@@ -93,6 +93,8 @@ executable redis-client
                     , data-default-class
                     , crypton-x509-system
                     , bytestring
+                    , dns
+                    , iproute
 
     -- Directories containing source files.
     hs-source-dirs:   app

@@ -2,8 +2,13 @@
 
 module Main where
 
+import Data.Bits (Bits ((.|.)), shiftL, shiftR, (.&.))
 import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BSC
 import Data.Default.Class (def)
+import Data.IP (IPv4, fromIPv4w)
+import Data.Word (Word32)
+import Network.DNS
 import Network.Socket
 import Network.TLS
 import Network.TLS.Extra.Cipher
@@ -11,11 +16,14 @@ import System.X509.Unix (getSystemCertificateStore)
 
 main :: IO ()
 main = do
-  let ip = tupleToHostAddress (9, 223, 65, 55) -- "9.223.65.55"
-  let hostname = "sspeaks-swec-test-02-18-25.cache.icbbvt.windows-int.net"
-  let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6380 ip, addrCanonName = Just hostname}
+  let hostname = "sspeaks-eus2euap-test.redis.cache.windows.net"
+  ip <- resolve hostname
+  let ipCorrectEndian = toNetworkByteOrder ip
+  print $ hostAddressToTuple ipCorrectEndian
+  let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
   sock <- openSocket addrInfo
   connect sock (addrAddress addrInfo)
+  print "Socket connected"
 
   -- Load system CA certificates
   store <- getSystemCertificateStore
@@ -34,6 +42,7 @@ main = do
           }
   context <- contextNew sock clientParams
   handshake context
+  print "Handshake done"
   sendData context "HELLO 3 AUTH default <password>\r\n"
   recvData context >>= print
   sendData context "PING\r\n"
@@ -41,6 +50,24 @@ main = do
   bye context
   close sock
   return ()
+
+toNetworkByteOrder :: Word32 -> Word32
+toNetworkByteOrder hostOrder =
+  (hostOrder `shiftR` 24) .&. 0xFF
+    .|. (hostOrder `shiftR` 8) .&. 0xFF00
+    .|. (hostOrder `shiftL` 8) .&. 0xFF0000
+    .|. (hostOrder `shiftL` 24) .&. 0xFF000000
+
+resolve :: String -> IO HostAddress
+resolve address = do
+  rs <- makeResolvSeed defaultResolvConf
+  addrInfo <- withResolver rs $ \resolver -> do
+    lookupA resolver (BSC.pack address)
+  return $ f addrInfo
+  where
+    f :: Either DNSError [IPv4] -> HostAddress
+    f (Right (a : _)) = fromIPv4w a
+    f _ = error "no address found"
 
 byteStringToString :: BS.ByteString -> String
 byteStringToString = map (toEnum . fromEnum) . BS.unpack
