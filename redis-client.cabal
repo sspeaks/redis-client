@@ -59,6 +59,7 @@ library resp
     build-depends:    base ^>=4.18.2.1
                     , bytestring
                     , containers
+                    , attoparsec
     hs-source-dirs:   lib
     default-language: GHC2021
     exposed-modules:  Resp
@@ -96,6 +97,7 @@ executable redis-client
                     , bytestring
                     , dns
                     , iproute
+                    , resp
 
     -- Directories containing source files.
     hs-source-dirs:   app
