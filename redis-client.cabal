@@ -103,13 +103,7 @@ executable redis-client
 
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.18.2.1
-                    , tls
-                    , network
-                    , data-default-class
-                    , crypton-x509-system
                     , bytestring
-                    , dns
-                    , iproute
                     , resp
                     , client
 

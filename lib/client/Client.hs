@@ -1,14 +1,16 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 
-module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient)) where
+module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient)) where
 
 import Control.Monad (void)
 import Control.Monad.IO.Class
 import Data.Bits (Bits (..))
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as BSC
-import Data.ByteString.Lazy (toStrict, fromStrict)
+import Data.ByteString.Lazy (fromStrict)
+import Data.Default.Class (def)
 import Data.IP (IPv4, fromIPv4w)
 import Data.Kind (Type)
 import Data.Word (Word32, Word8)
@@ -39,6 +41,9 @@ import Network.Socket
   )
 import Network.Socket qualified as S
 import Network.Socket.ByteString (recv, sendAll)
+import Network.TLS (ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
+import Network.TLS.Extra (ciphersuite_strong)
+import System.X509.Unix (getSystemCertificateStore)
 import Prelude hiding (getContents)
 
 data ConnectionStatus = Connected | NotConnected
@@ -69,6 +74,44 @@ instance Client PlainTextClient where
   send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
   recieve :: (MonadIO m) => PlainTextClient 'Connected -> m B.ByteString
   recieve (ConnectedPlainTextClient _ _ sock) = liftIO $ recv sock 4096
+
+data TLSClient (a :: ConnectionStatus) where
+  NotConnectedTLSClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> TLSClient 'NotConnected
+  ConnectedTLSClient :: String -> Word32 -> Socket -> Context -> TLSClient 'Connected
+
+instance Client TLSClient where
+  connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
+  connect (NotConnectedTLSClient hostname maybeTuple) = do
+    ipCorrectEndian <- case maybeTuple of
+      Nothing -> toNetworkByteOrder <$> liftIO (resolve hostname)
+      (Just tup) -> pure $ tupleToHostAddress tup
+    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
+    sock <- liftIO $ openSocket addrInfo
+    liftIO $ S.connect sock (addrAddress addrInfo)
+    -- Load system CA certificates
+    store <- liftIO getSystemCertificateStore
+
+    let clientParams =
+          (defaultParamsClient hostname "redis-server")
+            { clientSupported =
+                def
+                  { supportedVersions = [TLS13, TLS12],
+                    supportedCiphers = ciphersuite_strong
+                  },
+              clientShared =
+                def
+                  { sharedCAStore = store
+                  }
+            }
+    context <- contextNew sock clientParams
+    handshake context
+    return $ ConnectedTLSClient hostname ipCorrectEndian sock context
+  close :: (MonadIO m) => TLSClient 'Connected -> m ()
+  close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx >> S.close sock
+  send :: (MonadIO m) => TLSClient 'Connected -> B.ByteString -> m ()
+  send (ConnectedTLSClient _ _ _ ctx) dat = liftIO $ sendData ctx (fromStrict dat)
+  recieve :: (MonadIO m) => TLSClient 'Connected -> m B.ByteString
+  recieve (ConnectedTLSClient _ _ _ ctx) = liftIO $ recvData ctx
 
 toNetworkByteOrder :: Word32 -> Word32
 toNetworkByteOrder hostOrder =
