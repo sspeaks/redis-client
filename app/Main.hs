@@ -28,12 +28,7 @@ maxRecvBytes = 4096
 
 main :: IO ()
 main = do
-  let hostname = "localhost"
-  -- ip <- resolve hostname
-  let ipCorrectEndian = tupleToHostAddress (127, 0, 0, 1)
-  print $ hostAddressToTuple ipCorrectEndian
-  let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6379 ipCorrectEndian, addrCanonName = Just hostname}
-  sock <- openSocket addrInfo
+  
   connect sock (addrAddress addrInfo)
   print "Socket connected"
   sendAll sock "HELLO 3\r\n"
@@ -70,23 +65,3 @@ main = do
   close sock
   return ()
 
-toNetworkByteOrder :: Word32 -> Word32
-toNetworkByteOrder hostOrder =
-  (hostOrder `shiftR` 24) .&. 0xFF
-    .|. (hostOrder `shiftR` 8) .&. 0xFF00
-    .|. (hostOrder `shiftL` 8) .&. 0xFF0000
-    .|. (hostOrder `shiftL` 24) .&. 0xFF000000
-
-resolve :: String -> IO HostAddress
-resolve address = do
-  rs <- makeResolvSeed defaultResolvConf
-  addrInfo <- withResolver rs $ \resolver -> do
-    lookupA resolver (BSC.pack address)
-  return $ f addrInfo
-  where
-    f :: Either DNSError [IPv4] -> HostAddress
-    f (Right (a : _)) = fromIPv4w a
-    f _ = error "no address found"
-
-byteStringToString :: BS.ByteString -> String
-byteStringToString = map (toEnum . fromEnum) . BS.unpack
