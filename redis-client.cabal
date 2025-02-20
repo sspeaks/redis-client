@@ -111,6 +111,7 @@ executable redis-client
                     , dns
                     , iproute
                     , resp
+                    , client
 
     -- Directories containing source files.
     hs-source-dirs:   app

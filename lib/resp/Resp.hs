@@ -5,9 +5,10 @@
 module Resp where
 
 import Control.Applicative ((<|>))
+import Data.Attoparsec.ByteString qualified as StrictParse
 import Data.Attoparsec.ByteString.Char8 qualified as Char8
 import Data.Attoparsec.ByteString.Lazy qualified as Lazy
-import Data.ByteString.Lazy.Char8 qualified as B8
+import Data.ByteString.Char8 qualified as B8
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Prelude hiding (take)
@@ -72,7 +73,7 @@ parseBulkString = do
   _ <- Char8.endOfLine
   s <- Char8.take len
   _ <- Char8.endOfLine
-  return $ RespBulkString (B8.fromStrict s)
+  return $ RespBulkString s
 
 parseArray :: Char8.Parser RespData
 parseArray = do
@@ -101,8 +102,17 @@ parseMap = do
       return (k, v)
 
 parseWith :: (Monad m) => m B8.ByteString -> m RespData
-parseWith recv = do
+parseWith recv = head <$> parseManyWith 1 recv
+
+parseManyWith :: (Monad m) => Int -> m B8.ByteString -> m [RespData]
+parseManyWith cnt recv = do
   input <- recv
-  case Lazy.parseOnly parseRespData input of
-    Left err -> error err
-    Right result -> return result
+  case StrictParse.parse (StrictParse.count cnt parseRespData) input of
+    StrictParse.Fail _ _ err -> error err
+    part@(StrictParse.Partial f) -> runUntilDone part recv
+    StrictParse.Done _ r -> return r
+  where
+    runUntilDone :: (Monad m) => StrictParse.IResult i r -> m i -> m r
+    runUntilDone (StrictParse.Fail _ _ err) _ = error err
+    runUntilDone (StrictParse.Partial f) getMore = getMore >>= (flip runUntilDone getMore . f)
+    runUntilDone (StrictParse.Done _ r) _ = return r

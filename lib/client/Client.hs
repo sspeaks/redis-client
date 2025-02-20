@@ -1,48 +1,74 @@
-module Client (Client, PlainTextClient, defaultPlainTextClient) where
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 
-import qualified Data.ByteString as B
-import Data.Word (Word8, Word32)
+module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient)) where
+
+import Control.Monad (void)
 import Control.Monad.IO.Class
-import Network.Socket
-import Network.DNS
+import Data.Bits (Bits (..))
+import Data.ByteString qualified as B
+import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Lazy (toStrict, fromStrict)
 import Data.IP (IPv4, fromIPv4w)
-import Data.Bits (Bits(..))
-import qualified Data.ByteString.Char8 as BSC
+import Data.Kind (Type)
+import Data.Word (Word32, Word8)
+import Network.DNS
+  ( DNSError,
+    defaultResolvConf,
+    lookupA,
+    makeResolvSeed,
+    withResolver,
+  )
+import Network.Socket
+  ( AddrInfo
+      ( AddrInfo,
+        addrAddress,
+        addrCanonName,
+        addrFamily,
+        addrFlags,
+        addrProtocol,
+        addrSocketType
+      ),
+    Family (AF_INET),
+    HostAddress,
+    SockAddr (SockAddrInet),
+    Socket,
+    SocketType (Stream),
+    openSocket,
+    tupleToHostAddress,
+  )
+import Network.Socket qualified as S
+import Network.Socket.ByteString (recv, sendAll)
+import Prelude hiding (getContents)
 
-class Client client where
-    connect :: MonadIO m => client -> m client
-    close :: (MonadIO m) => client -> m ()
-    send :: (MonadIO m) => client -> B.ByteString -> m Bool
-    recieve :: (MonadIO m) => client -> m (Either String B.ByteString)
+data ConnectionStatus = Connected | NotConnected
 
-data PlainTextClient = PlainTextClient {
-    hostName :: String,
-    ipTuple :: Maybe (Word8, Word8, Word8, Word8),
-    sock :: Maybe Socket
-}
+class Client (client :: ConnectionStatus -> Type) where
+  connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
+  close :: (MonadIO m) => client 'Connected -> m ()
+  send :: (MonadIO m) => client 'Connected -> B.ByteString -> m ()
+  recieve :: (MonadIO m) => client 'Connected -> m B.ByteString
+
+data PlainTextClient (a :: ConnectionStatus) where
+  NotConnectedPlainTextClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> PlainTextClient 'NotConnected
+  ConnectedPlainTextClient :: String -> Word32 -> Socket -> PlainTextClient 'Connected
 
 instance Client PlainTextClient where
-  connect :: MonadIO m => PlainTextClient -> m PlainTextClient
-  connect client = do
-    let hostname = hostName client
-    -- ip <- resolve hostname
-    ipCorrectEndian <- case ipTuple client of
-                                  Nothing -> toNetworkByteOrder <$> liftIO (resolve hostname)
-                                  (Just tup) -> pure $ tupleToHostAddress tup
+  connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
+  connect (NotConnectedPlainTextClient hostname maybeTuple) = do
+    ipCorrectEndian <- case maybeTuple of
+      Nothing -> toNetworkByteOrder <$> liftIO (resolve hostname)
+      (Just tup) -> pure $ tupleToHostAddress tup
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6379 ipCorrectEndian, addrCanonName = Just hostname}
     sock <- liftIO $ openSocket addrInfo
-    return $ client {
-      sock = Just sock
-    }
-  close :: MonadIO m => PlainTextClient -> m ()
-  close = _
-  send = _
-  recieve = _
-
-
-
-defaultPlainTextClient :: PlainTextClient
-defaultPlainTextClient = PlainTextClient "localhost" Nothing Nothing
+    liftIO $ S.connect sock (addrAddress addrInfo)
+    return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
+  close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
+  close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
+  send :: (MonadIO m) => PlainTextClient 'Connected -> B.ByteString -> m ()
+  send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
+  recieve :: (MonadIO m) => PlainTextClient 'Connected -> m B.ByteString
+  recieve (ConnectedPlainTextClient _ _ sock) = liftIO $ recv sock 4096
 
 toNetworkByteOrder :: Word32 -> Word32
 toNetworkByteOrder hostOrder =
