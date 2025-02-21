@@ -17,13 +17,13 @@ runRedisAction = runCommandsAgainstPlaintextHost "redis.local"
 main :: IO ()
 main = hspec $ do
   describe "Can run basic operations" $ do
-    it "set" $ do
+    it "set is encoded and responded to properly" $ do
       runRedisAction (set "hello" "world") `shouldReturn` RespSimpleString "OK"
-    it "get" $ do
+    it "get is encoded properly and fetches the key set previously" $ do
       runRedisAction (get "hello") `shouldReturn` RespBulkString "world"
-    it "ping" $ do
+    it "ping is encoded properly and returns pong" $ do
       runRedisAction ping `shouldReturn` RespSimpleString "PONG"
-    it "bulkSet" $ do
+    it "bulkSet is encoded properly and subsequent gets work properly" $ do
       runRedisAction (bulkSet [("a", "b"), ("c", "d"), ("e", "f")]) `shouldReturn` RespSimpleString "OK"
       runRedisAction (get "a") `shouldReturn` RespBulkString "b"
       runRedisAction (get "c") `shouldReturn` RespBulkString "d"
