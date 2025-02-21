@@ -97,6 +97,16 @@ test-suite RespSpec
                     , resp
                     , bytestring
                     , containers
+executable EndToEnd
+    default-language: GHC2021
+    main-is:          E2E.hs
+    hs-source-dirs:   test
+    build-depends:    base ^>=4.18.2.1
+                    , hspec
+                    , redis-command-client
+                    , bytestring
+                    , client
+                    , resp
 
 executable redis-client
     -- Import common warning flags.
