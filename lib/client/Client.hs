@@ -2,7 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient)) where
+module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient), ConnectionStatus (..)) where
 
 import Control.Monad (void)
 import Control.Monad.IO.Class
