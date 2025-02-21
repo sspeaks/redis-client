@@ -3,11 +3,12 @@
 
 module RedisCommandClient where
 
-import Client (Client (..), ConnectionStatus (..), TLSClient (..))
+import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
 import Control.Monad.IO.Class
 import Control.Monad.State as State
 import Data.ByteString.Char8 qualified as BSC
 import Data.Kind (Type)
+import Data.Word (Word8)
 import Resp (Encodable (encode), RespData (..), parseWith)
 
 data RedisCommandClient client (a :: Type) where
@@ -65,7 +66,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     client <- State.get
     liftIO $ send client (encode $ wrapInRay ["HELLO", "3", "AUTH", "default", password])
     liftIO $ parseWith (recieve client)
-    
+
   bulkSet :: [(String, String)] -> RedisCommandClient client RespData
   bulkSet kvs = RedisCommandClient $ do
     client <- State.get
@@ -75,6 +76,20 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
 runCommandsAgainstTLSHost :: String -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost host action = do
   client <- connect (NotConnectedTLSClient host Nothing)
+  val <- evalStateT (runRedisCommandClient action) client
+  close client
+  return val
+
+runCommandsAgainstPlaintextHost :: String -> RedisCommandClient PlainTextClient a -> IO a
+runCommandsAgainstPlaintextHost host action = do
+  client <- connect (NotConnectedPlainTextClient host Nothing)
+  val <- evalStateT (runRedisCommandClient action) client
+  close client
+  return val
+
+runCommandsAgainstPlaintextHostWithTuple :: String -> (Word8, Word8, Word8, Word8) -> RedisCommandClient PlainTextClient a -> IO a
+runCommandsAgainstPlaintextHostWithTuple host tup action = do
+  client <- connect (NotConnectedPlainTextClient host (Just tup))
   val <- evalStateT (runRedisCommandClient action) client
   close client
   return val
