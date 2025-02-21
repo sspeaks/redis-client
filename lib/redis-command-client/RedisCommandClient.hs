@@ -32,45 +32,65 @@ instance (Client client) => MonadIO (RedisCommandClient client) where
   liftIO :: IO a -> RedisCommandClient client a
   liftIO = RedisCommandClient . liftIO
 
+instance (Client client) => MonadState (client 'Connected) (RedisCommandClient client) where
+  get :: RedisCommandClient client (client 'Connected)
+  get = RedisCommandClient State.get
+  put :: client 'Connected -> RedisCommandClient client ()
+  put = RedisCommandClient . State.put
+
 class (MonadIO m) => RedisCommands m where
   auth :: String -> m RespData
   ping :: m RespData
   set :: String -> String -> m RespData
   get :: String -> m RespData
   bulkSet :: [(String, String)] -> m RespData
+  flushAll :: m RespData
+  dbsize :: m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay = RespArray . map (RespBulkString . BSC.pack)
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping :: RedisCommandClient client RespData
-  ping = RedisCommandClient $ do
+  ping = do
     client <- State.get
     liftIO $ send client (encode $ wrapInRay ["PING"])
     liftIO $ parseWith (recieve client)
 
   set :: String -> String -> RedisCommandClient client RespData
-  set k v = RedisCommandClient $ do
+  set k v = do
     client <- State.get
     liftIO $ send client (encode $ wrapInRay ["SET", k, v])
     liftIO $ parseWith (recieve client)
 
   get :: String -> RedisCommandClient client RespData
-  get k = RedisCommandClient $ do
+  get k = do
     client <- State.get
     liftIO $ send client (encode $ wrapInRay ["GET", k])
     liftIO $ parseWith (recieve client)
 
   auth :: String -> RedisCommandClient client RespData
-  auth password = RedisCommandClient $ do
+  auth password = do
     client <- State.get
     liftIO $ send client (encode $ wrapInRay ["HELLO", "3", "AUTH", "default", password])
     liftIO $ parseWith (recieve client)
 
   bulkSet :: [(String, String)] -> RedisCommandClient client RespData
-  bulkSet kvs = RedisCommandClient $ do
+  bulkSet kvs = do
     client <- State.get
     liftIO $ send client (encode $ wrapInRay (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs))
+    liftIO $ parseWith (recieve client)
+
+  flushAll :: RedisCommandClient client RespData
+  flushAll = do
+    client <- State.get
+    liftIO $ send client (encode $ wrapInRay ["FLUSHALL"])
+    liftIO $ parseWith (recieve client)
+
+  dbsize :: RedisCommandClient client RespData
+  dbsize = do
+    client <- State.get
+    liftIO $ send client (encode $ wrapInRay ["DBSIZE"])
     liftIO $ parseWith (recieve client)
 
 runCommandsAgainstTLSHost :: String -> RedisCommandClient TLSClient a -> IO a
