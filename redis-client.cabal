@@ -121,4 +121,5 @@ executable redis-client
                     , resp
                     , time
     hs-source-dirs:   app
+    other-modules: Filler
     default-language: GHC2021
