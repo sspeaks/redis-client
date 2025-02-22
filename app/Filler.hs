@@ -9,6 +9,7 @@ import Control.Monad (replicateM, replicateM_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
 import Data.ByteString qualified as B
+import Data.List (find)
 import Data.Maybe (isJust)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import RedisCommandClient (RedisCommandClient, RedisCommands (dbsize))
@@ -52,10 +53,12 @@ fillCacheWithData gb = do
 
 readerThread :: (Client client) => client 'Connected -> Int -> MVar (Either String ()) -> IO ()
 readerThread client numToRead errorOrDone = do
-  result <- foldr (\x acc -> if isJust acc then acc else isError x) Nothing <$> parseManyWith (numToPipeline * 4 * numToRead) (recieve client)
+  result <- extractError $ find isError <$> parseManyWith (numToPipeline * 4 * numToRead) (recieve client)
   liftIO $ case result of
     Nothing -> putMVar errorOrDone $ Right ()
     Just s -> putMVar errorOrDone $ Left s
   where
-    isError (RespError e) = Just e
-    isError _ = Nothing
+    isError (RespError _) = True
+    isError _ = False
+    extractError (RespError e) = e
+    extractError _ = error "won't happen"
