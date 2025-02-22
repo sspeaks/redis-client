@@ -107,6 +107,7 @@ executable EndToEnd
                     , bytestring
                     , client
                     , resp
+                    , mtl
 
 executable redis-client
     import:           warnings
