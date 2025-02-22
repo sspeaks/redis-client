@@ -119,5 +119,6 @@ executable redis-client
                     , client
                     , random
                     , resp
+                    , time
     hs-source-dirs:   app
     default-language: GHC2021

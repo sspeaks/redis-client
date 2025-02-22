@@ -93,23 +93,30 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     liftIO $ send client (encode $ wrapInRay ["DBSIZE"])
     liftIO $ parseWith (recieve client)
 
-runCommandsAgainstTLSHost :: String -> RedisCommandClient TLSClient a -> IO a
-runCommandsAgainstTLSHost host action = do
-  client <- connect (NotConnectedTLSClient host Nothing)
-  val <- evalStateT (runRedisCommandClient action) client
+data RunState = RunState
+  { host :: String,
+    password :: String,
+    useTLS :: Bool,
+    dataGBs :: Int,
+    flush :: Bool
+  }
+  deriving (Show)
+
+authenticate :: (Client client) => String -> RedisCommandClient client RespData
+authenticate [] = return $ RespSimpleString "OK"
+authenticate password = auth password
+
+runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
+runCommandsAgainstTLSHost st action = do
+  client <- connect (NotConnectedTLSClient (host st) Nothing)
+  val <- evalStateT (runRedisCommandClient (authenticate (password st) >> action)) client
   close client
   return val
 
-runCommandsAgainstPlaintextHost :: String -> RedisCommandClient PlainTextClient a -> IO a
-runCommandsAgainstPlaintextHost host action = do
-  client <- connect (NotConnectedPlainTextClient host Nothing)
-  val <- evalStateT (runRedisCommandClient action) client
-  close client
-  return val
-
-runCommandsAgainstPlaintextHostWithTuple :: String -> (Word8, Word8, Word8, Word8) -> RedisCommandClient PlainTextClient a -> IO a
-runCommandsAgainstPlaintextHostWithTuple host tup action = do
-  client <- connect (NotConnectedPlainTextClient host (Just tup))
-  val <- evalStateT (runRedisCommandClient action) client
+runCommandsAgainstPlaintextHost :: RunState -> RedisCommandClient PlainTextClient a -> IO a
+runCommandsAgainstPlaintextHost st action = do
+  let notConnectedClient = if host st == "localhost" then NotConnectedPlainTextClient "localhost" (Just (127, 0, 0, 1)) else NotConnectedPlainTextClient (host st) Nothing
+  client <- connect notConnectedClient
+  val <- evalStateT (runRedisCommandClient (authenticate (password st) >> action)) client
   close client
   return val
