@@ -2,7 +2,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-
 module Filler where
 
 import Client (Client (..), ConnectionStatus (Connected))
@@ -24,14 +23,13 @@ import System.Random (mkStdGen)
 import System.Random.Stateful (StatefulGen, newIOGenM, uniformByteStringM)
 import Text.Printf (printf)
 
-
 randomBytes :: (StatefulGen g m) => g -> Int -> m SB.ByteString
 randomBytes g b = uniformByteStringM b g
 
 genRandomSet :: (StatefulGen g m) => g -> m LB.ByteString
 genRandomSet gen = do
-  bytesToSend <- LB.fromStrict <$> randomBytes gen (1024 * 1024 * 256) -- 256 MB of bytes
-  case Atto.parseOnly (Atto.count (1024 * 256) parseSet) bytesToSend of
+  bytesToSend <- LB.fromStrict <$> randomBytes gen (numKilosToPipeline * 1024) -- 1 GB of bytes
+  case Atto.parseOnly (Atto.count numKilosToPipeline parseSet) bytesToSend of
     Left err -> error err
     Right v -> return $ Builder.toLazyByteString $ mconcat v
   where
@@ -44,8 +42,8 @@ genRandomSet gen = do
       val <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
       return $ setBuilder <> key <> val
 
-numToPipeline :: Int
-numToPipeline = 1024 * 256
+numKilosToPipeline :: Int
+numKilosToPipeline = 1024 * 1024 -- 1 gigabyte
 
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
@@ -55,9 +53,9 @@ fillCacheWithData gb = do
   gen <- newIOGenM (mkStdGen seed)
   doneMvar <- liftIO newEmptyMVar
   _ <- liftIO $ forkIO (readerThread client gb doneMvar)
-  replicateM_ (4 * gb) $ do
+  replicateM_ gb $ do
     _ <- liftIO (genRandomSet gen) >>= send client
-    liftIO $ printf "+256MB written in fireAndForget mode\n"
+    liftIO $ printf "+1GB written in fireAndForget mode\n"
   liftIO $ printf "Done writing... waiting on read thread to finish...\n"
   result <- liftIO $ takeMVar doneMvar
   case result of
@@ -70,7 +68,7 @@ fillCacheWithData gb = do
     extractInt _ = error "Expected RespInteger"
 
 replicateM' :: (Applicative m) => Int -> m a -> m [a]
-replicateM' n ls = go n (pure id)
+replicateM' num ls = go num (pure id)
   where
     go n fs
       | n <= 0 = do
@@ -84,9 +82,9 @@ replicateM' n ls = go n (pure id)
           pure (f . (l :))
 
 readerThread :: (Client client) => client 'Connected -> Int -> MVar (Either String ()) -> IO ()
-readerThread client numToRead errorOrDone = do
-  !reses <- replicateM' (4 * numToRead) $ do
-    !res <- find isError <$> parseManyWith numToPipeline (recieve client)
+readerThread client numGbToRead errorOrDone = do
+  !reses <- replicateM' numGbToRead $ do
+    !res <- find isError <$> parseManyWith numKilosToPipeline (recieve client)
     return res
   liftIO $ case extractError <$> catMaybes reses of
     [] -> putMVar errorOrDone $ Right ()

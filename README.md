@@ -10,3 +10,5 @@ https://www.speedscope.app/
 https://stackoverflow.com/questions/61666819/haskell-how-to-detect-lazy-memory-leaks
 
 https://stackoverflow.com/questions/3276240/tools-for-analyzing-performance-of-a-haskell-program
+
+"-with-rtsopts=-hT"
