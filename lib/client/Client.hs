@@ -10,6 +10,7 @@ import Data.Bits (Bits (..))
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as BSC
 import Data.ByteString.Lazy (fromStrict)
+import Data.ByteString.Lazy qualified as Lazy
 import Data.Default.Class (def)
 import Data.IP (IPv4, fromIPv4w)
 import Data.Kind (Type)
@@ -40,7 +41,8 @@ import Network.Socket
     tupleToHostAddress,
   )
 import Network.Socket qualified as S
-import Network.Socket.ByteString (recv, sendAll)
+import Network.Socket.ByteString (recv)
+import Network.Socket.ByteString.Lazy (sendAll)
 import Network.TLS (ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
 import Network.TLS.Extra (ciphersuite_strong)
 import System.X509.Unix (getSystemCertificateStore)
@@ -51,7 +53,7 @@ data ConnectionStatus = Connected | NotConnected
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
   close :: (MonadIO m) => client 'Connected -> m ()
-  send :: (MonadIO m) => client 'Connected -> B.ByteString -> m ()
+  send :: (MonadIO m) => client 'Connected -> Lazy.ByteString -> m ()
   recieve :: (MonadIO m) => client 'Connected -> m B.ByteString
 
 data PlainTextClient (a :: ConnectionStatus) where
@@ -70,7 +72,7 @@ instance Client PlainTextClient where
     return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
   close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
-  send :: (MonadIO m) => PlainTextClient 'Connected -> B.ByteString -> m ()
+  send :: (MonadIO m) => PlainTextClient 'Connected -> Lazy.ByteString -> m ()
   send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
   recieve :: (MonadIO m) => PlainTextClient 'Connected -> m B.ByteString
   recieve (ConnectedPlainTextClient _ _ sock) = liftIO $ recv sock 4096
@@ -108,8 +110,8 @@ instance Client TLSClient where
     return $ ConnectedTLSClient hostname ipCorrectEndian sock context
   close :: (MonadIO m) => TLSClient 'Connected -> m ()
   close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx >> S.close sock
-  send :: (MonadIO m) => TLSClient 'Connected -> B.ByteString -> m ()
-  send (ConnectedTLSClient _ _ _ ctx) dat = liftIO $ sendData ctx (fromStrict dat)
+  send :: (MonadIO m) => TLSClient 'Connected -> Lazy.ByteString -> m ()
+  send (ConnectedTLSClient _ _ _ ctx) dat = liftIO $ sendData ctx dat
   recieve :: (MonadIO m) => TLSClient 'Connected -> m B.ByteString
   recieve (ConnectedTLSClient _ _ _ ctx) = liftIO $ recvData ctx
 

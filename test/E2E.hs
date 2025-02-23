@@ -4,7 +4,7 @@ module Main where
 
 import Client (Client (..), PlainTextClient)
 import Control.Monad.State qualified as State
-import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Lazy.Char8 qualified as BSC
 import RedisCommandClient (RedisCommandClient, RedisCommands (..), RunState (..), runCommandsAgainstPlaintextHost)
 import Resp
   ( Encodable (encode),
@@ -12,6 +12,7 @@ import Resp
     parseManyWith,
   )
 import Test.Hspec
+import qualified Data.ByteString.Builder as Builder
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
 runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" "" False 0 False)
@@ -36,7 +37,7 @@ main = hspec $ do
       runRedisAction
         ( do
             client <- State.get
-            send client $ mconcat ([encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
+            send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
             parseManyWith 100 (recieve client)
         )
         `shouldReturn` replicate 100 (RespSimpleString "OK")
@@ -44,7 +45,7 @@ main = hspec $ do
       runRedisAction
         ( do
             client <- State.get
-            send client $ mconcat ([encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
+            send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
             parseManyWith 100 (recieve client)
         )
         `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100]]

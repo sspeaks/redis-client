@@ -8,7 +8,9 @@ import Control.Applicative ((<|>))
 import Data.Attoparsec.ByteString qualified as StrictParse
 import Data.Attoparsec.ByteString.Char8 qualified as Char8
 import Data.Attoparsec.ByteString.Lazy qualified as Lazy
-import Data.ByteString.Char8 qualified as B8
+import Data.ByteString.Lazy.Char8 qualified as B8
+import Data.ByteString.Char8 qualified as SB8
+import Data.ByteString.Builder as Builder ( Builder, byteString, lazyByteString )
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Prelude hiding (take)
@@ -24,19 +26,19 @@ data RespData where
   deriving (Eq, Ord, Show)
 
 class Encodable a where
-  encode :: a -> B8.ByteString
+  encode :: a -> Builder.Builder
 
 instance Encodable RespData where
-  encode :: RespData -> B8.ByteString
-  encode (RespSimpleString s) = B8.concat ["+", B8.pack s, "\r\n"]
-  encode (RespError s) = B8.concat ["-", B8.pack s, "\r\n"]
-  encode (RespInteger i) = B8.concat [":", B8.pack . show $ i, "\r\n"]
-  encode (RespBulkString s) = B8.concat ["$", B8.pack . show . B8.length $ s, "\r\n", s, "\r\n"]
-  encode (RespArray xs) = B8.concat ["*", B8.pack . show $ length xs, "\r\n", mconcat . map encode $ xs]
-  encode (RespSet s) = B8.concat ["~", B8.pack . show $ S.size s, "\r\n", mconcat . map encode $ S.toList s]
-  encode (RespMap m) = B8.concat ["*", B8.pack . show $ M.size m, "\r\n", mconcat . map encodePair $ M.toList m]
+  encode :: RespData -> Builder.Builder
+  encode (RespSimpleString !s) = Builder.lazyByteString $ B8.concat ["+", B8.pack s, "\r\n"]
+  encode (RespError !s) = Builder.lazyByteString $ B8.concat ["-", B8.pack s, "\r\n"]
+  encode (RespInteger !i) = Builder.lazyByteString $ B8.concat [":", B8.pack . show $ i, "\r\n"]
+  encode (RespBulkString !s) = Builder.lazyByteString $ B8.concat ["$", B8.pack . show . B8.length $ s, "\r\n", s, "\r\n"]
+  encode (RespArray xs) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ length xs, "\r\n"]) <> foldMap encode xs
+  encode (RespSet !s) = Builder.lazyByteString (B8.concat ["~", B8.pack . show $ S.size s, "\r\n"]) <> foldMap encode (S.toList s)
+  encode (RespMap !m) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ M.size m, "\r\n"]) <> foldMap encodePair (M.toList m)
     where
-      encodePair (k, v) = B8.concat [encode k, encode v]
+      encodePair (k, v) =  encode k <> encode v
 
 -- Parser for RespData
 parseRespData :: Char8.Parser RespData
@@ -49,17 +51,19 @@ parseRespData =
     '*' -> parseArray
     '~' -> parseSet
     '%' -> parseMap
-    _ -> fail "Invalid RESP data type"
+    v -> fail ("Invalid RESP data type starting with " <> [v])
 
 parseSimpleString :: Char8.Parser RespData
 parseSimpleString = do
-  s <- Char8.manyTill Char8.anyChar Char8.endOfLine
-  return $ RespSimpleString s
+  s <- Char8.takeTill (== '\r')
+  _ <- Char8.take 2
+  return $ RespSimpleString (SB8.unpack s)
 
 parseError :: Char8.Parser RespData
 parseError = do
-  s <- Char8.manyTill Char8.anyChar Char8.endOfLine
-  return $ RespError s
+  s <- Char8.takeTill (== '\r')
+  _ <- Char8.take 2
+  return $ RespError (SB8.unpack s)
 
 parseInteger :: Char8.Parser RespData
 parseInteger = do
@@ -73,7 +77,7 @@ parseBulkString = do
   _ <- Char8.endOfLine
   s <- Char8.take len
   _ <- Char8.endOfLine
-  return $ RespBulkString s
+  return $ RespBulkString (B8.fromStrict s)
 
 parseArray :: Char8.Parser RespData
 parseArray = do
@@ -101,10 +105,10 @@ parseMap = do
       v <- parseRespData
       return (k, v)
 
-parseWith :: (Monad m) => m B8.ByteString -> m RespData
+parseWith :: (Monad m) => m SB8.ByteString -> m RespData
 parseWith recv = head <$> parseManyWith 1 recv
 
-parseManyWith :: (Monad m) => Int -> m B8.ByteString -> m [RespData]
+parseManyWith :: (Monad m) => Int -> m SB8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
   input <- recv
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of

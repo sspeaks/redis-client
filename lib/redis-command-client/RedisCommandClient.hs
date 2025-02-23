@@ -6,10 +6,11 @@ module RedisCommandClient where
 import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
 import Control.Monad.IO.Class
 import Control.Monad.State as State
-import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Lazy.Char8 qualified as BSC
 import Data.Kind (Type)
 import Data.Word (Word8)
 import Resp (Encodable (encode), RespData (..), parseWith)
+import qualified Data.ByteString.Builder as Builder
 
 data RedisCommandClient client (a :: Type) where
   RedisCommandClient :: (Client client) => {runRedisCommandClient :: State.StateT (client 'Connected) IO a} -> RedisCommandClient client a
@@ -54,43 +55,43 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping :: RedisCommandClient client RespData
   ping = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay ["PING"])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["PING"])
     liftIO $ parseWith (recieve client)
 
   set :: String -> String -> RedisCommandClient client RespData
   set k v = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay ["SET", k, v])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SET", k, v])
     liftIO $ parseWith (recieve client)
 
   get :: String -> RedisCommandClient client RespData
   get k = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay ["GET", k])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["GET", k])
     liftIO $ parseWith (recieve client)
 
   auth :: String -> RedisCommandClient client RespData
   auth password = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay ["HELLO", "3", "AUTH", "default", password])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HELLO", "3", "AUTH", "default", password])
     liftIO $ parseWith (recieve client)
 
   bulkSet :: [(String, String)] -> RedisCommandClient client RespData
   bulkSet kvs = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs))
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs))
     liftIO $ parseWith (recieve client)
 
   flushAll :: RedisCommandClient client RespData
   flushAll = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay ["FLUSHALL"])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["FLUSHALL"])
     liftIO $ parseWith (recieve client)
 
   dbsize :: RedisCommandClient client RespData
   dbsize = do
     client <- State.get
-    liftIO $ send client (encode $ wrapInRay ["DBSIZE"])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["DBSIZE"])
     liftIO $ parseWith (recieve client)
 
 data RunState = RunState
