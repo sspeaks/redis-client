@@ -6,33 +6,37 @@ module Filler where
 
 import Client (Client (..), ConnectionStatus (Connected))
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (replicateM_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
 import Data.Attoparsec.ByteString.Lazy qualified as Atto
-import Data.ByteString qualified as SB
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
+import Data.Foldable (forM_)
 import Data.List (find)
 import Data.Maybe (catMaybes)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Word (Word32)
 import RedisCommandClient (RedisCommandClient, RedisCommands (dbsize))
 import Resp (Encodable (..), RespData (..), parseManyWith)
-import System.Random (mkStdGen)
-import System.Random.Stateful (StatefulGen, newIOGenM, uniformByteStringM)
 import Text.Printf (printf)
 
-randomBytes :: (StatefulGen g m) => g -> Int -> m SB.ByteString
-randomBytes g b = uniformByteStringM b g
+oneGig :: Int -> LB.ByteString
+oneGig start =
+  let sizeInBytes = 1024 * 1024 * 1024 -- 1GB
+      numWords = sizeInBytes `div` 4 -- Number of 4-byte words
+      builder = foldMap word32ToBuilder [fromIntegral start .. fromIntegral (numWords - 1 + start)]
+   in Builder.toLazyByteString builder
 
-genRandomSet :: (StatefulGen g m) => g -> m LB.ByteString
+-- Helper function to convert Word32 to ByteString Builder
+word32ToBuilder :: Word32 -> Builder.Builder
+word32ToBuilder = Builder.word32LE -- Directly write Word32 in little-endian order
+
+genRandomSet :: Int -> LB.ByteString
 genRandomSet gen = do
-  bytesToSend <- LB.fromStrict <$> randomBytes gen (numKilosToPipeline * 1024) -- 1 GB of bytes
+  let bytesToSend = oneGig gen
   case Atto.parseOnly (Atto.count numKilosToPipeline parseSet) bytesToSend of
     Left err -> error err
-    Right v -> return $ Builder.toLazyByteString $ mconcat v
+    Right v -> Builder.toLazyByteString $ mconcat v
   where
-    -- return $ encode . RespArray $ map RespBulkString ["SET", key, value]
     setBuilder :: Builder.Builder
     setBuilder = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
     parseSet :: Atto.Parser Builder.Builder
@@ -47,12 +51,12 @@ numKilosToPipeline = 1024 * 1024 -- 1 gigabyte
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
   client <- State.get
-  seed <- liftIO $ round <$> getPOSIXTime
-  gen <- newIOGenM (mkStdGen seed)
+  -- seed <- liftIO $ round <$> getPOSIXTime
+  -- gen <- newIOGenM (mkStdGen seed)
   doneMvar <- liftIO newEmptyMVar
   _ <- liftIO $ forkIO (readerThread client gb doneMvar)
-  replicateM_ gb $ do
-    _ <- liftIO (genRandomSet gen) >>= send client
+  forM_ [1 .. gb] $ \iter -> do
+    _ <- send client (genRandomSet iter)
     liftIO $ printf "+1GB written in fireAndForget mode\n"
   liftIO $ printf "Done writing... waiting on read thread to finish...\n"
   result <- liftIO $ takeMVar doneMvar
