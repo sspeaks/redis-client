@@ -4,6 +4,7 @@ module Main where
 
 import Client (Client (..), PlainTextClient)
 import Control.Monad.State qualified as State
+import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as BSC
 import RedisCommandClient (RedisCommandClient, RedisCommands (..), RunState (..), runCommandsAgainstPlaintextHost)
 import Resp
@@ -11,8 +12,7 @@ import Resp
     RespData (RespArray, RespBulkString, RespSimpleString),
     parseManyWith,
   )
-import Test.Hspec
-import qualified Data.ByteString.Builder as Builder
+import Test.Hspec (describe, hspec, it, shouldReturn)
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
 runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" "" False 0 False)

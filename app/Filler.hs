@@ -6,12 +6,11 @@ module Filler where
 
 import Client (Client (..), ConnectionStatus (Connected))
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (replicateM, replicateM_)
+import Control.Monad (replicateM_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
 import Data.Attoparsec.ByteString.Lazy qualified as Atto
 import Data.ByteString qualified as SB
-import Data.ByteString.Builder (stringUtf8)
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
 import Data.List (find)
@@ -35,7 +34,7 @@ genRandomSet gen = do
   where
     -- return $ encode . RespArray $ map RespBulkString ["SET", key, value]
     setBuilder :: Builder.Builder
-    setBuilder = stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
+    setBuilder = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
     parseSet :: Atto.Parser Builder.Builder
     parseSet = do
       key <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
@@ -48,7 +47,6 @@ numKilosToPipeline = 1024 * 1024 -- 1 gigabyte
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
   client <- State.get
-  -- Open /dev/random in ReadMode
   seed <- liftIO $ round <$> getPOSIXTime
   gen <- newIOGenM (mkStdGen seed)
   doneMvar <- liftIO newEmptyMVar

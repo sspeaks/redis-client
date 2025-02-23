@@ -8,12 +8,11 @@ import Control.Applicative ((<|>))
 import Data.Attoparsec.ByteString qualified as StrictParse
 import Data.Attoparsec.ByteString.Char8 qualified as Char8
 import Data.Attoparsec.ByteString.Lazy qualified as Lazy
-import Data.ByteString.Lazy.Char8 qualified as B8
+import Data.ByteString.Builder as Builder (Builder, byteString, lazyByteString)
 import Data.ByteString.Char8 qualified as SB8
-import Data.ByteString.Builder as Builder ( Builder, byteString, lazyByteString )
+import Data.ByteString.Lazy.Char8 qualified as B8
 import Data.Map qualified as M
 import Data.Set qualified as S
-import Prelude hiding (take)
 
 data RespData where
   RespSimpleString :: String -> RespData
@@ -38,7 +37,7 @@ instance Encodable RespData where
   encode (RespSet !s) = Builder.lazyByteString (B8.concat ["~", B8.pack . show $ S.size s, "\r\n"]) <> foldMap encode (S.toList s)
   encode (RespMap !m) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ M.size m, "\r\n"]) <> foldMap encodePair (M.toList m)
     where
-      encodePair (k, v) =  encode k <> encode v
+      encodePair (k, v) = encode k <> encode v
 
 -- Parser for RespData
 parseRespData :: Char8.Parser RespData
