@@ -19,6 +19,7 @@ data RespData where
   RespError :: String -> RespData
   RespInteger :: Integer -> RespData
   RespBulkString :: B8.ByteString -> RespData
+  RespNullBilkString :: RespData
   RespArray :: [RespData] -> RespData
   RespMap :: M.Map RespData RespData -> RespData
   RespSet :: S.Set RespData -> RespData
@@ -33,6 +34,7 @@ instance Encodable RespData where
   encode (RespError !s) = Builder.lazyByteString $ B8.concat ["-", B8.pack s, "\r\n"]
   encode (RespInteger !i) = Builder.lazyByteString $ B8.concat [":", B8.pack . show $ i, "\r\n"]
   encode (RespBulkString !s) = Builder.lazyByteString $ B8.concat ["$", B8.pack . show . B8.length $ s, "\r\n", s, "\r\n"]
+  encode RespNullBilkString = Builder.lazyByteString $ "$-1\r\n"
   encode (RespArray xs) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ length xs, "\r\n"]) <> foldMap encode xs
   encode (RespSet !s) = Builder.lazyByteString (B8.concat ["~", B8.pack . show $ S.size s, "\r\n"]) <> foldMap encode (S.toList s)
   encode (RespMap !m) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ M.size m, "\r\n"]) <> foldMap encodePair (M.toList m)
@@ -46,7 +48,7 @@ parseRespData =
     '+' -> parseSimpleString
     '-' -> parseError
     ':' -> parseInteger
-    '$' -> parseBulkString
+    '$' -> parseBulkString <|> parseNullBulkString
     '*' -> parseArray
     '~' -> parseSet
     '%' -> parseMap
@@ -77,6 +79,13 @@ parseBulkString = do
   s <- Char8.take len
   _ <- Char8.endOfLine
   return $ RespBulkString (B8.fromStrict s)
+
+parseNullBulkString :: Char8.Parser RespData
+parseNullBulkString = do
+  _ <- Char8.char '-'
+  _ <- Char8.char '1'
+  _ <- Char8.endOfLine
+  return RespNullBilkString
 
 parseArray :: Char8.Parser RespData
 parseArray = do
