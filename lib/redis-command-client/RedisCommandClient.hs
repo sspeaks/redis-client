@@ -61,6 +61,11 @@ class (MonadIO m) => RedisCommands m where
   rpop :: String -> m RespData
   sadd :: String -> [String] -> m RespData
   smembers :: String -> m RespData
+  hdel :: String -> [String] -> m RespData
+  hkeys :: String -> m RespData
+  hvals :: String -> m RespData
+  llen :: String -> m RespData
+  lindex :: String -> Int -> m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
@@ -192,6 +197,36 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   smembers key = do
     client <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SMEMBERS", key])
+    liftIO $ parseWith (recieve client)
+
+  hdel :: String -> [String] -> RedisCommandClient client RespData
+  hdel key fields = do
+    client <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("HDEL" : key : fields))
+    liftIO $ parseWith (recieve client)
+
+  hkeys :: String -> RedisCommandClient client RespData
+  hkeys key = do
+    client <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HKEYS", key])
+    liftIO $ parseWith (recieve client)
+
+  hvals :: String -> RedisCommandClient client RespData
+  hvals key = do
+    client <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HVALS", key])
+    liftIO $ parseWith (recieve client)
+
+  llen :: String -> RedisCommandClient client RespData
+  llen key = do
+    client <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["LLEN", key])
+    liftIO $ parseWith (recieve client)
+
+  lindex :: String -> Int -> RedisCommandClient client RespData
+  lindex key index = do
+    client <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["LINDEX", key, show index])
     liftIO $ parseWith (recieve client)
 
 data RunState = RunState

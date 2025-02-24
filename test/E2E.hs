@@ -63,6 +63,24 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
     it "sadd and smembers are encoded properly and work correctly" $ do
       runRedisAction (sadd "myset" ["one", "two", "three"]) `shouldReturn` RespInteger 3
       runRedisAction (smembers "myset") `shouldReturn` RespArray [RespBulkString "one", RespBulkString "two", RespBulkString "three"]
+    it "hdel is encoded properly and works correctly" $ do
+      runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
+      runRedisAction (hdel "myhash" ["field1"]) `shouldReturn` RespInteger 1
+      runRedisAction (hget "myhash" "field1") `shouldReturn` RespNullBilkString
+    it "hkeys is encoded properly and works correctly" $ do
+      runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
+      runRedisAction (hset "myhash" "field2" "value2") `shouldReturn` RespInteger 1
+      runRedisAction (hkeys "myhash") `shouldReturn` RespArray [RespBulkString "field1", RespBulkString "field2"]
+    it "hvals is encoded properly and works correctly" $ do
+      runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
+      runRedisAction (hset "myhash" "field2" "value2") `shouldReturn` RespInteger 1
+      runRedisAction (hvals "myhash") `shouldReturn` RespArray [RespBulkString "value1", RespBulkString "value2"]
+    it "llen is encoded properly and works correctly" $ do
+      runRedisAction (lpush "mylist" ["one", "two", "three"]) `shouldReturn` RespInteger 3
+      runRedisAction (llen "mylist") `shouldReturn` RespInteger 3
+    it "lindex is encoded properly and works correctly" $ do
+      runRedisAction (lpush "mylist" ["one", "two", "three"]) `shouldReturn` RespInteger 3
+      runRedisAction (lindex "mylist" 1) `shouldReturn` RespBulkString "two"
 
   describe "Pipelining works: " $ do
     it "can pipeline 100 commands and retrieve their values" $ do
