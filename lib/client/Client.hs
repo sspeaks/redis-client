@@ -86,7 +86,7 @@ instance Client PlainTextClient where
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m B.ByteString
   receive (ConnectedPlainTextClient _ _ sock) = do
-    val <- liftIO $ timeout (5 * 1000000) $ recv sock 4096
+    val <- liftIO $ timeout (30 * 1000000) $ recv sock 4096
     case val of
       Nothing -> fail "recv socket timeout"
       Just v -> return v
@@ -129,7 +129,7 @@ instance Client TLSClient where
 
   receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m B.ByteString
   receive (ConnectedTLSClient _ _ _ ctx) = do
-    val <- liftIO $ timeout (5 * 1000000) $ recvData ctx
+    val <- liftIO $ timeout (30 * 1000000) $ recvData ctx
     case val of
       Nothing -> fail "recv socket timeout"
       Just v -> return v

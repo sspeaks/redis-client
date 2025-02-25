@@ -2,7 +2,10 @@
 
 module Main where
 
-import Control.Monad (void, when)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (finally)
+import Control.Monad (replicateM_, void, when)
+import Data.Foldable (forM_)
 import Filler (fillCacheWithData)
 import RedisCommandClient
 import System.Console.GetOpt (ArgDescr (..), ArgOrder (..), OptDescr (Option), getOpt, usageInfo)
@@ -29,24 +32,31 @@ handleArgs args = do
     (_, _, errs) -> ioError (userError (concat errs ++ usageInfo "Usage: redis-client [OPTION...]" options))
 
 main :: IO ()
-main =
-  getArgs >>= handleArgs >>= \(state, _) -> do
-    when (null (host state)) $ do
-      putStrLn "No host specified\n"
-      putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
-      exitFailure
-    when (dataGBs state <= 0 && not (flush state)) $ do
-      putStrLn "No data specified or data is 0GB or fewer\n"
-      putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
-      exitFailure
-    when (flush state) $ do
-      printf "Flushing cache '%s'\n" (host state)
-      if useTLS state
-        then runCommandsAgainstTLSHost state (void flushAll)
-        else runCommandsAgainstPlaintextHost state (void flushAll)
-    when (dataGBs state > 0) $ do
-      printf "Filling cache '%s' with %dGB of data\n" (host state) (dataGBs state)
-
-      if useTLS state
-        then runCommandsAgainstTLSHost state $ fillCacheWithData (dataGBs state)
-        else runCommandsAgainstPlaintextHost state $ fillCacheWithData (dataGBs state)
+main = do
+  (state, _) <- getArgs >>= handleArgs
+  when (null (host state)) $ do
+    putStrLn "No host specified\n"
+    putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
+    exitFailure
+  when (dataGBs state <= 0 && not (flush state)) $ do
+    putStrLn "No data specified or data is 0GB or fewer\n"
+    putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
+    exitFailure
+  when (flush state) $ do
+    printf "Flushing cache '%s'\n" (host state)
+    if useTLS state
+      then runCommandsAgainstTLSHost state (void flushAll)
+      else runCommandsAgainstPlaintextHost state (void flushAll)
+  when (dataGBs state > 0) $ do
+    printf "Filling cache '%s' with %dGB of data\n" (host state) (dataGBs state)
+    let clampedThreads = min (dataGBs state) 4
+    doneMVar <- newEmptyMVar
+    let fillData =
+          if useTLS state
+            then runCommandsAgainstTLSHost state . fillCacheWithData
+            else runCommandsAgainstPlaintextHost state . fillCacheWithData
+    let (gbPerThread, remaining) = dataGBs state `divMod` clampedThreads
+    forM_ [1 .. clampedThreads] $ \threadNum -> do
+      let gbToFill = if threadNum == 1 then gbPerThread + remaining else gbPerThread
+      void $ forkIO $ fillData gbToFill `finally` putMVar doneMVar ()
+    replicateM_ clampedThreads (takeMVar doneMVar)
