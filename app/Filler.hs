@@ -28,19 +28,19 @@ randomBytes g b = uniformByteStringM b g
 
 genRandomSet :: (StatefulGen g m) => g -> m LB.ByteString
 genRandomSet gen = do
-  bytesToSend <- LB.fromStrict <$> randomBytes gen (numKilosToPipeline * 1024) -- 1 GB of bytes
+  !bytesToSend <- LB.fromStrict <$> randomBytes gen (numKilosToPipeline * 1024) -- 1 GB of bytes
   case Atto.parseOnly (Atto.count numKilosToPipeline parseSet) bytesToSend of
     Left err -> error err
-    Right v -> return $ Builder.toLazyByteString $ mconcat v
+    Right v -> return $! Builder.toLazyByteString $! mconcat v
   where
     -- return $ encode . RespArray $ map RespBulkString ["SET", key, value]
     setBuilder :: Builder.Builder
     setBuilder = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
     parseSet :: Atto.Parser Builder.Builder
     parseSet = do
-      key <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
-      val <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
-      return $ setBuilder <> key <> val
+      !key <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
+      !val <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
+      return $! setBuilder <> key <> val
 
 numKilosToPipeline :: Int
 numKilosToPipeline = 1024*1024 -- 1 gigabyte

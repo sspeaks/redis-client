@@ -15,14 +15,14 @@ import Data.Map qualified as M
 import Data.Set qualified as S
 
 data RespData where
-  RespSimpleString :: String -> RespData
-  RespError :: String -> RespData
-  RespInteger :: Integer -> RespData
-  RespBulkString :: B8.ByteString -> RespData
+  RespSimpleString :: !String -> RespData
+  RespError :: !String -> RespData
+  RespInteger :: !Integer -> RespData
+  RespBulkString :: !B8.ByteString -> RespData
   RespNullBilkString :: RespData
-  RespArray :: [RespData] -> RespData
-  RespMap :: M.Map RespData RespData -> RespData
-  RespSet :: S.Set RespData -> RespData
+  RespArray :: ![RespData] -> RespData
+  RespMap :: !(M.Map RespData RespData) -> RespData
+  RespSet :: !(S.Set RespData) -> RespData
   deriving (Eq, Ord, Show)
 
 class Encodable a where
@@ -59,27 +59,27 @@ parseRespData =
 
 parseSimpleString :: Char8.Parser RespData
 parseSimpleString = do
-  s <- Char8.takeTill (== '\r')
+  !s <- Char8.takeTill (== '\r')
   _ <- Char8.take 2
   return $ RespSimpleString (SB8.unpack s)
 
 parseError :: Char8.Parser RespData
 parseError = do
-  s <- Char8.takeTill (== '\r')
+  !s <- Char8.takeTill (== '\r')
   _ <- Char8.take 2
   return $ RespError (SB8.unpack s)
 
 parseInteger :: Char8.Parser RespData
 parseInteger = do
-  i <- Char8.signed Char8.decimal
+  !i <- Char8.signed Char8.decimal
   _ <- Char8.endOfLine
   return $ RespInteger i
 
 parseBulkString :: Char8.Parser RespData
 parseBulkString = do
-  len <- Char8.decimal
+  !len <- Char8.decimal
   _ <- Char8.endOfLine
-  s <- Char8.take len
+  !s <- Char8.take len
   _ <- Char8.endOfLine
   return $ RespBulkString (B8.fromStrict s)
 
@@ -92,23 +92,23 @@ parseNullBulkString = do
 
 parseArray :: Char8.Parser RespData
 parseArray = do
-  len <- Char8.decimal
+  !len <- Char8.decimal
   _ <- Char8.endOfLine
-  xs <- Char8.count len parseRespData
+  !xs <- Char8.count len parseRespData
   return $ RespArray xs
 
 parseSet :: Char8.Parser RespData
 parseSet = do
-  len <- Char8.decimal
+  !len <- Char8.decimal
   _ <- Char8.endOfLine
-  xs <- Char8.count len parseRespData
+  !xs <- Char8.count len parseRespData
   return $ RespSet (S.fromList xs)
 
 parseMap :: Char8.Parser RespData
 parseMap = do
-  len <- Char8.decimal
+  !len <- Char8.decimal
   _ <- Char8.endOfLine
-  pairs <- Char8.count len parsePair
+  !pairs <- Char8.count len parsePair
   return $ RespMap (M.fromList pairs)
   where
     parsePair = do

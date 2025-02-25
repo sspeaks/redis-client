@@ -113,7 +113,7 @@ executable EndToEnd
 
 executable redis-client
     import:           warnings
-    ghc-options:      -O2 "-with-rtsopts=-M4096M -H1024M"
+    ghc-options:      -O2 "-with-rtsopts=-H1024M"
     main-is:          Main.hs
     build-depends:    base ^>=4.18.2.1
                     , bytestring

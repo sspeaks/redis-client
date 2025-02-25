@@ -70,6 +70,7 @@ cabal run redis-client --enable-profiling -- +RTS -hT -pj -RTS -h localhost -d 1
 ### Profiling Tools
 
 - `hp2ps`: Convert heap profile to PostScript
+  - `hp2ps -e18in -c redis-client.hp`
 - `evince`: View PostScript files
 - [Speedscope](https://www.speedscope.app/): Interactive flamegraph viewer
 

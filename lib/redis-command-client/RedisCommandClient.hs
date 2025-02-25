@@ -279,13 +279,13 @@ parseManyWith cnt recv = do
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
     StrictParse.Fail _ _ err -> error err
     part@(StrictParse.Partial f) -> runUntilDone client part recv
-    StrictParse.Done remainder r -> do
+    StrictParse.Done remainder !r -> do
       State.put (ClientState client remainder)
       return r
   where
     runUntilDone :: (Client client, Monad m, MonadState ClientState m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
     runUntilDone client (StrictParse.Fail _ _ err) _ = error err
     runUntilDone client (StrictParse.Partial f) getMore = getMore >>= (flip (runUntilDone client) getMore . f)
-    runUntilDone client (StrictParse.Done remainder r) _ = do
+    runUntilDone client (StrictParse.Done remainder !r) _ = do
       State.put (ClientState client remainder)
       return r
