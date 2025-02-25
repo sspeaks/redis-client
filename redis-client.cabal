@@ -97,6 +97,7 @@ test-suite RespSpec
                     , resp
                     , bytestring
                     , containers
+                    , attoparsec
 executable EndToEnd
     default-language: GHC2021
     main-is:          E2E.hs
@@ -111,7 +112,7 @@ executable EndToEnd
 
 executable redis-client
     import:           warnings
-    ghc-options:      -O2
+    ghc-options:      -O2 "-with-rtsopts=-M4096M -H1024M"
     main-is:          Main.hs
     build-depends:    base ^>=4.18.2.1
                     , bytestring

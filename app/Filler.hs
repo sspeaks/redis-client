@@ -69,11 +69,10 @@ fillCacheWithData gb = do
 readerThread :: (Client client) => ThreadId -> client 'Connected -> Int -> MVar (Either String ()) -> IO ()
 readerThread parentThread client numGbToRead errorOrDone =
   ( do
-      replicateM_ numGbToRead $ do
-        !res <- find isError <$> parseManyWith numKilosToPipeline (receive client)
-        case extractError <$> res of
-          Nothing -> return ()
-          Just s -> fail ("error encountered from RESP values read from socket: " <> s)
+      !res <- find isError <$> parseManyWith (numKilosToPipeline * numGbToRead) (receive client)
+      case extractError <$> res of
+        Nothing -> return ()
+        Just s -> fail ("error encountered from RESP values read from socket: " <> s)
       liftIO $ putMVar errorOrDone $ Right ()
   )
     `catch` (\e -> putMVar errorOrDone (Left $ "Exception: " ++ show (e :: IOException)) >> throwTo parentThread e)
