@@ -83,6 +83,7 @@ library redis-command-client
                     , mtl
                     , client
                     , resp
+                    , attoparsec
     hs-source-dirs:   lib/redis-command-client
     default-language: GHC2021
     exposed-modules:  RedisCommandClient

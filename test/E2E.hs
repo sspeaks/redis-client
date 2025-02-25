@@ -7,11 +7,10 @@ import Control.Monad (void)
 import Control.Monad.State qualified as State
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as BSC
-import RedisCommandClient (RedisCommandClient, RedisCommands (..), RunState (..), runCommandsAgainstPlaintextHost)
+import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (..), RunState (..), parseManyWith, runCommandsAgainstPlaintextHost)
 import Resp
   ( Encodable (encode),
     RespData (..),
-    parseManyWith,
   )
 import Test.Hspec (before_, describe, hspec, it, shouldReturn)
 
@@ -22,7 +21,7 @@ main :: IO ()
 main = hspec $ before_ (void $ runRedisAction flushAll) $ do
   describe "Can run basic operations: " $ do
     it "get and set are encoded and respond properly" $ do
-      runRedisAction (set "hello" "world") `shouldReturn` RespSimpleString "OK"      
+      runRedisAction (set "hello" "world") `shouldReturn` RespSimpleString "OK"
       runRedisAction (get "hello") `shouldReturn` RespBulkString "world"
     it "ping is encoded properly and returns pong" $ do
       runRedisAction ping `shouldReturn` RespSimpleString "PONG"
@@ -86,14 +85,14 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
     it "can pipeline 100 commands and retrieve their values" $ do
       runRedisAction
         ( do
-            client <- State.get
+            ClientState client _ <- State.get
             send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
             parseManyWith 100 (receive client)
         )
         `shouldReturn` replicate 100 (RespSimpleString "OK")
       runRedisAction
         ( do
-            client <- State.get
+            ClientState client _ <- State.get
             send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
             parseManyWith 100 (receive client)
         )

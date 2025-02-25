@@ -16,8 +16,8 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
 import Data.List (find)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import RedisCommandClient (RedisCommandClient, RedisCommands (dbsize))
-import Resp (Encodable (..), RespData (..), parseManyWith)
+import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize), parseManyWith)
+import Resp (Encodable (..), RespData (..))
 import System.Random (mkStdGen)
 import System.Random.Stateful (StatefulGen, newIOGenM, uniformByteStringM)
 import Text.Printf (printf)
@@ -46,7 +46,7 @@ numKilosToPipeline = 1024 * 1024 -- 1 gigabyte
 
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
-  client <- State.get
+  ClientState client _ <- State.get
   seed <- liftIO $ round <$> getPOSIXTime
   gen <- newIOGenM (mkStdGen seed)
   doneMvar <- liftIO newEmptyMVar
