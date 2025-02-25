@@ -52,7 +52,10 @@ parseRespData =
     '*' -> parseArray
     '~' -> parseSet
     '%' -> parseMap
-    v -> fail ("Invalid RESP data type starting with " <> [v])
+    v -> do
+      rest <- Char8.takeByteString
+      let catted = SB8.cons v rest
+      fail ("Invalid RESP data type: Remaining string " <> SB8.unpack catted)
 
 parseSimpleString :: Char8.Parser RespData
 parseSimpleString = do
@@ -113,18 +116,18 @@ parseMap = do
       v <- parseRespData
       return (k, v)
 
-parseWith :: (Monad m) => m SB8.ByteString -> m RespData
+parseWith :: (Monad m, MonadFail m) => m SB8.ByteString -> m RespData
 parseWith recv = head <$> parseManyWith 1 recv
 
-parseManyWith :: (Monad m) => Int -> m SB8.ByteString -> m [RespData]
+parseManyWith :: (Monad m, MonadFail m) => Int -> m SB8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
   input <- recv
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
-    StrictParse.Fail _ _ err -> error err
+    StrictParse.Fail _ _ err -> fail err
     part@(StrictParse.Partial f) -> runUntilDone part recv
     StrictParse.Done _ r -> return r
   where
-    runUntilDone :: (Monad m) => StrictParse.IResult i r -> m i -> m r
-    runUntilDone (StrictParse.Fail _ _ err) _ = error err
+    runUntilDone :: (Monad m, MonadFail m) => StrictParse.IResult i r -> m i -> m r
+    runUntilDone (StrictParse.Fail _ _ err) _ = fail err
     runUntilDone (StrictParse.Partial f) getMore = getMore >>= (flip runUntilDone getMore . f)
     runUntilDone (StrictParse.Done _ r) _ = return r

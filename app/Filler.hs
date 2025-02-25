@@ -5,7 +5,8 @@
 module Filler where
 
 import Client (Client (..), ConnectionStatus (Connected))
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, putMVar, takeMVar, throwTo)
+import Control.Exception (IOException, catch)
 import Control.Monad (replicateM_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
@@ -14,7 +15,6 @@ import Data.ByteString qualified as SB
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
 import Data.List (find)
-import Data.Maybe (catMaybes)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import RedisCommandClient (RedisCommandClient, RedisCommands (dbsize))
 import Resp (Encodable (..), RespData (..), parseManyWith)
@@ -50,7 +50,8 @@ fillCacheWithData gb = do
   seed <- liftIO $ round <$> getPOSIXTime
   gen <- newIOGenM (mkStdGen seed)
   doneMvar <- liftIO newEmptyMVar
-  _ <- liftIO $ forkIO (readerThread client gb doneMvar)
+  parentThread <- liftIO myThreadId
+  _ <- liftIO $ forkIO (readerThread parentThread client gb doneMvar)
   replicateM_ gb $ do
     _ <- liftIO (genRandomSet gen) >>= send client
     liftIO $ printf "+1GB written in fireAndForget mode\n"
@@ -65,28 +66,17 @@ fillCacheWithData gb = do
     extractInt (RespInteger i) = i
     extractInt _ = error "Expected RespInteger"
 
-replicateM' :: (Applicative m) => Int -> m a -> m [a]
-replicateM' num ls = go num (pure id)
-  where
-    go n fs
-      | n <= 0 = do
-          f <- fs
-          pure (f [])
-      | otherwise = go (n - 1) gs
-      where
-        gs = do
-          f <- fs
-          l <- ls
-          pure (f . (l :))
-
-readerThread :: (Client client) => client 'Connected -> Int -> MVar (Either String ()) -> IO ()
-readerThread client numGbToRead errorOrDone = do
-  !reses <- replicateM' numGbToRead $ do
-    !res <- find isError <$> parseManyWith numKilosToPipeline (recieve client)
-    return res
-  liftIO $ case extractError <$> catMaybes reses of
-    [] -> putMVar errorOrDone $ Right ()
-    (s : _) -> putMVar errorOrDone $ Left s
+readerThread :: (Client client) => ThreadId -> client 'Connected -> Int -> MVar (Either String ()) -> IO ()
+readerThread parentThread client numGbToRead errorOrDone =
+  ( do
+      replicateM_ numGbToRead $ do
+        !res <- find isError <$> parseManyWith numKilosToPipeline (receive client)
+        case extractError <$> res of
+          Nothing -> return ()
+          Just s -> fail ("error encountered from RESP values read from socket: " <> s)
+      liftIO $ putMVar errorOrDone $ Right ()
+  )
+    `catch` (\e -> putMVar errorOrDone (Left $ "Exception: " ++ show (e :: IOException)) >> throwTo parentThread e)
   where
     isError (RespError _) = True
     isError _ = False

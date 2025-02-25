@@ -4,6 +4,7 @@
 
 module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient), ConnectionStatus (..)) where
 
+import Control.Exception (bracket, finally)
 import Control.Monad (void)
 import Control.Monad.IO.Class
 import Data.Bits (Bits (..))
@@ -36,8 +37,13 @@ import Network.Socket
     HostAddress,
     SockAddr (SockAddrInet),
     Socket,
+    SocketOption (..),
+    SocketTimeout (SocketTimeout),
     SocketType (Stream),
-    openSocket,
+    defaultProtocol,
+    setSockOpt,
+    setSocketOption,
+    socket,
     tupleToHostAddress,
   )
 import Network.Socket qualified as S
@@ -45,6 +51,7 @@ import Network.Socket.ByteString (recv)
 import Network.Socket.ByteString.Lazy (sendAll)
 import Network.TLS (ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
 import Network.TLS.Extra (ciphersuite_strong)
+import System.Timeout (timeout)
 import System.X509.Unix (getSystemCertificateStore)
 import Prelude hiding (getContents)
 
@@ -54,7 +61,7 @@ class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
   close :: (MonadIO m) => client 'Connected -> m ()
   send :: (MonadIO m) => client 'Connected -> Lazy.ByteString -> m ()
-  recieve :: (MonadIO m) => client 'Connected -> m B.ByteString
+  receive :: (MonadIO m, MonadFail m) => client 'Connected -> m B.ByteString
 
 data PlainTextClient (a :: ConnectionStatus) where
   NotConnectedPlainTextClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> PlainTextClient 'NotConnected
@@ -62,20 +69,27 @@ data PlainTextClient (a :: ConnectionStatus) where
 
 instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
-  connect (NotConnectedPlainTextClient hostname maybeTuple) = do
+  connect (NotConnectedPlainTextClient hostname maybeTuple) = liftIO $ do
     ipCorrectEndian <- case maybeTuple of
-      Nothing -> toNetworkByteOrder <$> liftIO (resolve hostname)
-      (Just tup) -> pure $ tupleToHostAddress tup
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6379 ipCorrectEndian, addrCanonName = Just hostname}
-    sock <- liftIO $ openSocket addrInfo
-    liftIO $ S.connect sock (addrAddress addrInfo)
+      Nothing -> toNetworkByteOrder <$> resolve hostname
+      Just tup -> pure $ tupleToHostAddress tup
+    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6379 ipCorrectEndian, addrCanonName = Just hostname}
+    sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
+    S.connect sock (addrAddress addrInfo)
     return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
+
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
   close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
+
   send :: (MonadIO m) => PlainTextClient 'Connected -> Lazy.ByteString -> m ()
   send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
-  recieve :: (MonadIO m) => PlainTextClient 'Connected -> m B.ByteString
-  recieve (ConnectedPlainTextClient _ _ sock) = liftIO $ recv sock 4096
+
+  receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m B.ByteString
+  receive (ConnectedPlainTextClient _ _ sock) = do
+    val <- liftIO $ timeout (5 * 1000000) $ recv sock 4096
+    case val of
+      Nothing -> fail "recv socket timeout"
+      Just v -> return v
 
 data TLSClient (a :: ConnectionStatus) where
   NotConnectedTLSClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> TLSClient 'NotConnected
@@ -83,16 +97,14 @@ data TLSClient (a :: ConnectionStatus) where
 
 instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
-  connect (NotConnectedTLSClient hostname maybeTuple) = do
+  connect (NotConnectedTLSClient hostname maybeTuple) = liftIO $ do
     ipCorrectEndian <- case maybeTuple of
-      Nothing -> toNetworkByteOrder <$> liftIO (resolve hostname)
-      (Just tup) -> pure $ tupleToHostAddress tup
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = 0, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
-    sock <- liftIO $ openSocket addrInfo
-    liftIO $ S.connect sock (addrAddress addrInfo)
-    -- Load system CA certificates
-    store <- liftIO getSystemCertificateStore
-
+      Nothing -> toNetworkByteOrder <$> resolve hostname
+      Just tup -> pure $ tupleToHostAddress tup
+    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
+    sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
+    S.connect sock (addrAddress addrInfo)
+    store <- getSystemCertificateStore
     let clientParams =
           (defaultParamsClient hostname "redis-server")
             { clientSupported =
@@ -108,12 +120,19 @@ instance Client TLSClient where
     context <- contextNew sock clientParams
     handshake context
     return $ ConnectedTLSClient hostname ipCorrectEndian sock context
+
   close :: (MonadIO m) => TLSClient 'Connected -> m ()
-  close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx >> S.close sock
+  close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx `finally` S.close sock
+
   send :: (MonadIO m) => TLSClient 'Connected -> Lazy.ByteString -> m ()
   send (ConnectedTLSClient _ _ _ ctx) dat = liftIO $ sendData ctx dat
-  recieve :: (MonadIO m) => TLSClient 'Connected -> m B.ByteString
-  recieve (ConnectedTLSClient _ _ _ ctx) = liftIO $ recvData ctx
+
+  receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m B.ByteString
+  receive (ConnectedTLSClient _ _ _ ctx) = do
+    val <- liftIO $ timeout (5 * 1000000) $ recvData ctx
+    case val of
+      Nothing -> fail "recv socket timeout"
+      Just v -> return v
 
 toNetworkByteOrder :: Word32 -> Word32
 toNetworkByteOrder hostOrder =

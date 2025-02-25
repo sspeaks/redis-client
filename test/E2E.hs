@@ -88,13 +88,13 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
         ( do
             client <- State.get
             send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
-            parseManyWith 100 (recieve client)
+            parseManyWith 100 (receive client)
         )
         `shouldReturn` replicate 100 (RespSimpleString "OK")
       runRedisAction
         ( do
             client <- State.get
             send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
-            parseManyWith 100 (recieve client)
+            parseManyWith 100 (receive client)
         )
         `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100]]
