@@ -47,7 +47,7 @@ genRandomSet gen = do
 genGigSetRandom :: Int -> LB.ByteString -> LB.ByteString
 genGigSetRandom start value =
   let tl = encode $ RespBulkString value
-   in Builder.toLazyByteString $ go (1024 * 10) tl
+   in Builder.toLazyByteString $ go (1024 * 5) tl
   where
     setBuilder :: Builder.Builder
     setBuilder = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
@@ -65,13 +65,13 @@ fillCacheWithData gb = do
   client <- State.get
   seed <- liftIO $ round <$> getPOSIXTime
   gen <- newIOGenM (mkStdGen seed)
-  val <- LB.fromStrict <$> randomBytes gen (1024 * 100)
+  val <- LB.fromStrict <$> randomBytes gen (1024 * 100 * 2)
   doneMvar <- liftIO newEmptyMVar
   parentThread <- liftIO myThreadId
   -- _ <- liftIO $ print $ genGigSetRandom 1 val
   _ <- liftIO $ forkIO (readerThread parentThread client gb doneMvar)
   forM_ [1 .. gb] $ \iter -> do
-    _ <- send client (genGigSetRandom ((iter -1) * 1024 * 10) val)
+    _ <- send client (genGigSetRandom ((iter -1) * 1024 * 5) val)
     liftIO $ printf "+1GB written in fireAndForget mode\n"
   liftIO $ printf "Done writing... waiting on read thread to finish...\n"
   result <- liftIO $ takeMVar doneMvar
@@ -88,7 +88,7 @@ readerThread :: (Client client) => ThreadId -> client 'Connected -> Int -> MVar 
 readerThread parentThread client numGbToRead errorOrDone =
   ( do
       replicateM_ numGbToRead $ do
-        !res <- find isError <$> parseManyWith (1024 * 10) (receive client)
+        !res <- find isError <$> parseManyWith (1024 * 5) (receive client)
         case extractError <$> res of
           Nothing -> return ()
           Just s -> fail ("error encountered from RESP values read from socket: " <> s)
