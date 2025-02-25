@@ -9,6 +9,7 @@ import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, put
 import Control.Exception (IOException, catch)
 import Control.Monad (replicateM_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
+import Control.Monad.State (evalStateT)
 import Control.Monad.State qualified as State
 import Data.Attoparsec.ByteString.Lazy qualified as Atto
 import Data.ByteString qualified as SB
@@ -42,7 +43,7 @@ genRandomSet gen = do
       return $ setBuilder <> key <> val
 
 numKilosToPipeline :: Int
-numKilosToPipeline = 1024 * 1024 -- 1 gigabyte
+numKilosToPipeline = 1024*1024 -- 1 gigabyte
 
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
@@ -68,13 +69,16 @@ fillCacheWithData gb = do
 
 readerThread :: (Client client) => ThreadId -> client 'Connected -> Int -> MVar (Either String ()) -> IO ()
 readerThread parentThread client numGbToRead errorOrDone =
-  ( do
-      !res <- find isError <$> parseManyWith (numKilosToPipeline * numGbToRead) (receive client)
-      case extractError <$> res of
-        Nothing -> return ()
-        Just s -> fail ("error encountered from RESP values read from socket: " <> s)
-      liftIO $ putMVar errorOrDone $ Right ()
-  )
+  evalStateT -- use state monad to keep track of the parse buffer and not drop input
+    ( do
+        replicateM_ numGbToRead $ do
+          !res <- find isError <$> parseManyWith numKilosToPipeline (receive client)
+          case extractError <$> res of
+            Nothing -> return ()
+            Just s -> fail ("error encountered from RESP values read from socket: " <> s)
+        liftIO $ putMVar errorOrDone $ Right ()
+    )
+    (ClientState client SB.empty)
     `catch` (\e -> putMVar errorOrDone (Left $ "Exception: " ++ show (e :: IOException)) >> throwTo parentThread e)
   where
     isError (RespError _) = True
