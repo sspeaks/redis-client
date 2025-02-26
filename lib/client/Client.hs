@@ -2,9 +2,9 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient), ConnectionStatus (..)) where
+module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient), ConnectionStatus (..), resolve) where
 
-import Control.Exception (bracket, finally)
+import Control.Exception (IOException, bracket, catch, finally, throwIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class
 import Data.Bits (Bits (..))
@@ -53,6 +53,7 @@ import Network.TLS (ClientParams (..), Context, Shared (..), Supported (..), Ver
 import Network.TLS.Extra (ciphersuite_strong)
 import System.Timeout (timeout)
 import System.X509.Unix (getSystemCertificateStore)
+import Text.Printf (printf)
 import Prelude hiding (getContents)
 
 data ConnectionStatus = Connected | NotConnected
@@ -75,7 +76,10 @@ instance Client PlainTextClient where
       Just tup -> pure $ tupleToHostAddress tup
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6379 ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
-    S.connect sock (addrAddress addrInfo)
+    S.connect sock (addrAddress addrInfo) `catch` \(e :: IOException) -> do
+      printf "Wasn't able to connect to the server: %s...\n" (show e)
+      putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
+      throwIO e
     return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
 
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
