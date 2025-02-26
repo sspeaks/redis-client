@@ -150,6 +150,7 @@ toNetworkByteOrder hostOrder =
     .&. 0xFF000000
 
 resolve :: String -> IO HostAddress
+resolve "localhost" = return $ tupleToHostAddress (127, 0, 0, 1)
 resolve address = do
   rs <- makeResolvSeed defaultResolvConf
   addrInfo <- withResolver rs $ \resolver -> do

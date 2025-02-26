@@ -266,7 +266,7 @@ runCommandsAgainstTLSHost st action = do
 runCommandsAgainstPlaintextHost :: RunState -> RedisCommandClient PlainTextClient a -> IO a
 runCommandsAgainstPlaintextHost st action =
   bracket
-    (connect $ if host st == "localhost" then NotConnectedPlainTextClient "localhost" (Just (127, 0, 0, 1)) else NotConnectedPlainTextClient (host st) Nothing)
+    (connect $ NotConnectedPlainTextClient (host st) Nothing)
     close
     $ \client -> evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
 
