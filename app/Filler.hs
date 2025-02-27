@@ -43,7 +43,7 @@ genRandomSet gen = do
       return $! setBuilder <> key <> val
 
 numKilosToPipeline :: Int
-numKilosToPipeline = 1024*1024 -- 1 gigabyte
+numKilosToPipeline = 1024 * 1024 -- 1 gigabyte
 
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do

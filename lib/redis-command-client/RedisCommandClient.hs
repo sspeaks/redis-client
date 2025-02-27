@@ -16,16 +16,13 @@ import Data.Word (Word8)
 import Debug.Trace (trace, traceShow)
 import Resp (Encodable (encode), RespData (..), parseRespData)
 
-data ClientState where
-  ClientState ::
-    (Client client) =>
-    { getClient :: client 'Connected,
-      getParseBuffer :: SB8.ByteString
-    } ->
-    ClientState
+data ClientState client = ClientState
+  { getClient :: client 'Connected,
+    getParseBuffer :: SB8.ByteString
+  }
 
 data RedisCommandClient client (a :: Type) where
-  RedisCommandClient :: (Client client) => {runRedisCommandClient :: State.StateT ClientState IO a} -> RedisCommandClient client a
+  RedisCommandClient :: (Client client) => {runRedisCommandClient :: State.StateT (ClientState client) IO a} -> RedisCommandClient client a
 
 instance (Client client) => Functor (RedisCommandClient client) where
   fmap :: (a -> b) -> RedisCommandClient client a -> RedisCommandClient client b
@@ -45,10 +42,10 @@ instance (Client client) => MonadIO (RedisCommandClient client) where
   liftIO :: IO a -> RedisCommandClient client a
   liftIO = RedisCommandClient . liftIO
 
-instance (Client client) => MonadState ClientState (RedisCommandClient client) where
-  get :: RedisCommandClient client ClientState
+instance (Client client) => MonadState (ClientState client) (RedisCommandClient client) where
+  get :: RedisCommandClient client (ClientState client)
   get = RedisCommandClient State.get
-  put :: ClientState -> RedisCommandClient client ()
+  put :: ClientState client -> RedisCommandClient client ()
   put = RedisCommandClient . State.put
 
 instance (Client client) => MonadFail (RedisCommandClient client) where
@@ -270,10 +267,10 @@ runCommandsAgainstPlaintextHost st action =
     close
     $ \client -> evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
 
-parseWith :: (Monad m, MonadState ClientState m) => m SB8.ByteString -> m RespData
+parseWith :: (Client client, Monad m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
 parseWith recv = head <$> parseManyWith 1 recv
 
-parseManyWith :: (Monad m, MonadState ClientState m) => Int -> m SB8.ByteString -> m [RespData]
+parseManyWith :: (Client client, Monad m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
   (ClientState !client !input) <- State.get
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
@@ -283,7 +280,7 @@ parseManyWith cnt recv = do
       State.put (ClientState client remainder)
       return r
   where
-    runUntilDone :: (Client client, Monad m, MonadState ClientState m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
+    runUntilDone :: (Client client, Monad m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
     runUntilDone client (StrictParse.Fail _ _ err) _ = error err
     runUntilDone client (StrictParse.Partial f) getMore = getMore >>= (flip (runUntilDone client) getMore . f)
     runUntilDone client (StrictParse.Done remainder !r) _ = do

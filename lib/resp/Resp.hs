@@ -11,9 +11,9 @@ import Data.Attoparsec.ByteString.Lazy qualified as Lazy
 import Data.ByteString.Builder as Builder (Builder, byteString, lazyByteString)
 import Data.ByteString.Char8 qualified as SB8
 import Data.ByteString.Lazy.Char8 qualified as B8
+import Data.List (intercalate)
 import Data.Map qualified as M
 import Data.Set qualified as S
-import Data.List (intercalate)
 
 data RespData where
   RespSimpleString :: !String -> RespData

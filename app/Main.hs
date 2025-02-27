@@ -2,21 +2,20 @@
 
 module Main where
 
-import Control.Monad (void, when, unless)
+import Client (Client (receive, send), TLSClient (..), serve)
+import Control.Monad (unless, void, when)
+import Control.Monad.IO.Class
+import Control.Monad.State qualified as State
+import Data.ByteString.Builder qualified as Builder
+import Data.ByteString.Lazy.Char8 qualified as BS
 import Filler (fillCacheWithData)
 import RedisCommandClient
+import Resp (Encodable (encode), RespData (RespArray, RespBulkString))
 import System.Console.GetOpt (ArgDescr (..), ArgOrder (..), OptDescr (Option), getOpt, usageInfo)
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
+import System.IO (hFlush, stdout)
 import Text.Printf (printf)
-import Client (Client (send))
-import Control.Monad.IO.Class
-import Resp (RespData (RespArray, RespBulkString), Encodable (encode))
-import qualified Data.ByteString.Lazy.Char8 as BS
-import qualified Control.Monad.State as State
-import qualified Data.ByteString.Builder as Builder
-import Client (Client(receive))
-import System.IO (stdout, hFlush)
 
 defaultRunState :: RunState
 defaultRunState = RunState "" "" False 0 False
@@ -38,22 +37,35 @@ handleArgs args = do
 
 main :: IO ()
 main = do
-  (mode:args) <- getArgs
+  (mode : args) <- getArgs
   (state, _) <- handleArgs args
-  unless (mode `elem` ["cli", "fill"]) $ do
-    printf "Invalid mode '%s' specified\nValid modes are 'cli' and 'fill'\n" mode
+  unless (mode `elem` ["cli", "fill", "tunn"]) $ do
+    printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', and 'tunn'\n" mode
     putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
     exitFailure
-  when (mode == "cli") $ do
-    putStrLn "Starting CLI mode\n"
-    if useTLS state
-      then runCommandsAgainstTLSHost state repl
-      else runCommandsAgainstPlaintextHost state repl
-    exitSuccess
   when (null (host state)) $ do
     putStrLn "No host specified\n"
     putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
     exitFailure
+  when (mode == "tunn") $ tunn state
+  when (mode == "cli") $ cli state
+  when (mode == "fill") $ fill state
+
+tunn :: RunState -> IO ()
+tunn state = do
+  putStrLn "Starting tunnel mode"
+  if useTLS state
+    then runCommandsAgainstTLSHost state $ do
+      ClientState !client _ <- State.get
+      serve (TLSTunnel client)
+    else do
+      -- starts a server socket that listens on localhost and passes the traffic to the redis client
+      putStrLn "Tunnel mode is only supported with TLS enabled\n"
+      exitFailure
+  exitSuccess
+
+fill :: RunState -> IO ()
+fill state = do
   when (dataGBs state <= 0 && not (flush state)) $ do
     putStrLn "No data specified or data is 0GB or fewer\n"
     putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
@@ -65,10 +77,19 @@ main = do
       else runCommandsAgainstPlaintextHost state (void flushAll)
   when (dataGBs state > 0) $ do
     printf "Filling cache '%s' with %dGB of data\n" (host state) (dataGBs state)
-
     if useTLS state
       then runCommandsAgainstTLSHost state $ fillCacheWithData (dataGBs state)
       else runCommandsAgainstPlaintextHost state $ fillCacheWithData (dataGBs state)
+    exitSuccess
+  exitFailure
+
+cli :: RunState -> IO ()
+cli state = do
+  putStrLn "Starting CLI mode"
+  if useTLS state
+    then runCommandsAgainstTLSHost state repl
+    else runCommandsAgainstPlaintextHost state repl
+  exitSuccess
 
 repl :: (Client client) => RedisCommandClient client ()
 repl = do

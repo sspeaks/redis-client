@@ -2,8 +2,9 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient), ConnectionStatus (..), resolve) where
+module Client (Client (..), serve, PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient, TLSTunnel), ConnectionStatus (..), resolve) where
 
+import Control.Concurrent (forkIO)
 import Control.Exception (IOException, bracket, catch, finally, throwIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class
@@ -56,7 +57,7 @@ import System.X509.Unix (getSystemCertificateStore)
 import Text.Printf (printf)
 import Prelude hiding (getContents)
 
-data ConnectionStatus = Connected | NotConnected
+data ConnectionStatus = Connected | NotConnected | Server
 
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
@@ -98,12 +99,13 @@ instance Client PlainTextClient where
 data TLSClient (a :: ConnectionStatus) where
   NotConnectedTLSClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> TLSClient 'NotConnected
   ConnectedTLSClient :: String -> Word32 -> Socket -> Context -> TLSClient 'Connected
+  TLSTunnel :: TLSClient 'Connected -> TLSClient 'Server
 
 instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
   connect (NotConnectedTLSClient hostname maybeTuple) = liftIO $ do
     ipCorrectEndian <- case maybeTuple of
-      Nothing ->  resolve hostname
+      Nothing -> toNetworkByteOrder <$> resolve hostname
       Just tup -> pure $ tupleToHostAddress tup
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
@@ -137,6 +139,27 @@ instance Client TLSClient where
     case val of
       Nothing -> fail "recv socket timeout"
       Just v -> return v
+
+serve :: (MonadIO m) => TLSClient 'Server -> m ()
+serve (TLSTunnel redisClient) = liftIO $ do
+  bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
+    setSocketOption sock ReuseAddr 1
+    S.bind sock (SockAddrInet 6379 (tupleToHostAddress (127, 0, 0, 1)))
+    S.listen sock 1024
+    putStrLn "Listening on localhost:6379"
+    (clientSock, _) <- S.accept sock
+    putStrLn "Accepted connection"
+    void $
+      finally
+        (loop clientSock redisClient)
+        (S.close clientSock)
+  where
+    loop client redis = do
+      dat <- recv client 4096
+      send redisClient (fromStrict dat)
+      recieveData <- receive redis
+      sendAll client (fromStrict recieveData)
+      loop client redis
 
 toNetworkByteOrder :: Word32 -> Word32
 toNetworkByteOrder hostOrder =

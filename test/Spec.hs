@@ -2,13 +2,13 @@
 
 module Main where
 
+import Data.Attoparsec.ByteString.Char8 (parseOnly)
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as B
 import Data.Map qualified as M
 import Data.Set qualified as S
 import Resp
 import Test.Hspec
-import Data.Attoparsec.ByteString.Char8 (parseOnly)
 
 main :: IO ()
 main = hspec $ describe "encode" $ do
