@@ -103,7 +103,7 @@ instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
   connect (NotConnectedTLSClient hostname maybeTuple) = liftIO $ do
     ipCorrectEndian <- case maybeTuple of
-      Nothing -> toNetworkByteOrder <$> resolve hostname
+      Nothing ->  resolve hostname
       Just tup -> pure $ tupleToHostAddress tup
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
@@ -150,7 +150,7 @@ toNetworkByteOrder hostOrder =
     .&. 0xFF000000
 
 resolve :: String -> IO HostAddress
-resolve "localhost" = return $ tupleToHostAddress (127, 0, 0, 1)
+resolve "localhost" = return (tupleToHostAddress (0, 0, 0, 0))
 resolve address = do
   rs <- makeResolvSeed defaultResolvConf
   addrInfo <- withResolver rs $ \resolver -> do

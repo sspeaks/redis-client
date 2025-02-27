@@ -13,6 +13,7 @@ import Data.ByteString.Char8 qualified as SB8
 import Data.ByteString.Lazy.Char8 qualified as B8
 import Data.Map qualified as M
 import Data.Set qualified as S
+import Data.List (intercalate)
 
 data RespData where
   RespSimpleString :: !String -> RespData
@@ -23,7 +24,20 @@ data RespData where
   RespArray :: ![RespData] -> RespData
   RespMap :: !(M.Map RespData RespData) -> RespData
   RespSet :: !(S.Set RespData) -> RespData
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
+
+instance Show RespData where
+  show :: RespData -> String
+  show (RespSimpleString !s) = s
+  show (RespError !s) = "ERROR: " <> s
+  show (RespInteger !i) = show i
+  show (RespBulkString !s) = B8.unpack s
+  show RespNullBilkString = "NULL"
+  show (RespArray !xs) = intercalate "\n" (map show xs)
+  show (RespSet !s) = intercalate "\n" (map show (S.toList s))
+  show (RespMap !m) = intercalate "\n" (map showPair (M.toList m))
+    where
+      showPair (k, v) = show k <> ": " <> show v
 
 class Encodable a where
   encode :: a -> Builder.Builder
