@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
@@ -5,16 +6,24 @@ module Main where
 import Client (Client (receive, send), TLSClient (..), serve)
 import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class
-import Control.Monad.State qualified as State
+import Control.Monad.State.Strict qualified as State
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as BS
 import Filler (fillCacheWithData)
 import RedisCommandClient
+  ( ClientState (ClientState),
+    RedisCommandClient,
+    RedisCommands (flushAll),
+    RunState (..),
+    parseWith,
+    runCommandsAgainstPlaintextHost,
+    runCommandsAgainstTLSHost,
+  )
 import Resp (Encodable (encode), RespData (RespArray, RespBulkString))
 import System.Console.GetOpt (ArgDescr (..), ArgOrder (..), OptDescr (Option), getOpt, usageInfo)
+import System.Console.Readline (addHistory, readline)
 import System.Environment (getArgs)
 import System.Exit (exitFailure, exitSuccess)
-import System.IO (hFlush, stdout)
 import Text.Printf (printf)
 
 defaultRunState :: RunState
@@ -97,10 +106,13 @@ repl = do
   loop client
   where
     loop !client = do
-      liftIO $ putStr "> " >> hFlush stdout
-      command <- liftIO getLine
-      unless (command == "exit") $ do
-        (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS.pack)) . words $ command
-        response <- parseWith (receive client)
-        liftIO $ print response
-        loop client
+      command <- liftIO (readline "> ")
+      case command of
+        Nothing -> return ()
+        Just cmd -> do
+          liftIO $ addHistory cmd
+          unless (cmd == "exit") $ do
+            (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS.pack)) . words $ cmd
+            response <- parseWith (receive client)
+            liftIO $ print response
+            loop client
