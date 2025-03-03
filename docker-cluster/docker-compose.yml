@@ -1,0 +1,41 @@
+services:
+  redis1:
+    image: redis
+    hostname: redis1.local
+    volumes:
+      - ./redis1.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - 6379:6379
+  redis2:
+    image: redis
+    hostname: redis2.local
+    volumes:
+      - ./redis2.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - 6380:6380
+  redis3:
+    image: redis
+    hostname: redis3.local
+    volumes:
+      - ./redis3.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - 6381:6381
+  redis4:
+    image: redis
+    hostname: redis4.local
+    volumes:
+      - ./redis4.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - 6382:6382
+  redis5:
+    image: redis
+    hostname: redis5.local
+    volumes:
+      - ./redis5.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - 6383:6383
