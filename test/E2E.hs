@@ -15,7 +15,7 @@ import Resp
 import Test.Hspec (before_, describe, hspec, it, shouldReturn)
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
-runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" "" False 0 False)
+runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "" False 0 False)
 
 main :: IO ()
 main = hspec $ before_ (void $ runRedisAction flushAll) $ do

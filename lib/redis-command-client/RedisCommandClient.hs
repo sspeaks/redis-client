@@ -5,8 +5,12 @@ module RedisCommandClient where
 
 import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
 import Control.Exception (bracket)
-import Control.Monad.IO.Class
+import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.State as State
+  ( MonadState (get, put),
+    StateT,
+    evalStateT,
+  )
 import Data.Attoparsec.ByteString.Char8 qualified as StrictParse
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as SB8
@@ -244,6 +248,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
 
 data RunState = RunState
   { host :: String,
+    port :: Maybe Int,
     password :: String,
     useTLS :: Bool,
     dataGBs :: Int,

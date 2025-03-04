@@ -14,8 +14,9 @@ import Data.ByteString.Char8 qualified as BSC
 import Data.ByteString.Lazy (fromStrict)
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Default.Class (def)
-import Data.IP (IPv4, fromIPv4w)
+import Data.IP (IPv4, fromIPv4w, toHostAddress)
 import Data.Kind (Type)
+import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word8)
 import Network.DNS
   ( DNSError,
@@ -66,16 +67,14 @@ class Client (client :: ConnectionStatus -> Type) where
   receive :: (MonadIO m, MonadFail m) => client 'Connected -> m B.ByteString
 
 data PlainTextClient (a :: ConnectionStatus) where
-  NotConnectedPlainTextClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> PlainTextClient 'NotConnected
+  NotConnectedPlainTextClient :: String -> Maybe Int -> PlainTextClient 'NotConnected
   ConnectedPlainTextClient :: String -> Word32 -> Socket -> PlainTextClient 'Connected
 
 instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
-  connect (NotConnectedPlainTextClient hostname maybeTuple) = liftIO $ do
-    ipCorrectEndian <- case maybeTuple of
-      Nothing -> toNetworkByteOrder <$> resolve hostname
-      Just tup -> pure $ tupleToHostAddress tup
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6379 ipCorrectEndian, addrCanonName = Just hostname}
+  connect (NotConnectedPlainTextClient hostname port) = liftIO $ do
+    ipCorrectEndian <- resolve hostname
+    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
     S.connect sock (addrAddress addrInfo) `catch` \(e :: IOException) -> do
       printf "Wasn't able to connect to the server: %s...\n" (show e)
@@ -97,17 +96,15 @@ instance Client PlainTextClient where
       Just v -> return v
 
 data TLSClient (a :: ConnectionStatus) where
-  NotConnectedTLSClient :: String -> Maybe (Word8, Word8, Word8, Word8) -> TLSClient 'NotConnected
+  NotConnectedTLSClient :: String -> Maybe Int -> TLSClient 'NotConnected
   ConnectedTLSClient :: String -> Word32 -> Socket -> Context -> TLSClient 'Connected
   TLSTunnel :: TLSClient 'Connected -> TLSClient 'Server
 
 instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
-  connect (NotConnectedTLSClient hostname maybeTuple) = liftIO $ do
-    ipCorrectEndian <- case maybeTuple of
-      Nothing -> toNetworkByteOrder <$> resolve hostname
-      Just tup -> pure $ tupleToHostAddress tup
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet 6380 ipCorrectEndian, addrCanonName = Just hostname}
+  connect (NotConnectedTLSClient hostname port) = liftIO $ do
+    ipCorrectEndian <- resolve hostname
+    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
     S.connect sock (addrAddress addrInfo)
     store <- getSystemCertificateStore
@@ -173,7 +170,7 @@ toNetworkByteOrder hostOrder =
     .&. 0xFF000000
 
 resolve :: String -> IO HostAddress
-resolve "localhost" = return (tupleToHostAddress (0, 0, 0, 0))
+resolve "localhost" = return (tupleToHostAddress (127, 0, 0, 1))
 resolve address = do
   rs <- makeResolvSeed defaultResolvConf
   addrInfo <- withResolver rs $ \resolver -> do
@@ -181,7 +178,7 @@ resolve address = do
   return $ f addrInfo
   where
     f :: Either DNSError [IPv4] -> HostAddress
-    f (Right (a : _)) = fromIPv4w a
+    f (Right (a : _)) = toHostAddress a
     f _ = error "no address found"
 
 byteStringToString :: B.ByteString -> String

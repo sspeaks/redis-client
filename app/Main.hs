@@ -27,12 +27,13 @@ import System.Exit (exitFailure, exitSuccess)
 import Text.Printf (printf)
 
 defaultRunState :: RunState
-defaultRunState = RunState "" "" False 0 False
+defaultRunState = RunState "" Nothing "" False 0 False
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
   [ Option ['h'] ["host"] (ReqArg (\arg opt -> return $ opt {host = arg}) "HOST") "Host to connect to",
-    Option ['p'] ["password"] (ReqArg (\arg opt -> return $ opt {password = arg}) "PASSWORD") "Password to authenticate with",
+    Option ['p'] ["port"] (ReqArg (\arg opt -> return $ opt {port = Just . read $ arg}) "PORT") "Port to connect to. Will default to 6379 for plaintext and 6380 for TLS",
+    Option ['a'] ["password"] (ReqArg (\arg opt -> return $ opt {password = arg}) "PASSWORD") "Password to authenticate with",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database"
