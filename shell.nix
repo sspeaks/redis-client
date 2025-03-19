@@ -7,5 +7,6 @@ pkgs.haskellPackages.shellFor {
      haskell-language-server
      cabal-install
      stylish-haskell
+     pkgs.zlib
   ];
 }
