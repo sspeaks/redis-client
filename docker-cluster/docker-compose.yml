@@ -2,40 +2,39 @@ services:
   redis1:
     image: redis
     hostname: redis1.local
+    network_mode: host
     volumes:
       - ./redis1.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    ports:
-      - 6379:6379
+
   redis2:
     image: redis
     hostname: redis2.local
+    network_mode: host
     volumes:
       - ./redis2.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    ports:
-      - 6380:6380
+
   redis3:
     image: redis
     hostname: redis3.local
+    network_mode: host
     volumes:
       - ./redis3.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    ports:
-      - 6381:6381
+
   redis4:
     image: redis
     hostname: redis4.local
+    network_mode: host
     volumes:
       - ./redis4.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    ports:
-      - 6382:6382
+
   redis5:
     image: redis
     hostname: redis5.local
+    network_mode: host
     volumes:
       - ./redis5.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    ports:
-      - 6383:6383
