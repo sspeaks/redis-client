@@ -77,6 +77,15 @@ library client
     default-language: GHC2021
     exposed-modules:  Client
 
+library crc16
+    build-depends:    base ^>=4.18.2.1
+                    , text
+                    , bytestring
+    hs-source-dirs:   lib/crc16
+    c-sources:        lib/crc16/crc16.c
+    default-language: GHC2021
+    exposed-modules:  Crc16
+
 library redis-command-client
     build-depends:    base ^>=4.18.2.1
                     , bytestring
