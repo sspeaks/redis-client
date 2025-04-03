@@ -1,20 +1,25 @@
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import Client (Client (..), PlainTextClient)
-import Control.Monad (void)
-import Control.Monad.State qualified as State
-import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Lazy.Char8 qualified as BSC
-import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (..), RunState (..), parseManyWith, runCommandsAgainstPlaintextHost)
-import Resp
-  ( Encodable (encode),
-    RespData (..),
-  )
-import Test.Hspec (before_, describe, hspec, it, shouldReturn)
+import           Client                     (Client (..),
+                                             ConnectionStatus (Connected),
+                                             PlainTextClient)
+import           Control.Monad              (void)
+import qualified Control.Monad.State        as State
+import qualified Data.ByteString.Builder    as Builder
+import qualified Data.ByteString.Lazy.Char8 as BSC
+import           RedisCommandClient         (ClientState (..),
+                                             RedisCommandClient,
+                                             RedisCommands (..), RunState (..),
+                                             parseManyWith,
+                                             runCommandsAgainstPlaintextHost)
+import           Resp                       (Encodable (encode), RespData (..))
+import           Test.Hspec                 (before_, describe, hspec, it,
+                                             shouldReturn)
 
-runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
+runRedisAction :: RedisCommandClient (PlainTextClient 'Connected) a -> IO a
 runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "" False 0 False)
 
 main :: IO ()
@@ -86,14 +91,14 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction
         ( do
             ClientState client _ <- State.get
-            send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
-            parseManyWith 100 (receive client)
+            send client mempty $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
+            parseManyWith 100 (receive client mempty)
         )
         `shouldReturn` replicate 100 (RespSimpleString "OK")
       runRedisAction
         ( do
             ClientState client _ <- State.get
-            send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
-            parseManyWith 100 (receive client)
+            send client mempty $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
+            parseManyWith 100 (receive client mempty)
         )
         `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100]]

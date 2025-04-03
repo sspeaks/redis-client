@@ -73,6 +73,8 @@ library client
                     , bytestring
                     , dns
                     , iproute
+                    , resp
+                    , crc16
     hs-source-dirs:   lib/client
     default-language: GHC2021
     exposed-modules:  Client

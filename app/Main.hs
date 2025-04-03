@@ -1,30 +1,32 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import Client (Client (receive, send), TLSClient (..), serve)
-import Control.Monad (unless, void, when)
-import Control.Monad.IO.Class
-import Control.Monad.State.Strict qualified as State
-import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Lazy.Char8 qualified as BS
-import Filler (fillCacheWithData)
-import RedisCommandClient
-  ( ClientState (ClientState),
-    RedisCommandClient,
-    RedisCommands (flushAll),
-    RunState (..),
-    parseWith,
-    runCommandsAgainstPlaintextHost,
-    runCommandsAgainstTLSHost,
-  )
-import Resp (Encodable (encode), RespData (RespArray, RespBulkString))
-import System.Console.GetOpt (ArgDescr (..), ArgOrder (..), OptDescr (Option), getOpt, usageInfo)
-import System.Console.Readline (addHistory, readline)
-import System.Environment (getArgs)
-import System.Exit (exitFailure, exitSuccess)
-import Text.Printf (printf)
+import           Client                     (Client (receive, send),
+                                             ConnectionStatus (Connected),
+                                             TLSClient (..), serve)
+import           Control.Monad              (unless, void, when)
+import           Control.Monad.IO.Class
+import qualified Control.Monad.State.Strict as State
+import qualified Data.ByteString.Builder    as Builder
+import qualified Data.ByteString.Lazy.Char8 as BS
+import           Filler                     (fillCacheWithData)
+import           RedisCommandClient         (ClientState (ClientState),
+                                             RedisCommandClient,
+                                             RedisCommands (flushAll),
+                                             RunState (..), parseWith,
+                                             runCommandsAgainstPlaintextHost,
+                                             runCommandsAgainstTLSHost)
+import           Resp                       (Encodable (encode),
+                                             RespData (RespArray, RespBulkString))
+import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
+                                             OptDescr (Option), getOpt,
+                                             usageInfo)
+import           System.Console.Readline    (addHistory, readline)
+import           System.Environment         (getArgs)
+import           System.Exit                (exitFailure, exitSuccess)
+import           Text.Printf                (printf)
 
 defaultRunState :: RunState
 defaultRunState = RunState "" Nothing "" False 0 False
@@ -101,7 +103,7 @@ cli state = do
     else runCommandsAgainstPlaintextHost state repl
   exitSuccess
 
-repl :: (Client client) => RedisCommandClient client ()
+repl :: (Client client) => RedisCommandClient (client 'Connected) ()
 repl = do
   ClientState !client _ <- State.get
   loop client
@@ -113,7 +115,7 @@ repl = do
         Just cmd -> do
           liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
-            (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS.pack)) . words $ cmd
-            response <- parseWith (receive client)
+            (send client mempty . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS.pack)) . words $ cmd
+            response <- parseWith (receive client mempty)
             liftIO $ print response
             loop client
