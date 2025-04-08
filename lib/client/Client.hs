@@ -147,6 +147,16 @@ serve (TLSTunnel redisClient) = liftIO $ do
       sendAll client (fromStrict recieveData)
       loop client redis
 
+
+getSlotInfo :: (MonadIO m) => client 'Connected -> m (Int, Int)
+getSlotInfo client = do
+   callClusterSlots >>= parseClusterSlots
+  where 
+    parseClusterSlots :: B.ByteString -> m (Int, Int)
+    parseClusterSlots dat = undefined
+    callClusterSlots :: m B.ByteString
+    callClusterSlots = undefined
+
 data ClusterClient (connected :: ConnectionStatus) where
   NotConnectedClusterClient :: (Client client) => [client 'NotConnected] -> ClusterClient  'NotConnected
   ConnectedClusterClient :: (Client client) => (Key -> client 'Connected) -> [client 'Connected] -> ClusterClient  'Connected
