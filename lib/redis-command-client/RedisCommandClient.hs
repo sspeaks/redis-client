@@ -83,6 +83,7 @@ class (MonadIO m) => RedisCommands m where
   hvals :: String -> m RespData
   llen :: String -> m RespData
   lindex :: String -> Int -> m RespData
+  clientSetInfo :: [String] -> m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
@@ -245,6 +246,12 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["LINDEX", key, show index])
     parseWith (receive client)
+  
+  clientSetInfo :: [String] -> RedisCommandClient client RespData
+  clientSetInfo info = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay (["CLIENT", "SETINFO"] ++ info))
+    parseWith (receive client)
 
 data RunState = RunState
   { host :: String,
@@ -258,7 +265,10 @@ data RunState = RunState
 
 authenticate :: (Client client) => String -> RedisCommandClient client RespData
 authenticate [] = return $ RespSimpleString "OK"
-authenticate password = auth password
+authenticate password = do 
+  auth password
+  clientSetInfo ["LIB-NAME", "seth-spaghetti"]
+  clientSetInfo ["LIB-VER", "0.0.0"]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost st action = do
