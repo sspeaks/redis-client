@@ -33,9 +33,9 @@ instance Show RespData where
   show (RespInteger !i) = show i
   show (RespBulkString !s) = B8.unpack s
   show RespNullBilkString = "NULL"
-  show (RespArray !xs) = intercalate "\n" (map show xs)
-  show (RespSet !s) = intercalate "\n" (map show (S.toList s))
-  show (RespMap !m) = intercalate "\n" (map showPair (M.toList m))
+  show (RespArray !xs) = intercalate ";" (map show xs)
+  show (RespSet !s) = intercalate ";" (map show (S.toList s))
+  show (RespMap !m) = intercalate ";" (map showPair (M.toList m))
     where
       showPair (k, v) = show k <> ": " <> show v
 

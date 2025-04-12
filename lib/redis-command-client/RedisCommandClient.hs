@@ -86,6 +86,7 @@ class (MonadIO m) => RedisCommands m where
   hvals :: String -> m RespData
   llen :: String -> m RespData
   lindex :: String -> Int -> m RespData
+  clusterSlots :: m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
@@ -249,6 +250,12 @@ instance (Client client) => RedisCommands (RedisCommandClient (client 'Connected
     liftIO $ send client key (Builder.toLazyByteString . encode $ wrapInRay ["LINDEX", key, show index])
     parseWith (receive client key)
 
+  clusterSlots :: RedisCommandClient (client 'Connected) RespData
+  clusterSlots = do
+    ClientState !client _ <- State.get
+    liftIO $ send client mempty (Builder.toLazyByteString . encode $ wrapInRay ["CLUSTER", "SLOTS"])
+    parseWith (receive client mempty)
+
 data RunState = RunState
   { host     :: String,
     port     :: Maybe Int,
@@ -262,6 +269,16 @@ data RunState = RunState
 authenticate :: (Client client) => String -> RedisCommandClient (client 'Connected) RespData
 authenticate []       = return $ RespSimpleString "OK"
 authenticate password = auth password
+
+configureClusterClient :: RedisCommandClient (ClusterClient 'Connected) a
+configureClusterClient = do
+  resp <- clusterSlots
+  undefined
+
+runCommandsAgainstHostClustered :: RunState -> RedisCommandClient (ClusterClient 'Connected) a -> IO a
+runCommandsAgainstHostClustered st action = do
+  bracket (connect (NotConnectedClusterClient (host st) Nothing)) close $ \client -> do
+    evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient (TLSClient 'Connected) a -> IO a
 runCommandsAgainstTLSHost st action = do

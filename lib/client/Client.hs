@@ -159,29 +159,33 @@ getSlotInfo client = do
 
 data ClusterClient (connected :: ConnectionStatus) where
   NotConnectedClusterClient :: (Client client) => [client 'NotConnected] -> ClusterClient  'NotConnected
-  ConnectedClusterClient :: (Client client) => (Key -> client 'Connected) -> [client 'Connected] -> ClusterClient  'Connected
-
+  ConnectedClusterClient :: (Client client) => [client 'Connected] -> ClusterClient  'Connected
+  ConfiguredClusterClient :: (Client client) => (Key -> client 'Connected) -> [client 'Connected] -> ClusterClient  'Connected
 instance Client ClusterClient where
   connect :: MonadIO m => ClusterClient NotConnected -> m (ClusterClient  Connected)
   connect  (NotConnectedClusterClient clients) = do
     connectedClients <- mapM connect clients
-    let connected = ConnectedClusterClient (\_ -> undefined) connectedClients -- Placeholder for actual socket creation
+    let connected = ConnectedClusterClient connectedClients -- Placeholder for actual socket creation
     return connected
   close :: MonadIO m => ClusterClient  Connected -> m ()
-  close (ConnectedClusterClient _ clients) = do
+  close (ConnectedClusterClient clients) = do
+    mapM_ close clients
+  close (ConfiguredClusterClient _ clients) = do
     mapM_ close clients
   send :: MonadIO m => ClusterClient  Connected -> Key -> Lazy.ByteString -> m ()
-  send (ConnectedClusterClient mapFunc clients) key dat = do
+  send (ConfiguredClusterClient mapFunc clients) key dat = do
     let clientsToSend = if key == mempty
                     then   clients
                     else   [mapFunc key]
     mapM_ (\c -> send c key dat ) clientsToSend -- Basically, if there's no key then just send the command to everybody
+  send _ _ _ = error "Not configured to cluster"
   receive :: (MonadIO m, MonadFail m) => ClusterClient  Connected -> Key -> m BSC.ByteString
-  receive (ConnectedClusterClient mapFunc clients) key = do
+  receive (ConfiguredClusterClient mapFunc clients) key = do
     let clientsToReceive = if key == mempty
                     then   clients
                     else   [mapFunc key]
     head <$> mapM (`receive` mempty) clientsToReceive -- Only care about the first response in the case of cluster commands that get spewed this is a dummy implemntation until something more complete can be decided upon
+  receive _ _ = error "Not configured to cluster"
 toNetworkByteOrder :: Word32 -> Word32
 toNetworkByteOrder hostOrder =
   (hostOrder `shiftR` 24)
