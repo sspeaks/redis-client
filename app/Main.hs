@@ -1,30 +1,31 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import Client (Client (receive, send), TLSClient (..), serve)
-import Control.Monad (unless, void, when)
-import Control.Monad.IO.Class
-import Control.Monad.State.Strict qualified as State
-import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Lazy.Char8 qualified as BS
-import Filler (fillCacheWithData)
-import RedisCommandClient
-  ( ClientState (ClientState),
-    RedisCommandClient,
-    RedisCommands (flushAll),
-    RunState (..),
-    parseWith,
-    runCommandsAgainstPlaintextHost,
-    runCommandsAgainstTLSHost,
-  )
-import Resp (Encodable (encode), RespData (RespArray, RespBulkString))
-import System.Console.GetOpt (ArgDescr (..), ArgOrder (..), OptDescr (Option), getOpt, usageInfo)
-import System.Console.Readline (addHistory, readline)
-import System.Environment (getArgs)
-import System.Exit (exitFailure, exitSuccess)
-import Text.Printf (printf)
+import           Client                     (Client (receive, send),
+                                             TLSClient (..), serve)
+import           Control.Monad              (unless, void, when)
+import           Control.Monad.IO.Class
+import qualified Control.Monad.State.Strict as State
+import qualified Data.ByteString.Builder    as Builder
+import qualified Data.ByteString.Lazy.Char8 as BS
+import           Filler                     (fillCacheWithData)
+import           RedisCommandClient         (ClientState (ClientState),
+                                             RedisCommandClient,
+                                             RedisCommands (flushAll),
+                                             RunState (..), parseWith,
+                                             runCommandsAgainstPlaintextHost,
+                                             runCommandsAgainstTLSHost)
+import           Resp                       (Encodable (encode),
+                                             RespData (RespArray, RespBulkString))
+import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
+                                             OptDescr (Option), getOpt,
+                                             usageInfo)
+import           System.Console.Readline    (addHistory, readline)
+import           System.Environment         (getArgs)
+import           System.Exit                (exitFailure, exitSuccess)
+import           Text.Printf                (printf)
 
 defaultRunState :: RunState
 defaultRunState = RunState "" Nothing "" False 0 False
@@ -47,19 +48,24 @@ handleArgs args = do
 
 main :: IO ()
 main = do
-  (mode : args) <- getArgs
-  (state, _) <- handleArgs args
-  unless (mode `elem` ["cli", "fill", "tunn"]) $ do
-    printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', and 'tunn'\n" mode
-    putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
-    exitFailure
-  when (null (host state)) $ do
-    putStrLn "No host specified\n"
-    putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
-    exitFailure
-  when (mode == "tunn") $ tunn state
-  when (mode == "cli") $ cli state
-  when (mode == "fill") $ fill state
+  args' <- getArgs
+  case args' of
+    [] -> do
+      putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
+      exitFailure
+    (mode : args) -> do
+      (state, _) <- handleArgs args
+      unless (mode `elem` ["cli", "fill", "tunn"]) $ do
+        printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', and 'tunn'\n" mode
+        putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
+        exitFailure
+      when (null (host state)) $ do
+        putStrLn "No host specified\n"
+        putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
+        exitFailure
+      when (mode == "tunn") $ tunn state
+      when (mode == "cli") $ cli state
+      when (mode == "fill") $ fill state
 
 tunn :: RunState -> IO ()
 tunn state = do
