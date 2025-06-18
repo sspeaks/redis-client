@@ -78,7 +78,7 @@ library client
     exposed-modules:  Client
 
 library crc16
-    build-depends:    base ^>=4.18.2.1
+    build-depends:    base ^>=4.19
                     , text
                     , bytestring
     hs-source-dirs:   lib/crc16
