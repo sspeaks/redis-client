@@ -1,12 +1,12 @@
-{ pkgs ? import <nixpkgs> {}, ... }:
+{ pkgs ? import <nixpkgs> { }, ... }:
 pkgs.haskellPackages.shellFor {
   packages = hpkgs: [
-    (import ./default.nix {}).justStaticEndToEnd
+    (import ./default.nix { }).justStaticEndToEnd
   ];
   nativeBuildInputs = with (pkgs.haskellPackages); [
-     haskell-language-server
-     cabal-install
-     stylish-haskell
-     pkgs.zlib
+    haskell-language-server
+    cabal-install
+    stylish-haskell
+    pkgs.zlib
   ];
 }
