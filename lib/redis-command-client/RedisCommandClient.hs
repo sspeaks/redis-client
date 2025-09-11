@@ -272,13 +272,13 @@ authenticate password = do
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost st action = do
-  bracket (connect (NotConnectedTLSClient (host st) Nothing)) close $ \client -> do
+  bracket (connect (NotConnectedTLSClient (host st) (port st))) close $ \client -> do
     evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
 
 runCommandsAgainstPlaintextHost :: RunState -> RedisCommandClient PlainTextClient a -> IO a
 runCommandsAgainstPlaintextHost st action =
   bracket
-    (connect $ NotConnectedPlainTextClient (host st) Nothing)
+    (connect $ NotConnectedPlainTextClient (host st) (port st))
     close
     $ \client -> evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
 
