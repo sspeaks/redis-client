@@ -24,7 +24,13 @@ import Resp
   ( Encodable (encode),
     RespData (..),
   )
-import Test.Hspec (before_, describe, expectationFailure, hspec, it, shouldBe, shouldReturn, shouldSatisfy)
+import Test.Hspec (before_, describe, expectationFailure, hspec, it, shouldBe, shouldReturn, shouldSatisfy, shouldSatisfy, Expectation)
+
+shouldReturnOneOf :: (Eq a, Show a) => IO a -> [a] -> Expectation
+shouldReturnOneOf action expectedValues = do
+  result <- action
+  result `shouldSatisfy` (`elem` expectedValues)
+
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
 runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "" False 0 False)
@@ -104,7 +110,8 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
     it "expire and ttl are encoded properly and work correctly" $ do
       runRedisAction (set "mykey" "myvalue") `shouldReturn` RespSimpleString "OK"
       runRedisAction (expire "mykey" 10) `shouldReturn` RespInteger 1
-      runRedisAction (ttl "mykey") `shouldReturn` RespInteger 10
+      runRedisAction (ttl "mykey") `shouldReturnOneOf` [RespInteger 10, -- Redis rounds
+                                                        RespInteger 9]  -- Garnet floors
     it "rpush and lpop are encoded properly and work correctly" $ do
       runRedisAction (rpush "mylist2" ["one", "two", "three"]) `shouldReturn` RespInteger 3
       runRedisAction (lpop "mylist2") `shouldReturn` RespBulkString "one"

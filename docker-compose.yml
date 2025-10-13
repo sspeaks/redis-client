@@ -1,12 +1,17 @@
 services:
-  redis:
-    image: redis
+  garnet-server:
+    image: garnet-server
     hostname: redis.local
-    volumes:
-      - ./redis.conf:/usr/local/etc/redis/redis.conf
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    command: ["GarnetServer", "--bind", "0.0.0.0"]
     ports:
       - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
   e2etests:
     image: e2etests:latest
-    depends_on: [redis]
+    depends_on:
+      garnet-server:
+        condition: service_healthy
