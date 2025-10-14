@@ -93,11 +93,100 @@ class (MonadIO m) => RedisCommands m where
   clientSetInfo :: [String] -> m RespData
   zadd :: String -> [(Int, String)] -> m RespData
   zrange :: String -> Int -> Int -> Bool -> m RespData
+  geoadd :: String -> [(Double, Double, String)] -> m RespData
+  geodist :: String -> String -> String -> Maybe GeoUnit -> m RespData
+  geohash :: String -> [String] -> m RespData
+  geopos :: String -> [String] -> m RespData
+  georadius :: String -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  georadiusRo :: String -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  georadiusByMember :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  georadiusByMemberRo :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  geosearch :: String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m RespData
+  geosearchstore :: String -> String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
   let !res = RespArray . map (RespBulkString . BSC.pack) $ inp
    in res
+
+data GeoUnit
+  = Meters
+  | Kilometers
+  | Miles
+  | Feet
+  deriving (Eq, Show)
+
+geoUnitKeyword :: GeoUnit -> String
+geoUnitKeyword unit =
+  case unit of
+    Meters -> "M"
+    Kilometers -> "KM"
+    Miles -> "MI"
+    Feet -> "FT"
+
+data GeoRadiusFlag
+  = GeoWithCoord
+  | GeoWithDist
+  | GeoWithHash
+  | GeoRadiusCount Int Bool -- Bool indicates whether ANY is appended
+  | GeoRadiusAsc
+  | GeoRadiusDesc
+  | GeoRadiusStore String
+  | GeoRadiusStoreDist String
+  deriving (Eq, Show)
+
+geoRadiusFlagToList :: GeoRadiusFlag -> [String]
+geoRadiusFlagToList flag =
+  case flag of
+    GeoWithCoord -> ["WITHCOORD"]
+    GeoWithDist -> ["WITHDIST"]
+    GeoWithHash -> ["WITHHASH"]
+    GeoRadiusCount n useAny -> ["COUNT", show n] <> ["ANY" | useAny]
+    GeoRadiusAsc -> ["ASC"]
+    GeoRadiusDesc -> ["DESC"]
+    GeoRadiusStore key -> ["STORE", key]
+    GeoRadiusStoreDist key -> ["STOREDIST", key]
+
+data GeoSearchFrom
+  = GeoFromLonLat Double Double
+  | GeoFromMember String
+  deriving (Eq, Show)
+
+geoSearchFromToList :: GeoSearchFrom -> [String]
+geoSearchFromToList fromSpec =
+  case fromSpec of
+    GeoFromLonLat lon lat -> ["FROMLONLAT", show lon, show lat]
+    GeoFromMember member -> ["FROMMEMBER", member]
+
+data GeoSearchBy
+  = GeoByRadius Double GeoUnit
+  | GeoByBox Double Double GeoUnit
+  deriving (Eq, Show)
+
+geoSearchByToList :: GeoSearchBy -> [String]
+geoSearchByToList bySpec =
+  case bySpec of
+    GeoByRadius radius unit -> ["BYRADIUS", show radius, geoUnitKeyword unit]
+    GeoByBox width height unit -> ["BYBOX", show width, show height, geoUnitKeyword unit]
+
+data GeoSearchOption
+  = GeoSearchWithCoord
+  | GeoSearchWithDist
+  | GeoSearchWithHash
+  | GeoSearchCount Int Bool -- Bool indicates ANY
+  | GeoSearchAsc
+  | GeoSearchDesc
+  deriving (Eq, Show)
+
+geoSearchOptionToList :: GeoSearchOption -> [String]
+geoSearchOptionToList opt =
+  case opt of
+    GeoSearchWithCoord -> ["WITHCOORD"]
+    GeoSearchWithDist -> ["WITHDIST"]
+    GeoSearchWithHash -> ["WITHHASH"]
+    GeoSearchCount n useAny -> ["COUNT", show n] <> ["ANY" | useAny]
+    GeoSearchAsc -> ["ASC"]
+    GeoSearchDesc -> ["DESC"]
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping :: RedisCommandClient client RespData
@@ -322,6 +411,88 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     ClientState !client _ <- State.get
     let base = ["ZRANGE", key, show start, show stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  geoadd :: String -> [(Double, Double, String)] -> RedisCommandClient client RespData
+  geoadd key entries = do
+    ClientState !client _ <- State.get
+    let payload = concatMap (\(lon, lat, member) -> [show lon, show lat, member]) entries
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("GEOADD" : key : payload))
+    parseWith (receive client)
+
+  geodist :: String -> String -> String -> Maybe GeoUnit -> RedisCommandClient client RespData
+  geodist key member1 member2 unit = do
+    ClientState !client _ <- State.get
+    let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
+        command = ["GEODIST", key, member1, member2] ++ unitPart
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  geohash :: String -> [String] -> RedisCommandClient client RespData
+  geohash key members = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("GEOHASH" : key : members))
+    parseWith (receive client)
+
+  geopos :: String -> [String] -> RedisCommandClient client RespData
+  geopos key members = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("GEOPOS" : key : members))
+    parseWith (receive client)
+
+  georadius :: String -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> RedisCommandClient client RespData
+  georadius key longitude latitude radius unit flags = do
+    ClientState !client _ <- State.get
+    let base = ["GEORADIUS", key, show longitude, show latitude, show radius, geoUnitKeyword unit]
+        command = base ++ concatMap geoRadiusFlagToList flags
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  georadiusRo :: String -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> RedisCommandClient client RespData
+  georadiusRo key longitude latitude radius unit flags = do
+    ClientState !client _ <- State.get
+    let base = ["GEORADIUS_RO", key, show longitude, show latitude, show radius, geoUnitKeyword unit]
+        command = base ++ concatMap geoRadiusFlagToList flags
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  georadiusByMember :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> RedisCommandClient client RespData
+  georadiusByMember key member radius unit flags = do
+    ClientState !client _ <- State.get
+    let base = ["GEORADIUSBYMEMBER", key, member, show radius, geoUnitKeyword unit]
+        command = base ++ concatMap geoRadiusFlagToList flags
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  georadiusByMemberRo :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> RedisCommandClient client RespData
+  georadiusByMemberRo key member radius unit flags = do
+    ClientState !client _ <- State.get
+    let base = ["GEORADIUSBYMEMBER_RO", key, member, show radius, geoUnitKeyword unit]
+        command = base ++ concatMap geoRadiusFlagToList flags
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  geosearch :: String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> RedisCommandClient client RespData
+  geosearch key fromSpec bySpec options = do
+    ClientState !client _ <- State.get
+    let command =
+          ["GEOSEARCH", key]
+            ++ geoSearchFromToList fromSpec
+            ++ geoSearchByToList bySpec
+            ++ concatMap geoSearchOptionToList options
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  geosearchstore :: String -> String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> RedisCommandClient client RespData
+  geosearchstore dest source fromSpec bySpec options storeDist = do
+    ClientState !client _ <- State.get
+    let base =
+          ["GEOSEARCHSTORE", dest, source]
+            ++ geoSearchFromToList fromSpec
+            ++ geoSearchByToList bySpec
+            ++ concatMap geoSearchOptionToList options
+        command = if storeDist then base ++ ["STOREDIST"] else base
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
     parseWith (receive client)
 

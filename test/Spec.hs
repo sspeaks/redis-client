@@ -88,6 +88,50 @@ main = hspec $ describe "encode" $ do
       Builder.toLazyByteString (encode (wrapInRay ["SISMEMBER", "myset", "one"]))
         `shouldBe` "*3\r\n$9\r\nSISMEMBER\r\n$5\r\nmyset\r\n$3\r\none\r\n"
 
+    it "encodes GEOADD commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEOADD", "locations", "13.361389", "38.115556", "Palermo"]))
+        `shouldBe` "*5\r\n$6\r\nGEOADD\r\n$9\r\nlocations\r\n$9\r\n13.361389\r\n$9\r\n38.115556\r\n$7\r\nPalermo\r\n"
+
+    it "encodes GEOHASH commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEOHASH", "locations", "Palermo", "Catania"]))
+        `shouldBe` "*4\r\n$7\r\nGEOHASH\r\n$9\r\nlocations\r\n$7\r\nPalermo\r\n$7\r\nCatania\r\n"
+
+    it "encodes GEOSEARCH commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEOSEARCH", "locations", "FROMLONLAT", "13", "38", "BYRADIUS", "50", "KM", "ASC"]))
+        `shouldBe` "*9\r\n$9\r\nGEOSEARCH\r\n$9\r\nlocations\r\n$10\r\nFROMLONLAT\r\n$2\r\n13\r\n$2\r\n38\r\n$8\r\nBYRADIUS\r\n$2\r\n50\r\n$2\r\nKM\r\n$3\r\nASC\r\n"
+
+    it "encodes GEODIST commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEODIST", "geo", "Palermo", "Catania", "KM"]))
+        `shouldBe` "*5\r\n$7\r\nGEODIST\r\n$3\r\ngeo\r\n$7\r\nPalermo\r\n$7\r\nCatania\r\n$2\r\nKM\r\n"
+
+    it "encodes GEOPOS commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEOPOS", "geo", "Palermo", "Catania"]))
+        `shouldBe` "*4\r\n$6\r\nGEOPOS\r\n$3\r\ngeo\r\n$7\r\nPalermo\r\n$7\r\nCatania\r\n"
+
+    it "encodes GEORADIUS commands with flags correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEORADIUS", "geo", "15.0", "37.0", "200.0", "KM", "WITHDIST", "ASC"]))
+        `shouldBe` "*8\r\n$9\r\nGEORADIUS\r\n$3\r\ngeo\r\n$4\r\n15.0\r\n$4\r\n37.0\r\n$5\r\n200.0\r\n$2\r\nKM\r\n$8\r\nWITHDIST\r\n$3\r\nASC\r\n"
+
+    it "encodes GEORADIUS_RO commands with flags correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEORADIUS_RO", "geo", "15.0", "37.0", "200.0", "KM", "WITHCOORD"]))
+        `shouldBe` "*7\r\n$12\r\nGEORADIUS_RO\r\n$3\r\ngeo\r\n$4\r\n15.0\r\n$4\r\n37.0\r\n$5\r\n200.0\r\n$2\r\nKM\r\n$9\r\nWITHCOORD\r\n"
+
+    it "encodes GEORADIUSBYMEMBER commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEORADIUSBYMEMBER", "geo", "Palermo", "200.0", "KM", "WITHDIST", "DESC"]))
+        `shouldBe` "*7\r\n$17\r\nGEORADIUSBYMEMBER\r\n$3\r\ngeo\r\n$7\r\nPalermo\r\n$5\r\n200.0\r\n$2\r\nKM\r\n$8\r\nWITHDIST\r\n$4\r\nDESC\r\n"
+
+    it "encodes GEORADIUSBYMEMBER_RO commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEORADIUSBYMEMBER_RO", "geo", "Palermo", "200.0", "KM", "COUNT", "5", "ANY"]))
+        `shouldBe` "*8\r\n$20\r\nGEORADIUSBYMEMBER_RO\r\n$3\r\ngeo\r\n$7\r\nPalermo\r\n$5\r\n200.0\r\n$2\r\nKM\r\n$5\r\nCOUNT\r\n$1\r\n5\r\n$3\r\nANY\r\n"
+
+    it "encodes GEOSEARCHSTORE commands with STOREDIST correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["GEOSEARCHSTORE", "dest", "src", "FROMMEMBER", "Palermo", "BYBOX", "100.0", "200.0", "KM", "DESC", "STOREDIST"]))
+        `shouldBe` "*11\r\n$14\r\nGEOSEARCHSTORE\r\n$4\r\ndest\r\n$3\r\nsrc\r\n$10\r\nFROMMEMBER\r\n$7\r\nPalermo\r\n$5\r\nBYBOX\r\n$5\r\n100.0\r\n$5\r\n200.0\r\n$2\r\nKM\r\n$4\r\nDESC\r\n$9\r\nSTOREDIST\r\n"
+
+    it "encodes CLIENT SETINFO commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["CLIENT", "SETINFO", "LIB-NAME", "redis-client"]))
+        `shouldBe` "*4\r\n$6\r\nCLIENT\r\n$7\r\nSETINFO\r\n$8\r\nLIB-NAME\r\n$12\r\nredis-client\r\n"
+
   describe "parse" $ do
     it "parses simple strings correctly" $ do
       parseOnly parseRespData "+OK\r\n" `shouldBe` Right (RespSimpleString "OK")

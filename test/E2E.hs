@@ -7,12 +7,24 @@ import Control.Monad (void)
 import Control.Monad.State qualified as State
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as BSC
-import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (..), RunState (..), parseManyWith, runCommandsAgainstPlaintextHost)
+import RedisCommandClient
+  ( ClientState (..),
+    GeoRadiusFlag (..),
+    GeoSearchBy (..),
+    GeoSearchFrom (..),
+    GeoSearchOption (..),
+    GeoUnit (..),
+    RedisCommandClient,
+    RedisCommands (..),
+    RunState (..),
+    parseManyWith,
+    runCommandsAgainstPlaintextHost
+  )
 import Resp
   ( Encodable (encode),
     RespData (..),
   )
-import Test.Hspec (before_, describe, hspec, it, shouldReturn)
+import Test.Hspec (before_, describe, expectationFailure, hspec, it, shouldBe, shouldReturn, shouldSatisfy)
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
 runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "" False 0 False)
@@ -25,6 +37,14 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction (get "hello") `shouldReturn` RespBulkString "world"
     it "ping is encoded properly and returns pong" $ do
       runRedisAction ping `shouldReturn` RespSimpleString "PONG"
+    it "auth negotiates the RESP3 handshake" $ do
+      authResp <- runRedisAction (auth "")
+      case authResp of
+        RespError err -> expectationFailure $ "Unexpected AUTH error: " <> err
+        RespMap _ -> pure ()
+        RespArray _ -> pure ()
+        RespSimpleString "OK" -> pure ()
+        _ -> expectationFailure $ "Unexpected AUTH response shape: " <> show authResp
     it "bulkSet is encoded properly and subsequent gets work properly" $ do
       runRedisAction (bulkSet [("a", "b"), ("c", "d"), ("e", "f")]) `shouldReturn` RespSimpleString "OK"
       runRedisAction (get "a") `shouldReturn` RespBulkString "b"
@@ -44,6 +64,10 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction (exists ["testKey"]) `shouldReturn` RespInteger 1
       runRedisAction (del ["testKey"]) `shouldReturn` RespInteger 1
       runRedisAction (exists ["testKey"]) `shouldReturn` RespInteger 0
+    it "dbsize reflects the number of keys" $ do
+      runRedisAction dbsize `shouldReturn` RespInteger 0
+      runRedisAction (set "dbsize:key" "value") `shouldReturn` RespSimpleString "OK"
+      runRedisAction dbsize `shouldReturn` RespInteger 1
     it "incr is encoded properly and increments the key" $ do
       runRedisAction (set "counter" "0") `shouldReturn` RespSimpleString "OK"
       runRedisAction (incr "counter") `shouldReturn` RespInteger 1
@@ -59,6 +83,9 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction (setnx "nx:key" "first") `shouldReturn` RespInteger 1
       runRedisAction (setnx "nx:key" "second") `shouldReturn` RespInteger 0
       runRedisAction (get "nx:key") `shouldReturn` RespBulkString "first"
+    it "clientSetInfo updates client metadata" $ do
+      runRedisAction (clientSetInfo ["LIB-NAME", "redis-client-e2e"]) `shouldReturn` RespSimpleString "OK"
+      runRedisAction (clientSetInfo ["LIB-VER", "0.1-test"]) `shouldReturn` RespSimpleString "OK"
     it "hset and hget are encoded properly and work correctly" $ do
       runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
       runRedisAction (hget "myhash" "field1") `shouldReturn` RespBulkString "value1"
@@ -124,6 +151,79 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
             RespBulkString "three",
             RespBulkString "3"
           ]
+
+    it "geoadd and geodist work correctly" $ do
+      runRedisAction (geoadd "geo:italy" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      runRedisAction (geodist "geo:italy" "Palermo" "Catania" (Just Kilometers)) `shouldReturn` RespBulkString "166.2742"
+
+    it "geohash returns geohash strings for members" $ do
+      runRedisAction (geoadd "geo:hash" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      runRedisAction (geohash "geo:hash" ["Palermo", "Catania"]) `shouldReturn`
+        RespArray [RespBulkString "sqc8b49rny0", RespBulkString "sqdtr74hyu0"]
+
+    it "geopos returns longitudes and latitudes" $ do
+      runRedisAction (geoadd "geo:pos" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      response <- runRedisAction (geopos "geo:pos" ["Palermo", "Catania"])
+      case response of
+        RespArray [RespArray [RespBulkString lon1, RespBulkString lat1], RespArray [RespBulkString lon2, RespBulkString lat2]] -> do
+          lon1 `shouldSatisfy` (BSC.isPrefixOf "13.36")
+          lat1 `shouldSatisfy` (BSC.isPrefixOf "38.11")
+          lon2 `shouldSatisfy` (BSC.isPrefixOf "15.08")
+          lat2 `shouldSatisfy` (BSC.isPrefixOf "37.50")
+        _ -> expectationFailure $ "Unexpected GEOPOS response: " <> show response
+
+    it "georadius returns members ordered with distances" $ do
+      runRedisAction (geoadd "geo:radius" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      radiusResult <- runRedisAction (georadius "geo:radius" 15 37 200 Kilometers [GeoWithDist, GeoRadiusAsc])
+      case radiusResult of
+        RespArray [RespArray [RespBulkString "Catania", RespBulkString dist1], RespArray [RespBulkString "Palermo", RespBulkString dist2]] -> do
+          dist1 `shouldSatisfy` (not . BSC.null)
+          dist2 `shouldSatisfy` (not . BSC.null)
+        _ -> expectationFailure $ "Unexpected GEORADIUS response: " <> show radiusResult
+
+    it "georadiusRo reads data with distance flags" $ do
+      runRedisAction (geoadd "geo:radius-ro" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      roResult <- runRedisAction (georadiusRo "geo:radius-ro" 15 37 200 Kilometers [GeoWithDist, GeoRadiusAsc])
+      case roResult of
+        RespArray [RespArray [RespBulkString "Catania", RespBulkString dist1], RespArray [RespBulkString "Palermo", RespBulkString dist2]] -> do
+          dist1 `shouldSatisfy` (not . BSC.null)
+          dist2 `shouldSatisfy` (not . BSC.null)
+        _ -> expectationFailure $ "Unexpected GEORADIUS_RO response: " <> show roResult
+
+    it "georadiusByMember returns nearby members" $ do
+      runRedisAction (geoadd "geo:member" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      byMember <- runRedisAction (georadiusByMember "geo:member" "Palermo" 200 Kilometers [GeoWithDist, GeoRadiusAsc])
+      case byMember of
+        RespArray [RespArray [RespBulkString "Palermo"], RespArray [RespBulkString "Catania", RespBulkString dist]] -> do
+          dist `shouldSatisfy` (not . BSC.null)
+        RespArray [RespArray [RespBulkString "Palermo", RespBulkString distSelf], RespArray [RespBulkString "Catania", RespBulkString distOther]] -> do
+          distSelf `shouldSatisfy` (not . BSC.null)
+          distOther `shouldSatisfy` (not . BSC.null)
+        _ -> expectationFailure $ "Unexpected GEORADIUSBYMEMBER response: " <> show byMember
+
+    it "georadiusByMemberRo reads without mutating state" $ do
+      runRedisAction (geoadd "geo:member-ro" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      byMemberRo <- runRedisAction (georadiusByMemberRo "geo:member-ro" "Palermo" 200 Kilometers [GeoWithDist, GeoRadiusAsc])
+      case byMemberRo of
+        RespArray [RespArray [RespBulkString "Palermo"], RespArray [RespBulkString "Catania", RespBulkString dist]] -> do
+          dist `shouldSatisfy` (not . BSC.null)
+        RespArray [RespArray [RespBulkString "Palermo", RespBulkString distSelf], RespArray [RespBulkString "Catania", RespBulkString distOther]] -> do
+          distSelf `shouldSatisfy` (not . BSC.null)
+          distOther `shouldSatisfy` (not . BSC.null)
+        _ -> expectationFailure $ "Unexpected GEORADIUSBYMEMBER_RO response: " <> show byMemberRo
+
+    it "geosearch and geosearchstore integrate with sorted sets" $ do
+      runRedisAction (geoadd "geo:search" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
+      runRedisAction (geosearch "geo:search" (GeoFromLonLat 15 37) (GeoByRadius 200 Kilometers) [GeoSearchAsc])
+        `shouldReturn` RespArray [RespBulkString "Catania", RespBulkString "Palermo"]
+      runRedisAction (geosearchstore "geo:dest" "geo:search" (GeoFromLonLat 15 37) (GeoByRadius 200 Kilometers) [GeoSearchAsc] True)
+        `shouldReturn` RespInteger 2
+      storeResult <- runRedisAction (zrange "geo:dest" 0 (-1) True)
+      case storeResult of
+        RespArray [RespBulkString member1, _, RespBulkString member2, _] -> do
+          member1 `shouldBe` "Catania"
+          member2 `shouldBe` "Palermo"
+        _ -> expectationFailure $ "Unexpected GEOSEARCHSTORE ZRANGE response: " <> show storeResult
 
   describe "Pipelining works: " $ do
     it "can pipeline 100 commands and retrieve their values" $ do
