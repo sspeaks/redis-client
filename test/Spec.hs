@@ -7,6 +7,7 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as B
 import Data.Map qualified as M
 import Data.Set qualified as S
+import RedisCommandClient (wrapInRay)
 import Resp
 import Test.Hspec
 
@@ -49,6 +50,19 @@ main = hspec $ describe "encode" $ do
   it "parses lists of length greater than 10 correctly" $ do
     let longListEncoded = "*11\r\n" <> mconcat (replicate 11 "+item\r\n")
     parseOnly parseRespData (B.toStrict longListEncoded) `shouldBe` Right (RespArray (replicate 11 (RespSimpleString "item")))
+
+  describe "command encoding" $ do
+    it "encodes MGET commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["MGET", "key1", "key2"]))
+        `shouldBe` "*3\r\n$4\r\nMGET\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n"
+
+    it "encodes ZADD commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["ZADD", "myzset", "1", "one", "2", "two"]))
+        `shouldBe` "*6\r\n$4\r\nZADD\r\n$6\r\nmyzset\r\n$1\r\n1\r\n$3\r\none\r\n$1\r\n2\r\n$3\r\ntwo\r\n"
+
+    it "encodes ZRANGE WITHSCORES commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["ZRANGE", "myzset", "0", "-1", "WITHSCORES"]))
+        `shouldBe` "*5\r\n$6\r\nZRANGE\r\n$6\r\nmyzset\r\n$1\r\n0\r\n$2\r\n-1\r\n$10\r\nWITHSCORES\r\n"
 
   describe "parse" $ do
     it "parses simple strings correctly" $ do

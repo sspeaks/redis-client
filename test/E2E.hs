@@ -30,6 +30,11 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction (get "a") `shouldReturn` RespBulkString "b"
       runRedisAction (get "c") `shouldReturn` RespBulkString "d"
       runRedisAction (get "e") `shouldReturn` RespBulkString "f"
+    it "mget is encoded properly and returns multiple values" $ do
+      runRedisAction (set "mget:key1" "value1") `shouldReturn` RespSimpleString "OK"
+      runRedisAction (set "mget:key2" "value2") `shouldReturn` RespSimpleString "OK"
+      runRedisAction (mget ["mget:key1", "mget:key2", "mget:missing"]) `shouldReturn`
+        RespArray [RespBulkString "value1", RespBulkString "value2", RespNullBilkString]
     it "del is encoded properly and deletes the key" $ do
       runRedisAction (set "testKey" "testValue") `shouldReturn` RespSimpleString "OK"
       runRedisAction (del ["testKey"]) `shouldReturn` RespInteger 1
@@ -43,6 +48,10 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction (set "counter" "0") `shouldReturn` RespSimpleString "OK"
       runRedisAction (incr "counter") `shouldReturn` RespInteger 1
       runRedisAction (get "counter") `shouldReturn` RespBulkString "1"
+    it "setnx is encoded properly and only sets when a key is missing" $ do
+      runRedisAction (setnx "nx:key" "first") `shouldReturn` RespInteger 1
+      runRedisAction (setnx "nx:key" "second") `shouldReturn` RespInteger 0
+      runRedisAction (get "nx:key") `shouldReturn` RespBulkString "first"
     it "hset and hget are encoded properly and work correctly" $ do
       runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
       runRedisAction (hget "myhash" "field1") `shouldReturn` RespBulkString "value1"
@@ -80,6 +89,18 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
     it "lindex is encoded properly and works correctly" $ do
       runRedisAction (lpush "mylist" ["one", "two", "three"]) `shouldReturn` RespInteger 3
       runRedisAction (lindex "mylist" 1) `shouldReturn` RespBulkString "two"
+    it "zadd and zrange are encoded properly and work correctly" $ do
+      runRedisAction (zadd "myzset" [(1, "one"), (2, "two"), (3, "three")]) `shouldReturn` RespInteger 3
+      runRedisAction (zrange "myzset" 0 1 False) `shouldReturn` RespArray [RespBulkString "one", RespBulkString "two"]
+      runRedisAction (zrange "myzset" 0 (-1) True)
+        `shouldReturn` RespArray
+          [ RespBulkString "one",
+            RespBulkString "1",
+            RespBulkString "two",
+            RespBulkString "2",
+            RespBulkString "three",
+            RespBulkString "3"
+          ]
 
   describe "Pipelining works: " $ do
     it "can pipeline 100 commands and retrieve their values" $ do

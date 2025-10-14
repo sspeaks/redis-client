@@ -16,7 +16,6 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as SB8
 import Data.ByteString.Lazy.Char8 qualified as BSC
 import Data.Kind (Type)
-import Data.Word (Word8)
 import Debug.Trace (trace, traceShow)
 import Resp (Encodable (encode), RespData (..), parseRespData)
 
@@ -61,6 +60,8 @@ class (MonadIO m) => RedisCommands m where
   ping :: m RespData
   set :: String -> String -> m RespData
   get :: String -> m RespData
+  mget :: [String] -> m RespData
+  setnx :: String -> String -> m RespData
   bulkSet :: [(String, String)] -> m RespData
   flushAll :: m RespData
   dbsize :: m RespData
@@ -84,6 +85,8 @@ class (MonadIO m) => RedisCommands m where
   llen :: String -> m RespData
   lindex :: String -> Int -> m RespData
   clientSetInfo :: [String] -> m RespData
+  zadd :: String -> [(Int, String)] -> m RespData
+  zrange :: String -> Int -> Int -> Bool -> m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
@@ -107,6 +110,18 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   get k = do
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["GET", k])
+    parseWith (receive client)
+
+  mget :: [String] -> RedisCommandClient client RespData
+  mget keys = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("MGET" : keys))
+    parseWith (receive client)
+
+  setnx :: String -> String -> RedisCommandClient client RespData
+  setnx key value = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SETNX", key, value])
     parseWith (receive client)
 
   auth :: String -> RedisCommandClient client RespData
@@ -251,6 +266,21 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   clientSetInfo info = do
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay (["CLIENT", "SETINFO"] ++ info))
+    parseWith (receive client)
+
+  zadd :: String -> [(Int, String)] -> RedisCommandClient client RespData
+  zadd key members = do
+    ClientState !client _ <- State.get
+    let payload = concatMap (\(score, member) -> [show score, member]) members
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("ZADD" : key : payload))
+    parseWith (receive client)
+
+  zrange :: String -> Int -> Int -> Bool -> RedisCommandClient client RespData
+  zrange key start stop withScores = do
+    ClientState !client _ <- State.get
+    let base = ["ZRANGE", key, show start, show stop]
+        command = if withScores then base ++ ["WITHSCORES"] else base
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
     parseWith (receive client)
 
 data RunState = RunState
