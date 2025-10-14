@@ -48,6 +48,13 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
       runRedisAction (set "counter" "0") `shouldReturn` RespSimpleString "OK"
       runRedisAction (incr "counter") `shouldReturn` RespInteger 1
       runRedisAction (get "counter") `shouldReturn` RespBulkString "1"
+    it "decr is encoded properly and decrements the key" $ do
+      runRedisAction (set "counter:down" "5") `shouldReturn` RespSimpleString "OK"
+      runRedisAction (decr "counter:down") `shouldReturn` RespInteger 4
+      runRedisAction (get "counter:down") `shouldReturn` RespBulkString "4"
+    it "psetex sets value with expiry" $ do
+      runRedisAction (psetex "psetex:key" 600 "value") `shouldReturn` RespSimpleString "OK"
+      runRedisAction (get "psetex:key") `shouldReturn` RespBulkString "value"
     it "setnx is encoded properly and only sets when a key is missing" $ do
       runRedisAction (setnx "nx:key" "first") `shouldReturn` RespInteger 1
       runRedisAction (setnx "nx:key" "second") `shouldReturn` RespInteger 0
@@ -55,6 +62,15 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
     it "hset and hget are encoded properly and work correctly" $ do
       runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
       runRedisAction (hget "myhash" "field1") `shouldReturn` RespBulkString "value1"
+    it "hmget returns multiple hash fields" $ do
+      runRedisAction (hset "hash:multi" "field1" "value1") `shouldReturn` RespInteger 1
+      runRedisAction (hset "hash:multi" "field2" "value2") `shouldReturn` RespInteger 1
+      runRedisAction (hmget "hash:multi" ["field1", "field2", "missing"]) `shouldReturn`
+        RespArray [RespBulkString "value1", RespBulkString "value2", RespNullBilkString]
+    it "hexists indicates whether a hash field exists" $ do
+      runRedisAction (hset "hash:exists" "field" "value") `shouldReturn` RespInteger 1
+      runRedisAction (hexists "hash:exists" "field") `shouldReturn` RespInteger 1
+      runRedisAction (hexists "hash:exists" "missing") `shouldReturn` RespInteger 0
     it "lpush and lrange are encoded properly and work correctly" $ do
       runRedisAction (lpush "mylist" ["one", "two", "three"]) `shouldReturn` RespInteger 3
       runRedisAction (lrange "mylist" 0 2) `shouldReturn` RespArray [RespBulkString "three", RespBulkString "two", RespBulkString "one"]
@@ -71,6 +87,13 @@ main = hspec $ before_ (void $ runRedisAction flushAll) $ do
     it "sadd and smembers are encoded properly and work correctly" $ do
       runRedisAction (sadd "myset" ["one", "two", "three"]) `shouldReturn` RespInteger 3
       runRedisAction (smembers "myset") `shouldReturn` RespArray [RespBulkString "one", RespBulkString "two", RespBulkString "three"]
+    it "scard returns the set cardinality" $ do
+      runRedisAction (sadd "size:set" ["a", "b", "c"]) `shouldReturn` RespInteger 3
+      runRedisAction (scard "size:set") `shouldReturn` RespInteger 3
+    it "sismember detects membership" $ do
+      runRedisAction (sadd "member:set" ["alpha"]) `shouldReturn` RespInteger 1
+      runRedisAction (sismember "member:set" "alpha") `shouldReturn` RespInteger 1
+      runRedisAction (sismember "member:set" "beta") `shouldReturn` RespInteger 0
     it "hdel is encoded properly and works correctly" $ do
       runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
       runRedisAction (hdel "myhash" ["field1"]) `shouldReturn` RespInteger 1

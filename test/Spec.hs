@@ -64,6 +64,30 @@ main = hspec $ describe "encode" $ do
       Builder.toLazyByteString (encode (wrapInRay ["ZRANGE", "myzset", "0", "-1", "WITHSCORES"]))
         `shouldBe` "*5\r\n$6\r\nZRANGE\r\n$6\r\nmyzset\r\n$1\r\n0\r\n$2\r\n-1\r\n$10\r\nWITHSCORES\r\n"
 
+    it "encodes DECR commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["DECR", "counter"]))
+        `shouldBe` "*2\r\n$4\r\nDECR\r\n$7\r\ncounter\r\n"
+
+    it "encodes PSETEX commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["PSETEX", "temp", "500", "value"]))
+        `shouldBe` "*4\r\n$6\r\nPSETEX\r\n$4\r\ntemp\r\n$3\r\n500\r\n$5\r\nvalue\r\n"
+
+    it "encodes HMGET commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["HMGET", "myhash", "field1", "field2"]))
+        `shouldBe` "*4\r\n$5\r\nHMGET\r\n$6\r\nmyhash\r\n$6\r\nfield1\r\n$6\r\nfield2\r\n"
+
+    it "encodes HEXISTS commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["HEXISTS", "myhash", "field1"]))
+        `shouldBe` "*3\r\n$7\r\nHEXISTS\r\n$6\r\nmyhash\r\n$6\r\nfield1\r\n"
+
+    it "encodes SCARD commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["SCARD", "myset"]))
+        `shouldBe` "*2\r\n$5\r\nSCARD\r\n$5\r\nmyset\r\n"
+
+    it "encodes SISMEMBER commands correctly" $ do
+      Builder.toLazyByteString (encode (wrapInRay ["SISMEMBER", "myset", "one"]))
+        `shouldBe` "*3\r\n$9\r\nSISMEMBER\r\n$5\r\nmyset\r\n$3\r\none\r\n"
+
   describe "parse" $ do
     it "parses simple strings correctly" $ do
       parseOnly parseRespData "+OK\r\n" `shouldBe` Right (RespSimpleString "OK")

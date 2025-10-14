@@ -62,6 +62,8 @@ class (MonadIO m) => RedisCommands m where
   get :: String -> m RespData
   mget :: [String] -> m RespData
   setnx :: String -> String -> m RespData
+  decr :: String -> m RespData
+  psetex :: String -> Int -> String -> m RespData
   bulkSet :: [(String, String)] -> m RespData
   flushAll :: m RespData
   dbsize :: m RespData
@@ -70,6 +72,8 @@ class (MonadIO m) => RedisCommands m where
   incr :: String -> m RespData
   hset :: String -> String -> String -> m RespData
   hget :: String -> String -> m RespData
+  hmget :: String -> [String] -> m RespData
+  hexists :: String -> String -> m RespData
   lpush :: String -> [String] -> m RespData
   lrange :: String -> Int -> Int -> m RespData
   expire :: String -> Int -> m RespData
@@ -79,6 +83,8 @@ class (MonadIO m) => RedisCommands m where
   rpop :: String -> m RespData
   sadd :: String -> [String] -> m RespData
   smembers :: String -> m RespData
+  scard :: String -> m RespData
+  sismember :: String -> String -> m RespData
   hdel :: String -> [String] -> m RespData
   hkeys :: String -> m RespData
   hvals :: String -> m RespData
@@ -122,6 +128,18 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   setnx key value = do
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SETNX", key, value])
+    parseWith (receive client)
+
+  decr :: String -> RedisCommandClient client RespData
+  decr key = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["DECR", key])
+    parseWith (receive client)
+
+  psetex :: String -> Int -> String -> RedisCommandClient client RespData
+  psetex key milliseconds value = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["PSETEX", key, show milliseconds, value])
     parseWith (receive client)
 
   auth :: String -> RedisCommandClient client RespData
@@ -178,6 +196,18 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HGET", key, field])
     parseWith (receive client)
 
+  hmget :: String -> [String] -> RedisCommandClient client RespData
+  hmget key fields = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ("HMGET" : key : fields))
+    parseWith (receive client)
+
+  hexists :: String -> String -> RedisCommandClient client RespData
+  hexists key field = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HEXISTS", key, field])
+    parseWith (receive client)
+
   lpush :: String -> [String] -> RedisCommandClient client RespData
   lpush key values = do
     ClientState !client _ <- State.get
@@ -230,6 +260,18 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   smembers key = do
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SMEMBERS", key])
+    parseWith (receive client)
+
+  scard :: String -> RedisCommandClient client RespData
+  scard key = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SCARD", key])
+    parseWith (receive client)
+
+  sismember :: String -> String -> RedisCommandClient client RespData
+  sismember key member = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["SISMEMBER", key, member])
     parseWith (receive client)
 
   hdel :: String -> [String] -> RedisCommandClient client RespData
