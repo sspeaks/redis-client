@@ -4,12 +4,13 @@ module Main where
 
 import           Client                     (Client (..), PlainTextClient)
 import           Control.Concurrent         (threadDelay)
-import           Control.Exception          (evaluate)
+import           Control.Exception          (IOException, evaluate, finally,
+                                             try)
 import           Control.Monad              (void)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
-import           Data.List                  (isInfixOf)
+import           Data.List                  (foldl', isInfixOf)
 import           RedisCommandClient         (ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),
@@ -24,13 +25,19 @@ import           System.Directory           (doesFileExist, findExecutable)
 import           System.Environment         (getEnvironment, getExecutablePath)
 import           System.Exit                (ExitCode (..))
 import           System.FilePath            (takeDirectory, (</>))
-import           System.IO                  (BufferMode (LineBuffering), hClose,
-                                             hFlush, hGetContents, hPutStrLn,
-                                             hSetBuffering)
+import           System.IO                  (BufferMode (LineBuffering), Handle,
+                                             hClose, hFlush, hGetContents,
+                                             hGetLine, hPutStrLn,
+                                             hIsTerminalDevice, hSetBuffering,
+                                             isEOF, stdin, stdout)
 import           System.Process             (CreateProcess (..),
+                                             ProcessHandle,
                                              StdStream (CreatePipe), proc,
+                                             getProcessExitCode,
                                              readCreateProcessWithExitCode,
-                                             waitForProcess, withCreateProcess)
+                                             terminateProcess, waitForProcess,
+                                             withCreateProcess)
+import           System.Timeout             (timeout)
 import           Test.Hspec                 (beforeAll_, before_, describe,
                                              expectationFailure, hspec, it,
                                              shouldBe, shouldNotBe,
@@ -53,14 +60,41 @@ getRedisClientPath = do
         Just path -> return path
         Nothing -> error $ "Could not locate redis-client executable starting from " <> binDir
 
+cleanupProcess :: ProcessHandle -> IO ()
+cleanupProcess ph = do
+  _ <- (try (terminateProcess ph) :: IO (Either IOException ()))
+  _ <- (try (waitForProcess ph) :: IO (Either IOException ExitCode))
+  pure ()
+
+waitForSubstring :: Handle -> String -> IO ()
+waitForSubstring handle needle = do
+  line <- hGetLine handle
+  if needle `isInfixOf` line
+    then pure ()
+    else waitForSubstring handle needle
+
+drainHandle :: Handle -> IO String
+drainHandle handle = do
+  result <- try (hGetContents handle) :: IO (Either IOException String)
+  case result of
+    Left _ -> pure ""
+    Right contents -> do
+      void $ evaluate (length contents)
+      pure contents
+
 main :: IO ()
 main = do
   redisClient <- getRedisClientPath
   baseEnv <- getEnvironment
-  let runRedisClient args input = readCreateProcessWithExitCode (proc redisClient args) input
+  let tlsExtras = [("SSL_CERT_FILE", "/certs/redis-ca.crt"), ("REDIS_CLIENT_TLS_INSECURE", "1")]
+      mergeEnv extra =
+        let combined = tlsExtras ++ extra
+            filteredBase = filter (\(k, _) -> k `notElem` map fst combined) baseEnv
+         in combined ++ filteredBase
+      runRedisClient args input =
+        readCreateProcessWithExitCode ((proc redisClient args) {env = Just (mergeEnv [])}) input
       runRedisClientWithEnv extra args input =
-        let filteredBase = filter (\(k, _) -> k `notElem` map fst extra) baseEnv
-         in readCreateProcessWithExitCode ((proc redisClient args) {env = Just (extra ++ filteredBase)}) input
+        readCreateProcessWithExitCode ((proc redisClient args) {env = Just (mergeEnv extra)}) input
       chunkKilosForTest :: Integer
       chunkKilosForTest = 4
   hspec $ do
@@ -307,7 +341,54 @@ main = do
           exitCode `shouldBe` ExitSuccess
           stdoutOut `shouldSatisfy` ("PONG" `isInfixOf`)
 
-      it "tunnel without TLS exits with an error" $ do
-        (code, stdoutOut, _) <- runRedisClient ["tunn", "--host", "redis.local"] ""
-        code `shouldNotBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("Tunnel mode is only supported with TLS enabled" `isInfixOf`)
+      it "tunnel proxies plaintext traffic to TLS redis" $ do
+        let cp =
+              (proc redisClient ["tunn", "--host", "redis.local", "--tls"])
+                { std_out = CreatePipe,
+                  std_err = CreatePipe,
+                  env = Just (mergeEnv [])
+                }
+            viaTunnel :: RedisCommandClient PlainTextClient a -> IO a
+            viaTunnel action =
+              runCommandsAgainstPlaintextHost (RunState "localhost" (Just 6379) "" False 0 False) action
+        withCreateProcess cp $ \_ mOut mErr ph ->
+          case (mOut, mErr) of
+            (Just hout, Just herr) -> do
+              hSetBuffering hout LineBuffering
+              hSetBuffering herr LineBuffering
+              let cleanup = cleanupProcess ph
+              finally
+                (do
+                    ready <- timeout (5 * 1000000) (try (waitForSubstring hout "Listening on localhost:6379") :: IO (Either IOException ()))
+                    case ready of
+                      Nothing -> do
+                        cleanup
+                        stdoutRest <- drainHandle hout
+                        stderrRest <- drainHandle herr
+                        expectationFailure (unlines ["Tunnel did not report listening within timeout.", "stdout:", stdoutRest, "stderr:", stderrRest])
+                      Just (Left err) -> do
+                        cleanup
+                        stdoutRest <- drainHandle hout
+                        stderrRest <- drainHandle herr
+                        expectationFailure (unlines ["Tunnel stdout closed unexpectedly: " <> show err, "stdout:", stdoutRest, "stderr:", stderrRest])
+                      Just (Right ()) -> do
+                        (pongResp, echoResp) <-
+                          viaTunnel $ do
+                            pong <- ping
+                            _ <- set "tunnel:key" "via-tls"
+                            val <- get "tunnel:key"
+                            pure (pong, val)
+                        pongResp `shouldBe` RespSimpleString "PONG"
+                        echoResp `shouldBe` RespBulkString "via-tls"
+                        runRedisAction (get "tunnel:key") `shouldReturn` RespBulkString "via-tls"
+                        runRedisAction flushAll
+                        postAccept <- timeout (2 * 1000000) (try (waitForSubstring hout "Accepted connection") :: IO (Either IOException ()))
+                        case postAccept of
+                          Nothing -> expectationFailure "Tunnel never logged an accepted connection"
+                          Just (Left err) -> expectationFailure ("Reading tunnel output failed: " <> show err)
+                          Just (Right ()) -> pure ()
+                )
+                cleanup
+            _ -> do
+              cleanupProcess ph
+              expectationFailure "Tunnel process did not expose stdout/stderr handles"

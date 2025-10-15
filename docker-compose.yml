@@ -4,9 +4,20 @@ services:
     hostname: redis.local
     volumes:
       - ./redis.conf:/usr/local/etc/redis/redis.conf
+      - ./certs:/certs:ro
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     ports:
       - 6379:6379
+    networks:
+      default:
+        aliases:
+          - redis.local
   e2etests:
     image: e2etests:latest
     depends_on: [redis]
+    volumes:
+      - ./certs:/certs:ro
+    networks:
+      default:
+        aliases:
+          - e2etests

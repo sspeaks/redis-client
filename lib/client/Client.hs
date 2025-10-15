@@ -51,8 +51,10 @@ import Network.Socket
 import Network.Socket qualified as S
 import Network.Socket.ByteString (recv)
 import Network.Socket.ByteString.Lazy (sendAll)
-import Network.TLS (ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
+import Network.TLS (ClientHooks (..), ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
 import Network.TLS.Extra (ciphersuite_strong)
+import System.IO (BufferMode (LineBuffering), hFlush, hSetBuffering, stdout)
+import System.Environment (lookupEnv)
 import System.Timeout (timeout)
 import System.X509.Unix (getSystemCertificateStore)
 import Text.Printf (printf)
@@ -108,7 +110,9 @@ instance Client TLSClient where
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
     S.connect sock (addrAddress addrInfo)
     store <- getSystemCertificateStore
-    let clientParams =
+    insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
+    let allowInsecure = maybe False (not . null) insecureFlag
+        baseParams =
           (defaultParamsClient hostname "redis-server")
             { clientSupported =
                 def
@@ -120,6 +124,10 @@ instance Client TLSClient where
                   { sharedCAStore = store
                   }
             }
+        clientParams =
+          if allowInsecure
+            then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
+            else baseParams
     context <- contextNew sock clientParams
     handshake context
     return $ ConnectedTLSClient hostname ipCorrectEndian sock context
@@ -139,13 +147,16 @@ instance Client TLSClient where
 
 serve :: (MonadIO m) => TLSClient 'Server -> m ()
 serve (TLSTunnel redisClient) = liftIO $ do
+  hSetBuffering stdout LineBuffering
   bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
     setSocketOption sock ReuseAddr 1
     S.bind sock (SockAddrInet 6379 (tupleToHostAddress (127, 0, 0, 1)))
     S.listen sock 1024
     putStrLn "Listening on localhost:6379"
+    hFlush stdout
     (clientSock, _) <- S.accept sock
     putStrLn "Accepted connection"
+    hFlush stdout
     void $
       finally
         (loop clientSock redisClient)
