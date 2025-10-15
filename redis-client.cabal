@@ -120,6 +120,9 @@ executable EndToEnd
                     , client
                     , resp
                     , mtl
+                    , process
+                    , filepath
+                    , directory
 
 executable redis-client
     import:           warnings

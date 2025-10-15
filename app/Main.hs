@@ -25,6 +25,8 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs)
 import           System.Exit                (exitFailure, exitSuccess)
+import           System.IO                  (hFlush, hIsTerminalDevice, isEOF,
+                                             stdin, stdout)
 import           Text.Printf                (printf)
 
 defaultRunState :: RunState
@@ -102,24 +104,34 @@ fill state = do
 cli :: RunState -> IO ()
 cli state = do
   putStrLn "Starting CLI mode"
+  isTTY <- hIsTerminalDevice stdin
   if useTLS state
-    then runCommandsAgainstTLSHost state repl
-    else runCommandsAgainstPlaintextHost state repl
+    then runCommandsAgainstTLSHost state (repl isTTY)
+    else runCommandsAgainstPlaintextHost state (repl isTTY)
   exitSuccess
 
-repl :: (Client client) => RedisCommandClient client ()
-repl = do
+repl :: (Client client) => Bool -> RedisCommandClient client ()
+repl isTTY = do
   ClientState !client _ <- State.get
   loop client
   where
     loop !client = do
-      command <- liftIO (readline "> ")
+      command <- liftIO readCommand
       case command of
         Nothing -> return ()
         Just cmd -> do
-          liftIO $ addHistory cmd
+          when isTTY $ liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
             (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS.pack)) . words $ cmd
             response <- parseWith (receive client)
             liftIO $ print response
             loop client
+    readCommand
+      | isTTY = readline "> "
+      | otherwise = do
+          putStr "> "
+          hFlush stdout
+          eof <- isEOF
+          if eof
+            then return Nothing
+            else Just <$> getLine
