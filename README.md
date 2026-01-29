@@ -101,6 +101,19 @@ The fill operation generates Redis SET commands efficiently without unnecessary 
 
 The client uses fire-and-forget pipelining with a separate reader thread to maximize throughput during bulk fill operations.
 
+## Benchmarking
+
+To measure the performance improvements from the optimizations:
+
+```sh
+# Run automated benchmark comparing before/after optimizations
+./benchmark.sh
+
+# See BENCHMARKING.md for detailed instructions
+```
+
+For complete benchmarking instructions, including manual testing steps and configuration options, see [BENCHMARKING.md](BENCHMARKING.md).
+
 ## Profiling
 
 To enable profiling, use the following command:
