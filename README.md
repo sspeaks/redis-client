@@ -78,19 +78,19 @@ This client includes several performance optimizations for high-throughput opera
 - `REDIS_CLIENT_RECV_BUFFER_SIZE`: Configure the receive buffer size in bytes (default: 65536)
   ```sh
   export REDIS_CLIENT_RECV_BUFFER_SIZE=131072  # Use 128KB buffer
-  cabal run redis-client -- fill -h localhost -d 1
+  cabal run redis-client -- -h localhost -d 1
   ```
 
 - `REDIS_CLIENT_FILL_CHUNK_KB`: Configure the chunk size for fill operations in KB (default: 1048576 = 1GB)
   ```sh
   export REDIS_CLIENT_FILL_CHUNK_KB=524288  # Use 512MB chunks
-  cabal run redis-client -- fill -h localhost -d 2
+  cabal run redis-client -- -h localhost -d 2
   ```
 
 - `REDIS_CLIENT_TLS_INSECURE`: Skip TLS certificate validation (use only for testing)
   ```sh
   export REDIS_CLIENT_TLS_INSECURE=1
-  cabal run redis-client -- fill -h localhost -t -d 1
+  cabal run redis-client -- -h localhost -t -d 1
   ```
 
 ### Command Generation

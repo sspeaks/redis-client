@@ -89,7 +89,7 @@ class Client (client :: ConnectionStatus -> Type) where
 
 data PlainTextClient (a :: ConnectionStatus) where
   NotConnectedPlainTextClient :: String -> Maybe Int -> PlainTextClient 'NotConnected
-  ConnectedPlainTextClient :: String -> Word32 -> Socket -> PlainTextClient 'Connected
+  ConnectedPlainTextClient :: String -> Word32 -> Socket -> Int -> PlainTextClient 'Connected
 
 instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
@@ -102,17 +102,17 @@ instance Client PlainTextClient where
       printf "Wasn't able to connect to the server: %s...\n" (show e)
       putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
       throwIO e
-    return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
+    bufSize <- getRecvBufferSizeEnv
+    return $ ConnectedPlainTextClient hostname ipCorrectEndian sock bufSize
 
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
-  close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
+  close (ConnectedPlainTextClient _ _ sock _) = liftIO $ S.close sock
 
   send :: (MonadIO m) => PlainTextClient 'Connected -> Lazy.ByteString -> m ()
-  send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
+  send (ConnectedPlainTextClient _ _ sock _) dat = liftIO $ sendAll sock dat
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m B.ByteString
-  receive (ConnectedPlainTextClient _ _ sock) = do
-    bufSize <- liftIO getRecvBufferSizeEnv
+  receive (ConnectedPlainTextClient _ _ sock bufSize) = do
     val <- liftIO $ timeout (5 * 1000000) $ recv sock bufSize
     case val of
       Nothing -> fail "recv socket timeout"
@@ -162,7 +162,6 @@ instance Client TLSClient where
 
   receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m B.ByteString
   receive (ConnectedTLSClient _ _ _ ctx) = do
-    bufSize <- liftIO getRecvBufferSizeEnv
     val <- liftIO $ timeout (5 * 1000000) $ recvData ctx
     case val of
       Nothing -> fail "recv socket timeout"
@@ -180,18 +179,18 @@ serve (TLSTunnel redisClient) = liftIO $ do
     (clientSock, _) <- S.accept sock
     putStrLn "Accepted connection"
     hFlush stdout
+    bufSize <- getRecvBufferSizeEnv
     void $
       finally
-        (loop clientSock redisClient)
+        (loop clientSock redisClient bufSize)
         (S.close clientSock)
   where
-    loop client redis = do
-      bufSize <- getRecvBufferSizeEnv
+    loop client redis bufSize = do
       dat <- recv client bufSize
       send redisClient (fromStrict dat)
       recieveData <- receive redis
       sendAll client (fromStrict recieveData)
-      loop client redis
+      loop client redis bufSize
 
 toNetworkByteOrder :: Word32 -> Word32
 toNetworkByteOrder hostOrder =
