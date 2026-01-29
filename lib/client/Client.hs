@@ -58,9 +58,28 @@ import System.Environment (lookupEnv)
 import System.Timeout (timeout)
 import System.X509.Unix (getSystemCertificateStore)
 import Text.Printf (printf)
+import Text.Read (readMaybe)
 import Prelude hiding (getContents)
 
 data ConnectionStatus = Connected | NotConnected | Server
+
+-- Get the receive buffer size from environment or use default
+getRecvBufferSizeEnv :: IO Int
+getRecvBufferSizeEnv = do
+  mSize <- lookupEnv "REDIS_CLIENT_RECV_BUFFER_SIZE"
+  case mSize >>= readMaybe of
+    Just n | n > 0 -> return n
+    _ -> return 65536 -- Default to 64KB
+
+-- Configure socket for optimal performance
+configureSocket :: Socket -> IO ()
+configureSocket sock = do
+  -- Enable TCP_NODELAY to disable Nagle's algorithm (reduces latency)
+  setSocketOption sock NoDelay 1
+  
+  -- Set larger send and receive buffers for better throughput
+  setSocketOption sock RecvBuffer 262144 -- 256KB
+  setSocketOption sock SendBuffer 262144 -- 256KB
 
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
@@ -78,6 +97,7 @@ instance Client PlainTextClient where
     ipCorrectEndian <- resolve hostname
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
+    configureSocket sock
     S.connect sock (addrAddress addrInfo) `catch` \(e :: IOException) -> do
       printf "Wasn't able to connect to the server: %s...\n" (show e)
       putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
@@ -92,7 +112,8 @@ instance Client PlainTextClient where
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m B.ByteString
   receive (ConnectedPlainTextClient _ _ sock) = do
-    val <- liftIO $ timeout (5 * 1000000) $ recv sock 4096
+    bufSize <- liftIO getRecvBufferSizeEnv
+    val <- liftIO $ timeout (5 * 1000000) $ recv sock bufSize
     case val of
       Nothing -> fail "recv socket timeout"
       Just v -> return v
@@ -108,6 +129,7 @@ instance Client TLSClient where
     ipCorrectEndian <- resolve hostname
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
+    configureSocket sock
     S.connect sock (addrAddress addrInfo)
     store <- getSystemCertificateStore
     insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
@@ -140,6 +162,7 @@ instance Client TLSClient where
 
   receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m B.ByteString
   receive (ConnectedTLSClient _ _ _ ctx) = do
+    bufSize <- liftIO getRecvBufferSizeEnv
     val <- liftIO $ timeout (5 * 1000000) $ recvData ctx
     case val of
       Nothing -> fail "recv socket timeout"
@@ -163,7 +186,8 @@ serve (TLSTunnel redisClient) = liftIO $ do
         (S.close clientSock)
   where
     loop client redis = do
-      dat <- recv client 4096
+      bufSize <- getRecvBufferSizeEnv
+      dat <- recv client bufSize
       send redisClient (fromStrict dat)
       recieveData <- receive redis
       sendAll client (fromStrict recieveData)

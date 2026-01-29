@@ -1,0 +1,6 @@
+packages: .
+
+-- Constrain to older compatible versions
+constraints: crypton-asn1-types < 0.4,
+             crypton-asn1-encoding < 0.10,
+             crypton-asn1-parse < 0.10
