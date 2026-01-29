@@ -61,15 +61,12 @@ fi
 
 # Test Redis connectivity
 print_info "Testing Redis connectivity at $REDIS_HOST:$REDIS_PORT..."
-if command -v redis-cli &> /dev/null; then
-    if ! redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" PING &> /dev/null; then
-        print_error "Cannot connect to Redis at $REDIS_HOST:$REDIS_PORT"
-        print_error "Please ensure Redis is running: docker compose up -d redis"
-        exit 1
-    fi
+if echo "PING" | cabal run redis-client -- cli -h "$REDIS_HOST" 2>&1 | grep -q "PONG"; then
     print_info "Redis connection successful"
 else
-    print_warning "redis-cli not found, skipping connectivity check"
+    print_error "Cannot connect to Redis at $REDIS_HOST:$REDIS_PORT"
+    print_error "Please ensure Redis is running: docker compose up -d redis"
+    exit 1
 fi
 
 # Function to build at a specific commit
@@ -97,10 +94,9 @@ run_benchmark() {
     
     print_info "Running benchmark for $label (${TEST_SIZE_GB}GB)..."
     
-    # Flush Redis before test
-    if command -v redis-cli &> /dev/null; then
-        redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" FLUSHALL > /dev/null
-    fi
+    # Flush Redis before test using redis-client
+    print_info "Flushing Redis..."
+    echo "FLUSHALL" | cabal run redis-client -- cli -h "$REDIS_HOST" > /dev/null 2>&1
     
     # Run the fill command and capture timing
     local start_time=$(date +%s.%N)

@@ -158,8 +158,8 @@ docker ps | grep redis
 # Start Redis if needed
 docker compose up -d redis
 
-# Test connectivity
-redis-cli -h localhost -p 6379 PING
+# Test connectivity using redis-client
+echo "PING" | cabal run redis-client -- cli -h localhost
 ```
 
 ### Out of Memory
