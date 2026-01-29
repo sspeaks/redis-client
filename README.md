@@ -75,9 +75,9 @@ This client includes several performance optimizations for high-throughput opera
 
 #### Environment Variables
 
-- `REDIS_CLIENT_RECV_BUFFER_SIZE`: Configure the receive buffer size in bytes (default: 65536)
+- `REDIS_CLIENT_RECV_BUFFER_SIZE`: Configure the receive buffer size for recv() calls in bytes (default: 65536). This controls how much data is requested per read operation, not the socket's kernel buffer size.
   ```sh
-  export REDIS_CLIENT_RECV_BUFFER_SIZE=131072  # Use 128KB buffer
+  export REDIS_CLIENT_RECV_BUFFER_SIZE=131072  # Use 128KB per read
   cabal run redis-client -- -h localhost -d 1
   ```
 

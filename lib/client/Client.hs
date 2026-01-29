@@ -188,8 +188,8 @@ serve (TLSTunnel redisClient) = liftIO $ do
     loop client redis bufSize = do
       dat <- recv client bufSize
       send redisClient (fromStrict dat)
-      recieveData <- receive redis
-      sendAll client (fromStrict recieveData)
+      receiveData <- receive redis
+      sendAll client (fromStrict receiveData)
       loop client redis bufSize
 
 toNetworkByteOrder :: Word32 -> Word32
