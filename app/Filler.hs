@@ -7,11 +7,10 @@ module Filler where
 import Client (Client (..), ConnectionStatus (Connected))
 import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, putMVar, takeMVar, throwTo)
 import Control.Exception (IOException, catch)
-import Control.Monad (replicateM_)
+import Control.Monad (replicateM, replicateM_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State (evalStateT)
 import Control.Monad.State qualified as State
-import Data.Attoparsec.ByteString.Lazy qualified as Atto
 import Data.ByteString qualified as SB
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
@@ -30,19 +29,18 @@ randomBytes g b = uniformByteStringM b g
 
 genRandomSet :: (StatefulGen g m) => Int -> g -> m LB.ByteString
 genRandomSet chunkKilos gen = do
-  !bytesToSend <- LB.fromStrict <$> randomBytes gen (chunkKilos * 1024)
-  case Atto.parseOnly (Atto.count chunkKilos parseSet) bytesToSend of
-    Left err -> error err
-    Right v -> return $! Builder.toLazyByteString $! mconcat v
-  where
-    -- return $ encode . RespArray $ map RespBulkString ["SET", key, value]
-    setBuilder :: Builder.Builder
-    setBuilder = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
-    parseSet :: Atto.Parser Builder.Builder
-    parseSet = do
-      !key <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
-      !val <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
-      return $! setBuilder <> key <> val
+  -- Pre-compute the constant parts of the SET command
+  let setPrefix = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
+      -- Each SET command is: setPrefix + key (512 bytes) + value (512 bytes)
+      -- Total per command: ~1KB
+  -- Generate all SET commands directly without parsing
+  builders <- replicateM chunkKilos $ do
+    !keyBytes <- randomBytes gen 512
+    !valBytes <- randomBytes gen 512
+    let !keyBuilder = encode . RespBulkString . LB.fromStrict $ keyBytes
+        !valBuilder = encode . RespBulkString . LB.fromStrict $ valBytes
+    return $! setPrefix <> keyBuilder <> valBuilder
+  return $! Builder.toLazyByteString $! mconcat builders
 
 defaultChunkKilos :: Int
 defaultChunkKilos = 1024 * 1024 -- 1 gigabyte worth of data
