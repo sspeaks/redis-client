@@ -59,6 +59,48 @@ cabal run redis-client -- -h localhost -f
 cabal run redis-client -- -h localhost -t -d 1
 ```
 
+## Performance Optimizations
+
+This client includes several performance optimizations for high-throughput operations:
+
+### Socket Optimizations
+
+1. **TCP_NODELAY Enabled**: Disables Nagle's algorithm to reduce latency
+2. **Large Buffer Sizes**: 
+   - Send buffer: 256KB (SO_SNDBUF)
+   - Receive buffer: 256KB (SO_RCVBUF)
+   - Default receive size: 64KB per read operation
+
+### Configuration
+
+#### Environment Variables
+
+- `REDIS_CLIENT_RECV_BUFFER_SIZE`: Configure the receive buffer size in bytes (default: 65536)
+  ```sh
+  export REDIS_CLIENT_RECV_BUFFER_SIZE=131072  # Use 128KB buffer
+  cabal run redis-client -- fill -h localhost -d 1
+  ```
+
+- `REDIS_CLIENT_FILL_CHUNK_KB`: Configure the chunk size for fill operations in KB (default: 1048576 = 1GB)
+  ```sh
+  export REDIS_CLIENT_FILL_CHUNK_KB=524288  # Use 512MB chunks
+  cabal run redis-client -- fill -h localhost -d 2
+  ```
+
+- `REDIS_CLIENT_TLS_INSECURE`: Skip TLS certificate validation (use only for testing)
+  ```sh
+  export REDIS_CLIENT_TLS_INSECURE=1
+  cabal run redis-client -- fill -h localhost -t -d 1
+  ```
+
+### Command Generation
+
+The fill operation generates Redis SET commands efficiently without unnecessary parsing or memory allocation. Each command sets a 512-byte key with a 512-byte value (~1KB per command).
+
+### Pipelining
+
+The client uses fire-and-forget pipelining with a separate reader thread to maximize throughput during bulk fill operations.
+
 ## Profiling
 
 To enable profiling, use the following command:
