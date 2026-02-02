@@ -13,6 +13,7 @@ import Data.ByteString.Lazy qualified as LB
 import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize, clientReply), ClientReplyValues (OFF, ON))
 import System.Environment (lookupEnv)
 import Data.Word (Word64, Word8)
+import Data.Bits (shiftR)
 import Text.Read (readMaybe)
 import Text.Printf (printf)
 
@@ -28,7 +29,7 @@ randomNoise :: BS.ByteString
 randomNoise = fst $ BS.unfoldrN (128 * 1024 * 1024) step 0
   where
     step :: Word64 -> Maybe (Word8, Word64)
-    step !s = Just (fromIntegral s, s * 6364136223846793005 + 1442695040888963407)
+    step !s = Just (fromIntegral (s `shiftR` 56), s * 6364136223846793005 + 1442695040888963407)
 {-# NOINLINE randomNoise #-}
 
 -- | Forces evaluation of the noise buffer to ensure it is shared and ready.
