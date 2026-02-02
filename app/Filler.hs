@@ -91,13 +91,6 @@ lookupChunkKilos = do
     Just n | n > 0 -> return n
     _ -> return defaultChunkKilos
 
-lookupPipelineSize :: IO Int
-lookupPipelineSize = do
-  mPipeline <- lookupEnv "REDIS_CLIENT_PIPELINE_SIZE"
-  case mPipeline >>= readMaybe of
-    Just n | n > 0 -> return n
-    _ -> return 100  -- Default pipeline size optimized (100 * 8MB = 800MB batch)
-
 
 -- | Fills the cache with roughly the requested GB of data.
 fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> RedisCommandClient client ()
@@ -107,7 +100,6 @@ fillCacheWithData baseSeed threadIdx gb = do
   let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
   
   chunkKilos <- liftIO lookupChunkKilos
-  pipelineSize <- liftIO lookupPipelineSize
   
   -- We turn off client replies to maximize write throughput (Fire and Forget)
   -- This is safe in this threaded context because each thread has its own
@@ -118,22 +110,12 @@ fillCacheWithData baseSeed threadIdx gb = do
   -- Calculate total chunks needed based on actual GB requested
   let totalKilosNeeded = gb * 1024 * 1024  -- Convert GB to KB
       totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
-      batches = (totalChunks + pipelineSize - 1) `div` pipelineSize
   
-  -- Use pipelining for better throughput
-  mapM_ (\batchNum -> do
-    let startIdx = batchNum * pipelineSize
-        remainingChunks = totalChunks - startIdx
-        currentBatchSize = min pipelineSize remainingChunks
-    -- Generate and send a batch of commands with unique seeds.
-    -- We use 'forM_' directly which is streaming in IO, instead of building a big list with list comprehension
-    mapM_ (\i -> do 
-        let !cmd = genRandomSet chunkKilos (startSeed + fromIntegral i)
-        send client cmd
-        ) [startIdx..startIdx + currentBatchSize - 1]
-    
-    -- No per-batch print to keep output clean in parallel mode
-    ) [0..batches-1]
+  -- Send all chunks sequentially (fire-and-forget mode)
+  mapM_ (\i -> do 
+      let !cmd = genRandomSet chunkKilos (startSeed + fromIntegral i)
+      send client cmd
+      ) [0..totalChunks - 1]
   
   -- Turn replies back on to confirm completion
   val <- clientReply ON

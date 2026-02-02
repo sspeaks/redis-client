@@ -66,13 +66,11 @@ main = do
       putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
       putStrLn ""
       putStrLn "Environment Variables for Performance Tuning:"
-      putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB    Chunk size in KB (default: 2048)"
-      putStrLn "  REDIS_CLIENT_PIPELINE_SIZE    Pipeline batch size (default: 1000)"
+      putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB    Chunk size in KB (default: 8192)"
       putStrLn ""
       putStrLn "Examples:"
       putStrLn "  redis-client fill -h localhost -d 5                    # Fill 5GB with defaults"
       putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB=4096 redis-client fill ...  # Use 4MB chunks"
-      putStrLn "  REDIS_CLIENT_PIPELINE_SIZE=2000 redis-client fill ...  # Use 2000 command batches"
       exitFailure
     (mode : args) -> do
       (state, _) <- handleArgs args
