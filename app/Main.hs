@@ -5,12 +5,14 @@ module Main where
 
 import           Client                     (Client (receive, send),
                                              TLSClient (..), serve)
+import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
+                                             takeMVar)
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BS
-import           Filler                     (fillCacheWithData)
+import           Filler                     (fillCacheWithData, initRandomNoise)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
                                              RedisCommands (flushAll),
@@ -28,9 +30,11 @@ import           System.Exit                (exitFailure, exitSuccess)
 import           System.IO                  (hFlush, hIsTerminalDevice, isEOF,
                                              stdin, stdout)
 import           Text.Printf                (printf)
+import           System.Random              (randomIO)
+import           Data.Word                  (Word64)
 
 defaultRunState :: RunState
-defaultRunState = RunState "" Nothing "" False 0 False
+defaultRunState = RunState "" Nothing "" False 0 False False
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
@@ -39,7 +43,8 @@ options =
     Option ['a'] ["password"] (ReqArg (\arg opt -> return $ opt {password = arg}) "PASSWORD") "Password to authenticate with",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
-    Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database"
+    Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
+    Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -108,10 +113,26 @@ fill state = do
       then runCommandsAgainstTLSHost state (void flushAll)
       else runCommandsAgainstPlaintextHost state (void flushAll)
   when (dataGBs state > 0) $ do
-    printf "Filling cache '%s' with %dGB of data\n" (host state) (dataGBs state)
-    if useTLS state
-      then runCommandsAgainstTLSHost state $ fillCacheWithData (dataGBs state)
-      else runCommandsAgainstPlaintextHost state $ fillCacheWithData (dataGBs state)
+    initRandomNoise -- Ensure noise buffer is initialized once and shared
+    baseSeed <- randomIO :: IO Word64
+    if serial state
+      then do
+        printf "Filling cache '%s' with %dGB of data using serial mode\n" (host state) (dataGBs state)
+        if useTLS state
+          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state)
+          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state)
+      else do
+        printf "Filling cache '%s' with %dGB of data using %d parallel connections\n" (host state) (dataGBs state) (dataGBs state)
+        let jobs = zip [0..] (replicate (dataGBs state) 1)
+        mvars <- mapM (\(idx, gb) -> do
+            mv <- newEmptyMVar
+            _ <- forkIO $ do
+                 if useTLS state
+                    then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed idx gb
+                    else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed idx gb
+                 putMVar mv ()
+            return mv) jobs
+        mapM_ takeMVar mvars
     exitSuccess
   exitFailure
 

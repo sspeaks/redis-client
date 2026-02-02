@@ -515,7 +515,8 @@ data RunState = RunState
     password :: String,
     useTLS :: Bool,
     dataGBs :: Int,
-    flush :: Bool
+    flush :: Bool,
+    serial :: Bool
   }
   deriving (Show)
 

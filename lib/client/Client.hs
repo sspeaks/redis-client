@@ -79,9 +79,9 @@ instance Client PlainTextClient where
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
     -- Optimize socket for high throughput
-    setSocketOption sock SendBuffer (64 * 1024)   -- 64KB send buffer
-    setSocketOption sock RecvBuffer (64 * 1024)   -- 64KB receive buffer
-    setSocketOption sock NoDelay 1                -- Disable Nagle's algorithm
+    setSocketOption sock SendBuffer (12 * 1024 * 1024)  -- 12MB send buffer (covers >8MB app chunks)
+    setSocketOption sock RecvBuffer (64 * 1024)         -- 64KB receive buffer (replies are disabled)
+    setSocketOption sock NoDelay 1                      -- Disable Nagle's algorithm
     setSocketOption sock KeepAlive 1              -- Enable keep-alive
     S.connect sock (addrAddress addrInfo) `catch` \(e :: IOException) -> do
       printf "Wasn't able to connect to the server: %s...\n" (show e)
@@ -97,9 +97,10 @@ instance Client PlainTextClient where
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m B.ByteString
   receive (ConnectedPlainTextClient _ _ sock) = do
-    val <- liftIO $ timeout (5 * 1000000) $ recv sock 16384  -- Increased from 4KB to 16KB
+    -- Timeout increased to 300s (5 minutes) to handle massive backlogs during fill operations
+    val <- liftIO $ timeout (300 * 1000000) $ recv sock 16384
     case val of
-      Nothing -> fail "recv socket timeout"
+      Nothing -> fail "recv socket timeout (plaintext)"
       Just v -> return v
 
 data TLSClient (a :: ConnectionStatus) where
@@ -145,9 +146,10 @@ instance Client TLSClient where
 
   receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m B.ByteString
   receive (ConnectedTLSClient _ _ _ ctx) = do
-    val <- liftIO $ timeout (5 * 1000000) $ recvData ctx
+    -- Timeout increased to 300s (5 minutes) to handle massive backlogs
+    val <- liftIO $ timeout (300 * 1000000) $ recvData ctx
     case val of
-      Nothing -> fail "recv socket timeout"
+      Nothing -> fail "recv socket timeout (TLS)"
       Just v -> return v
 
 serve :: (MonadIO m) => TLSClient 'Server -> m ()

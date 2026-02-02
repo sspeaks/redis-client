@@ -126,7 +126,7 @@ executable EndToEnd
 
 executable redis-client
     import:           warnings
-    ghc-options:      -O2 "-with-rtsopts=-H1024M"
+    ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M"
     main-is:          Main.hs
     build-depends:    base ^>=4.19
                     , bytestring
