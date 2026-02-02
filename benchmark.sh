@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p docker-compose redis
 
 # Redis Client Performance Benchmark Script
 # This script measures cache fill performance before/after optimizations
