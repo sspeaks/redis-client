@@ -4,20 +4,16 @@
 
 module Filler where
 
-import Client (Client (..), ConnectionStatus (Connected))
-import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, putMVar, takeMVar, throwTo)
-import Control.Exception (IOException, catch)
-import Control.Monad (replicateM_)
+import Client (Client (..))
+import Control.Monad (replicateM)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.State (evalStateT)
 import Control.Monad.State qualified as State
 import Data.Attoparsec.ByteString.Lazy qualified as Atto
 import Data.ByteString qualified as SB
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
-import Data.List (find)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize), parseManyWith)
+import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize, clientReply), ClientReplyValues (OFF, ON))
 import Resp (Encodable (..), RespData (..))
 import System.Environment (lookupEnv)
 import System.Random (mkStdGen)
@@ -45,7 +41,7 @@ genRandomSet chunkKilos gen = do
       return $! setBuilder <> key <> val
 
 defaultChunkKilos :: Int
-defaultChunkKilos = 1024 * 1024 -- 1 gigabyte worth of data
+defaultChunkKilos = 2048  -- 2MB chunks for optimal throughput
 
 lookupChunkKilos :: IO Int
 lookupChunkKilos = do
@@ -54,44 +50,49 @@ lookupChunkKilos = do
     Just n | n > 0 -> return n
     _ -> return defaultChunkKilos
 
+lookupPipelineSize :: IO Int
+lookupPipelineSize = do
+  mPipeline <- lookupEnv "REDIS_CLIENT_PIPELINE_SIZE"
+  case mPipeline >>= readMaybe of
+    Just n | n > 0 -> return n
+    _ -> return 1000  -- Default pipeline size optimized for throughput
+
 fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
   ClientState client _ <- State.get
   seed <- liftIO $ round <$> getPOSIXTime
   gen <- newIOGenM (mkStdGen seed)
   chunkKilos <- liftIO lookupChunkKilos
-  doneMvar <- liftIO newEmptyMVar
-  parentThread <- liftIO myThreadId
-  _ <- liftIO $ forkIO (readerThread parentThread client chunkKilos gb doneMvar)
-  replicateM_ gb $ do
-    _ <- liftIO (genRandomSet chunkKilos gen) >>= send client
-    liftIO $ printf "+%dKB chunk written in fireAndForget mode\n" chunkKilos
+  pipelineSize <- liftIO lookupPipelineSize
+  clientReply OFF
+  
+  -- Calculate total chunks needed based on actual GB requested
+  let totalKilosNeeded = gb * 1024 * 1024  -- Convert GB to KB
+      totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
+      batches = (totalChunks + pipelineSize - 1) `div` pipelineSize
+  
+  liftIO $ printf "Filling %d GB (%d KB) using %d chunks of %d KB each\n" 
+                  gb totalKilosNeeded totalChunks chunkKilos
+  
+  -- Use pipelining for better throughput
+  mapM_ (\batchNum -> do
+    let remainingChunks = totalChunks - (batchNum * pipelineSize)
+        currentBatchSize = min pipelineSize remainingChunks
+    -- Generate and send a batch of commands
+    commands <- liftIO $ replicateM currentBatchSize (genRandomSet chunkKilos gen)
+    mapM_ (send client) commands
+    liftIO $ printf "+%d chunks (%dKB each) written in pipelined batch %d/%d\n" 
+                    currentBatchSize chunkKilos (batchNum + 1) batches
+    ) [0..batches-1]
+    
   liftIO $ printf "Done writing... waiting on read thread to finish...\n"
-  result <- liftIO $ takeMVar doneMvar
-  case result of
-    Left s -> error $ printf "Error: %s\n" s
-    Right () -> do
+  val <- clientReply ON
+  case val of 
+    Just _ -> do
       keys <- extractInt <$> dbsize
-      liftIO $ printf "Finished filling cache with %d chunk(s) of ~%dKB each. Wrote %d keys\n" gb chunkKilos keys
+      liftIO $ printf "Finished filling cache with %d GB using %d chunks of ~%dKB each. Wrote %d keys\n" 
+                      gb totalChunks chunkKilos keys
+    Nothing -> error "clientReply returned an unexpected value"
   where
     extractInt (RespInteger i) = i
     extractInt _ = error "Expected RespInteger"
-
-readerThread :: (Client client) => ThreadId -> client 'Connected -> Int -> Int -> MVar (Either String ()) -> IO ()
-readerThread parentThread client chunkKilos numGbToRead errorOrDone =
-  evalStateT -- use state monad to keep track of the parse buffer and not drop input
-    ( do
-        replicateM_ numGbToRead $ do
-          !res <- find isError <$> parseManyWith chunkKilos (receive client)
-          case extractError <$> res of
-            Nothing -> return ()
-            Just s -> fail ("error encountered from RESP values read from socket: " <> s)
-        liftIO $ putMVar errorOrDone $ Right ()
-    )
-    (ClientState client SB.empty)
-    `catch` (\e -> putMVar errorOrDone (Left $ "Exception: " ++ show (e :: IOException)) >> throwTo parentThread e)
-  where
-    isError (RespError _) = True
-    isError _ = False
-    extractError (RespError e) = e
-    extractError _ = error "won't happen"

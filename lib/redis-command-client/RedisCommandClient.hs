@@ -91,6 +91,7 @@ class (MonadIO m) => RedisCommands m where
   llen :: String -> m RespData
   lindex :: String -> Int -> m RespData
   clientSetInfo :: [String] -> m RespData
+  clientReply :: ClientReplyValues -> m (Maybe RespData)
   zadd :: String -> [(Int, String)] -> m RespData
   zrange :: String -> Int -> Int -> Bool -> m RespData
   geoadd :: String -> [(Double, Double, String)] -> m RespData
@@ -187,6 +188,9 @@ geoSearchOptionToList opt =
     GeoSearchCount n useAny -> ["COUNT", show n] <> ["ANY" | useAny]
     GeoSearchAsc -> ["ASC"]
     GeoSearchDesc -> ["DESC"]
+
+data ClientReplyValues = OFF | ON | SKIP
+  deriving (Eq, Show)
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping :: RedisCommandClient client RespData
@@ -392,12 +396,21 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["LINDEX", key, show index])
     parseWith (receive client)
-  
+
   clientSetInfo :: [String] -> RedisCommandClient client RespData
   clientSetInfo info = do
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay (["CLIENT", "SETINFO"] ++ info))
     parseWith (receive client)
+
+  clientReply :: ClientReplyValues -> RedisCommandClient client (Maybe RespData)
+  clientReply val = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", show val])
+    case val of
+      ON -> Just <$> parseWith (receive client)
+      _ -> return Nothing
+
 
   zadd :: String -> [(Int, String)] -> RedisCommandClient client RespData
   zadd key members = do
@@ -508,7 +521,7 @@ data RunState = RunState
 
 authenticate :: (Client client) => String -> RedisCommandClient client RespData
 authenticate [] = return $ RespSimpleString "OK"
-authenticate password = do 
+authenticate password = do
   auth password
   clientSetInfo ["LIB-NAME", "seth-spaghetti"]
   clientSetInfo ["LIB-VER", "0.0.0"]
