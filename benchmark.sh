@@ -41,8 +41,8 @@ print_header "Redis Client Performance Benchmark"
 # Check prerequisites
 print_info "Checking prerequisites..."
 
-if ! command -v cabal &> /dev/null; then
-    print_error "cabal not found. Please install GHC and cabal-install."
+if ! command -v nix &> /dev/null; then
+    print_error "nix not found. Please install Nix package manager."
     exit 1
 fi
 
@@ -78,7 +78,7 @@ build_at_commit() {
     git checkout "$commit" --quiet
     
     print_info "Building $label version (this may take a few minutes)..."
-    if cabal build redis-client > /tmp/build_${label}.log 2>&1; then
+    if nix build > /tmp/build_${label}.log 2>&1; then
         print_info "Build successful for $label"
         return 0
     else
@@ -101,7 +101,7 @@ run_benchmark() {
     # Run the fill command and capture timing
     local start_time=$(date +%s.%N)
     
-    if cabal run redis-client -- fill -h "$REDIS_HOST" -d "$TEST_SIZE_GB" -f > "$output_file" 2>&1; then
+    if nix run . -- fill -h "$REDIS_HOST" -d "$TEST_SIZE_GB" -f > "$output_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local duration=$(echo "$end_time - $start_time" | bc)
         
