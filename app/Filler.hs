@@ -58,10 +58,15 @@ fillCacheWithData gb = do
   seed <- liftIO $ round <$> getPOSIXTime
   gen <- newIOGenM (mkStdGen seed)
   chunkKilos <- liftIO lookupChunkKilos
+  -- Calculate number of iterations needed to reach the desired total size
+  -- gb is in gigabytes, chunkKilos is in kilobytes, so we need to convert
+  let totalKilos = gb * 1024 * 1024  -- Convert GB to KB
+      numIterations = (totalKilos + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
+  liftIO $ printf "Filling %d GB with chunks of %d KB (%d iterations)\n" gb chunkKilos numIterations
   doneMvar <- liftIO newEmptyMVar
   parentThread <- liftIO myThreadId
-  _ <- liftIO $ forkIO (readerThread parentThread client chunkKilos gb doneMvar)
-  replicateM_ gb $ do
+  _ <- liftIO $ forkIO (readerThread parentThread client chunkKilos numIterations doneMvar)
+  replicateM_ numIterations $ do
     _ <- liftIO (genRandomSet chunkKilos gen) >>= send client
     liftIO $ printf "+%dKB chunk written in fireAndForget mode\n" chunkKilos
   liftIO $ printf "Done writing... waiting on read thread to finish...\n"
@@ -70,7 +75,7 @@ fillCacheWithData gb = do
     Left s -> error $ printf "Error: %s\n" s
     Right () -> do
       keys <- extractInt <$> dbsize
-      liftIO $ printf "Finished filling cache with %d chunk(s) of ~%dKB each. Wrote %d keys\n" gb chunkKilos keys
+      liftIO $ printf "Finished filling cache with %d chunk(s) of ~%dKB each. Wrote %d keys\n" numIterations chunkKilos keys
   where
     extractInt (RespInteger i) = i
     extractInt _ = error "Expected RespInteger"
