@@ -61,7 +61,7 @@ fi
 
 # Test Redis connectivity
 print_info "Testing Redis connectivity at $REDIS_HOST:$REDIS_PORT..."
-if echo "PING" | cabal run redis-client -- cli -h "$REDIS_HOST" 2>&1 | grep -q "PONG"; then
+if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping 2>&1 | grep -q "PONG"; then
     print_info "Redis connection successful"
 else
     print_error "Cannot connect to Redis at $REDIS_HOST:$REDIS_PORT"
@@ -94,9 +94,9 @@ run_benchmark() {
     
     print_info "Running benchmark for $label (${TEST_SIZE_GB}GB)..."
     
-    # Flush Redis before test using redis-client
+    # Flush Redis before test using redis-cli
     print_info "Flushing Redis..."
-    echo "FLUSHALL" | cabal run redis-client -- cli -h "$REDIS_HOST" > /dev/null 2>&1
+    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" flushall > /dev/null 2>&1
     
     # Run the fill command and capture timing
     local start_time=$(date +%s.%N)
