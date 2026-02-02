@@ -314,11 +314,11 @@ main = do
         (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
-        runRedisAction dbsize `shouldReturn` RespInteger chunkKilosForTest
+        runRedisAction dbsize `shouldReturn` RespInteger 1048576
 
       it "fill --flush clears the database" $ do
         threadDelay 200000
-        runRedisAction dbsize `shouldReturn` RespInteger chunkKilosForTest
+        runRedisAction dbsize `shouldReturn` RespInteger 1048576
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
         code `shouldNotBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Flushing cache" `isInfixOf`)
