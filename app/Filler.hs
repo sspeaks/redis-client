@@ -7,7 +7,7 @@ module Filler where
 import Client (Client (..), ConnectionStatus (Connected))
 import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, putMVar, takeMVar, throwTo)
 import Control.Exception (IOException, catch)
-import Control.Monad (replicateM, replicateM_)
+import Control.Monad (replicateM, replicateM_, when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State (evalStateT)
 import Control.Monad.State qualified as State
@@ -16,7 +16,7 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
 import Data.List (find)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize), parseManyWith)
+import RedisCommandClient (ClientState (..), RedisCommandClient (runRedisCommandClient), RedisCommands (dbsize), parseManyWith, fastCountResponses)
 import Resp (Encodable (..), RespData (..))
 import System.Environment (lookupEnv)
 import System.Random (mkStdGen)
@@ -40,10 +40,12 @@ genRandomSet chunkKilos gen = do
     let !keyBuilder = encode . RespBulkString . LB.fromStrict $ keyBytes
         !valBuilder = encode . RespBulkString . LB.fromStrict $ valBytes
     return $! setPrefix <> keyBuilder <> valBuilder
-  return $! Builder.toLazyByteString $! mconcat builders
+  -- Use strict evaluation to force the computation and reduce memory usage
+  let !result = Builder.toLazyByteString $! mconcat builders
+  return result
 
 defaultChunkKilos :: Int
-defaultChunkKilos = 1024 * 1024 -- 1 gigabyte worth of data
+defaultChunkKilos = 10240 -- 10MB worth of data (increased from 1GB)
 
 lookupChunkKilos :: IO Int
 lookupChunkKilos = do
@@ -62,14 +64,16 @@ fillCacheWithData gb = do
   -- gb is in gigabytes, chunkKilos is in kilobytes, so we need to convert
   let totalKilos = gb * 1024 * 1024  -- Convert GB to KB
       numIterations = (totalKilos + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
-  liftIO $ printf "Filling %d GB with chunks of %d KB (%d iterations)\n" gb chunkKilos numIterations
+      totalCommands = numIterations * chunkKilos  -- Total SET commands to send
+  liftIO $ printf "Filling %d GB with chunks of %d KB (%d iterations, %d commands)\n" gb chunkKilos numIterations totalCommands
   doneMvar <- liftIO newEmptyMVar
   parentThread <- liftIO myThreadId
-  _ <- liftIO $ forkIO (readerThread parentThread client chunkKilos numIterations doneMvar)
+  _ <- liftIO $ forkIO (optimizedReaderThread parentThread client totalCommands doneMvar)
   replicateM_ numIterations $ do
-    _ <- liftIO (genRandomSet chunkKilos gen) >>= send client
+    !chunk <- liftIO (genRandomSet chunkKilos gen)
+    send client chunk
     liftIO $ printf "+%dKB chunk written in fireAndForget mode\n" chunkKilos
-  liftIO $ printf "Done writing... waiting on read thread to finish...\n"
+  liftIO $ printf "Done writing %d commands... waiting on read thread to finish...\n" totalCommands
   result <- liftIO $ takeMVar doneMvar
   case result of
     Left s -> error $ printf "Error: %s\n" s
@@ -98,3 +102,26 @@ readerThread parentThread client chunkKilos numGbToRead errorOrDone =
     isError _ = False
     extractError (RespError e) = e
     extractError _ = error "won't happen"
+
+-- Optimized reader thread that counts responses instead of parsing them all
+optimizedReaderThread :: (Client client) => ThreadId -> client 'Connected -> Int -> MVar (Either String ()) -> IO ()
+optimizedReaderThread parentThread client totalCommands errorOrDone =
+  evalStateT
+    ( countResponses totalCommands 0 )
+    (ClientState client SB.empty)
+    `catch` (\e -> putMVar errorOrDone (Left $ "Exception: " ++ show (e :: IOException)) >> throwTo parentThread e)
+  where
+    countResponses :: (Client client) => Int -> Int -> State.StateT (ClientState client) IO ()
+    countResponses total counted
+      | counted >= total = liftIO $ putMVar errorOrDone $ Right ()
+      | otherwise = do
+          -- Use the fast response counting optimization instead of full parsing
+          let batchSize = min (total - counted) 1000
+          currentState <- State.get
+          let fastCountAction = fastCountResponses batchSize (receive (getClient currentState))
+          (actualCount, newState) <- liftIO $ State.runStateT (runRedisCommandClient fastCountAction) currentState
+          State.put newState
+          let newTotal = counted + actualCount
+          when (newTotal `mod` 10000 == 0) $
+            liftIO $ printf "Processed %d/%d responses\n" newTotal total
+          countResponses total newTotal

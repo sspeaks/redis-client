@@ -311,14 +311,18 @@ main = do
             `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100]]
     describe "redis-client modes" $ beforeAll_ (void $ runRedisAction flushAll) $ do
       it "fill --data 1 writes expected number of keys" $ do
+        -- With 4KB chunks and 1GB of data:
+        -- 1GB = 1,048,576 KB, chunks = 1,048,576/4 = 262,144, keys = 262,144 * 4 = 1,048,576
         (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
-        runRedisAction dbsize `shouldReturn` RespInteger chunkKilosForTest
+        let expectedKeys = 1048576  -- 1GB with 4KB chunks results in 1,048,576 keys
+        runRedisAction dbsize `shouldReturn` RespInteger expectedKeys
 
       it "fill --flush clears the database" $ do
         threadDelay 200000
-        runRedisAction dbsize `shouldReturn` RespInteger chunkKilosForTest
+        let expectedKeys = 1048576  -- 1GB with 4KB chunks results in 1,048,576 keys
+        runRedisAction dbsize `shouldReturn` RespInteger expectedKeys
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
         code `shouldNotBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Flushing cache" `isInfixOf`)

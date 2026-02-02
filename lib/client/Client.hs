@@ -69,7 +69,7 @@ getRecvBufferSizeEnv = do
   mSize <- lookupEnv "REDIS_CLIENT_RECV_BUFFER_SIZE"
   case mSize >>= readMaybe of
     Just n | n > 0 -> return n
-    _ -> return 65536 -- Default to 64KB
+    _ -> return 131072 -- Default to 128KB (increased from 64KB)
 
 -- Configure socket for optimal performance
 configureSocket :: Socket -> IO ()
@@ -78,8 +78,11 @@ configureSocket sock = do
   setSocketOption sock NoDelay 1
   
   -- Set larger send and receive buffers for better throughput
-  setSocketOption sock RecvBuffer 262144 -- 256KB
-  setSocketOption sock SendBuffer 262144 -- 256KB
+  setSocketOption sock RecvBuffer 1048576 -- 1MB
+  setSocketOption sock SendBuffer 1048576 -- 1MB
+  
+  -- Enable TCP keepalive to detect broken connections
+  setSocketOption sock KeepAlive 1
 
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)

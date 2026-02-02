@@ -1,7 +1,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module RedisCommandClient where
+module RedisCommandClient (
+  ClientState(..), RedisCommandClient(..), RedisCommands(..), 
+  RunState(..), parseManyWith, fastCountResponses, parseWith, wrapInRay,
+  authenticate, runCommandsAgainstTLSHost, runCommandsAgainstPlaintextHost,
+  GeoUnit(..), GeoRadiusFlag(..), GeoSearchFrom(..), GeoSearchBy(..), GeoSearchOption(..)
+) where
 
 import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
 import Control.Exception (bracket)
@@ -544,3 +549,72 @@ parseManyWith cnt recv = do
     runUntilDone client (StrictParse.Done remainder !r) _ = do
       State.put (ClientState client remainder)
       return r
+
+-- Fast response counting for pipelining - only counts responses, doesn't parse content
+-- This is much faster than parseManyWith when you don't need the actual response data
+fastCountResponses :: (Client client, Monad m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m Int
+fastCountResponses maxCount recv = do
+  (ClientState !client !input) <- State.get
+  case StrictParse.parse (countRespResponses maxCount 0) input of
+    StrictParse.Fail _ _ err -> error err
+    part@(StrictParse.Partial f) -> runUntilDoneFast client part recv
+    StrictParse.Done remainder !count -> do
+      State.put (ClientState client remainder)
+      return count
+  where
+    runUntilDoneFast :: (Client client, Monad m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult SB8.ByteString Int -> m SB8.ByteString -> m Int
+    runUntilDoneFast client (StrictParse.Fail _ _ err) _ = error err
+    runUntilDoneFast client (StrictParse.Partial f) getMore = getMore >>= (flip (runUntilDoneFast client) getMore . f)
+    runUntilDoneFast client (StrictParse.Done remainder !count) _ = do
+      State.put (ClientState client remainder)
+      return count
+    
+    -- Parser that counts RESP responses without fully parsing them
+    countRespResponses :: Int -> Int -> StrictParse.Parser Int
+    countRespResponses 0 acc = return acc
+    countRespResponses n acc = do
+      _ <- skipOneRespResponse
+      countRespResponses (n - 1) (acc + 1)
+    
+    -- Skip a single RESP response without parsing its content
+    skipOneRespResponse :: StrictParse.Parser ()
+    skipOneRespResponse = do
+      c <- StrictParse.anyChar
+      case c of
+        '+' -> skipSimpleString   -- Simple string
+        '-' -> skipSimpleString   -- Error
+        ':' -> skipInteger        -- Integer  
+        '$' -> skipBulkString     -- Bulk string
+        '*' -> skipArray          -- Array
+        _ -> fail "Invalid RESP type"
+    
+    skipSimpleString :: StrictParse.Parser ()
+    skipSimpleString = do
+      _ <- StrictParse.takeTill (== '\r') -- Skip until \r
+      _ <- StrictParse.take 2           -- Skip \r\n
+      return ()
+    
+    skipInteger :: StrictParse.Parser ()
+    skipInteger = do
+      _ <- StrictParse.signed StrictParse.decimal
+      _ <- StrictParse.take 2  -- Skip \r\n
+      return ()
+    
+    skipBulkString :: StrictParse.Parser ()
+    skipBulkString = do
+      len <- StrictParse.decimal
+      _ <- StrictParse.take 2      -- Skip \r\n
+      if len == -1
+        then return ()             -- Null bulk string
+        else do
+          _ <- StrictParse.take len -- Skip content
+          _ <- StrictParse.take 2   -- Skip \r\n
+          return ()
+    
+    skipArray :: StrictParse.Parser ()
+    skipArray = do
+      len <- StrictParse.decimal
+      _ <- StrictParse.take 2      -- Skip \r\n
+      if len == -1
+        then return ()             -- Null array
+        else mapM_ (const skipOneRespResponse) [1..len]
