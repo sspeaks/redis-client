@@ -34,7 +34,7 @@ REDIS_HOST=${REDIS_HOST:-localhost}
 REDIS_PORT=${REDIS_PORT:-6379}
 TEST_SIZE_GB=${TEST_SIZE_GB:-1}
 OLD_COMMIT="3176667"  # Commit before optimizations
-NEW_COMMIT="93df980"  # Latest commit with optimizations
+NEW_COMMIT="d3356d3"  # Latest commit with optimizations
 
 print_header "Redis Client Performance Benchmark"
 
