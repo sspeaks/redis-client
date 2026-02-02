@@ -54,6 +54,20 @@ main = do
   case args' of
     [] -> do
       putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
+      putStrLn ""
+      putStrLn "Modes:"
+      putStrLn "  cli     Interactive Redis command-line interface"
+      putStrLn "  fill    Fill Redis cache with random data for testing"
+      putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
+      putStrLn ""
+      putStrLn "Environment Variables for Performance Tuning:"
+      putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB    Chunk size in KB (default: 2048)"
+      putStrLn "  REDIS_CLIENT_PIPELINE_SIZE    Pipeline batch size (default: 1000)"
+      putStrLn ""
+      putStrLn "Examples:"
+      putStrLn "  redis-client fill -h localhost -d 5                    # Fill 5GB with defaults"
+      putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB=4096 redis-client fill ...  # Use 4MB chunks"
+      putStrLn "  REDIS_CLIENT_PIPELINE_SIZE=2000 redis-client fill ...  # Use 2000 command batches"
       exitFailure
     (mode : args) -> do
       (state, _) <- handleArgs args

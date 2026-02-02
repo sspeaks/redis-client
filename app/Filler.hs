@@ -84,8 +84,7 @@ fillCacheWithData gb = do
     liftIO $ printf "+%d chunks (%dKB each) written in pipelined batch %d/%d\n" 
                     currentBatchSize chunkKilos (batchNum + 1) batches
     ) [0..batches-1]
-    
-  liftIO $ printf "Done writing... waiting on read thread to finish...\n"
+  
   val <- clientReply ON
   case val of 
     Just _ -> do
