@@ -5,40 +5,63 @@
 module Filler where
 
 import Client (Client (..))
-import Control.Monad (replicateM)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
-import Data.Attoparsec.ByteString.Lazy qualified as Atto
-import Data.ByteString qualified as SB
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize, clientReply), ClientReplyValues (OFF, ON))
-import Resp (Encodable (..), RespData (..))
+import Resp (RespData (..))
 import System.Environment (lookupEnv)
-import System.Random (mkStdGen)
-import System.Random.Stateful (StatefulGen, newIOGenM, uniformByteStringM)
+import Data.Word (Word64)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
 
-randomBytes :: (StatefulGen g m) => g -> Int -> m SB.ByteString
-randomBytes g b = uniformByteStringM b g
+-- Simple fast PRNG that directly generates Builder output
+gen :: Word64 -> Builder.Builder
+gen s = Builder.word64LE s <> gen (s * 1664525 + 1013904223)
+{-# INLINE gen #-}
 
-genRandomSet :: (StatefulGen g m) => Int -> g -> m LB.ByteString
-genRandomSet chunkKilos gen = do
-  !bytesToSend <- LB.fromStrict <$> randomBytes gen (chunkKilos * 1024)
-  case Atto.parseOnly (Atto.count chunkKilos parseSet) bytesToSend of
-    Left err -> error err
-    Right v -> return $! Builder.toLazyByteString $! mconcat v
+genRandomSet :: Int -> Word64 -> LB.ByteString
+genRandomSet chunkKilos seed = Builder.toLazyByteString $! go numCommands seed
   where
-    -- return $ encode . RespArray $ map RespBulkString ["SET", key, value]
-    setBuilder :: Builder.Builder
-    setBuilder = Builder.stringUtf8 "*3\r\n" <> (encode . RespBulkString $ "SET")
-    parseSet :: Atto.Parser Builder.Builder
-    parseSet = do
-      !key <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
-      !val <- encode . RespBulkString . LB.fromStrict <$> Atto.take 512
-      return $! setBuilder <> key <> val
+    numCommands = chunkKilos
+    
+    -- Pre-computed RESP protocol prefix for SET commands
+    setPrefix :: Builder.Builder
+    setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$512\r\n"
+    {-# INLINE setPrefix #-}
+    
+    valuePrefix :: Builder.Builder  
+    valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
+    {-# INLINE valuePrefix #-}
+    
+    commandSuffix :: Builder.Builder
+    commandSuffix = Builder.stringUtf8 "\r\n"
+    {-# INLINE commandSuffix #-}
+    
+    go :: Int -> Word64 -> Builder.Builder
+    go 0 _ = mempty
+    go n !s = 
+      let !keySeed = s
+          !valSeed = s * 1664525 + 1013904223
+          !nextSeed = valSeed * 1664525 + 1013904223
+          !keyData = generate512Bytes keySeed
+          !valData = generate512Bytes valSeed
+      in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
+    {-# INLINE go #-}
+    
+    -- Generate exactly 512 bytes efficiently (64 Word64s)
+    generate512Bytes :: Word64 -> Builder.Builder
+    generate512Bytes !s = generateWords64 64 s
+      where
+        generateWords64 :: Int -> Word64 -> Builder.Builder
+        generateWords64 0 _ = mempty
+        generateWords64 n !seed1 = 
+          let !nextSeed = seed1 * 1664525 + 1013904223
+          in Builder.word64LE seed1 <> generateWords64 (n - 1) nextSeed
+        {-# INLINE generateWords64 #-}
+    {-# INLINE generate512Bytes #-}
 
 defaultChunkKilos :: Int
 defaultChunkKilos = 2048  -- 2MB chunks for optimal throughput
@@ -61,7 +84,6 @@ fillCacheWithData :: (Client client) => Int -> RedisCommandClient client ()
 fillCacheWithData gb = do
   ClientState client _ <- State.get
   seed <- liftIO $ round <$> getPOSIXTime
-  gen <- newIOGenM (mkStdGen seed)
   chunkKilos <- liftIO lookupChunkKilos
   pipelineSize <- liftIO lookupPipelineSize
   clientReply OFF
@@ -76,10 +98,11 @@ fillCacheWithData gb = do
   
   -- Use pipelining for better throughput
   mapM_ (\batchNum -> do
-    let remainingChunks = totalChunks - (batchNum * pipelineSize)
+    let startIdx = batchNum * pipelineSize
+        remainingChunks = totalChunks - startIdx
         currentBatchSize = min pipelineSize remainingChunks
-    -- Generate and send a batch of commands
-    commands <- liftIO $ replicateM currentBatchSize (genRandomSet chunkKilos gen)
+    -- Generate and send a batch of commands with unique seeds
+    let commands = [genRandomSet chunkKilos (fromIntegral seed + fromIntegral i) | i <- [startIdx..startIdx + currentBatchSize - 1]]
     mapM_ (send client) commands
     liftIO $ printf "+%d chunks (%dKB each) written in pipelined batch %d/%d\n" 
                     currentBatchSize chunkKilos (batchNum + 1) batches
