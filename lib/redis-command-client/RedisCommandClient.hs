@@ -56,7 +56,7 @@ instance (Client client) => MonadFail (RedisCommandClient client) where
   fail = RedisCommandClient . liftIO . fail
 
 class (MonadIO m) => RedisCommands m where
-  auth :: String -> m RespData
+  auth :: String -> String -> m RespData
   ping :: m RespData
   set :: String -> String -> m RespData
   get :: String -> m RespData
@@ -235,10 +235,10 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["PSETEX", key, show milliseconds, value])
     parseWith (receive client)
 
-  auth :: String -> RedisCommandClient client RespData
-  auth password = do
+  auth :: String -> String -> RedisCommandClient client RespData
+  auth username password = do
     ClientState !client _ <- State.get
-    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HELLO", "3", "AUTH", "default", password])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["HELLO", "3", "AUTH", username, password])
     parseWith (receive client)
 
   bulkSet :: [(String, String)] -> RedisCommandClient client RespData
@@ -512,6 +512,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
 data RunState = RunState
   { host :: String,
     port :: Maybe Int,
+    username :: String,
     password :: String,
     useTLS :: Bool,
     dataGBs :: Int,
@@ -521,24 +522,24 @@ data RunState = RunState
   }
   deriving (Show)
 
-authenticate :: (Client client) => String -> RedisCommandClient client RespData
-authenticate [] = return $ RespSimpleString "OK"
-authenticate password = do
-  auth password
+authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
+authenticate _ [] = return $ RespSimpleString "OK"
+authenticate username password = do
+  auth username password
   clientSetInfo ["LIB-NAME", "seth-spaghetti"]
   clientSetInfo ["LIB-VER", "0.0.0"]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost st action = do
   bracket (connect (NotConnectedTLSClient (host st) (port st))) close $ \client -> do
-    evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
+    evalStateT (runRedisCommandClient (authenticate (username st) (password st) >> action)) (ClientState client SB8.empty)
 
 runCommandsAgainstPlaintextHost :: RunState -> RedisCommandClient PlainTextClient a -> IO a
 runCommandsAgainstPlaintextHost st action =
   bracket
     (connect $ NotConnectedPlainTextClient (host st) (port st))
     close
-    $ \client -> evalStateT (runRedisCommandClient (authenticate (password st) >> action)) (ClientState client SB8.empty)
+    $ \client -> evalStateT (runRedisCommandClient (authenticate (username st) (password st) >> action)) (ClientState client SB8.empty)
 
 parseWith :: (Client client, Monad m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
 parseWith recv = head <$> parseManyWith 1 recv

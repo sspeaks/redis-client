@@ -106,7 +106,7 @@ main = do
         it "ping is encoded properly and returns pong" $ do
           runRedisAction ping `shouldReturn` RespSimpleString "PONG"
         it "auth negotiates the RESP3 handshake" $ do
-          authResp <- runRedisAction (auth "")
+          authResp <- runRedisAction (auth "default" "")
           case authResp of
             RespError err -> expectationFailure $ "Unexpected AUTH error: " <> err
             RespMap _ -> pure ()

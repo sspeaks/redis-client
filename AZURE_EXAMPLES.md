@@ -154,9 +154,9 @@ When a cache uses Entra authentication (access keys disabled), the script:
 1. Detects that access keys are not available
 2. Uses `az account get-access-token --resource https://redis.azure.com` to obtain an OAuth token
 3. Retrieves the Object ID (OID) of the signed-in user via `az ad signed-in-user show`
-4. Passes the token as the password to redis-client
+4. Passes both the Object ID (as username) and the token (as password) to redis-client
 
-**Important - Entra Authentication Requirements:**
+**Entra Authentication Requirements:**
 
 For Entra authentication to work properly with Azure Cache for Redis, you need:
 - **Username**: The Object ID (OID) of the Azure AD user, service principal, or managed identity
@@ -168,15 +168,7 @@ According to [Microsoft's documentation](https://learn.microsoft.com/en-us/azure
 - The cache must be configured to use Entra ID authentication
 - **The username for authentication must be the Object ID**, not a friendly name
 
-**Current Limitation:**
-
-The redis-client currently hardcodes the username as "default" in the AUTH command. For full Entra authentication support, the redis-client would need to be updated to accept a custom username parameter. The script displays the correct Object ID that should be used, but cannot currently pass it to redis-client.
-
-**Workaround:**
-
-Until redis-client is updated to support custom usernames, you may experience authentication failures with Entra-only caches. Consider:
-- Keeping access keys enabled for now, or
-- Modifying redis-client to accept a `--username` parameter
+The script automatically retrieves the Object ID and passes it to redis-client using the `--username` (`-u`) parameter.
 
 ### Access Key Authentication
 

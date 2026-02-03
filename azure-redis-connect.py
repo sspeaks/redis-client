@@ -242,12 +242,15 @@ class AzureRedisConnector:
         if is_entra:
             # Get Entra token and user Object ID
             token, object_id = self.get_entra_token(hostname)
-            command.extend(['-a', token])
-            print(f"\n✓ Using Entra authentication")
             if object_id:
-                print(f"⚠ Note: Redis username should be set to: {object_id}")
-                print(f"⚠ Current limitation: redis-client uses 'default' as username")
-                print(f"⚠ For full Entra support, redis-client needs to be updated to accept a custom username")
+                # Pass the Object ID as username for Entra authentication
+                command.extend(['-u', object_id, '-a', token])
+                print(f"\n✓ Using Entra authentication with Object ID: {object_id}")
+            else:
+                # Fallback if we couldn't get the Object ID
+                command.extend(['-a', token])
+                print(f"\n✓ Using Entra authentication (username will default to 'default')")
+                print(f"⚠ Warning: Could not retrieve Object ID; authentication may fail")
         else:
             # Get access key
             access_key = self.get_access_key(cache)

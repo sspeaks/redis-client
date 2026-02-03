@@ -67,7 +67,8 @@ cabal run redis-client -- [OPTIONS]
 ### Options
 
 - `-h`, `--host HOST`: Host to connect to
-- `-p`, `--password PASSWORD`: Password to authenticate with
+- `-u`, `--username USERNAME`: Username to authenticate with (default: 'default')
+- `-a`, `--password PASSWORD`: Password to authenticate with
 - `-t`, `--tls`: Use TLS
 - `-d`, `--data GBs`: Random data amount to send in GB
 - `-f`, `--flush`: Flush the database
