@@ -41,7 +41,7 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e
+test: test-unit test-e2e test-cluster-e2e
 
 # Run unit tests (RespSpec, ClusterSpec, and ClusterCommandSpec)
 test-unit:
@@ -68,6 +68,11 @@ test-e2e:
 test-cluster-e2e:
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@if ! command -v nix-shell >/dev/null 2>&1; then \
+		echo "Error: nix-shell is not installed or not in PATH"; \
+		echo "Cluster E2E tests require Nix for building and redis-cli"; \
 		exit 1; \
 	fi
 	@echo "Running cluster E2E tests..."
