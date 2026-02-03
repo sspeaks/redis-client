@@ -19,7 +19,17 @@ ifeq ($(HAS_NIX),yes)
 else
 	@echo "Nix not found, using system package manager"
 	cabal update
-	sudo apt-get update && sudo apt-get install -y libreadline-dev || true
+	@if command -v apt-get >/dev/null 2>&1; then \
+		echo "Installing libreadline-dev via apt-get (you may be prompted for your password)"; \
+		if command -v sudo >/dev/null 2>&1; then \
+			sudo apt-get update && sudo apt-get install -y libreadline-dev; \
+		else \
+			apt-get update && apt-get install -y libreadline-dev; \
+		fi; \
+	else \
+		echo "Error: apt-get not found. Please install 'libreadline-dev' using your system package manager and re-run 'make setup'."; \
+		exit 1; \
+	fi
 endif
 
 # Build the project
