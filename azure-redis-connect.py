@@ -97,7 +97,11 @@ class AzureRedisConnector:
         
         while True:
             try:
-                selection = input(f"Select a cache (1-{len(caches)}): ").strip()
+                selection = input(f"Select a cache (1-{len(caches)}): ")
+                # Explicitly strip all whitespace including carriage returns
+                selection = selection.strip().rstrip('\r\n').strip()
+                if not selection:
+                    continue
                 idx = int(selection)
                 if 1 <= idx <= len(caches):
                     return idx - 1
@@ -116,7 +120,11 @@ class AzureRedisConnector:
         
         while True:
             try:
-                selection = input("\nSelect mode (1-3): ").strip()
+                selection = input("\nSelect mode (1-3): ")
+                # Explicitly strip all whitespace including carriage returns
+                selection = selection.strip().rstrip('\r\n').strip()
+                if not selection:
+                    continue
                 if selection == '1':
                     return 'fill'
                 elif selection == '2':
@@ -271,13 +279,18 @@ class AzureRedisConnector:
             # For fill mode, ask for data size
             while True:
                 try:
-                    data_gb = input("\nEnter data size in GB (e.g., 5): ").strip()
+                    data_gb = input("\nEnter data size in GB (e.g., 5): ")
+                    # Explicitly strip all whitespace including carriage returns
+                    data_gb = data_gb.strip().rstrip('\r\n').strip()
+                    if not data_gb:
+                        continue
                     data_gb = int(data_gb)
                     if data_gb > 0:
                         command.extend(['-d', str(data_gb)])
                         
                         # Ask if they want to flush first
-                        flush = input("Flush the cache before filling? (y/n): ").strip().lower()
+                        flush = input("Flush the cache before filling? (y/n): ")
+                        flush = flush.strip().rstrip('\r\n').strip().lower()
                         if flush == 'y':
                             command.append('-f')
                         break
