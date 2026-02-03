@@ -1,5 +1,7 @@
 { pkgs ? import <nixpkgs> { }, ... }:
-let src = builtins.path { path = ./.; name = "source"; };
+let 
+  src = builtins.path { path = ./.; name = "source"; };
+  scriptSrc = ./azure-redis-connect.py;
 in 
 rec {
   fullPackage = pkgs.haskellPackages.callCabal2nix "redis-client" src { };
@@ -17,7 +19,7 @@ rec {
     postBuild = ''
       # Install the azure-redis-connect script
       mkdir -p $out/bin
-      cp ${src}/azure-redis-connect.py $out/bin/azure-redis-connect
+      cp ${scriptSrc} $out/bin/azure-redis-connect
       chmod +x $out/bin/azure-redis-connect
       
       # Wrap the script to ensure python3 is in PATH
