@@ -202,7 +202,10 @@ fill state = do
     then fillCluster state
     else fillStandalone state
   
-  exitSuccess
+  -- Exit with success only if we filled data, otherwise failure
+  -- This maintains the original behavior where flush-only exits with failure
+  when (dataGBs state > 0) exitSuccess
+  exitFailure
 
 fillStandalone :: RunState -> IO ()
 fillStandalone state = do
