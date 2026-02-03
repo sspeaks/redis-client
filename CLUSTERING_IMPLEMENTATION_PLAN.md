@@ -109,16 +109,24 @@ data ClusterNode = ClusterNode
 data SlotRange = SlotRange
   { slotStart :: Word16  -- 0-16383
   , slotEnd :: Word16
-  , slotMaster :: ClusterNode
-  , slotReplicas :: [ClusterNode]
+  , slotMaster :: Text  -- Node ID reference (breaks circular dependency)
+  , slotReplicas :: [Text]  -- Node ID references
   }
 
 data ClusterTopology = ClusterTopology
   { topologySlots :: Vector SlotRange  -- 16384 slots
   , topologyNodes :: Map Text ClusterNode
+    -- ^ Node ID → full node details
+    -- Key: "07c37dfeb235213a872192d90877d0cd55635b91" 
+    -- Value: ClusterNode with host, port, role, slots served, replicas
   , topologyUpdateTime :: UTCTime
   }
 ```
+
+**Design Note**: `SlotRange` uses `Text` node IDs rather than full `ClusterNode` references to avoid circular dependencies between the data types. The `topologyNodes` Map provides O(1) lookup from node ID to full node details when needed. This design:
+- Breaks the circular dependency: `ClusterNode` → `SlotRange` ✗→ `ClusterNode`
+- Enables efficient lookups: `topologySlots ! slot` → node ID → `topologyNodes ! nodeId`
+- Simplifies serialization and comparison logic
 
 **Topology Discovery Flow**:
 1. Connect to any cluster node (seed node)
