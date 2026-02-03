@@ -168,6 +168,18 @@ executable EndToEnd
                     , filepath
                     , directory
 
+executable ClusterEndToEnd
+    default-language: GHC2021
+    main-is:          ClusterE2E.hs
+    hs-source-dirs:   test
+    build-depends:    base >=4.19 && <5
+                    , hspec
+                    , redis-command-client
+                    , cluster
+                    , bytestring
+                    , client
+                    , resp
+
 executable redis-client
     import:           warnings
     ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M"
