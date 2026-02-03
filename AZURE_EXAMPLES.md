@@ -153,15 +153,30 @@ Now you can connect to localhost:6379 with any Redis client.
 When a cache uses Entra authentication (access keys disabled), the script:
 1. Detects that access keys are not available
 2. Uses `az account get-access-token --resource https://redis.azure.com` to obtain an OAuth token
-3. Passes the token as the password to redis-client
-4. The token is used for authentication with Azure Cache for Redis
+3. Retrieves the Object ID (OID) of the signed-in user via `az ad signed-in-user show`
+4. Passes the token as the password to redis-client
 
-**Note:** For Entra authentication to work:
+**Important - Entra Authentication Requirements:**
+
+For Entra authentication to work properly with Azure Cache for Redis, you need:
+- **Username**: The Object ID (OID) of the Azure AD user, service principal, or managed identity
+- **Password**: The access token obtained from Azure CLI
+
+According to [Microsoft's documentation](https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/cache-azure-active-directory-for-authentication):
 - The user must have appropriate RBAC roles on the Redis cache (e.g., "Redis Cache Contributor")
 - Access keys must be disabled on the cache
 - The cache must be configured to use Entra ID authentication
+- **The username for authentication must be the Object ID**, not a friendly name
 
-See [Microsoft's documentation](https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/cache-azure-active-directory-for-authentication) for more details on Entra authentication setup.
+**Current Limitation:**
+
+The redis-client currently hardcodes the username as "default" in the AUTH command. For full Entra authentication support, the redis-client would need to be updated to accept a custom username parameter. The script displays the correct Object ID that should be used, but cannot currently pass it to redis-client.
+
+**Workaround:**
+
+Until redis-client is updated to support custom usernames, you may experience authentication failures with Entra-only caches. Consider:
+- Keeping access keys enabled for now, or
+- Modifying redis-client to accept a `--username` parameter
 
 ### Access Key Authentication
 

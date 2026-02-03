@@ -164,12 +164,16 @@ class AzureRedisConnector:
             print(f"Assuming Entra authentication is required")
             return True
 
-    def get_entra_token(self, hostname: str) -> str:
-        """Get an Entra (Azure AD) access token for Redis using MSAL via Azure CLI."""
+    def get_entra_token(self, hostname: str) -> tuple:
+        """Get an Entra (Azure AD) access token for Redis using Azure CLI.
+        
+        Returns:
+            tuple: (access_token, object_id) where object_id is the OID of the authenticated user
+        """
         print("\nObtaining Entra access token...")
         
         # Use Azure CLI to get the access token for Redis
-        # The resource/scope for Azure Redis is: https://redis.azure.com/.default
+        # The resource/scope for Azure Redis is: https://redis.azure.com
         try:
             token_output = self.run_az_command([
                 'az', 'account', 'get-access-token',
@@ -183,8 +187,23 @@ class AzureRedisConnector:
                 print("Error: Could not obtain access token", file=sys.stderr)
                 sys.exit(1)
             
-            print("✓ Successfully obtained access token")
-            return token
+            # Get the signed-in user's Object ID
+            # This is required for Entra authentication with Redis
+            try:
+                user_output = self.run_az_command([
+                    'az', 'ad', 'signed-in-user', 'show',
+                    '--query', 'id',
+                    '--output', 'tsv'
+                ])
+                object_id = user_output.strip()
+                print("✓ Successfully obtained access token")
+                print(f"✓ User Object ID: {object_id}")
+                return token, object_id
+            except Exception as e:
+                print(f"Warning: Could not retrieve user Object ID: {e}")
+                print("Note: For Entra authentication, you may need to manually configure the username")
+                return token, None
+                
         except Exception as e:
             print(f"Error obtaining access token: {e}", file=sys.stderr)
             sys.exit(1)
@@ -221,10 +240,14 @@ class AzureRedisConnector:
         command = ['redis-client', mode, '-h', hostname, '-t']
         
         if is_entra:
-            # Get Entra token and use it as password
-            token = self.get_entra_token(hostname)
+            # Get Entra token and user Object ID
+            token, object_id = self.get_entra_token(hostname)
             command.extend(['-a', token])
             print(f"\n✓ Using Entra authentication")
+            if object_id:
+                print(f"⚠ Note: Redis username should be set to: {object_id}")
+                print(f"⚠ Current limitation: redis-client uses 'default' as username")
+                print(f"⚠ For full Entra support, redis-client needs to be updated to accept a custom username")
         else:
             # Get access key
             access_key = self.get_access_key(cache)
