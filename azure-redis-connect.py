@@ -119,9 +119,11 @@ class AzureRedisConnector:
                     return 'tunn'
                 else:
                     print("Please enter 1, 2, or 3")
-            except (ValueError, KeyboardInterrupt):
-                print("\nExiting.")
+            except KeyboardInterrupt:
+                print("\n\nInterrupted by user. Exiting.")
                 sys.exit(0)
+            except ValueError:
+                print("Invalid input. Please enter 1, 2, or 3")
 
     def check_entra_auth(self, cache: Dict) -> bool:
         """Check if the cache uses Entra (Azure AD) authentication only."""
@@ -149,9 +151,17 @@ class AzureRedisConnector:
             else:
                 print(f"✓ Cache uses access key authentication")
                 return False
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Could not retrieve access keys (exit code {e.returncode})")
+            print(f"Assuming Entra authentication is required")
+            return True
+        except json.JSONDecodeError as e:
+            print(f"Warning: Could not parse access keys response: {e}")
+            print(f"Assuming Entra authentication is required")
+            return True
         except Exception as e:
-            print(f"Warning: Could not determine auth method: {e}")
-            # Assume Entra auth if we can't get keys
+            print(f"Warning: Unexpected error checking auth method: {e}")
+            print(f"Assuming Entra authentication is required")
             return True
 
     def get_entra_token(self, hostname: str) -> str:
@@ -241,9 +251,11 @@ class AzureRedisConnector:
                         break
                     else:
                         print("Please enter a positive number")
-                except (ValueError, KeyboardInterrupt):
-                    print("\nExiting.")
+                except KeyboardInterrupt:
+                    print("\n\nInterrupted by user. Exiting.")
                     sys.exit(0)
+                except ValueError:
+                    print("Invalid input. Please enter a valid number.")
         
         print(f"\nLaunching redis-client with command:")
         print(f"  {' '.join(command)}")
