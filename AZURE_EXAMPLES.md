@@ -74,12 +74,12 @@ When you run the script, it will guide you through:
 1. **List Caches**: Shows all available Redis caches with details
    ```
    Available Redis Caches:
-   
-   | # | Name           | Resource Group | Location | SKU      | Hostname                                      | SSL Port | Non-SSL |
-   |---|----------------|----------------|----------|----------|-----------------------------------------------|----------|---------|
-   | 1 | my-prod-cache  | production-rg  | eastus   | Premium  | my-prod-cache.redis.cache.windows.net        | 6380     | False   |
-   | 2 | my-test-cache  | test-rg        | westus   | Standard | my-test-cache.redis.cache.windows.net        | 6380     | False   |
-   | 3 | my-dev-cache   | dev-rg         | eastus2  | Basic    | my-dev-cache.redis.cache.windows.net         | 6380     | True    |
+
+   #    Name                           Resource Group            Location        SKU          SSL Port  
+   --------------------------------------------------------------------------------------------------------
+   1    my-prod-cache                  production-rg             eastus          Premium      6380      
+   2    my-test-cache                  test-rg                   westus          Standard     6380      
+   3    my-dev-cache                   dev-rg                    eastus2         Basic        6380      
    ```
 
 2. **Select Cache**: Choose a cache by entering its number

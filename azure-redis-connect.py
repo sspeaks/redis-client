@@ -71,29 +71,33 @@ class AzureRedisConnector:
     def display_caches(self, caches: List[Dict]) -> int:
         """Display available caches and return user's selection."""
         print("\nAvailable Redis Caches:")
-        print("-" * 80)
+        print()
         
+        # Table header
+        header = f"{'#':<4} {'Name':<30} {'Resource Group':<25} {'Location':<15} {'SKU':<12} {'SSL Port':<10}"
+        print(header)
+        print("-" * len(header))
+        
+        # Table rows
         for idx, cache in enumerate(caches, 1):
             name = cache.get('name', 'Unknown')
             resource_group = cache.get('resourceGroup', 'Unknown')
             location = cache.get('location', 'Unknown')
             sku = cache.get('sku', {}).get('name', 'Unknown')
-            hostname = cache.get('hostName', 'Unknown')
             ssl_port = cache.get('sslPort', 6380)
-            enable_non_ssl = cache.get('enableNonSslPort', False)
             
-            print(f"{idx}. {name}")
-            print(f"   Resource Group: {resource_group}")
-            print(f"   Location: {location}")
-            print(f"   SKU: {sku}")
-            print(f"   Hostname: {hostname}")
-            print(f"   SSL Port: {ssl_port}")
-            print(f"   Non-SSL Enabled: {enable_non_ssl}")
-            print("-" * 80)
+            # Truncate long names if necessary
+            name_display = name[:28] + '..' if len(name) > 30 else name
+            rg_display = resource_group[:23] + '..' if len(resource_group) > 25 else resource_group
+            
+            row = f"{idx:<4} {name_display:<30} {rg_display:<25} {location:<15} {sku:<12} {ssl_port:<10}"
+            print(row)
+        
+        print()
         
         while True:
             try:
-                selection = input(f"\nSelect a cache (1-{len(caches)}): ").strip()
+                selection = input(f"Select a cache (1-{len(caches)}): ").strip()
                 idx = int(selection)
                 if 1 <= idx <= len(caches):
                     return idx - 1
