@@ -27,7 +27,17 @@ This document provides examples of how to use the `azure-redis-connect.py` scrip
 
 ## Basic Usage
 
-### Connect to a cache in a subscription
+### Connect to caches in the currently selected subscription
+
+If you have a subscription already selected with `az account set`, you can run the script without specifying a subscription:
+
+```bash
+python3 azure-redis-connect.py
+```
+
+The script will automatically use your currently selected Azure subscription.
+
+### Connect to a cache in a specific subscription
 
 ```bash
 python3 azure-redis-connect.py --subscription "My Subscription Name"
@@ -43,6 +53,12 @@ python3 azure-redis-connect.py --subscription "12345678-1234-1234-1234-123456789
 
 ```bash
 python3 azure-redis-connect.py --subscription "My Subscription" --resource-group "my-redis-rg"
+```
+
+Or with the currently selected subscription:
+
+```bash
+python3 azure-redis-connect.py --resource-group "my-redis-rg"
 ```
 
 ### Short flags

@@ -6,7 +6,9 @@ This script wraps Azure CLI to list and connect to Azure Redis caches.
 It supports Entra (Azure AD) authentication and can launch redis-client in various modes.
 
 Usage:
-    python3 azure-redis-connect.py --subscription <subscription-id> [--resource-group <rg-name>]
+    python3 azure-redis-connect.py [--subscription <subscription-id>] [--resource-group <rg-name>]
+    
+    If --subscription is not provided, the currently selected Azure subscription will be used.
 """
 
 import argparse
@@ -323,8 +325,7 @@ def main():
     )
     parser.add_argument(
         '--subscription', '-s',
-        required=True,
-        help='Azure subscription ID or name'
+        help='Azure subscription ID or name (defaults to currently selected subscription)'
     )
     parser.add_argument(
         '--resource-group', '-g',
@@ -349,8 +350,25 @@ def main():
         print("Please run: az login", file=sys.stderr)
         sys.exit(1)
     
+    # Get subscription - use provided one or default to current
+    subscription = args.subscription
+    if not subscription:
+        try:
+            result = subprocess.run(
+                ['az', 'account', 'show', '--query', 'name', '-o', 'tsv'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            subscription = result.stdout.strip()
+            print(f"Using currently selected subscription: {subscription}")
+        except subprocess.CalledProcessError:
+            print("Error: Could not determine current subscription", file=sys.stderr)
+            print("Please specify a subscription with --subscription or select one with 'az account set'", file=sys.stderr)
+            sys.exit(1)
+    
     # Create connector and run
-    connector = AzureRedisConnector(args.subscription, args.resource_group)
+    connector = AzureRedisConnector(subscription, args.resource_group)
     connector.run()
 
 
