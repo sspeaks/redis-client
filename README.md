@@ -17,16 +17,23 @@ A Haskell-based Redis client that supports both plain text and TLS connections.
 For easy connection to Azure Redis caches with automatic Entra (Azure AD) authentication:
 
 ```sh
-# Use currently selected subscription
+# If installed via Nix
+azure-redis-connect
+
+# Or run directly with Python
 python3 azure-redis-connect.py
 
-# Or specify a subscription
+# Specify a subscription
+azure-redis-connect --subscription <subscription-id>
+# or
 python3 azure-redis-connect.py --subscription <subscription-id>
 ```
 
 With a specific resource group:
 
 ```sh
+azure-redis-connect --resource-group <rg-name>
+# or
 python3 azure-redis-connect.py --resource-group <rg-name>
 ```
 
@@ -60,6 +67,18 @@ To build the project with Nix, use the following command:
 ```sh
 nix-build
 ```
+
+To install both `redis-client` and `azure-redis-connect` to your profile:
+
+```sh
+# Install from the current directory
+nix profile install .#
+
+# Or install directly from GitHub
+nix profile install github:sspeaks/redis-client
+```
+
+This will install both executables to your PATH, making them available system-wide.
 
 ### Running the Client
 
