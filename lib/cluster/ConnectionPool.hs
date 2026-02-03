@@ -42,7 +42,7 @@ createPool config = do
   connections <- newTVarIO Map.empty
   return $ ConnectionPool connections config
 
--- | Get an existing connection or create a new one for PlainText
+-- | Get an existing connection or create a new one
 -- This is lazy - connections are only created when first needed
 getOrCreateConnection ::
   (Client client, MonadIO m) =>

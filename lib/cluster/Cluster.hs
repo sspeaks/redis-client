@@ -53,7 +53,7 @@ data ClusterNode = ClusterNode
 data SlotRange = SlotRange
   { slotStart :: Word16, -- 0-16383
     slotEnd :: Word16,
-    slotMaster :: Text, -- Node ID reference (breaks circular dependency)
+    slotMaster :: Text, -- Node ID reference
     slotReplicas :: [Text] -- Node ID references
   }
   deriving (Show, Eq)
@@ -137,11 +137,9 @@ parseClusterSlots (RespArray slots) currentTime = do
 
     buildNodeMap :: Map Text ClusterNode -> SlotRange -> Map Text ClusterNode
     buildNodeMap nodeMap range =
-      let masterId = slotMaster range
-          -- We don't have full node details from CLUSTER SLOTS
-          -- This is a simplified version - in a real implementation,
-          -- we'd need to combine with CLUSTER NODES or store addresses separately
-       in nodeMap
+      -- Note: CLUSTER SLOTS provides minimal node info (host, port, ID)
+      -- Full node details would require parsing addresses from slot ranges
+      nodeMap
 parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ show other
 
 -- | Find the node responsible for a given slot
