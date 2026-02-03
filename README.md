@@ -125,7 +125,6 @@ make test-unit      # Run unit tests only
 make test-e2e       # Run end-to-end tests
 make redis-start    # Start local Redis for testing
 make redis-stop     # Stop local Redis
-make redis-logs     # View Redis logs
 make profile        # Build with profiling enabled
 make clean          # Clean build artifacts
 ```
