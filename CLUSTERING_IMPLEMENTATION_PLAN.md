@@ -146,6 +146,7 @@ data ClusterTopology = ClusterTopology
 **New Module**: `lib/cluster/ConnectionPool.hs`
 
 ```haskell
+-- Initial implementation: Single connection per node
 data ConnectionPool client = ConnectionPool
   { poolConnections :: TVar (Map NodeAddress (client 'Connected))
   , poolConfig :: PoolConfig
@@ -161,6 +162,34 @@ data PoolConfig = PoolConfig
   , useTLS :: Bool
   }
 ```
+
+**Scaling Options**: The initial design supports one connection per node. If profiling reveals connection contention, two scaling approaches are available:
+
+**Option A: List-based pool** (simpler):
+```haskell
+data ConnectionPool client = ConnectionPool
+  { poolConnections :: TVar (Map NodeAddress [client 'Connected])
+    -- ^ Multiple connections per node stored in a list
+  , poolConfig :: PoolConfig
+  }
+```
+
+**Option B: Bounded pool** (more robust):
+```haskell
+data ConnectionPool client = ConnectionPool
+  { poolsByNode :: TVar (Map NodeAddress (BoundedPool (client 'Connected)))
+    -- ^ Proper bounded pool with max size enforcement
+  , poolConfig :: PoolConfig
+  }
+
+data BoundedPool a = BoundedPool
+  { poolAvailable :: TQueue a
+  , poolInUse :: TVar Int
+  , poolMaxSize :: Int
+  }
+```
+
+Option B provides better resource management but adds implementation complexity. Start with single connection (sufficient for most use cases), profile under load, and only implement scaling if needed.
 
 **Connection Strategy**:
 1. Lazy connection creation (connect on first use)
