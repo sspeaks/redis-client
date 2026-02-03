@@ -259,6 +259,38 @@ class AzureRedisConnector:
             print(f"  Assuming Entra authentication is required")
             return True
 
+    def extract_oid_from_token(self, token: str) -> Optional[str]:
+        """Extract the 'oid' (Object ID) claim from a JWT access token.
+        
+        JWT tokens have three base64-encoded parts separated by dots.
+        The middle part contains the claims payload including 'oid'.
+        """
+        import base64
+        
+        try:
+            # JWT format: header.payload.signature
+            parts = token.split('.')
+            if len(parts) != 3:
+                return None
+            
+            # Decode the payload (second part)
+            # JWT uses base64url encoding, need to add padding
+            payload_b64 = parts[1]
+            # Add padding if needed (base64 requires length to be multiple of 4)
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += '=' * padding
+            
+            # Replace URL-safe characters with standard base64 characters
+            payload_b64 = payload_b64.replace('-', '+').replace('_', '/')
+            
+            payload_bytes = base64.b64decode(payload_b64)
+            payload = json.loads(payload_bytes.decode('utf-8'))
+            
+            return payload.get('oid')
+        except Exception:
+            return None
+
     def get_entra_token(self, hostname: str) -> tuple:
         """Get an Entra (Azure AD) access token for Redis using Azure CLI.
         
@@ -282,21 +314,17 @@ class AzureRedisConnector:
                 print("Error: Could not obtain access token", file=sys.stderr)
                 sys.exit(1)
             
-            # Get the signed-in user's Object ID
-            # This is required for Entra authentication with Redis
-            try:
-                user_output = self.run_az_command([
-                    'az', 'ad', 'signed-in-user', 'show',
-                    '--query', 'id',
-                    '--output', 'tsv'
-                ])
-                object_id = user_output.strip()
+            # Extract the Object ID directly from the JWT token
+            # This avoids conditional access issues with 'az ad signed-in-user show'
+            object_id = self.extract_oid_from_token(token)
+            
+            if object_id:
                 print("✓ Successfully obtained access token (token hidden for security)")
                 print(f"✓ User Object ID: {object_id}")
                 return token, object_id
-            except Exception as e:
-                safe_error = self.obfuscate_sensitive_data(str(e))
-                print(f"Warning: Could not retrieve user Object ID: {safe_error}")
+            else:
+                print("✓ Successfully obtained access token (token hidden for security)")
+                print("Warning: Could not extract Object ID from token")
                 print("Note: For Entra authentication, you may need to manually configure the username")
                 return token, None
                 
