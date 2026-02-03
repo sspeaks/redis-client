@@ -168,54 +168,53 @@ class AzureRedisConnector:
                 print("Invalid input. Please enter 1, 2, or 3")
 
     def check_entra_auth(self, cache: Dict) -> bool:
-        """Check if the cache uses Entra (Azure AD) authentication only."""
-        # Azure Redis has a 'disableAccessKeyAuthentication' property
-        # When true, only Entra (Azure AD) authentication is allowed
+        """Check if the cache uses Entra (Azure AD) authentication only.
+        
+        Returns True if Entra-only authentication is required, False if access keys work.
+        """
         name = cache.get('name')
-        
-        # First check if the property is already in the cache object
-        if 'disableAccessKeyAuthentication' in cache:
-            entra_only = cache.get('disableAccessKeyAuthentication', False)
-            if entra_only:
-                print(f"✓ Cache {name} uses Entra (Azure AD) authentication only")
-            else:
-                print(f"✓ Cache {name} uses access key authentication")
-            return entra_only
-        
-        # If not available, fetch detailed cache information
         resource_group = cache.get('resourceGroup')
+        
+        # Strategy: Try to get access keys and check if they're valid
+        # When access key authentication is disabled, list-keys may still return keys,
+        # but they will be empty/null or the command may fail
+        
         print(f"\nChecking authentication method for {name}...")
         
         try:
-            # Get detailed cache information
-            show_output = self.run_az_command([
-                'az', 'redis', 'show',
+            # Try to retrieve access keys
+            keys_output = self.run_az_command([
+                'az', 'redis', 'list-keys',
                 '--name', name,
                 '--resource-group', resource_group,
                 '--output', 'json'
             ])
-            cache_details = json.loads(show_output)
+            keys = json.loads(keys_output)
+            primary_key = keys.get('primaryKey')
             
-            # Check if access key authentication is disabled
-            entra_only = cache_details.get('disableAccessKeyAuthentication', False)
-            
-            if entra_only:
-                print(f"✓ Cache uses Entra (Azure AD) authentication only")
+            # Check if the key is actually usable (not None, not empty)
+            if primary_key and len(primary_key) > 0:
+                print(f"✓ Cache has access keys available")
+                print(f"  Access key authentication appears to be enabled")
+                return False
             else:
-                print(f"✓ Cache uses access key authentication")
-            
-            return entra_only
+                # Keys are null/empty - access key authentication is disabled
+                print(f"✓ Access keys are disabled (empty/null keys returned)")
+                print(f"  Entra (Azure AD) authentication required")
+                return True
+                
         except subprocess.CalledProcessError as e:
-            print(f"Warning: Could not retrieve cache details (exit code {e.returncode})")
-            print(f"Will attempt both authentication methods")
-            return False
+            # If list-keys command fails, assume Entra-only
+            print(f"✓ Cannot retrieve access keys (command failed with code {e.returncode})")
+            print(f"  Entra (Azure AD) authentication required")
+            return True
         except json.JSONDecodeError as e:
-            print(f"Warning: Could not parse cache details: {e}")
-            print(f"Will attempt both authentication methods")
+            print(f"Warning: Could not parse keys response: {e}")
+            print(f"  Assuming Entra authentication is required")
             return True
         except Exception as e:
-            print(f"Warning: Unexpected error checking auth method: {e}")
-            print(f"Assuming Entra authentication is required")
+            print(f"Warning: Unexpected error checking access keys: {e}")
+            print(f"  Assuming Entra authentication is required")
             return True
 
     def get_entra_token(self, hostname: str) -> tuple:
