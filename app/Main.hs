@@ -12,7 +12,10 @@ import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BS
-import           Filler                     (fillCacheWithData, fillCacheWithDataMB, initRandomNoise)
+import           Data.Word                  (Word64)
+import           Filler                     (fillCacheWithData,
+                                             fillCacheWithDataMB,
+                                             initRandomNoise)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
                                              RedisCommands (flushAll),
@@ -27,14 +30,12 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs)
 import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hFlush, hIsTerminalDevice, isEOF,
-                                             stdin, stdout)
-import           Text.Printf                (printf)
+import           System.IO                  (hIsTerminalDevice, isEOF, stdin)
 import           System.Random              (randomIO)
-import           Data.Word                  (Word64)
+import           Text.Printf                (printf)
 
 defaultRunState :: RunState
-defaultRunState = RunState "" Nothing "" False 0 False False (Just 8)
+defaultRunState = RunState "" Nothing "" False 0 False False (Just 2)
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
@@ -45,7 +46,7 @@ options =
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
     Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)",
-    Option ['n'] ["connections"] (ReqArg (\arg opt -> return $ opt {numConnections = Just . read $ arg}) "NUM") "Number of parallel connections (default: 8)"
+    Option ['n'] ["connections"] (ReqArg (\arg opt -> return $ opt {numConnections = Just . read $ arg}) "NUM") "Number of parallel connections (default: 2)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])

@@ -44,6 +44,8 @@ cabal run redis-client -- [OPTIONS]
 - `-t`, `--tls`: Use TLS
 - `-d`, `--data GBs`: Random data amount to send in GB
 - `-f`, `--flush`: Flush the database
+- `-s`, `--serial`: Run in serial mode (no concurrency)
+- `-n`, `--connections NUM`: Number of parallel connections (default: 2)
 
 ### Performance Tuning Environment Variables
 
