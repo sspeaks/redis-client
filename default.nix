@@ -12,11 +12,19 @@ rec {
   ];
   
   # Wrapper package that includes both redis-client and azure-redis-connect
-  fullPackageWithScripts = pkgs.symlinkJoin {
+  fullPackageWithScripts = pkgs.stdenv.mkDerivation {
     name = "redis-client-full";
-    paths = [ fullPackage ];
+    
     buildInputs = [ pkgs.makeWrapper ];
-    postBuild = ''
+    
+    unpackPhase = "true";
+    
+    installPhase = ''
+      mkdir -p $out/bin
+      
+      # Copy all binaries from the Haskell package
+      cp -r ${fullPackage}/bin/* $out/bin/
+      
       # Install the azure-redis-connect script
       cp ${scriptSrc} $out/bin/azure-redis-connect
       chmod +x $out/bin/azure-redis-connect
