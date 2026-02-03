@@ -9,7 +9,7 @@
         pkgs = import nixpkgs { inherit system; };
       in
       {
-        defaultPackage = (import ./default.nix { inherit pkgs; }).fullPackage;
+        defaultPackage = (import ./default.nix { inherit pkgs; }).fullPackageWithScripts;
         devShell = import ./shell.nix { inherit pkgs; };
         formatter = pkgs.nixpkgs-fmt;
       });
