@@ -194,8 +194,6 @@ For faster iteration during development:
 
 ```sh
 # Start Redis locally
-./start-redis-local.sh
-# or
 make redis-start
 
 # Build and run tests
@@ -203,8 +201,6 @@ cabal build
 cabal test
 
 # Stop Redis when done
-./stop-redis-local.sh
-# or
 make redis-stop
 ```
 

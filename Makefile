@@ -53,6 +53,15 @@ endif
 
 # Run end-to-end tests with Docker
 test-e2e:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@if ! command -v nix-build >/dev/null 2>&1; then \
+		echo "Error: nix-build is not installed or not in PATH"; \
+		echo "E2E tests require Nix to build the test container image"; \
+		exit 1; \
+	fi
 	./rune2eTests.sh
 
 # Start Redis with Docker Compose
