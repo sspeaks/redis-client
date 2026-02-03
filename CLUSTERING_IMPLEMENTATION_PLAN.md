@@ -682,10 +682,10 @@ describe "Command key extraction" $ do
 - [x] Unit tests for core cluster logic
 
 ### Phase 2: Command Execution (2 weeks)
-- [ ] Extend `RedisCommandClient` for cluster operations
-- [ ] Implement MOVED/ASK error handling
-- [ ] Add retry logic with backoff
-- [ ] Unit tests for redirection handling
+- [x] Extend `RedisCommandClient` for cluster operations
+- [x] Implement MOVED/ASK error handling
+- [x] Add retry logic with backoff
+- [x] Unit tests for redirection handling
 
 ### Phase 3: Mode Integration (2-3 weeks)
 - [ ] Integrate fill mode with cluster routing

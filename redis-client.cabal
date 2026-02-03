@@ -108,10 +108,13 @@ library cluster
                     , crc16
                     , client
                     , resp
+                    , redis-command-client
+                    , mtl
     hs-source-dirs:   lib/cluster
     default-language: GHC2021
     exposed-modules:  Cluster
                     , ConnectionPool
+                    , ClusterCommandClient
 
 test-suite RespSpec
     type:             exitcode-stdio-1.0
@@ -130,6 +133,18 @@ test-suite ClusterSpec
     type:             exitcode-stdio-1.0
     default-language: GHC2021
     main-is:          ClusterSpec.hs
+    hs-source-dirs:   test
+    build-depends:    base >=4.19 && <5
+                    , hspec
+                    , cluster
+                    , resp
+                    , bytestring
+                    , time
+
+test-suite ClusterCommandSpec
+    type:             exitcode-stdio-1.0
+    default-language: GHC2021
+    main-is:          ClusterCommandSpec.hs
     hs-source-dirs:   test
     build-depends:    base >=4.19 && <5
                     , hspec
