@@ -1,0 +1,95 @@
+#! /usr/bin/env nix-shell
+#! nix-shell -i bash -p redis
+
+set -e
+
+echo "Starting Redis Cluster E2E Tests..."
+
+# Navigate to docker-cluster directory
+cd docker-cluster
+
+# Start the cluster
+echo "Starting Redis cluster nodes..."
+docker-compose up -d
+
+# Wait for nodes to be ready
+echo "Waiting for Redis nodes to be ready..."
+sleep 5
+
+# Create the cluster
+echo "Creating Redis cluster..."
+./make_cluster.sh || {
+    echo "Cluster creation failed. Cleaning up..."
+    docker-compose down
+    exit 1
+}
+
+# Give cluster time to stabilize and verify it's ready
+echo "Waiting for cluster to stabilize..."
+MAX_RETRIES=10
+RETRY_COUNT=0
+CLUSTER_READY=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  sleep 2
+  
+  # Check cluster state
+  if redis-cli -p 6379 cluster info | grep -q "cluster_state:ok"; then
+    echo "Cluster is ready!"
+    CLUSTER_READY=true
+    break
+  fi
+  
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  echo "Cluster not ready yet (attempt $RETRY_COUNT/$MAX_RETRIES)..."
+done
+
+if [ "$CLUSTER_READY" = false ]; then
+  echo "ERROR: Cluster failed to reach 'ok' state after $MAX_RETRIES attempts"
+  echo "Cluster info:"
+  redis-cli -p 6379 cluster info
+  echo ""
+  echo "Cluster nodes:"
+  redis-cli -p 6379 cluster nodes
+  docker-compose down
+  exit 1
+fi
+
+# Go back to root directory
+cd ..
+
+# Build the Docker image
+echo "Building cluster E2E test Docker image..."
+nix-build e2eClusterDockerImg.nix || {
+    echo "Failed to build Docker image"
+    cd docker-cluster
+    docker-compose down
+    exit 1
+}
+
+# Load the Docker image
+echo "Loading cluster E2E test Docker image..."
+docker load < result
+
+# Run the cluster E2E tests in Docker
+echo "Running cluster E2E tests in Docker container..."
+docker run --network=host clustere2etests:latest  || {
+    EXIT_CODE=$?
+    echo "Tests failed with exit code $EXIT_CODE"
+    cd docker-cluster
+    docker-compose down
+    # Clean up docker image
+    docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
+    rm -f result
+    exit $EXIT_CODE
+}
+
+# Cleanup
+echo "Cleaning up..."
+cd docker-cluster
+docker-compose down
+cd ..
+docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
+rm -f result
+
+echo "Cluster E2E tests completed successfully!"

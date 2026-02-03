@@ -13,20 +13,20 @@ module Cluster
   )
 where
 
-import Crc16 (crc16)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
+import           Crc16                      (crc16)
+import           Data.ByteString            (ByteString)
+import qualified Data.ByteString            as BS
+import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy.Char8 as LBSC
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Time (UTCTime)
-import Data.Vector (Vector)
-import qualified Data.Vector as V
-import Data.Word (Word16)
-import Resp (RespData (..))
+import           Data.Map.Strict            (Map)
+import qualified Data.Map.Strict            as Map
+import           Data.Text                  (Text)
+import qualified Data.Text                  as T
+import           Data.Time                  (UTCTime)
+import           Data.Vector                (Vector)
+import qualified Data.Vector                as V
+import           Data.Word                  (Word16)
+import           Resp                       (RespData (..))
 
 -- | Node role in the cluster
 data NodeRole = Master | Replica
@@ -41,27 +41,27 @@ data NodeAddress = NodeAddress
 
 -- | Represents a cluster node with its metadata
 data ClusterNode = ClusterNode
-  { nodeId :: Text,
-    nodeAddress :: NodeAddress,
-    nodeRole :: NodeRole,
+  { nodeId          :: Text,
+    nodeAddress     :: NodeAddress,
+    nodeRole        :: NodeRole,
     nodeSlotsServed :: [SlotRange],
-    nodeReplicas :: [Text] -- Node IDs of replicas
+    nodeReplicas    :: [Text] -- Node IDs of replicas
   }
   deriving (Show, Eq)
 
 -- | Represents a range of slots and the nodes serving them
 data SlotRange = SlotRange
-  { slotStart :: Word16, -- 0-16383
-    slotEnd :: Word16,
-    slotMaster :: Text, -- Node ID reference
+  { slotStart    :: Word16, -- 0-16383
+    slotEnd      :: Word16,
+    slotMaster   :: Text, -- Node ID reference
     slotReplicas :: [Text] -- Node ID references
   }
   deriving (Show, Eq)
 
 -- | Complete cluster topology
 data ClusterTopology = ClusterTopology
-  { topologySlots :: Vector Text, -- 16384 slots, each mapped to node ID
-    topologyNodes :: Map Text ClusterNode, -- Node ID -> full node details
+  { topologySlots      :: Vector Text, -- 16384 slots, each mapped to node ID
+    topologyNodes      :: Map Text ClusterNode, -- Node ID -> full node details
     topologyUpdateTime :: UTCTime
   }
   deriving (Show)
@@ -103,29 +103,29 @@ parseClusterSlots (RespArray slots) currentTime = do
   let (slotMap, nodeMap) = buildTopology ranges
   return $ ClusterTopology slotMap nodeMap currentTime
   where
-    parseSlotRange :: RespData -> Either String SlotRange
+    parseSlotRange :: RespData -> Either String (SlotRange, [(Text, NodeAddress)])
     parseSlotRange (RespArray (RespInteger start : RespInteger end : masterInfo : replicaInfos)) = do
       master <- parseNodeInfo masterInfo
       replicas <- mapM parseNodeInfo replicaInfos
-      return $
-        SlotRange
-          { slotStart = fromIntegral start,
-            slotEnd = fromIntegral end,
-            slotMaster = fst master,
-            slotReplicas = map fst replicas
-          }
+      let range = SlotRange
+            { slotStart = fromIntegral start,
+              slotEnd = fromIntegral end,
+              slotMaster = fst master,
+              slotReplicas = map fst replicas
+            }
+      return (range, master : replicas)
     parseSlotRange other = Left $ "Invalid slot range format: " ++ show other
 
     parseNodeInfo :: RespData -> Either String (Text, NodeAddress)
-    parseNodeInfo (RespArray [RespBulkString host, RespInteger port, RespBulkString nodeId]) =
+    parseNodeInfo (RespArray (RespBulkString host : RespInteger port : RespBulkString nodeId : _)) =
       Right (T.pack $ LBSC.unpack nodeId, NodeAddress (LBSC.unpack host) (fromIntegral port))
     parseNodeInfo other = Left $ "Invalid node info format: " ++ show other
 
-    buildTopology :: [SlotRange] -> (Vector Text, Map Text ClusterNode)
-    buildTopology ranges =
+    buildTopology :: [(SlotRange, [(Text, NodeAddress)])] -> (Vector Text, Map Text ClusterNode)
+    buildTopology rangesWithNodes =
       let slotVector = V.replicate 16384 ""
-          slotMap = foldl assignSlots slotVector ranges
-          nodeMap = foldl buildNodeMap Map.empty ranges
+          slotMap = foldl (\v (range, _) -> assignSlots v range) slotVector rangesWithNodes
+          nodeMap = foldl buildNodeMap Map.empty rangesWithNodes
        in (slotMap, nodeMap)
 
     assignSlots :: Vector Text -> SlotRange -> Vector Text
@@ -135,15 +135,19 @@ parseClusterSlots (RespArray slots) currentTime = do
         vec
         [slotStart range .. slotEnd range]
 
-    buildNodeMap :: Map Text ClusterNode -> SlotRange -> Map Text ClusterNode
-    buildNodeMap nodeMap range =
-      -- Note: CLUSTER SLOTS provides minimal node info (host, port, ID)
-      -- Full node details would require parsing addresses from slot ranges
-      nodeMap
+    buildNodeMap :: Map Text ClusterNode -> (SlotRange, [(Text, NodeAddress)]) -> Map Text ClusterNode
+    buildNodeMap nodeMap (range, nodeInfos) =
+      foldl insertNode nodeMap nodeInfos
+      where
+        insertNode :: Map Text ClusterNode -> (Text, NodeAddress) -> Map Text ClusterNode
+        insertNode nm (nodeId, addr) =
+          if Map.member nodeId nm
+            then nm -- Node already exists, don't overwrite
+            else Map.insert nodeId (ClusterNode nodeId addr Master [range] []) nm
 parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ show other
 
 -- | Find the node responsible for a given slot
 findNodeForSlot :: ClusterTopology -> Word16 -> Maybe Text
 findNodeForSlot topology slot
-  | slot < 16384 = Just $ (topologySlots topology) V.! fromIntegral slot
+  | slot < 16384 = Just $ topologySlots topology V.! fromIntegral slot
   | otherwise = Nothing

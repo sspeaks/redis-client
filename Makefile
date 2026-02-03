@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-e2e clean redis-start redis-stop profile setup
+.PHONY: help build test test-unit test-e2e test-cluster-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e redis-start redis-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -41,14 +41,14 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e
+test: test-unit test-e2e test-cluster-e2e
 
-# Run unit tests (RespSpec and ClusterSpec)
+# Run unit tests (RespSpec, ClusterSpec, and ClusterCommandSpec)
 test-unit:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal test RespSpec ClusterSpec"
+	nix-shell --run "cabal test RespSpec ClusterSpec ClusterCommandSpec"
 else
-	cabal test RespSpec ClusterSpec
+	cabal test RespSpec ClusterSpec ClusterCommandSpec
 endif
 
 # Run end-to-end tests with Docker
@@ -64,14 +64,33 @@ test-e2e:
 	fi
 	./rune2eTests.sh
 
+# Run cluster end-to-end tests with Docker
+test-cluster-e2e:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@echo "Running cluster E2E tests..."
+	./runClusterE2ETests.sh
+
 # Start Redis with Docker Compose
 redis-start:
 	@docker compose up -d redis
 	@sleep 2
 
+# Start Redis Cluster with Docker Compose
+redis-cluster-start:
+	@cd docker-cluster && docker-compose up -d
+	@sleep 5
+	@cd docker-cluster && ./make_cluster.sh
+
 # Stop Redis
 redis-stop:
 	@docker compose stop redis
+
+# Stop Redis Cluster
+redis-cluster-stop:
+	@cd docker-cluster && docker-compose down
 
 # Build with profiling enabled
 profile:

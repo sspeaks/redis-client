@@ -104,6 +104,7 @@ class (MonadIO m) => RedisCommands m where
   georadiusByMemberRo :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
   geosearch :: String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m RespData
   geosearchstore :: String -> String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m RespData
+  clusterSlots :: m RespData
 
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
@@ -507,6 +508,12 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
             ++ concatMap geoSearchOptionToList options
         command = if storeDist then base ++ ["STOREDIST"] else base
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay command)
+    parseWith (receive client)
+
+  clusterSlots :: RedisCommandClient client RespData
+  clusterSlots = do
+    ClientState !client _ <- State.get
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLUSTER", "SLOTS"])
     parseWith (receive client)
 
 data RunState = RunState

@@ -11,6 +11,12 @@ rec {
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "EndToEnd" "redis-client" ])
   ];
   
+  justStaticClusterEndToEnd = pkgs.lib.pipe fullPackage [
+    pkgs.haskell.lib.justStaticExecutables
+    pkgs.haskell.lib.dontCheck
+    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "ClusterEndToEnd" ])
+  ];
+  
   # Wrapper package that includes both redis-client and azure-redis-connect
   fullPackageWithScripts = pkgs.stdenv.mkDerivation {
     name = "redis-client-full";

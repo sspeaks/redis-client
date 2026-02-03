@@ -188,15 +188,39 @@ toNetworkByteOrder hostOrder =
 
 resolve :: String -> IO HostAddress
 resolve "localhost" = return (tupleToHostAddress (127, 0, 0, 1))
-resolve address = do
-  rs <- makeResolvSeed defaultResolvConf
-  addrInfo <- withResolver rs $ \resolver -> do
-    lookupA resolver (BSC.pack address)
-  return $ f addrInfo
+resolve address = 
+  -- Check if it's an IP address (simple check for IPv4 format)
+  case parseIPv4 address of
+    Just ipAddr -> return ipAddr
+    Nothing -> do
+      -- It's a hostname, do DNS lookup
+      rs <- makeResolvSeed defaultResolvConf
+      addrInfo <- withResolver rs $ \resolver -> do
+        lookupA resolver (BSC.pack address)
+      return $ f addrInfo
   where
     f :: Either DNSError [IPv4] -> HostAddress
     f (Right (a : _)) = toHostAddress a
     f _ = error "no address found"
+    
+    -- Parse IPv4 address string (e.g., "127.0.0.1")
+    parseIPv4 :: String -> Maybe HostAddress
+    parseIPv4 str = 
+      case reads str :: [(IPv4, String)] of
+        [(ip, "")] -> Just (toHostAddress ip)
+        _ -> case words $ map (\c -> if c == '.' then ' ' else c) str of
+          [a, b, c, d] -> do
+            w1 <- readMaybe a :: Maybe Word8
+            w2 <- readMaybe b :: Maybe Word8
+            w3 <- readMaybe c :: Maybe Word8
+            w4 <- readMaybe d :: Maybe Word8
+            return $ tupleToHostAddress (w1, w2, w3, w4)
+          _ -> Nothing
+    
+    readMaybe :: Read a => String -> Maybe a
+    readMaybe s = case reads s of
+      [(x, "")] -> Just x
+      _ -> Nothing
 
 byteStringToString :: B.ByteString -> String
 byteStringToString = map (toEnum . fromEnum) . B.unpack
