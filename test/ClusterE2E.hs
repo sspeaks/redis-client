@@ -6,11 +6,9 @@ import Client (Client (..), PlainTextClient (NotConnectedPlainTextClient))
 import Cluster (NodeAddress (..), calculateSlot)
 import ClusterCommandClient
 import ConnectionPool (PoolConfig (..))
-import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
-import RedisCommandClient (RedisCommands (..))
 import Resp (RespData (..))
 import Test.Hspec
 
@@ -34,13 +32,11 @@ createTestClusterClient = do
     connector (NodeAddress host port) = do
       connect (NotConnectedPlainTextClient host (Just port))
 
--- | Execute a command against the cluster
-runClusterCommand :: ClusterClient PlainTextClient -> String -> IO (Either ClusterError RespData) -> IO RespData
-runClusterCommand client key action = do
-  result <- action
-  case result of
-    Left err -> fail $ "Cluster error: " ++ show err
-    Right val -> return val
+-- | Helper to run cluster commands using the RedisCommands instance
+runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
+runCmd client action = runClusterCommandClient client connector action
+  where
+    connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
 main :: IO ()
 main = hspec $ do
@@ -56,18 +52,16 @@ main = hspec $ do
           let key = "cluster:test:key"
           
           -- SET command
-          setResult <- executeClusterCommandForKey client key (\k -> set k "testvalue") connector
+          setResult <- runCmd client $ set key "testvalue"
           case setResult of
-            Right (RespSimpleString "OK") -> return ()
-            Right other -> expectationFailure $ "Unexpected SET response: " ++ show other
-            Left err -> expectationFailure $ "SET failed: " ++ show err
+            RespSimpleString "OK" -> return ()
+            other -> expectationFailure $ "Unexpected SET response: " ++ show other
           
           -- GET command
-          getResult <- executeClusterCommandForKey client key get connector
+          getResult <- runCmd client $ get key
           case getResult of
-            Right (RespBulkString "testvalue") -> return ()
-            Right other -> expectationFailure $ "Unexpected GET response: " ++ show other
-            Left err -> expectationFailure $ "GET failed: " ++ show err
+            RespBulkString "testvalue" -> return ()
+            other -> expectationFailure $ "Unexpected GET response: " ++ show other
 
       it "routes commands to correct nodes based on slot" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
@@ -76,20 +70,18 @@ main = hspec $ do
           
           -- Set all keys
           mapM_ (\key -> do
-            result <- executeClusterCommandForKey client key (\k -> set k ("value_" ++ k)) connector
+            result <- runCmd client $ set key ("value_" ++ key)
             case result of
-              Right (RespSimpleString "OK") -> return ()
-              Right other -> expectationFailure $ "Unexpected SET response for " ++ key ++ ": " ++ show other
-              Left err -> expectationFailure $ "SET failed for " ++ key ++ ": " ++ show err
+              RespSimpleString "OK" -> return ()
+              other -> expectationFailure $ "Unexpected SET response for " ++ key ++ ": " ++ show other
             ) keys
           
           -- Get all keys and verify
           mapM_ (\key -> do
-            result <- executeClusterCommandForKey client key get connector
+            result <- runCmd client $ get key
             case result of
-              Right (RespBulkString val) | val == BSL.pack ("value_" ++ key) -> return ()
-              Right other -> expectationFailure $ "Unexpected GET response for " ++ key ++ ": " ++ show other
-              Left err -> expectationFailure $ "GET failed for " ++ key ++ ": " ++ show err
+              RespBulkString val | val == BSL.pack ("value_" ++ key) -> return ()
+              other -> expectationFailure $ "Unexpected GET response for " ++ key ++ ": " ++ show other
             ) keys
 
       it "handles keys with hash tags correctly" $ do
@@ -104,11 +96,11 @@ main = hspec $ do
           slot1 `shouldBe` slot2
           
           -- Set both keys
-          result1 <- executeClusterCommandForKey client key1 (\k -> set k "profile_data") connector
-          result2 <- executeClusterCommandForKey client key2 (\k -> set k "settings_data") connector
+          result1 <- runCmd client $ set key1 "profile_data"
+          result2 <- runCmd client $ set key2 "settings_data"
           
           case (result1, result2) of
-            (Right (RespSimpleString "OK"), Right (RespSimpleString "OK")) -> return ()
+            (RespSimpleString "OK", RespSimpleString "OK") -> return ()
             _ -> expectationFailure "Failed to set keys with hash tags"
 
       it "can execute multiple operations in sequence" $ do
@@ -116,44 +108,36 @@ main = hspec $ do
           let key = "counter:test"
           
           -- SET initial value
-          setResult <- executeClusterCommandForKey client key (\k -> set k "0") connector
+          setResult <- runCmd client $ set key "0"
           case setResult of
-            Right (RespSimpleString "OK") -> return ()
+            RespSimpleString "OK" -> return ()
             _ -> expectationFailure "Failed to set initial counter value"
           
           -- INCR
-          incrResult <- executeClusterCommandForKey client key incr connector
+          incrResult <- runCmd client $ incr key
           case incrResult of
-            Right (RespInteger 1) -> return ()
-            Right other -> expectationFailure $ "Unexpected INCR response: " ++ show other
-            Left err -> expectationFailure $ "INCR failed: " ++ show err
+            RespInteger 1 -> return ()
+            other -> expectationFailure $ "Unexpected INCR response: " ++ show other
           
           -- GET to verify
-          getResult <- executeClusterCommandForKey client key get connector
+          getResult <- runCmd client $ get key
           case getResult of
-            Right (RespBulkString "1") -> return ()
-            Right other -> expectationFailure $ "Unexpected GET response: " ++ show other
-            Left err -> expectationFailure $ "GET failed: " ++ show err
+            RespBulkString "1" -> return ()
+            other -> expectationFailure $ "Unexpected GET response: " ++ show other
 
       it "can execute PING through cluster" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          -- PING doesn't need a routing key - using keyless helper
-          result <- executeKeylessClusterCommand client ping connector
+          -- PING doesn't need a routing key - the RedisCommands instance handles it
+          result <- runCmd client ping
           case result of
-            Right (RespSimpleString "PONG") -> return ()
-            Right other -> expectationFailure $ "Unexpected PING response: " ++ show other
-            Left err -> expectationFailure $ "PING failed: " ++ show err
+            RespSimpleString "PONG" -> return ()
+            other -> expectationFailure $ "Unexpected PING response: " ++ show other
 
       it "can query CLUSTER SLOTS" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          result <- executeKeylessClusterCommand client clusterSlots connector
+          result <- runCmd client clusterSlots
           case result of
-            Right (RespArray slots) -> do
+            RespArray slots -> do
               -- Verify we got some slot ranges
               length slots `shouldSatisfy` (> 0)
-            Right other -> expectationFailure $ "Unexpected CLUSTER SLOTS response: " ++ show other
-            Left err -> expectationFailure $ "CLUSTER SLOTS failed: " ++ show err
-
-  where
-    connector (NodeAddress host port) = do
-      connect (NotConnectedPlainTextClient host (Just port))
+            other -> expectationFailure $ "Unexpected CLUSTER SLOTS response: " ++ show other

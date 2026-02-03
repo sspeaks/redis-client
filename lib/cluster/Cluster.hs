@@ -13,20 +13,20 @@ module Cluster
   )
 where
 
-import Crc16 (crc16)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
+import           Crc16                      (crc16)
+import           Data.ByteString            (ByteString)
+import qualified Data.ByteString            as BS
+import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy.Char8 as LBSC
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Time (UTCTime)
-import Data.Vector (Vector)
-import qualified Data.Vector as V
-import Data.Word (Word16)
-import Resp (RespData (..))
+import           Data.Map.Strict            (Map)
+import qualified Data.Map.Strict            as Map
+import           Data.Text                  (Text)
+import qualified Data.Text                  as T
+import           Data.Time                  (UTCTime)
+import           Data.Vector                (Vector)
+import qualified Data.Vector                as V
+import           Data.Word                  (Word16)
+import           Resp                       (RespData (..))
 
 -- | Node role in the cluster
 data NodeRole = Master | Replica
@@ -41,27 +41,27 @@ data NodeAddress = NodeAddress
 
 -- | Represents a cluster node with its metadata
 data ClusterNode = ClusterNode
-  { nodeId :: Text,
-    nodeAddress :: NodeAddress,
-    nodeRole :: NodeRole,
+  { nodeId          :: Text,
+    nodeAddress     :: NodeAddress,
+    nodeRole        :: NodeRole,
     nodeSlotsServed :: [SlotRange],
-    nodeReplicas :: [Text] -- Node IDs of replicas
+    nodeReplicas    :: [Text] -- Node IDs of replicas
   }
   deriving (Show, Eq)
 
 -- | Represents a range of slots and the nodes serving them
 data SlotRange = SlotRange
-  { slotStart :: Word16, -- 0-16383
-    slotEnd :: Word16,
-    slotMaster :: Text, -- Node ID reference
+  { slotStart    :: Word16, -- 0-16383
+    slotEnd      :: Word16,
+    slotMaster   :: Text, -- Node ID reference
     slotReplicas :: [Text] -- Node ID references
   }
   deriving (Show, Eq)
 
 -- | Complete cluster topology
 data ClusterTopology = ClusterTopology
-  { topologySlots :: Vector Text, -- 16384 slots, each mapped to node ID
-    topologyNodes :: Map Text ClusterNode, -- Node ID -> full node details
+  { topologySlots      :: Vector Text, -- 16384 slots, each mapped to node ID
+    topologyNodes      :: Map Text ClusterNode, -- Node ID -> full node details
     topologyUpdateTime :: UTCTime
   }
   deriving (Show)
@@ -149,5 +149,5 @@ parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ sho
 -- | Find the node responsible for a given slot
 findNodeForSlot :: ClusterTopology -> Word16 -> Maybe Text
 findNodeForSlot topology slot
-  | slot < 16384 = Just $ (topologySlots topology) V.! fromIntegral slot
+  | slot < 16384 = Just $ topologySlots topology V.! fromIntegral slot
   | otherwise = Nothing

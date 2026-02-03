@@ -1,47 +1,67 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RankNTypes        #-}
 
 module ClusterCommandClient
-  ( ClusterClient (..),
+  ( -- * Client Types
+    ClusterClient (..),
+    ClusterCommandClient,
+    ClusterClientState (..),
     ClusterError (..),
-    RedirectionInfo (..),
     ClusterConfig (..),
+    -- * Client Lifecycle
     createClusterClient,
     closeClusterClient,
-    executeClusterCommand,
-    executeClusterCommandForKey,
-    executeKeylessClusterCommand,
-    withRetry,
+    -- * Running Commands
+    runClusterCommandClient,
+    -- * Re-export RedisCommands for convenience
+    module RedisCommandClient,
+    -- * Internal (exported for testing)
+    RedirectionInfo (..),
     parseRedirectionError,
-    handleMoved,
-    handleAsk,
   )
 where
 
-import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient))
-import Cluster (ClusterTopology (..), ClusterNode (..), NodeAddress (..), calculateSlot, findNodeForSlot, parseClusterSlots)
-import ConnectionPool (ConnectionPool, PoolConfig (..), closePool, createPool, getOrCreateConnection)
-import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVar, writeTVar)
-import Control.Exception (SomeException, catch, throwIO, try)
-import Control.Monad (when)
-import Control.Monad.IO.Class (MonadIO (..))
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as BS
-import qualified Data.ByteString.Lazy.Char8 as BSC
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Time.Clock (UTCTime, getCurrentTime)
-import qualified Data.Vector as V
-import Data.Word (Word16)
-import RedisCommandClient (ClientState (..), RedisCommandClient (..), RedisCommands (..), parseWith, runRedisCommandClient)
-import Resp (Encodable (..), RespData (..))
-import qualified Data.ByteString.Builder as Builder
-import Control.Monad.State qualified as State
+import           Client                      (Client (..),
+                                              ConnectionStatus (..),
+                                              PlainTextClient (NotConnectedPlainTextClient),
+                                              TLSClient (NotConnectedTLSClient))
+import           Cluster                     (ClusterNode (..),
+                                              ClusterTopology (..),
+                                              NodeAddress (..), NodeRole (..),
+                                              calculateSlot, findNodeForSlot,
+                                              parseClusterSlots)
+import           ConnectionPool              (ConnectionPool, PoolConfig (..),
+                                              closePool, createPool,
+                                              getOrCreateConnection)
+import           Control.Concurrent          (threadDelay)
+import           Control.Concurrent.STM      (TVar, atomically, modifyTVar',
+                                              newTVarIO, readTVar, writeTVar)
+import           Control.Concurrent.STM.TVar
+import           Control.Exception           (SomeException, catch, throwIO,
+                                              try)
+import           Control.Monad               (when)
+import           Control.Monad.IO.Class      (MonadIO (..))
+import qualified Control.Monad.State         as State
+import           Data.ByteString             (ByteString)
+import qualified Data.ByteString.Builder     as Builder
+import qualified Data.ByteString.Char8       as BS
+import qualified Data.ByteString.Lazy.Char8  as BSC
+import           Data.Kind                   (Type)
+import           Data.Map.Strict             (Map)
+import qualified Data.Map.Strict             as Map
+import           Data.Text                   (Text)
+import qualified Data.Text                   as T
+import           Data.Time.Clock             (UTCTime, getCurrentTime)
+import qualified Data.Vector                 as V
+import           Data.Word                   (Word16)
+import           RedisCommandClient          (ClientState (..),
+                                              RedisCommandClient (..),
+                                              RedisCommands (..), parseWith,
+                                              runRedisCommandClient)
+import qualified RedisCommandClient
+import           Resp                        (Encodable (..), RespData (..))
 
 -- | Error types specific to cluster operations
 data ClusterError
@@ -65,20 +85,72 @@ data RedirectionInfo = RedirectionInfo
 
 -- | Configuration for cluster client
 data ClusterConfig = ClusterConfig
-  { clusterSeedNode :: NodeAddress, -- Initial node to connect to
-    clusterPoolConfig :: PoolConfig,
-    clusterMaxRetries :: Int, -- Maximum retry attempts (default: 3)
-    clusterRetryDelay :: Int, -- Initial retry delay in microseconds (default: 100000 = 100ms)
+  { clusterSeedNode                :: NodeAddress, -- Initial node to connect to
+    clusterPoolConfig              :: PoolConfig,
+    clusterMaxRetries              :: Int, -- Maximum retry attempts (default: 3)
+    clusterRetryDelay              :: Int, -- Initial retry delay in microseconds (default: 100000 = 100ms)
     clusterTopologyRefreshInterval :: Int -- Seconds between topology refreshes (default: 60)
   }
   deriving (Show)
 
 -- | Cluster client that manages connections to multiple nodes
 data ClusterClient client = ClusterClient
-  { clusterTopology :: TVar ClusterTopology,
+  { clusterTopology       :: TVar ClusterTopology,
     clusterConnectionPool :: ConnectionPool client,
-    clusterConfig :: ClusterConfig
+    clusterConfig         :: ClusterConfig
   }
+
+-- | State for ClusterCommandClient monad
+data ClusterClientState client = ClusterClientState
+  { getClusterClient :: ClusterClient client,
+    getConnector     :: NodeAddress -> IO (client 'Connected)
+  }
+
+-- | Monad for executing Redis commands on a cluster
+-- Wraps StateT to abstract away the client state and connector
+data ClusterCommandClient client a where
+  ClusterCommandClient :: (Client client) => 
+    { runClusterCommandClientM :: State.StateT (ClusterClientState client) IO a } 
+    -> ClusterCommandClient client a
+
+-- | Run a ClusterCommandClient action with the given cluster client and connector
+runClusterCommandClient :: 
+  (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  ClusterCommandClient client a ->
+  IO a
+runClusterCommandClient client connector (ClusterCommandClient action) = do
+  let state = ClusterClientState client connector
+  State.evalStateT action state
+
+instance (Client client) => Functor (ClusterCommandClient client) where
+  fmap :: (a -> b) -> ClusterCommandClient client a -> ClusterCommandClient client b
+  fmap f (ClusterCommandClient s) = ClusterCommandClient (fmap f s)
+
+instance (Client client) => Applicative (ClusterCommandClient client) where
+  pure :: a -> ClusterCommandClient client a
+  pure = ClusterCommandClient . pure
+  (<*>) :: ClusterCommandClient client (a -> b) -> ClusterCommandClient client a -> ClusterCommandClient client b
+  ClusterCommandClient f <*> ClusterCommandClient s = ClusterCommandClient (f <*> s)
+
+instance (Client client) => Monad (ClusterCommandClient client) where
+  (>>=) :: ClusterCommandClient client a -> (a -> ClusterCommandClient client b) -> ClusterCommandClient client b
+  ClusterCommandClient s >>= f = ClusterCommandClient (s >>= \a -> let ClusterCommandClient s' = f a in s')
+
+instance (Client client) => MonadIO (ClusterCommandClient client) where
+  liftIO :: IO a -> ClusterCommandClient client a
+  liftIO = ClusterCommandClient . liftIO
+
+instance (Client client) => State.MonadState (ClusterClientState client) (ClusterCommandClient client) where
+  get :: ClusterCommandClient client (ClusterClientState client)
+  get = ClusterCommandClient State.get
+  put :: ClusterClientState client -> ClusterCommandClient client ()
+  put = ClusterCommandClient . State.put
+
+instance (Client client) => MonadFail (ClusterCommandClient client) where
+  fail :: String -> ClusterCommandClient client a
+  fail = ClusterCommandClient . liftIO . Prelude.fail
 
 -- | Create a new cluster client by connecting to seed node and discovering topology
 createClusterClient ::
@@ -109,11 +181,11 @@ refreshTopology ::
 refreshTopology client connector = do
   let seedNode = clusterSeedNode (clusterConfig client)
   conn <- getOrCreateConnection (clusterConnectionPool client) seedNode connector
-  
+
   -- Use clusterSlots command from RedisCommands
   let clientState = ClientState conn BS.empty
   response <- State.evalStateT (runRedisCommandClient clusterSlots) clientState
-  
+
   currentTime <- getCurrentTime
   case parseClusterSlots response currentTime of
     Left err -> throwIO $ userError $ "Failed to parse cluster topology: " ++ err
@@ -141,7 +213,7 @@ executeOnSlot ::
   (NodeAddress -> IO (client 'Connected)) ->
   IO (Either ClusterError a)
 executeOnSlot client slot action connector = do
-  topology <- atomically $ readTVar (clusterTopology client)
+  topology <- readTVarIO (clusterTopology client)
   case findNodeForSlot topology slot of
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just nodeId -> do
@@ -163,10 +235,25 @@ executeOnNode client nodeAddr action connector = do
     conn <- getOrCreateConnection (clusterConnectionPool client) nodeAddr connector
     let clientState = ClientState conn BS.empty
     State.evalStateT (runRedisCommandClient action) clientState
-  
+
   case result of
     Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
-    Right value -> return $ Right value
+    Right value               -> return $ Right value
+
+-- | Execute a keyless command on any available node (e.g., PING, AUTH, FLUSHALL)
+executeKeylessClusterCommand ::
+  (Client client) =>
+  ClusterClient client ->
+  RedisCommandClient client a ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  IO (Either ClusterError a)
+executeKeylessClusterCommand client action connector = do
+  topology <- readTVarIO (clusterTopology client)
+  -- Find any master node to execute the command on
+  let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  case masterNodes of
+    [] -> return $ Left $ TopologyError "No master nodes available"
+    (node:_) -> executeOnNode client (nodeAddress node) action connector
 
 -- | Retry logic with exponential backoff
 withRetry ::
@@ -235,7 +322,7 @@ handleAsk ::
   IO (Either ClusterError a)
 handleAsk client redir action connector = do
   let askAddr = NodeAddress (redirHost redir) (redirPort redir)
-  
+
   -- Execute ASKING followed by the original command
   result <- try $ do
     conn <- getOrCreateConnection (clusterConnectionPool client) askAddr connector
@@ -249,35 +336,102 @@ handleAsk client redir action connector = do
       -- Execute original command
       action
       ) clientState
-  
+
   case result of
     Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
-    Right value -> return $ Right value
+    Right value               -> return $ Right value
 
-
--- | Helper function to execute a cluster command with a String key
--- This eliminates the duplication of converting the key to ByteString for routing
--- while still passing the original String key to commands that need it
-executeClusterCommandForKey ::
+-- | Internal helper to execute a keyed command within ClusterCommandClient monad
+executeKeyedCommand ::
   (Client client) =>
-  ClusterClient client ->
-  String ->
-  (String -> RedisCommandClient client a) ->
-  (NodeAddress -> IO (client 'Connected)) ->
-  IO (Either ClusterError a)
-executeClusterCommandForKey client key commandBuilder connector =
-  executeClusterCommand client (BS.pack key) (commandBuilder key) connector
-
--- | Helper function to execute keyless cluster commands (like PING, CLUSTER SLOTS)
--- Routes to a random node from the cluster topology
-executeKeylessClusterCommand ::
-  (Client client) =>
-  ClusterClient client ->
+  ByteString ->
   RedisCommandClient client a ->
-  (NodeAddress -> IO (client 'Connected)) ->
-  IO (Either ClusterError a)
-executeKeylessClusterCommand client action connector = do
-  topology <- atomically $ readTVar (clusterTopology client)
-  case Map.elems (topologyNodes topology) of
-    [] -> return $ Left $ TopologyError "No nodes available in cluster topology"
-    (node:_) -> executeOnNode client (nodeAddress node) action connector
+  ClusterCommandClient client (Either ClusterError a)
+executeKeyedCommand key action = do
+  ClusterClientState client connector <- State.get
+  liftIO $ executeClusterCommand client key action connector
+
+-- | Internal helper to execute a keyless command within ClusterCommandClient monad
+executeKeylessCommand ::
+  (Client client) =>
+  RedisCommandClient client a ->
+  ClusterCommandClient client (Either ClusterError a)
+executeKeylessCommand action = do
+  ClusterClientState client connector <- State.get
+  liftIO $ executeKeylessClusterCommand client action connector
+
+-- | Helper to unwrap Either ClusterError or fail
+unwrapClusterResult :: (Client client) => Either ClusterError a -> ClusterCommandClient client a
+unwrapClusterResult (Right a) = pure a
+unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
+
+-- | Execute a keyed command and unwrap the result
+executeKeyed :: (Client client) => String -> RedisCommandClient client a -> ClusterCommandClient client a
+executeKeyed key action = do
+  result <- executeKeyedCommand (BS.pack key) action
+  unwrapClusterResult result
+
+-- | Execute a keyless command and unwrap the result
+executeKeyless :: (Client client) => RedisCommandClient client a -> ClusterCommandClient client a
+executeKeyless action = do
+  result <- executeKeylessCommand action
+  unwrapClusterResult result
+
+instance (Client client) => RedisCommands (ClusterCommandClient client) where
+  auth username password = executeKeyless (RedisCommandClient.auth username password)
+  ping = executeKeyless RedisCommandClient.ping
+  set k v = executeKeyed k (RedisCommandClient.set k v)
+  get k = executeKeyed k (RedisCommandClient.get k)
+  mget keys = case keys of
+    [] -> executeKeyless (RedisCommandClient.mget [])
+    (k:_) -> executeKeyed k (RedisCommandClient.mget keys)
+  setnx k v = executeKeyed k (RedisCommandClient.setnx k v)
+  decr k = executeKeyed k (RedisCommandClient.decr k)
+  psetex k ms v = executeKeyed k (RedisCommandClient.psetex k ms v)
+  bulkSet kvs = case kvs of
+    [] -> executeKeyless (RedisCommandClient.bulkSet [])
+    ((k, _):_) -> executeKeyed k (RedisCommandClient.bulkSet kvs)
+  flushAll = executeKeyless RedisCommandClient.flushAll
+  dbsize = executeKeyless RedisCommandClient.dbsize
+  del keys = case keys of
+    [] -> executeKeyless (RedisCommandClient.del [])
+    (k:_) -> executeKeyed k (RedisCommandClient.del keys)
+  exists keys = case keys of
+    [] -> executeKeyless (RedisCommandClient.exists [])
+    (k:_) -> executeKeyed k (RedisCommandClient.exists keys)
+  incr k = executeKeyed k (RedisCommandClient.incr k)
+  hset k f v = executeKeyed k (RedisCommandClient.hset k f v)
+  hget k f = executeKeyed k (RedisCommandClient.hget k f)
+  hmget k fs = executeKeyed k (RedisCommandClient.hmget k fs)
+  hexists k f = executeKeyed k (RedisCommandClient.hexists k f)
+  lpush k vs = executeKeyed k (RedisCommandClient.lpush k vs)
+  lrange k start stop = executeKeyed k (RedisCommandClient.lrange k start stop)
+  expire k secs = executeKeyed k (RedisCommandClient.expire k secs)
+  ttl k = executeKeyed k (RedisCommandClient.ttl k)
+  rpush k vs = executeKeyed k (RedisCommandClient.rpush k vs)
+  lpop k = executeKeyed k (RedisCommandClient.lpop k)
+  rpop k = executeKeyed k (RedisCommandClient.rpop k)
+  sadd k vs = executeKeyed k (RedisCommandClient.sadd k vs)
+  smembers k = executeKeyed k (RedisCommandClient.smembers k)
+  scard k = executeKeyed k (RedisCommandClient.scard k)
+  sismember k v = executeKeyed k (RedisCommandClient.sismember k v)
+  hdel k fs = executeKeyed k (RedisCommandClient.hdel k fs)
+  hkeys k = executeKeyed k (RedisCommandClient.hkeys k)
+  hvals k = executeKeyed k (RedisCommandClient.hvals k)
+  llen k = executeKeyed k (RedisCommandClient.llen k)
+  lindex k idx = executeKeyed k (RedisCommandClient.lindex k idx)
+  clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
+  clientReply val = executeKeyless (RedisCommandClient.clientReply val)
+  zadd k scores = executeKeyed k (RedisCommandClient.zadd k scores)
+  zrange k start stop withScores = executeKeyed k (RedisCommandClient.zrange k start stop withScores)
+  geoadd k members = executeKeyed k (RedisCommandClient.geoadd k members)
+  geodist k m1 m2 unit = executeKeyed k (RedisCommandClient.geodist k m1 m2 unit)
+  geohash k members = executeKeyed k (RedisCommandClient.geohash k members)
+  geopos k members = executeKeyed k (RedisCommandClient.geopos k members)
+  georadius k lon lat radius unit flags = executeKeyed k (RedisCommandClient.georadius k lon lat radius unit flags)
+  georadiusRo k lon lat radius unit flags = executeKeyed k (RedisCommandClient.georadiusRo k lon lat radius unit flags)
+  georadiusByMember k member radius unit flags = executeKeyed k (RedisCommandClient.georadiusByMember k member radius unit flags)
+  georadiusByMemberRo k member radius unit flags = executeKeyed k (RedisCommandClient.georadiusByMemberRo k member radius unit flags)
+  geosearch k from by opts = executeKeyed k (RedisCommandClient.geosearch k from by opts)
+  geosearchstore dest src from by opts storeDist = executeKeyed dest (RedisCommandClient.geosearchstore dest src from by opts storeDist)
+  clusterSlots = executeKeyless RedisCommandClient.clusterSlots

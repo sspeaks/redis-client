@@ -1,5 +1,5 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds  #-}
+{-# LANGUAGE GADTs      #-}
 {-# LANGUAGE RankNTypes #-}
 
 module ConnectionPool
@@ -11,21 +11,24 @@ module ConnectionPool
   )
 where
 
-import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient))
-import Cluster (NodeAddress (..))
-import Control.Concurrent.STM (STM, TVar, atomically, newTVarIO, readTVar, writeTVar)
-import Control.Exception (bracket, catch, SomeException)
-import Control.Monad (forM_)
-import Control.Monad.IO.Class (MonadIO (..))
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
+import           Client                 (Client (..), ConnectionStatus (..),
+                                         PlainTextClient (NotConnectedPlainTextClient),
+                                         TLSClient (NotConnectedTLSClient))
+import           Cluster                (NodeAddress (..))
+import           Control.Concurrent.STM (STM, TVar, atomically, newTVarIO,
+                                         readTVar, readTVarIO, writeTVar)
+import           Control.Exception      (SomeException, bracket, catch)
+import           Control.Monad          (forM_)
+import           Control.Monad.IO.Class (MonadIO (..))
+import           Data.Map.Strict        (Map)
+import qualified Data.Map.Strict        as Map
 
 -- | Configuration for the connection pool
 data PoolConfig = PoolConfig
   { maxConnectionsPerNode :: Int, -- Default: 1 (can scale up)
-    connectionTimeout :: Int,
-    maxRetries :: Int,
-    useTLS :: Bool
+    connectionTimeout     :: Int,
+    maxRetries            :: Int,
+    useTLS                :: Bool
   }
   deriving (Show)
 
@@ -33,7 +36,7 @@ data PoolConfig = PoolConfig
 -- Uses TVar for thread-safe access
 data ConnectionPool client = ConnectionPool
   { poolConnections :: TVar (Map NodeAddress (client 'Connected)),
-    poolConfig :: PoolConfig
+    poolConfig      :: PoolConfig
   }
 
 -- | Create a new empty connection pool
@@ -51,7 +54,7 @@ getOrCreateConnection ::
   (NodeAddress -> IO (client 'Connected)) ->
   m (client 'Connected)
 getOrCreateConnection pool addr connector = liftIO $ do
-  connMap <- atomically $ readTVar (poolConnections pool)
+  connMap <- readTVarIO (poolConnections pool)
   case Map.lookup addr connMap of
     Just conn -> return conn
     Nothing -> do
@@ -66,7 +69,7 @@ getOrCreateConnection pool addr connector = liftIO $ do
 -- | Close all connections in the pool
 closePool :: (Client client) => ConnectionPool client -> IO ()
 closePool pool = do
-  connMap <- atomically $ readTVar (poolConnections pool)
+  connMap <- readTVarIO (poolConnections pool)
   forM_ (Map.elems connMap) $ \conn -> do
     close conn `catch` \(_ :: SomeException) -> return ()
   atomically $ writeTVar (poolConnections pool) Map.empty
