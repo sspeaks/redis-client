@@ -49,7 +49,19 @@ class AzureRedisConnector:
         self.resource_group = resource_group
         self.subscription_was_provided = subscription_was_provided
 
-    def run_az_command(self, command: List[str]) -> str:
+    def obfuscate_sensitive_data(self, text: str) -> str:
+        """Obfuscate access keys and tokens in text for display."""
+        if not text:
+            return text
+        # Look for patterns that might be access keys or tokens
+        # Azure Redis access keys are typically 43 characters base64
+        # Tokens can be much longer (JWT format)
+        import re
+        # Pattern for base64-like strings (likely access keys)
+        text = re.sub(r'\b[A-Za-z0-9+/]{40,}={0,2}\b', '***REDACTED***', text)
+        return text
+    
+    def run_az_command(self, command: List[str], obfuscate_output: bool = False) -> str:
         """Execute an Azure CLI command and return output."""
         try:
             result = subprocess.run(
@@ -58,10 +70,15 @@ class AzureRedisConnector:
                 text=True,
                 check=True
             )
+            if obfuscate_output:
+                return result.stdout  # Return raw output for parsing
             return result.stdout
         except subprocess.CalledProcessError as e:
-            print(f"Error executing Azure CLI command: {e}", file=sys.stderr)
-            print(f"Error output: {e.stderr}", file=sys.stderr)
+            # Obfuscate sensitive data in error messages
+            safe_stderr = self.obfuscate_sensitive_data(e.stderr) if e.stderr else ""
+            print(f"Error executing Azure CLI command (code {e.returncode})", file=sys.stderr)
+            if safe_stderr:
+                print(f"Error output: {safe_stderr}", file=sys.stderr)
             sys.exit(1)
 
     def set_subscription(self):
@@ -214,7 +231,7 @@ class AzureRedisConnector:
                     '--name', name,
                     '--resource-group', resource_group,
                     '--output', 'json'
-                ])
+                ], obfuscate_output=True)
                 keys = json.loads(keys_output)
                 primary_key = keys.get('primaryKey')
                 
@@ -257,7 +274,7 @@ class AzureRedisConnector:
                 'az', 'account', 'get-access-token',
                 '--resource', 'https://redis.azure.com',
                 '--output', 'json'
-            ])
+            ], obfuscate_output=True)
             token_data = json.loads(token_output)
             token = token_data.get('accessToken')
             
@@ -274,16 +291,18 @@ class AzureRedisConnector:
                     '--output', 'tsv'
                 ])
                 object_id = user_output.strip()
-                print("✓ Successfully obtained access token")
+                print("✓ Successfully obtained access token (token hidden for security)")
                 print(f"✓ User Object ID: {object_id}")
                 return token, object_id
             except Exception as e:
-                print(f"Warning: Could not retrieve user Object ID: {e}")
+                safe_error = self.obfuscate_sensitive_data(str(e))
+                print(f"Warning: Could not retrieve user Object ID: {safe_error}")
                 print("Note: For Entra authentication, you may need to manually configure the username")
                 return token, None
                 
         except Exception as e:
-            print(f"Error obtaining access token: {e}", file=sys.stderr)
+            safe_error = self.obfuscate_sensitive_data(str(e))
+            print(f"Error obtaining access token: {safe_error}", file=sys.stderr)
             sys.exit(1)
 
     def get_access_key(self, cache: Dict) -> Optional[str]:
@@ -297,7 +316,7 @@ class AzureRedisConnector:
                 '--name', name,
                 '--resource-group', resource_group,
                 '--output', 'json'
-            ])
+            ], obfuscate_output=True)
             keys = json.loads(keys_output)
             return keys.get('primaryKey')
         except Exception:
@@ -324,10 +343,12 @@ class AzureRedisConnector:
                 # Pass the Object ID as username for Entra authentication
                 command.extend(['-u', object_id, '-a', token])
                 print(f"\n✓ Using Entra authentication with Object ID: {object_id}")
+                print(f"  (Access token hidden for security)")
             else:
                 # Fallback if we couldn't get the Object ID
                 command.extend(['-a', token])
                 print(f"\n✓ Using Entra authentication (username will default to 'default')")
+                print(f"  (Access token hidden for security)")
                 print(f"⚠ Warning: Could not retrieve Object ID; authentication may fail")
         else:
             # Get access key
@@ -335,6 +356,7 @@ class AzureRedisConnector:
             if access_key:
                 command.extend(['-a', access_key])
                 print(f"\n✓ Using access key authentication")
+                print(f"  (Access key hidden for security)")
             else:
                 print("Warning: No authentication credentials available")
         
@@ -369,14 +391,27 @@ class AzureRedisConnector:
                     print("Invalid input. Please enter a valid number.")
         
         print(f"\nLaunching redis-client with command:")
-        print(f"  {' '.join(command)}")
+        # Create a safe version of the command for display
+        safe_command = []
+        skip_next = False
+        for i, arg in enumerate(command):
+            if skip_next:
+                safe_command.append('***REDACTED***')
+                skip_next = False
+            elif arg in ['-a', '--password']:
+                safe_command.append(arg)
+                skip_next = True
+            else:
+                safe_command.append(arg)
+        print(f"  {' '.join(safe_command)}")
         print("\n" + "=" * 80)
         
         # Execute the redis-client
         try:
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as e:
-            print(f"\nError running redis-client: {e}", file=sys.stderr)
+            safe_error = self.obfuscate_sensitive_data(str(e))
+            print(f"\nError running redis-client: {safe_error}", file=sys.stderr)
             restore_terminal()
             sys.exit(1)
         except KeyboardInterrupt:
