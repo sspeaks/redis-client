@@ -16,7 +16,29 @@ import json
 import subprocess
 import sys
 import os
+import atexit
 from typing import List, Dict, Optional
+
+# Save terminal settings at startup
+_original_terminal_settings = None
+if sys.stdin.isatty():
+    try:
+        import termios
+        _original_terminal_settings = termios.tcgetattr(sys.stdin.fileno())
+    except (ImportError, termios.error):
+        pass
+
+def restore_terminal():
+    """Restore terminal to original settings."""
+    if _original_terminal_settings is not None:
+        try:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _original_terminal_settings)
+        except:
+            pass
+
+# Register terminal restoration on exit
+atexit.register(restore_terminal)
 
 
 class AzureRedisConnector:
@@ -331,10 +353,15 @@ class AzureRedisConnector:
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as e:
             print(f"\nError running redis-client: {e}", file=sys.stderr)
+            restore_terminal()
             sys.exit(1)
         except KeyboardInterrupt:
             print("\n\nInterrupted by user.")
+            restore_terminal()
             sys.exit(0)
+        finally:
+            # Always restore terminal settings after redis-client exits
+            restore_terminal()
 
     def run(self):
         """Main execution flow."""
