@@ -1,6 +1,20 @@
 dist-newstyle
 result
 .direnv
+
+# Profiling artifacts
+*.hp
+*.prof
+*.ps
+*.aux
+*.stat
+*.eventlog
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
 __pycache__
 *.pyc
 *.pyo

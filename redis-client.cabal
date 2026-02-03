@@ -56,7 +56,7 @@ common warnings
     ghc-options: -Wall
 
 library resp
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , bytestring
                     , containers
                     , attoparsec
@@ -65,7 +65,7 @@ library resp
     exposed-modules:  Resp
 
 library client
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , tls
                     , network
                     , data-default-class
@@ -78,7 +78,7 @@ library client
     exposed-modules:  Client
 
 library crc16
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , text
                     , bytestring
     hs-source-dirs:   lib/crc16
@@ -87,7 +87,7 @@ library crc16
     exposed-modules:  Crc16
 
 library redis-command-client
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , bytestring
                     , mtl
                     , client
@@ -102,7 +102,7 @@ test-suite RespSpec
     default-language: GHC2021
     main-is:          Spec.hs
     hs-source-dirs:   test
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , hspec
                     , resp
                     , redis-command-client
@@ -113,7 +113,7 @@ executable EndToEnd
     default-language: GHC2021
     main-is:          E2E.hs
     hs-source-dirs:   test
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , hspec
                     , redis-command-client
                     , bytestring
@@ -128,7 +128,7 @@ executable redis-client
     import:           warnings
     ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M"
     main-is:          Main.hs
-    build-depends:    base ^>=4.19
+    build-depends:    base >=4.19 && <5
                     , bytestring
                     , redis-command-client
                     , mtl
