@@ -11,6 +11,8 @@ module ClusterCommandClient
     createClusterClient,
     closeClusterClient,
     executeClusterCommand,
+    executeClusterCommandForKey,
+    executeKeylessClusterCommand,
     withRetry,
     parseRedirectionError,
     handleMoved,
@@ -251,3 +253,31 @@ handleAsk client redir action connector = do
   case result of
     Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
     Right value -> return $ Right value
+
+
+-- | Helper function to execute a cluster command with a String key
+-- This eliminates the duplication of converting the key to ByteString for routing
+-- while still passing the original String key to commands that need it
+executeClusterCommandForKey ::
+  (Client client) =>
+  ClusterClient client ->
+  String ->
+  (String -> RedisCommandClient client a) ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  IO (Either ClusterError a)
+executeClusterCommandForKey client key commandBuilder connector =
+  executeClusterCommand client (BS.pack key) (commandBuilder key) connector
+
+-- | Helper function to execute keyless cluster commands (like PING, CLUSTER SLOTS)
+-- Routes to a random node from the cluster topology
+executeKeylessClusterCommand ::
+  (Client client) =>
+  ClusterClient client ->
+  RedisCommandClient client a ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  IO (Either ClusterError a)
+executeKeylessClusterCommand client action connector = do
+  topology <- atomically $ readTVar (clusterTopology client)
+  case Map.elems (topologyNodes topology) of
+    [] -> return $ Left $ TopologyError "No nodes available in cluster topology"
+    (node:_) -> executeOnNode client (nodeAddress node) action connector

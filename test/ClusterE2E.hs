@@ -56,14 +56,14 @@ main = hspec $ do
           let key = "cluster:test:key"
           
           -- SET command
-          setResult <- executeClusterCommand client (BS.pack key) (set key "testvalue") connector
+          setResult <- executeClusterCommandForKey client key (\k -> set k "testvalue") connector
           case setResult of
             Right (RespSimpleString "OK") -> return ()
             Right other -> expectationFailure $ "Unexpected SET response: " ++ show other
             Left err -> expectationFailure $ "SET failed: " ++ show err
           
           -- GET command
-          getResult <- executeClusterCommand client (BS.pack key) (get key) connector
+          getResult <- executeClusterCommandForKey client key get connector
           case getResult of
             Right (RespBulkString "testvalue") -> return ()
             Right other -> expectationFailure $ "Unexpected GET response: " ++ show other
@@ -76,7 +76,7 @@ main = hspec $ do
           
           -- Set all keys
           mapM_ (\key -> do
-            result <- executeClusterCommand client (BS.pack key) (set key ("value_" ++ key)) connector
+            result <- executeClusterCommandForKey client key (\k -> set k ("value_" ++ k)) connector
             case result of
               Right (RespSimpleString "OK") -> return ()
               Right other -> expectationFailure $ "Unexpected SET response for " ++ key ++ ": " ++ show other
@@ -85,7 +85,7 @@ main = hspec $ do
           
           -- Get all keys and verify
           mapM_ (\key -> do
-            result <- executeClusterCommand client (BS.pack key) (get key) connector
+            result <- executeClusterCommandForKey client key get connector
             case result of
               Right (RespBulkString val) | val == BSL.pack ("value_" ++ key) -> return ()
               Right other -> expectationFailure $ "Unexpected GET response for " ++ key ++ ": " ++ show other
@@ -104,8 +104,8 @@ main = hspec $ do
           slot1 `shouldBe` slot2
           
           -- Set both keys
-          result1 <- executeClusterCommand client (BS.pack key1) (set key1 "profile_data") connector
-          result2 <- executeClusterCommand client (BS.pack key2) (set key2 "settings_data") connector
+          result1 <- executeClusterCommandForKey client key1 (\k -> set k "profile_data") connector
+          result2 <- executeClusterCommandForKey client key2 (\k -> set k "settings_data") connector
           
           case (result1, result2) of
             (Right (RespSimpleString "OK"), Right (RespSimpleString "OK")) -> return ()
@@ -116,20 +116,20 @@ main = hspec $ do
           let key = "counter:test"
           
           -- SET initial value
-          setResult <- executeClusterCommand client (BS.pack key) (set key "0") connector
+          setResult <- executeClusterCommandForKey client key (\k -> set k "0") connector
           case setResult of
             Right (RespSimpleString "OK") -> return ()
             _ -> expectationFailure "Failed to set initial counter value"
           
           -- INCR
-          incrResult <- executeClusterCommand client (BS.pack key) (incr key) connector
+          incrResult <- executeClusterCommandForKey client key incr connector
           case incrResult of
             Right (RespInteger 1) -> return ()
             Right other -> expectationFailure $ "Unexpected INCR response: " ++ show other
             Left err -> expectationFailure $ "INCR failed: " ++ show err
           
           -- GET to verify
-          getResult <- executeClusterCommand client (BS.pack key) (get key) connector
+          getResult <- executeClusterCommandForKey client key get connector
           case getResult of
             Right (RespBulkString "1") -> return ()
             Right other -> expectationFailure $ "Unexpected GET response: " ++ show other
@@ -137,8 +137,8 @@ main = hspec $ do
 
       it "can execute PING through cluster" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          -- PING doesn't need a key, so we use a dummy key for routing
-          result <- executeClusterCommand client "dummy" ping connector
+          -- PING doesn't need a routing key - using keyless helper
+          result <- executeKeylessClusterCommand client ping connector
           case result of
             Right (RespSimpleString "PONG") -> return ()
             Right other -> expectationFailure $ "Unexpected PING response: " ++ show other
@@ -146,7 +146,7 @@ main = hspec $ do
 
       it "can query CLUSTER SLOTS" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          result <- executeClusterCommand client "dummy" clusterSlots connector
+          result <- executeKeylessClusterCommand client clusterSlots connector
           case result of
             Right (RespArray slots) -> do
               -- Verify we got some slot ranges
