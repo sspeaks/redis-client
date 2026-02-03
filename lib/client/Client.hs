@@ -78,11 +78,8 @@ instance Client PlainTextClient where
     ipCorrectEndian <- resolve hostname
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
-    -- Optimize socket for high throughput
-    setSocketOption sock SendBuffer (12 * 1024 * 1024)  -- 12MB send buffer (covers >8MB app chunks)
-    setSocketOption sock RecvBuffer (64 * 1024)         -- 64KB receive buffer (replies are disabled)
-    setSocketOption sock NoDelay 1                      -- Disable Nagle's algorithm
-    setSocketOption sock KeepAlive 1              -- Enable keep-alive
+    setSocketOption sock NoDelay 1     -- Disable Nagle's algorithm
+    setSocketOption sock KeepAlive 1   -- Enable keep-alive
     S.connect sock (addrAddress addrInfo) `catch` \(e :: IOException) -> do
       printf "Wasn't able to connect to the server: %s...\n" (show e)
       putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
@@ -114,6 +111,8 @@ instance Client TLSClient where
     ipCorrectEndian <- resolve hostname
     let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
     sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
+    setSocketOption sock NoDelay 1     -- Disable Nagle's algorithm
+    setSocketOption sock KeepAlive 1   -- Enable keep-alive
     S.connect sock (addrAddress addrInfo)
     store <- getSystemCertificateStore
     insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
