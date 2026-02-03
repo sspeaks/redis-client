@@ -1,8 +1,17 @@
-.PHONY: help build test test-unit test-e2e clean redis-start redis-stop profile
+# Agent testing infrastructure
+# First-time setup: make setup
+# Then: make build && make test-unit
+
+.PHONY: help build test test-unit test-e2e clean redis-start redis-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: build test test-unit test-e2e redis-start redis-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e redis-start redis-stop profile clean"
+
+# Setup dependencies (run once in new environment)
+setup:
+	cabal update
+	sudo apt-get update && sudo apt-get install -y libreadline-dev || true
 
 # Build the project
 build:
