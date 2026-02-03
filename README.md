@@ -230,9 +230,10 @@ docker rm redis-client-dev
 **1. Quick development cycle:**
 ```sh
 make redis-start     # Start Redis once
-make dev             # Build and run unit tests
+make build           # Build the project
+make test-unit       # Run unit tests
 # ... make changes ...
-make dev             # Test again
+make test-unit       # Test again
 make redis-stop      # Stop when done
 ```
 
