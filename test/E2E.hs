@@ -44,7 +44,7 @@ import           Test.Hspec                 (beforeAll_, before_, describe,
                                              shouldReturn, shouldSatisfy)
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
-runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "" False 0 False False Nothing)
+runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "default" "" False 0 False False Nothing)
 
 getRedisClientPath :: IO FilePath
 getRedisClientPath = do
@@ -106,7 +106,7 @@ main = do
         it "ping is encoded properly and returns pong" $ do
           runRedisAction ping `shouldReturn` RespSimpleString "PONG"
         it "auth negotiates the RESP3 handshake" $ do
-          authResp <- runRedisAction (auth "")
+          authResp <- runRedisAction (auth "default" "")
           case authResp of
             RespError err -> expectationFailure $ "Unexpected AUTH error: " <> err
             RespMap _ -> pure ()
@@ -350,7 +350,7 @@ main = do
                 }
             viaTunnel :: RedisCommandClient PlainTextClient a -> IO a
             viaTunnel action =
-              runCommandsAgainstPlaintextHost (RunState "localhost" (Just 6379) "" False 0 False False Nothing) action
+              runCommandsAgainstPlaintextHost (RunState "localhost" (Just 6379) "default" "" False 0 False False Nothing) action
         withCreateProcess cp $ \_ mOut mErr ph ->
           case (mOut, mErr) of
             (Just hout, Just herr) -> do
