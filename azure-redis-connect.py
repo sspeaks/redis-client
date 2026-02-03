@@ -22,9 +22,10 @@ from typing import List, Dict, Optional
 class AzureRedisConnector:
     """Handles Azure Redis cache discovery and connection."""
 
-    def __init__(self, subscription: str, resource_group: Optional[str] = None):
+    def __init__(self, subscription: str, resource_group: Optional[str] = None, subscription_was_provided: bool = True):
         self.subscription = subscription
         self.resource_group = resource_group
+        self.subscription_was_provided = subscription_was_provided
 
     def run_az_command(self, command: List[str]) -> str:
         """Execute an Azure CLI command and return output."""
@@ -43,8 +44,11 @@ class AzureRedisConnector:
 
     def set_subscription(self):
         """Set the Azure subscription context."""
-        print(f"Setting subscription to: {self.subscription}")
-        self.run_az_command(['az', 'account', 'set', '--subscription', self.subscription])
+        # Only switch subscription if user explicitly provided one
+        if self.subscription_was_provided:
+            print(f"Setting subscription to: {self.subscription}")
+            self.run_az_command(['az', 'account', 'set', '--subscription', self.subscription])
+        # If using default subscription, no need to switch
 
     def list_redis_caches(self) -> List[Dict]:
         """List all Redis caches in the subscription (optionally filtered by resource group)."""
@@ -97,9 +101,10 @@ class AzureRedisConnector:
         
         while True:
             try:
+                sys.stdout.flush()  # Ensure prompt is displayed
                 selection = input(f"Select a cache (1-{len(caches)}): ")
-                # Explicitly strip all whitespace including carriage returns
-                selection = selection.strip().rstrip('\r\n').strip()
+                # Clean the input thoroughly
+                selection = selection.replace('\r', '').replace('\n', '').strip()
                 if not selection:
                     continue
                 idx = int(selection)
@@ -120,9 +125,10 @@ class AzureRedisConnector:
         
         while True:
             try:
+                sys.stdout.flush()  # Ensure prompt is displayed
                 selection = input("\nSelect mode (1-3): ")
-                # Explicitly strip all whitespace including carriage returns
-                selection = selection.strip().rstrip('\r\n').strip()
+                # Clean the input thoroughly
+                selection = selection.replace('\r', '').replace('\n', '').strip()
                 if not selection:
                     continue
                 if selection == '1':
@@ -279,9 +285,10 @@ class AzureRedisConnector:
             # For fill mode, ask for data size
             while True:
                 try:
+                    sys.stdout.flush()  # Ensure prompt is displayed
                     data_gb = input("\nEnter data size in GB (e.g., 5): ")
-                    # Explicitly strip all whitespace including carriage returns
-                    data_gb = data_gb.strip().rstrip('\r\n').strip()
+                    # Clean the input thoroughly
+                    data_gb = data_gb.replace('\r', '').replace('\n', '').strip()
                     if not data_gb:
                         continue
                     data_gb = int(data_gb)
@@ -289,8 +296,9 @@ class AzureRedisConnector:
                         command.extend(['-d', str(data_gb)])
                         
                         # Ask if they want to flush first
+                        sys.stdout.flush()  # Ensure prompt is displayed
                         flush = input("Flush the cache before filling? (y/n): ")
-                        flush = flush.strip().rstrip('\r\n').strip().lower()
+                        flush = flush.replace('\r', '').replace('\n', '').strip().lower()
                         if flush == 'y':
                             command.append('-f')
                         break
@@ -369,6 +377,7 @@ def main():
     
     # Get subscription - use provided one or default to current
     subscription = args.subscription
+    subscription_was_provided = args.subscription is not None
     if not subscription:
         try:
             result = subprocess.run(
@@ -385,7 +394,7 @@ def main():
             sys.exit(1)
     
     # Create connector and run
-    connector = AzureRedisConnector(subscription, args.resource_group)
+    connector = AzureRedisConnector(subscription, args.resource_group, subscription_was_provided)
     connector.run()
 
 
