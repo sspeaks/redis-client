@@ -28,11 +28,11 @@ rec {
       fi
       
       # Install the azure-redis-connect script
-      cp ${scriptSrc} $out/bin/azure-redis-connect
-      chmod +x $out/bin/azure-redis-connect
+      cp ${scriptSrc} $out/bin/redis-connect
+      chmod +x $out/bin/redis-connect
       
       # Wrap the script to ensure python3 is in PATH
-      wrapProgram $out/bin/azure-redis-connect \
+      wrapProgram $out/bin/redis-connect \
         --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.python3 ]}
     '';
   };
