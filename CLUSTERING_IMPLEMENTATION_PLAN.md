@@ -676,10 +676,10 @@ describe "Command key extraction" $ do
 ## Implementation Phases & Timeline Estimate
 
 ### Phase 1: Foundation (2-3 weeks)
-- [ ] Implement `Cluster.hs` topology management
-- [ ] Implement `ConnectionPool.hs` 
-- [ ] Add slot calculation and routing
-- [ ] Unit tests for core cluster logic
+- [x] Implement `Cluster.hs` topology management
+- [x] Implement `ConnectionPool.hs` 
+- [x] Add slot calculation and routing
+- [x] Unit tests for core cluster logic
 
 ### Phase 2: Command Execution (2 weeks)
 - [ ] Extend `RedisCommandClient` for cluster operations

@@ -97,6 +97,22 @@ library redis-command-client
     default-language: GHC2021
     exposed-modules:  RedisCommandClient
 
+library cluster
+    build-depends:    base >=4.19 && <5
+                    , bytestring
+                    , text
+                    , containers
+                    , vector
+                    , time
+                    , stm
+                    , crc16
+                    , client
+                    , resp
+    hs-source-dirs:   lib/cluster
+    default-language: GHC2021
+    exposed-modules:  Cluster
+                    , ConnectionPool
+
 test-suite RespSpec
     type:             exitcode-stdio-1.0
     default-language: GHC2021
@@ -109,6 +125,19 @@ test-suite RespSpec
                     , bytestring
                     , containers
                     , attoparsec
+
+test-suite ClusterSpec
+    type:             exitcode-stdio-1.0
+    default-language: GHC2021
+    main-is:          ClusterSpec.hs
+    hs-source-dirs:   test
+    build-depends:    base >=4.19 && <5
+                    , hspec
+                    , cluster
+                    , resp
+                    , bytestring
+                    , time
+
 executable EndToEnd
     default-language: GHC2021
     main-is:          E2E.hs
