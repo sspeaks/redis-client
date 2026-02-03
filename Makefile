@@ -10,19 +10,33 @@ help:
 
 # Setup dependencies (run once in new environment)
 setup:
-	cabal update
-	sudo apt-get update && sudo apt-get install -y libreadline-dev || true
+	@if command -v nix-shell >/dev/null 2>&1; then \
+		echo "Using Nix for dependency management"; \
+		nix-shell --run "cabal update"; \
+	else \
+		echo "Nix not found, using system package manager"; \
+		cabal update; \
+		sudo apt-get update && sudo apt-get install -y libreadline-dev || true; \
+	fi
 
 # Build the project
 build:
-	cabal build
+	@if command -v nix-shell >/dev/null 2>&1; then \
+		nix-shell --run "cabal build"; \
+	else \
+		cabal build; \
+	fi
 
 # Run all tests
 test: test-unit test-e2e
 
 # Run unit tests (RespSpec)
 test-unit:
-	cabal test RespSpec
+	@if command -v nix-shell >/dev/null 2>&1; then \
+		nix-shell --run "cabal test RespSpec"; \
+	else \
+		cabal test RespSpec; \
+	fi
 
 # Run end-to-end tests with Docker
 test-e2e:
@@ -39,10 +53,18 @@ redis-stop:
 
 # Build with profiling enabled
 profile:
-	cabal build --enable-profiling
+	@if command -v nix-shell >/dev/null 2>&1; then \
+		nix-shell --run "cabal build --enable-profiling"; \
+	else \
+		cabal build --enable-profiling; \
+	fi
 
 # Clean build artifacts
 clean:
-	cabal clean
+	@if command -v nix-shell >/dev/null 2>&1; then \
+		nix-shell --run "cabal clean"; \
+	else \
+		cabal clean; \
+	fi
 	rm -f *.hp *.prof *.ps *.aux *.stat
 	rm -rf dist-newstyle
