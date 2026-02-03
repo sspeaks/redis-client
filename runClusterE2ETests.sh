@@ -1,4 +1,6 @@
-#!/bin/bash
+#! /usr/bin/env nix-shell
+#! nix-shell -i bash -p redis
+
 set -e
 
 echo "Starting Redis Cluster E2E Tests..."
@@ -13,12 +15,6 @@ docker-compose up -d
 # Wait for nodes to be ready
 echo "Waiting for Redis nodes to be ready..."
 sleep 5
-
-# Check if redis-cli is available
-if ! command -v redis-cli &> /dev/null; then
-    echo "Warning: redis-cli not found. Cluster creation may fail."
-    echo "Please ensure redis-cli is installed or run this in nix-shell."
-fi
 
 # Create the cluster
 echo "Creating Redis cluster..."

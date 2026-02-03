@@ -70,11 +70,6 @@ test-cluster-e2e:
 		echo "Error: docker is not installed or not in PATH"; \
 		exit 1; \
 	fi
-	@if ! command -v nix-shell >/dev/null 2>&1; then \
-		echo "Error: nix-shell is not installed or not in PATH"; \
-		echo "Cluster E2E tests require Nix for building and redis-cli"; \
-		exit 1; \
-	fi
 	@echo "Running cluster E2E tests..."
 	./runClusterE2ETests.sh
 

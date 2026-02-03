@@ -117,7 +117,7 @@ parseClusterSlots (RespArray slots) currentTime = do
     parseSlotRange other = Left $ "Invalid slot range format: " ++ show other
 
     parseNodeInfo :: RespData -> Either String (Text, NodeAddress)
-    parseNodeInfo (RespArray [RespBulkString host, RespInteger port, RespBulkString nodeId]) =
+    parseNodeInfo (RespArray (RespBulkString host : RespInteger port : RespBulkString nodeId : _)) =
       Right (T.pack $ LBSC.unpack nodeId, NodeAddress (LBSC.unpack host) (fromIntegral port))
     parseNodeInfo other = Left $ "Invalid node info format: " ++ show other
 
