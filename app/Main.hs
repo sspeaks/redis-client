@@ -12,7 +12,7 @@ import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BS
-import           Filler                     (fillCacheWithData, initRandomNoise)
+import           Filler                     (fillCacheWithData, fillCacheWithDataMB, initRandomNoise)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
                                              RedisCommands (flushAll),
@@ -34,7 +34,7 @@ import           System.Random              (randomIO)
 import           Data.Word                  (Word64)
 
 defaultRunState :: RunState
-defaultRunState = RunState "" Nothing "" False 0 False False
+defaultRunState = RunState "" Nothing "" False 0 False False (Just 8)
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
@@ -44,7 +44,8 @@ options =
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
-    Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)"
+    Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)",
+    Option ['n'] ["connections"] (ReqArg (\arg opt -> return $ opt {numConnections = Just . read $ arg}) "NUM") "Number of parallel connections (default: 8)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -120,14 +121,21 @@ fill state = do
           then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state)
           else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state)
       else do
-        printf "Filling cache '%s' with %dGB of data using %d parallel connections\n" (host state) (dataGBs state) (dataGBs state)
-        let jobs = zip [0..] (replicate (dataGBs state) 1)
-        mvars <- mapM (\(idx, gb) -> do
+        -- Use numConnections (defaults to 8)
+        let nConns = maybe 8 id (numConnections state)
+            totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
+            baseMB = totalMB `div` nConns
+            remainder = totalMB `mod` nConns
+            -- Each connection gets (baseMB + 1) or baseMB MB
+            -- Jobs: (connectionIdx, mbForThisConnection)
+            jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
+        printf "Filling cache '%s' with %dGB of data using %d parallel connections\n" (host state) (dataGBs state) (length jobs)
+        mvars <- mapM (\(idx, mb) -> do
             mv <- newEmptyMVar
             _ <- forkIO $ do
                  if useTLS state
-                    then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed idx gb
-                    else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed idx gb
+                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb
+                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb
                  putMVar mv ()
             return mv) jobs
         mapM_ takeMVar mvars
@@ -162,8 +170,6 @@ repl isTTY = do
     readCommand
       | isTTY = readline "> "
       | otherwise = do
-          putStr "> "
-          hFlush stdout
           eof <- isEOF
           if eof
             then return Nothing

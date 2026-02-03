@@ -516,7 +516,8 @@ data RunState = RunState
     useTLS :: Bool,
     dataGBs :: Int,
     flush :: Bool,
-    serial :: Bool
+    serial :: Bool,
+    numConnections :: Maybe Int
   }
   deriving (Show)
 

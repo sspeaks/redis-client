@@ -135,7 +135,6 @@ executable redis-client
                     , client
                     , random
                     , resp
-                    , time
                     , attoparsec
                     , readline
     hs-source-dirs:   app

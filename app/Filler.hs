@@ -94,7 +94,12 @@ lookupChunkKilos = do
 
 -- | Fills the cache with roughly the requested GB of data.
 fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> RedisCommandClient client ()
-fillCacheWithData baseSeed threadIdx gb = do
+fillCacheWithData baseSeed threadIdx gb = fillCacheWithDataMB baseSeed threadIdx (gb * 1024)
+
+-- | Fills the cache with roughly the requested MB of data.
+-- This allows finer-grained parallelization.
+fillCacheWithDataMB :: (Client client) => Word64 -> Int -> Int -> RedisCommandClient client ()
+fillCacheWithDataMB baseSeed threadIdx mb = do
   ClientState client _ <- State.get
   -- deterministic start seed for this thread based on the global baseSeed
   let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
@@ -107,8 +112,8 @@ fillCacheWithData baseSeed threadIdx gb = do
   -- affects this specific connection.
   clientReply OFF
   
-  -- Calculate total chunks needed based on actual GB requested
-  let totalKilosNeeded = gb * 1024 * 1024  -- Convert GB to KB
+  -- Calculate total chunks needed based on actual MB requested
+  let totalKilosNeeded = mb * 1024  -- Convert MB to KB
       totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
   
   -- Send all chunks sequentially (fire-and-forget mode)
