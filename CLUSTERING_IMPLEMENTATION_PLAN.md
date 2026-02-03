@@ -74,9 +74,9 @@ This document outlines a comprehensive plan for implementing Redis Cluster suppo
 ```
 CLUSTER SLOTS     → Returns slot ranges and node assignments
 CLUSTER NODES     → Returns full cluster topology
-READONLY          → Enable reads from replicas
-READWRITE         → Disable reads from replicas (default)
 ```
+
+**Note**: READONLY/READWRITE commands for replica reads are not part of initial implementation.
 
 ### Error Types
 
@@ -474,32 +474,7 @@ redis-client tunn --cluster --host node1 --tunnel-mode smart
 
 ### Phase 4: Advanced Features
 
-#### 4.1 Read Replica Support
-
-**Use Case**: Scale read-heavy workloads
-
-**Implementation**:
-```haskell
-data ReadPolicy
-  = ReadFromMaster  -- Default, strongest consistency
-  | ReadFromReplica  -- Enable with READONLY command
-  | ReadFromNearest  -- Choose by latency (future)
-
-executeRead :: ClusterClient client -> ReadPolicy -> RespData -> IO RespData
-executeRead cluster policy command = case policy of
-  ReadFromMaster -> routeToMaster cluster command
-  ReadFromReplica -> do
-    sendCommand (currentNode cluster) (wrapInRay ["READONLY"])
-    routeToReplica cluster command
-```
-
-**Trade-offs**:
-- **Pro**: Horizontal scaling for reads
-- **Pro**: Reduced load on master nodes
-- **Con**: Eventual consistency (replica lag)
-- **Con**: Additional command overhead (READONLY)
-
-#### 4.2 Pipelining in Cluster Mode
+#### 4.1 Pipelining in Cluster Mode
 
 **Challenge**: Maintain pipelining benefits across multiple nodes
 
@@ -525,7 +500,7 @@ pipelineClusterCommands cluster commands = do
 - **Con**: Complex result ordering logic
 - **Con**: Partial failures harder to handle
 
-#### 4.3 Multi-Key Command Handling
+#### 4.2 Multi-Key Command Handling
 
 **Challenge**: MGET, MSET, DEL with keys in different slots
 
@@ -725,12 +700,13 @@ describe "Command key extraction" $ do
 - [ ] Performance testing and optimization
 
 ### Phase 5: Advanced Features (2-3 weeks, Optional)
-- [ ] Read replica support
 - [ ] Pipelining optimization
 - [ ] Multi-key command splitting
 - [ ] Enhanced error messages and debugging
 
 **Total Estimated Effort**: 9-13 weeks (can be parallelized)
+
+**Note**: Read replica support (READONLY/READWRITE commands) is not planned for initial implementation. The focus is on core functional correctness rather than high-throughput optimizations. This can be reconsidered as a future enhancement if users request it.
 
 ## Configuration & User Interface
 
@@ -745,7 +721,6 @@ Cluster Options:
   --cluster-slots        Discover using CLUSTER SLOTS (default)
   --cluster-nodes        Discover using CLUSTER NODES
   --cluster-refresh INT  Topology refresh interval in seconds (default: 60)
-  --read-replicas        Enable reads from replicas
 ```
 
 **Examples**:
