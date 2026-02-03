@@ -55,13 +55,13 @@ docker load < result
 
 # Run the cluster E2E tests in Docker
 echo "Running cluster E2E tests in Docker container..."
-docker run --network=host clusterE2eTests:latest || {
+docker run --network=host clustere2etests:latest  || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
     cd docker-cluster
     docker-compose down
     # Clean up docker image
-    docker rmi $(docker images "clusterE2eTests:*" -q) 2>/dev/null || true
+    docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
     rm -f result
     exit $EXIT_CODE
 }
@@ -71,7 +71,7 @@ echo "Cleaning up..."
 cd docker-cluster
 docker-compose down
 cd ..
-docker rmi $(docker images "clusterE2eTests:*" -q) 2>/dev/null || true
+docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
 rm -f result
 
 echo "Cluster E2E tests completed successfully!"
