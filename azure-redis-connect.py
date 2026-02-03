@@ -175,45 +175,70 @@ class AzureRedisConnector:
         name = cache.get('name')
         resource_group = cache.get('resourceGroup')
         
-        # Strategy: Try to get access keys and check if they're valid
-        # When access key authentication is disabled, list-keys may still return keys,
-        # but they will be empty/null or the command may fail
+        # Strategy: Check if access policy assignments exist
+        # The presence of access policy assignments indicates Entra authentication is configured
         
         print(f"\nChecking authentication method for {name}...")
         
         try:
-            # Try to retrieve access keys
-            keys_output = self.run_az_command([
-                'az', 'redis', 'list-keys',
+            # Check if access policy assignments exist (indicates Entra auth)
+            policy_output = self.run_az_command([
+                'az', 'redis', 'access-policy-assignment', 'list',
                 '--name', name,
                 '--resource-group', resource_group,
                 '--output', 'json'
             ])
-            keys = json.loads(keys_output)
-            primary_key = keys.get('primaryKey')
+            policies = json.loads(policy_output)
             
-            # Check if the key is actually usable (not None, not empty)
-            if primary_key and len(primary_key) > 0:
-                print(f"✓ Cache has access keys available")
-                print(f"  Access key authentication appears to be enabled")
-                return False
-            else:
-                # Keys are null/empty - access key authentication is disabled
-                print(f"✓ Access keys are disabled (empty/null keys returned)")
+            # If access policy assignments exist, Entra authentication is configured
+            if policies and len(policies) > 0:
+                print(f"✓ Found {len(policies)} access policy assignment(s)")
                 print(f"  Entra (Azure AD) authentication required")
                 return True
+            else:
+                # No access policy assignments - using access key authentication
+                print(f"✓ No access policy assignments found")
+                print(f"  Access key authentication available")
+                return False
                 
         except subprocess.CalledProcessError as e:
-            # If list-keys command fails, assume Entra-only
-            print(f"✓ Cannot retrieve access keys (command failed with code {e.returncode})")
-            print(f"  Entra (Azure AD) authentication required")
-            return True
+            # If the command fails, it might be an older cache or permission issue
+            # Try to check for access keys as fallback
+            print(f"  Cannot check access policy assignments (command failed with code {e.returncode})")
+            print(f"  Attempting fallback to access key check...")
+            
+            try:
+                # Fallback: try to retrieve access keys
+                keys_output = self.run_az_command([
+                    'az', 'redis', 'list-keys',
+                    '--name', name,
+                    '--resource-group', resource_group,
+                    '--output', 'json'
+                ])
+                keys = json.loads(keys_output)
+                primary_key = keys.get('primaryKey')
+                
+                # If keys exist and are non-empty, assume access key auth is available
+                # NOTE: This is a fallback and may not be 100% reliable
+                if primary_key and len(primary_key) > 0:
+                    print(f"✓ Access keys retrieved successfully")
+                    print(f"  Access key authentication appears to be available")
+                    return False
+                else:
+                    print(f"✓ Access keys are empty/null")
+                    print(f"  Entra (Azure AD) authentication likely required")
+                    return True
+                    
+            except subprocess.CalledProcessError:
+                # Both methods failed - default to Entra auth
+                print(f"✓ Cannot determine auth method - defaulting to Entra authentication")
+                return True
         except json.JSONDecodeError as e:
-            print(f"Warning: Could not parse keys response: {e}")
+            print(f"Warning: Could not parse policy response: {e}")
             print(f"  Assuming Entra authentication is required")
             return True
         except Exception as e:
-            print(f"Warning: Unexpected error checking access keys: {e}")
+            print(f"Warning: Unexpected error checking auth method: {e}")
             print(f"  Assuming Entra authentication is required")
             return True
 

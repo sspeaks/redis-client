@@ -167,11 +167,13 @@ Now you can connect to localhost:6379 with any Redis client.
 ### Entra (Azure AD) Authentication
 
 When a cache uses Entra authentication (access keys disabled), the script:
-1. Attempts to retrieve access keys via `az redis list-keys` 
-2. If keys are empty/null or the command fails, determines that Entra authentication is required
+1. Checks for access policy assignments via `az redis access-policy-assignment list` 
+2. If access policy assignments exist, determines that Entra authentication is required
 3. Uses `az account get-access-token --resource https://redis.azure.com` to obtain an OAuth token
 4. Retrieves the Object ID (OID) of the signed-in user via `az ad signed-in-user show`
 5. Passes both the Object ID (as username) and the token (as password) to redis-client
+
+**Fallback:** If the access policy assignment check fails, the script attempts to retrieve access keys via `az redis list-keys` as a fallback method.
 
 **Entra Authentication Requirements:**
 
