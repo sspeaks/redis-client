@@ -218,7 +218,7 @@ class AzureRedisConnector:
         is_entra = self.check_entra_auth(cache)
         
         # Build command
-        command = ['cabal', 'run', 'redis-client', '--', mode, '-h', hostname, '-t']
+        command = ['redis-client', mode, '-h', hostname, '-t']
         
         if is_entra:
             # Get Entra token and use it as password

@@ -58,15 +58,12 @@ When you run the script, it will guide you through:
 1. **List Caches**: Shows all available Redis caches with details
    ```
    Available Redis Caches:
-   --------------------------------------------------------------------------------
-   1. my-prod-cache
-      Resource Group: production-rg
-      Location: eastus
-      SKU: Premium
-      Hostname: my-prod-cache.redis.cache.windows.net
-      SSL Port: 6380
-      Non-SSL Enabled: False
-   --------------------------------------------------------------------------------
+   
+   | # | Name           | Resource Group | Location | SKU      | Hostname                                      | SSL Port | Non-SSL |
+   |---|----------------|----------------|----------|----------|-----------------------------------------------|----------|---------|
+   | 1 | my-prod-cache  | production-rg  | eastus   | Premium  | my-prod-cache.redis.cache.windows.net        | 6380     | False   |
+   | 2 | my-test-cache  | test-rg        | westus   | Standard | my-test-cache.redis.cache.windows.net        | 6380     | False   |
+   | 3 | my-dev-cache   | dev-rg         | eastus2  | Basic    | my-dev-cache.redis.cache.windows.net         | 6380     | True    |
    ```
 
 2. **Select Cache**: Choose a cache by entering its number
@@ -108,7 +105,7 @@ Enter data size in GB (e.g., 5): 10
 Flush the cache before filling? (y/n): y
 
 Launching redis-client with command:
-  cabal run redis-client -- fill -h my-cache.redis.cache.windows.net -t -a <token> -d 10 -f
+  redis-client fill -h my-cache.redis.cache.windows.net -t -a <token> -d 10 -f
 ```
 
 ### CLI Mode
@@ -120,7 +117,7 @@ Example usage:
 Select mode (1-3): 2
 
 Launching redis-client with command:
-  cabal run redis-client -- cli -h my-cache.redis.cache.windows.net -t -a <token>
+  redis-client cli -h my-cache.redis.cache.windows.net -t -a <token>
 
 Starting CLI mode
 > PING
@@ -141,7 +138,7 @@ Example:
 Select mode (1-3): 3
 
 Launching redis-client with command:
-  cabal run redis-client -- tunn -h my-cache.redis.cache.windows.net -t -a <token>
+  redis-client tunn -h my-cache.redis.cache.windows.net -t -a <token>
 
 Starting tunnel mode
 Tunnel listening on localhost:6379
@@ -155,9 +152,16 @@ Now you can connect to localhost:6379 with any Redis client.
 
 When a cache uses Entra authentication (access keys disabled), the script:
 1. Detects that access keys are not available
-2. Uses `az account get-access-token` to obtain a token
-3. Uses the scope `https://redis.azure.com`
-4. Passes the token as the password to redis-client
+2. Uses `az account get-access-token --resource https://redis.azure.com` to obtain an OAuth token
+3. Passes the token as the password to redis-client
+4. The token is used for authentication with Azure Cache for Redis
+
+**Note:** For Entra authentication to work:
+- The user must have appropriate RBAC roles on the Redis cache (e.g., "Redis Cache Contributor")
+- Access keys must be disabled on the cache
+- The cache must be configured to use Entra ID authentication
+
+See [Microsoft's documentation](https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/cache-azure-active-directory-for-authentication) for more details on Entra authentication setup.
 
 ### Access Key Authentication
 
@@ -215,7 +219,7 @@ You can script the selection process (though interactive mode is recommended):
 
 ## Security Considerations
 
-1. **Token lifetime**: Entra tokens are time-limited. If your session is long-running, you may need to re-authenticate.
+1. **Token lifetime**: Entra tokens obtained via Azure CLI typically have a lifetime of 1 hour (3600 seconds). If your session runs longer than this, the token will expire and you'll need to re-run the script to obtain a fresh token. For long-running operations like large fill jobs, monitor for authentication errors.
 
 2. **Token storage**: The script does not persist tokens. They are only used for the current session.
 
