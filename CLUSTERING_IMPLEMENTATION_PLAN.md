@@ -347,17 +347,29 @@ fillCacheWithDataCluster cluster baseSeed threadIdx totalMB = do
     fillNodeWithData node nodeSeed mbPerNode
 ```
 
-**Key Distribution**:
-- Option A: **Pre-calculate slots** for each key before sending
-  - **Pro**: Guaranteed even distribution across slots
-  - **Con**: Slower (CRC16 calculation for every key)
-  
-- Option B: **Random keys with redirection handling**
-  - **Pro**: Simpler, leverages existing filler logic
-  - **Con**: Uneven distribution (some nodes might get more data)
-  - **Con**: Many MOVED redirections initially
+**Key Distribution Options**:
 
-**Recommended**: Option A for predictable performance
+- **Option A: Runtime CRC16 slot calculation**
+  - **Pro**: Simple, realistic key patterns
+  - **Pro**: No additional setup or files needed
+  - **Con**: CRC16 calculation overhead (~100ns per key)
+  
+- **Option B: Pre-computed hash tag lookup**
+  - Pre-generate hash tags mapping to each slot (0-16383)
+  - Store in file or embed at compile time: `slot0: {aaaaa}, slot1: {aaaab}, ...`
+  - Generate keys: `SET {aaaaa}:key-123 value` for slot 0
+  - **Pro**: Perfect distribution (exactly N keys per slot)
+  - **Pro**: No runtime CRC16 calculation overhead
+  - **Pro**: Deterministic and predictable behavior
+  - **Con**: Extra I/O to read file (unless embedded)
+  - **Con**: File generation and maintenance burden
+  
+- **Option C: Random keys with MOVED redirection handling**
+  - **Pro**: Simplest implementation, leverages existing filler
+  - **Con**: Uneven distribution across nodes
+  - **Con**: Many MOVED redirections initially (performance hit)
+
+**Recommended**: Option A for initial implementation (simplicity), Option B if profiling shows CRC16 is a bottleneck. Option C not recommended due to redirection overhead.
 
 **Trade-offs**:
 - **Pro**: Full cluster utilization (all nodes receive data)
@@ -400,9 +412,9 @@ cliClusterMode cluster = do
 
 **Challenge**: Single entry point (localhost:6379) to cluster
 
-**Solution Strategy Options**:
+**Solution Strategy**: Implement both options with a flag to choose between them.
 
-**Option A: Smart Proxy with Routing**
+**Option A: Smart Proxy with Routing** (default)
 ```haskell
 tunnelClusterMode :: ClusterClient client -> IO ()
 tunnelClusterMode cluster = do
@@ -420,14 +432,41 @@ tunnelClusterMode cluster = do
 ```
 
 **Option B: Connection Pinning**
-- Pin each tunnel connection to one cluster node
-- Simple but limits cluster benefits
+```haskell
+tunnelClusterModePinned :: ClusterClient client -> IO ()
+tunnelClusterModePinned cluster = do
+  serverSocket <- bindSocket "localhost:6379"
+  -- Pick one node to pin to (e.g., random master or seed node)
+  pinnedNode <- selectPinnedNode cluster
+  forever $ do
+    clientConn <- accept serverSocket
+    forkIO $ handlePinnedClient pinnedNode clientConn
+  where
+    handlePinnedClient node conn = do
+      command <- receiveCommand conn
+      response <- forwardToNode node command  -- Always to same node
+      sendResponse conn response
+```
 
-**Recommended**: Option A (smart proxy)
+**CLI Integration**:
+```bash
+# Smart proxy (default) - full cluster routing
+redis-client tunn --cluster --host node1
+
+# Connection pinning - simple passthrough to one node
+redis-client tunn --cluster --host node1 --tunnel-mode pinned
+
+# Explicit smart mode
+redis-client tunn --cluster --host node1 --tunnel-mode smart
+```
+
+**Use Cases**:
+- **Smart proxy**: Production use, testing cluster-wide operations, full cluster benefits
+- **Connection pinning**: Debugging specific nodes, testing single-node behavior, simpler failure modes
 
 **Trade-offs**:
-- **Pro** (Option A): Full cluster benefits for proxied clients
-- **Pro** (Option A): Transparent to downstream clients
+- **Pro** (Smart proxy): Full cluster benefits for proxied clients, automatic routing
+- **Pro** (Smart proxy): Transparent to downstream clients
 - **Con** (Option A): Complex proxy logic, more failure modes
 - **Con** (Option A): Performance overhead (parsing + routing)
 - **Pro** (Option B): Simple implementation
