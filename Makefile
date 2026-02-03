@@ -43,12 +43,12 @@ endif
 # Run all tests
 test: test-unit test-e2e
 
-# Run unit tests (RespSpec and ClusterSpec)
+# Run unit tests (RespSpec, ClusterSpec, and ClusterCommandSpec)
 test-unit:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal test RespSpec ClusterSpec"
+	nix-shell --run "cabal test RespSpec ClusterSpec ClusterCommandSpec"
 else
-	cabal test RespSpec ClusterSpec
+	cabal test RespSpec ClusterSpec ClusterCommandSpec
 endif
 
 # Run end-to-end tests with Docker

@@ -103,17 +103,17 @@ parseClusterSlots (RespArray slots) currentTime = do
   let (slotMap, nodeMap) = buildTopology ranges
   return $ ClusterTopology slotMap nodeMap currentTime
   where
-    parseSlotRange :: RespData -> Either String SlotRange
+    parseSlotRange :: RespData -> Either String (SlotRange, [(Text, NodeAddress)])
     parseSlotRange (RespArray (RespInteger start : RespInteger end : masterInfo : replicaInfos)) = do
       master <- parseNodeInfo masterInfo
       replicas <- mapM parseNodeInfo replicaInfos
-      return $
-        SlotRange
-          { slotStart = fromIntegral start,
-            slotEnd = fromIntegral end,
-            slotMaster = fst master,
-            slotReplicas = map fst replicas
-          }
+      let range = SlotRange
+            { slotStart = fromIntegral start,
+              slotEnd = fromIntegral end,
+              slotMaster = fst master,
+              slotReplicas = map fst replicas
+            }
+      return (range, master : replicas)
     parseSlotRange other = Left $ "Invalid slot range format: " ++ show other
 
     parseNodeInfo :: RespData -> Either String (Text, NodeAddress)
@@ -121,11 +121,11 @@ parseClusterSlots (RespArray slots) currentTime = do
       Right (T.pack $ LBSC.unpack nodeId, NodeAddress (LBSC.unpack host) (fromIntegral port))
     parseNodeInfo other = Left $ "Invalid node info format: " ++ show other
 
-    buildTopology :: [SlotRange] -> (Vector Text, Map Text ClusterNode)
-    buildTopology ranges =
+    buildTopology :: [(SlotRange, [(Text, NodeAddress)])] -> (Vector Text, Map Text ClusterNode)
+    buildTopology rangesWithNodes =
       let slotVector = V.replicate 16384 ""
-          slotMap = foldl assignSlots slotVector ranges
-          nodeMap = foldl buildNodeMap Map.empty ranges
+          slotMap = foldl (\v (range, _) -> assignSlots v range) slotVector rangesWithNodes
+          nodeMap = foldl buildNodeMap Map.empty rangesWithNodes
        in (slotMap, nodeMap)
 
     assignSlots :: Vector Text -> SlotRange -> Vector Text
@@ -135,11 +135,15 @@ parseClusterSlots (RespArray slots) currentTime = do
         vec
         [slotStart range .. slotEnd range]
 
-    buildNodeMap :: Map Text ClusterNode -> SlotRange -> Map Text ClusterNode
-    buildNodeMap nodeMap range =
-      -- Note: CLUSTER SLOTS provides minimal node info (host, port, ID)
-      -- Full node details would require parsing addresses from slot ranges
-      nodeMap
+    buildNodeMap :: Map Text ClusterNode -> (SlotRange, [(Text, NodeAddress)]) -> Map Text ClusterNode
+    buildNodeMap nodeMap (range, nodeInfos) =
+      foldl insertNode nodeMap nodeInfos
+      where
+        insertNode :: Map Text ClusterNode -> (Text, NodeAddress) -> Map Text ClusterNode
+        insertNode nm (nodeId, addr) =
+          if Map.member nodeId nm
+            then nm -- Node already exists, don't overwrite
+            else Map.insert nodeId (ClusterNode nodeId addr Master [range] []) nm
 parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ show other
 
 -- | Find the node responsible for a given slot

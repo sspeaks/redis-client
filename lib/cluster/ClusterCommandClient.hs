@@ -15,12 +15,11 @@ module ClusterCommandClient
     parseRedirectionError,
     handleMoved,
     handleAsk,
-    clusterSlots,
   )
 where
 
 import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient))
-import Cluster (ClusterTopology (..), NodeAddress (..), calculateSlot, findNodeForSlot, parseClusterSlots)
+import Cluster (ClusterTopology (..), ClusterNode (..), NodeAddress (..), calculateSlot, findNodeForSlot, parseClusterSlots)
 import ConnectionPool (ConnectionPool, PoolConfig (..), closePool, createPool, getOrCreateConnection)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVar, writeTVar)
@@ -37,7 +36,7 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import qualified Data.Vector as V
 import Data.Word (Word16)
-import RedisCommandClient (ClientState (..), RedisCommandClient (..), RedisCommands, parseWith, runRedisCommandClient)
+import RedisCommandClient (ClientState (..), RedisCommandClient (..), RedisCommands (..), parseWith, runRedisCommandClient)
 import Resp (Encodable (..), RespData (..))
 import qualified Data.ByteString.Builder as Builder
 import Control.Monad.State qualified as State
@@ -109,13 +108,9 @@ refreshTopology client connector = do
   let seedNode = clusterSeedNode (clusterConfig client)
   conn <- getOrCreateConnection (clusterConnectionPool client) seedNode connector
   
-  -- Send CLUSTER SLOTS command
-  let command = RespArray [RespBulkString "CLUSTER", RespBulkString "SLOTS"]
-  send conn (Builder.toLazyByteString $ encode command)
-  
-  -- Parse response using the client's state management
+  -- Use clusterSlots command from RedisCommands
   let clientState = ClientState conn BS.empty
-  response <- State.evalStateT (runRedisCommandClient (parseWith (receive conn))) clientState
+  response <- State.evalStateT (runRedisCommandClient clusterSlots) clientState
   
   currentTime <- getCurrentTime
   case parseClusterSlots response currentTime of
@@ -148,10 +143,10 @@ executeOnSlot client slot action connector = do
   case findNodeForSlot topology slot of
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just nodeId -> do
-      -- For now, we need to look up the node address from topology
-      -- This is a simplification - in a full implementation we'd maintain a nodeId -> address mapping
-      let seedNode = clusterSeedNode (clusterConfig client)
-      executeOnNode client seedNode action connector
+      -- Look up the node address from the topology
+      case Map.lookup nodeId (topologyNodes topology) of
+        Nothing -> return $ Left $ TopologyError $ "Node ID " ++ T.unpack nodeId ++ " not found in topology"
+        Just node -> executeOnNode client (nodeAddress node) action connector
 
 -- | Execute a command on a specific node
 executeOnNode ::
@@ -256,10 +251,3 @@ handleAsk client redir action connector = do
   case result of
     Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
     Right value -> return $ Right value
-
--- | Add CLUSTER SLOTS command to execute raw commands
-clusterSlots :: (Client client) => RedisCommandClient client RespData
-clusterSlots = do
-  ClientState client _ <- State.get
-  liftIO $ send client (Builder.toLazyByteString . encode $ RespArray [RespBulkString "CLUSTER", RespBulkString "SLOTS"])
-  parseWith (receive client)
