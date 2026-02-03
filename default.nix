@@ -23,7 +23,9 @@ rec {
       mkdir -p $out/bin
       
       # Copy all binaries from the Haskell package
-      cp -r ${fullPackage}/bin/* $out/bin/
+      if [ -d "${fullPackage}/bin" ]; then
+        cp -rL ${fullPackage}/bin/. $out/bin/
+      fi
       
       # Install the azure-redis-connect script
       cp ${scriptSrc} $out/bin/azure-redis-connect
