@@ -13,12 +13,11 @@ rec {
   
   # Wrapper package that includes both redis-client and azure-redis-connect
   fullPackageWithScripts = pkgs.symlinkJoin {
-    name = "redis-client-with-scripts";
+    name = "redis-client-full";
     paths = [ fullPackage ];
     buildInputs = [ pkgs.makeWrapper ];
     postBuild = ''
       # Install the azure-redis-connect script
-      mkdir -p $out/bin
       cp ${scriptSrc} $out/bin/azure-redis-connect
       chmod +x $out/bin/azure-redis-connect
       
