@@ -232,19 +232,57 @@ extractHashTag key =
 
 routeCommand :: ClusterClient client -> RespData -> IO (client 'Connected)
 routeCommand cluster command = do
-  -- Extract key from command (e.g., SET key value → key)
-  let key = extractKeyFromCommand command
-  slot <- calculateSlot key
   topology <- readTVar (clusterTopology cluster)
-  let node = findNodeForSlot topology slot
-  getOrCreateConnection (clusterConnections cluster) node
+  case extractKeys command of
+    -- Key-based commands: route by slot hash
+    Just (key:_) -> do
+      slot <- calculateSlot key
+      let node = findNodeForSlot topology slot
+      getOrCreateConnection (clusterConnections cluster) node
+    
+    -- Keyless commands: route to any master or seed node
+    Nothing -> 
+      if isClusterManagementCommand command
+        then getOrCreateConnection (clusterConnections cluster) (seedNode cluster)
+        else getOrCreateConnection (clusterConnections cluster) (randomMaster topology)
+
+extractKeys :: RespData -> Maybe [ByteString]
+extractKeys command = case command of
+  RespArray (RespBulkString cmd : args)
+    | cmd `elem` ["SET", "GET", "DEL", "EXISTS"] -> Just (extractKeysForCommand cmd args)
+    | cmd `elem` ["PING", "INFO", "DBSIZE"] -> Nothing  -- Keyless
+    | cmd `elem` ["CLUSTER"] -> Nothing  -- Cluster management
+  _ -> Nothing
+
+isClusterManagementCommand :: RespData -> Bool
+isClusterManagementCommand (RespArray (RespBulkString cmd : _)) = 
+  cmd `elem` ["CLUSTER"]
+isClusterManagementCommand _ = False
 ```
 
+**Routing Strategy**: The implementation handles three distinct command types:
+
+1. **Key-based commands** (SET, GET, DEL, MGET, etc.):
+   - Extract key(s) from command arguments
+   - Calculate slot using CRC16 hash
+   - Route to node owning that slot
+   
+2. **Keyless commands** (PING, INFO, DBSIZE, etc.):
+   - Can execute on any node
+   - Route to random master for load distribution
+   - Alternatively, route to seed node for consistency
+
+3. **Cluster management commands** (CLUSTER SLOTS, CLUSTER NODES, etc.):
+   - Must execute on seed/discovery node
+   - Required for topology refresh and cluster info
+
 **Trade-offs**:
-- **Pro**: O(1) slot lookup with Vector indexing
+- **Pro**: O(1) slot lookup with Vector indexing for key-based commands
 - **Pro**: Hash tag support enables multi-key operations
+- **Pro**: Flexible routing for keyless commands improves utilization
 - **Con**: Command parsing to extract keys adds overhead
 - **Con**: Some commands have complex key extraction (MGET, MSET, etc.)
+- **Con**: Need to maintain command classification (key-based vs keyless)
 
 ### Phase 2: Redirection Handling
 
