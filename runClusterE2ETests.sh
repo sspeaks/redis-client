@@ -24,18 +24,36 @@ echo "Creating Redis cluster..."
     exit 1
 }
 
-# Give cluster time to stabilize
+# Give cluster time to stabilize and verify it's ready
 echo "Waiting for cluster to stabilize..."
-sleep 3
+MAX_RETRIES=10
+RETRY_COUNT=0
+CLUSTER_READY=false
 
-# Verify cluster is up
-echo "Verifying cluster status..."
-redis-cli -p 6379 cluster info | grep "cluster_state:ok" || {
-    echo "Cluster is not in OK state. Dumping cluster info:"
-    redis-cli -p 6379 cluster info
-    docker-compose down
-    exit 1
-}
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  sleep 2
+  
+  # Check cluster state
+  if redis-cli -p 6379 cluster info | grep -q "cluster_state:ok"; then
+    echo "Cluster is ready!"
+    CLUSTER_READY=true
+    break
+  fi
+  
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  echo "Cluster not ready yet (attempt $RETRY_COUNT/$MAX_RETRIES)..."
+done
+
+if [ "$CLUSTER_READY" = false ]; then
+  echo "ERROR: Cluster failed to reach 'ok' state after $MAX_RETRIES attempts"
+  echo "Cluster info:"
+  redis-cli -p 6379 cluster info
+  echo ""
+  echo "Cluster nodes:"
+  redis-cli -p 6379 cluster nodes
+  docker-compose down
+  exit 1
+fi
 
 # Go back to root directory
 cd ..
