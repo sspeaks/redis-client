@@ -8,8 +8,35 @@ A Haskell-based Redis client that supports both plain text and TLS connections.
 - Send and receive RESP data
 - Perform basic Redis commands
 - Profile the application for performance analysis
+- Azure Redis Cache integration with Entra (Azure AD) authentication support
 
 ## Usage
+
+### Azure Redis Cache Connection
+
+For easy connection to Azure Redis caches with automatic Entra (Azure AD) authentication:
+
+```sh
+python3 azure-redis-connect.py --subscription <subscription-id>
+```
+
+Or with a specific resource group:
+
+```sh
+python3 azure-redis-connect.py --subscription <subscription-id> --resource-group <rg-name>
+```
+
+The script will:
+1. List all eligible Redis caches in your subscription
+2. Let you select a cache
+3. Choose between fill mode, CLI mode, or tunnel mode
+4. Automatically handle Entra authentication when needed
+
+#### Prerequisites for Azure Integration
+
+- Azure CLI installed and configured (`az login`)
+- Python 3.6 or later
+- Appropriate Azure permissions to list and access Redis caches
 
 ### Building the Project
 
