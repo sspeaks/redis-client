@@ -147,37 +147,49 @@ class AzureRedisConnector:
 
     def check_entra_auth(self, cache: Dict) -> bool:
         """Check if the cache uses Entra (Azure AD) authentication only."""
-        # Check for Entra auth by looking at the Redis access keys
-        # If access keys are disabled, it's Entra-only
+        # Azure Redis has a 'disableAccessKeyAuthentication' property
+        # When true, only Entra (Azure AD) authentication is allowed
         name = cache.get('name')
-        resource_group = cache.get('resourceGroup')
         
+        # First check if the property is already in the cache object
+        if 'disableAccessKeyAuthentication' in cache:
+            entra_only = cache.get('disableAccessKeyAuthentication', False)
+            if entra_only:
+                print(f"✓ Cache {name} uses Entra (Azure AD) authentication only")
+            else:
+                print(f"✓ Cache {name} uses access key authentication")
+            return entra_only
+        
+        # If not available, fetch detailed cache information
+        resource_group = cache.get('resourceGroup')
         print(f"\nChecking authentication method for {name}...")
         
         try:
-            # Try to get access keys
-            keys_output = self.run_az_command([
-                'az', 'redis', 'list-keys',
+            # Get detailed cache information
+            show_output = self.run_az_command([
+                'az', 'redis', 'show',
                 '--name', name,
                 '--resource-group', resource_group,
                 '--output', 'json'
             ])
-            keys = json.loads(keys_output)
+            cache_details = json.loads(show_output)
             
-            # If primary key is None or empty, it's likely Entra-only
-            if not keys.get('primaryKey'):
+            # Check if access key authentication is disabled
+            entra_only = cache_details.get('disableAccessKeyAuthentication', False)
+            
+            if entra_only:
                 print(f"✓ Cache uses Entra (Azure AD) authentication only")
-                return True
             else:
                 print(f"✓ Cache uses access key authentication")
-                return False
+            
+            return entra_only
         except subprocess.CalledProcessError as e:
-            print(f"Warning: Could not retrieve access keys (exit code {e.returncode})")
-            print(f"Assuming Entra authentication is required")
-            return True
+            print(f"Warning: Could not retrieve cache details (exit code {e.returncode})")
+            print(f"Will attempt both authentication methods")
+            return False
         except json.JSONDecodeError as e:
-            print(f"Warning: Could not parse access keys response: {e}")
-            print(f"Assuming Entra authentication is required")
+            print(f"Warning: Could not parse cache details: {e}")
+            print(f"Will attempt both authentication methods")
             return True
         except Exception as e:
             print(f"Warning: Unexpected error checking auth method: {e}")
