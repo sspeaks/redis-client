@@ -111,19 +111,171 @@ To include RTS options in the executable, use:
 "-with-rtsopts=-hT"
 ```
 
-## Running End-to-End Tests
+## Development and Testing
 
-To run end-to-end tests, use the following command:
+### Quick Start with Makefile
+
+The project includes a Makefile with common development tasks:
 
 ```sh
+make help           # Show all available commands
+make build          # Build the project
+make test           # Run all tests (unit + e2e)
+make test-unit      # Run unit tests only
+make test-e2e       # Run end-to-end tests
+make redis-start    # Start local Redis for testing
+make redis-stop     # Stop local Redis
+make redis-logs     # View Redis logs
+make profile        # Build with profiling enabled
+make clean          # Clean build artifacts
+```
+
+### Running Tests
+
+#### 1. Unit Tests
+
+Unit tests can be run without Redis:
+
+```sh
+cabal test RespSpec
+# or
+make test-unit
+```
+
+#### 2. End-to-End Tests
+
+E2E tests require a running Redis instance. There are two ways to run them:
+
+**Option A: Using Docker Compose (Full E2E Suite)**
+
+This runs the complete test suite in Docker containers:
+
+```sh
+./rune2eTests.sh
+# or
+make test-e2e
+```
+
+**Option B: Local Development**
+
+For faster iteration during development:
+
+```sh
+# Start Redis locally
+./start-redis-local.sh
+# or
+make redis-start
+
+# Build and run tests
+cabal build
 cabal test
+
+# Stop Redis when done
+./stop-redis-local.sh
+# or
+make redis-stop
 ```
 
-If you are using Nix, you can run the tests with:
+#### 3. Run All Tests
 
 ```sh
-nix-shell --run "cabal test"
+make test
 ```
+
+### Setting Up a Local Redis Instance
+
+#### Quick Method (Simple Redis)
+
+Use the provided script to start a simple Redis instance:
+
+```sh
+./start-redis-local.sh
+```
+
+This creates a Docker container named `redis-client-dev` accessible at `localhost:6379`.
+
+#### Using Docker Compose (Full Setup with TLS)
+
+For the complete setup including TLS support:
+
+```sh
+docker compose up -d redis
+```
+
+This uses the configuration in `docker-compose.yml` and `redis.conf`.
+
+#### Manual Docker Command
+
+```sh
+docker run -d --name redis-client-dev -p 6379:6379 redis:latest
+```
+
+### Stopping Redis
+
+```sh
+# Using the script
+./stop-redis-local.sh
+
+# Using Docker Compose
+docker compose stop redis
+
+# Using Docker directly
+docker stop redis-client-dev
+
+# Remove the container
+docker rm redis-client-dev
+```
+
+### Testing Workflow Examples
+
+**1. Quick development cycle:**
+```sh
+make redis-start     # Start Redis once
+make dev             # Build and run unit tests
+# ... make changes ...
+make dev             # Test again
+make redis-stop      # Stop when done
+```
+
+**2. Full test before PR:**
+```sh
+make test            # Runs all tests (starts/stops Redis automatically)
+```
+
+**3. Manual testing:**
+```sh
+make redis-start
+cabal run redis-client -- fill -h localhost -f -d 1
+make redis-stop
+```
+
+### Profiling with Redis
+
+To profile the application with a local Redis instance:
+
+```sh
+# Start Redis
+make redis-start
+
+# Profile before changes (use -f flag for local Docker Redis)
+cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
+
+# Make your changes...
+
+# Profile after changes
+cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
+
+# Compare the .prof files
+# Stop Redis
+make redis-stop
+
+# Clean up profiling artifacts
+rm -f *.hp *.prof *.ps *.aux *.stat
+```
+
+### CI/CD Integration
+
+The project uses GitHub Actions for CI. Check `.github/workflows/` for the CI configuration.
 
 ## License
 
