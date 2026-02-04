@@ -185,9 +185,6 @@ executable ClusterEndToEnd
                     , process
                     , directory
                     , filepath
-                    , mtl
-                    , random
-    other-modules:    Filler
 
 executable redis-client
     import:           warnings

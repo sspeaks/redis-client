@@ -160,7 +160,7 @@ fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
   -- Use CLIENT REPLY OFF/ON similar to non-clustered mode
   -- Turn off client replies for fire-and-forget pipelining
   send client (Builder.toLazyByteString $ encode $ RespArray [RespBulkString "CLIENT", RespBulkString "REPLY", RespBulkString "OFF"])
-  _ <- receive client  -- Consume the OK response
+  _ <- receive client  -- Consume the OK response from CLIENT REPLY OFF
   
   -- Generate commands with hash tag to route to target slot
   -- Hash tag format: {sN} where N is the target slot number
@@ -170,15 +170,18 @@ fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
       hashTag = BSC.pack hashTagStr
   
   -- Pipeline all chunks (fire-and-forget mode) using the noise buffer
+  -- No responses will be sent by Redis for these commands due to CLIENT REPLY OFF
   mapM_ (\chunkIdx -> do
       let chunkSeed = startSeed + fromIntegral chunkIdx
           cmd = genRandomSetWithHashTag chunkKilos chunkSeed hashTag
       send client cmd
     ) [0..totalChunks - 1]
   
-  -- Turn replies back on to confirm completion
+  -- Turn replies back on - this command itself also won't get a response
+  -- since CLIENT REPLY is still OFF when we send it
   send client (Builder.toLazyByteString $ encode $ RespArray [RespBulkString "CLIENT", RespBulkString "REPLY", RespBulkString "ON"])
-  _ <- receive client  -- Consume the OK response
+  -- DO NOT call receive here - CLIENT REPLY ON was sent while replies were off,
+  -- so no response will be sent. The next command after this will get a response.
   
   printf "Thread %d: Completed filling %d MB for slot %d\n" threadIdx mb targetSlot
 
