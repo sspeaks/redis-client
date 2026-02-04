@@ -26,7 +26,7 @@ import qualified ConnectionPool             as CP
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (SomeException, throwIO, try)
+
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State        as State
@@ -55,7 +55,7 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs)
 import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hFlush, hIsTerminalDevice, isEOF,
+import           System.IO                  (hIsTerminalDevice, isEOF,
                                              stdin, stdout)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
@@ -127,33 +127,16 @@ main = do
 -- Connects and authenticates to each node
 createPlaintextConnector :: RunState -> (NodeAddress -> IO (PlainTextClient 'Connected))
 createPlaintextConnector state addr = do
-  printf "[Connector] Connecting to %s:%d (plaintext)\n" (nodeHost addr) (nodePort addr)
-  hFlush stdout
   let notConnected = NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
-  result <- try $ connect notConnected
-  case result of
-    Left (e :: SomeException) -> do
-      printf "[Connector] Failed to connect to %s:%d: %s\n" (nodeHost addr) (nodePort addr) (show e)
-      hFlush stdout
-      throwIO e
-    Right client -> do
-      printf "[Connector] Connected to %s:%d\n" (nodeHost addr) (nodePort addr)
-      hFlush stdout
-      -- Authenticate if password is provided
-      if null (password state)
-        then do
-          printf "[Connector] No authentication needed\n"
-          hFlush stdout
-          return client
-        else do
-          printf "[Connector] Authenticating...\n"
-          hFlush stdout
-          _ <- State.evalStateT 
-                 (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
-                 (ClientState client BS.empty)
-          printf "[Connector] Authenticated\n"
-          hFlush stdout
-          return client
+  client <- connect notConnected
+  -- Authenticate if password is provided
+  if null (password state)
+    then return client
+    else do
+      _ <- State.evalStateT 
+             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
+             (ClientState client BS.empty)
+      return client
 
 -- | Create cluster connector for TLS connections
 -- Connects and authenticates to each node
