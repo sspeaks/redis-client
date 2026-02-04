@@ -4,15 +4,17 @@
 
 module Filler where
 
-import Client (Client (..))
+import Client (Client (..), ConnectionStatus (Connected))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
+import qualified Data.ByteString.Char8 as BSC
 import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize, clientReply, set), ClientReplyValues (OFF, ON))
+import Resp (RespData (..), Encodable (encode))
 import System.Environment (lookupEnv)
-import Data.Word (Word64, Word8)
+import Data.Word (Word64, Word8, Word16)
 import Data.Bits (shiftR)
 import Text.Read (readMaybe)
 import Text.Printf (printf)
@@ -130,16 +132,62 @@ fillCacheWithDataMB baseSeed threadIdx mb = do
       return ()
     Nothing -> error "clientReply returned an unexpected value"
 
--- | Cluster-aware fill function that uses the RedisCommands interface
+-- | Cluster-aware fill function using pipelining with pre-calculated slot hash tags
+-- This version uses raw client send/receive for fire-and-forget pipelining with CLIENT REPLY OFF
+-- Each thread fills data for a specific slot to ensure all commands route to the same node
+fillCacheWithDataClusterPipelined :: (Client client) => 
+  Word64 ->      -- Base seed for deterministic key generation
+  Int ->         -- Thread index
+  Int ->         -- MB to fill
+  Word16 ->      -- Target slot number (0-16383) 
+  client 'Connected -> 
+  IO ()
+fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
+  -- deterministic start seed for this thread based on the global baseSeed
+  let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
+  
+  chunkKilos <- lookupChunkKilos
+  
+  -- Calculate total commands needed
+  let totalKilosNeeded = mb * 1024  -- Convert MB to KB
+      totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
+      totalCommands = totalChunks * chunkKilos
+  
+  printf "Thread %d: Filling %d MB (%d commands) for slot %d with pipelining...\n" 
+    threadIdx mb totalCommands targetSlot
+  
+  -- Use pre-calculated hash tag for this slot to ensure all keys route to same node
+  -- Format: {slotN} where N is the slot number
+  let hashTag = BSC.pack $ "{slot" ++ show targetSlot ++ "}"
+  
+  -- Turn off client replies for fire-and-forget pipelining
+  send client (Builder.toLazyByteString $ encode $ RespArray [RespBulkString "CLIENT", RespBulkString "REPLY", RespBulkString "OFF"])
+  _ <- receive client  -- Consume the OK response
+  
+  -- Pipeline all SET commands (no waiting for responses)
+  mapM_ (\cmdIdx -> do
+      let keySeed = startSeed + fromIntegral cmdIdx
+          -- Use hash tag to ensure routing to correct slot/node
+          keyBS = BS.concat [hashTag, ":", BSC.pack $ printf "%016x" keySeed]
+          valBS = BSC.pack $ replicate 512 'x'
+          cmd = RespArray [RespBulkString "SET", 
+                          RespBulkString (LB.fromStrict keyBS), 
+                          RespBulkString (LB.fromStrict valBS)]
+      send client (Builder.toLazyByteString $ encode cmd)
+    ) [0..totalCommands - 1]
+  
+  -- Turn replies back on to confirm completion
+  send client (Builder.toLazyByteString $ encode $ RespArray [RespBulkString "CLIENT", RespBulkString "REPLY", RespBulkString "ON"])
+  _ <- receive client  -- Consume the OK response
+  
+  printf "Thread %d: Completed filling %d MB for slot %d\n" threadIdx mb targetSlot
+
+-- | Cluster-aware fill function that uses the RedisCommands interface (backward compatibility)
 -- This works with any monad that implements RedisCommands (including ClusterCommandClient)
 --
 -- PERFORMANCE NOTE: This implementation does not use CLIENT REPLY OFF or pipelining
 -- because the RedisCommands interface waits for a response after each command.
--- For fire-and-forget pipelining, a future enhancement would need to:
---   1. Pre-calculate hash tags that map to each slot (0-16383)
---   2. Group commands by target node based on slot ownership
---   3. Use raw client send/receive instead of RedisCommands
---   4. Pipeline all commands to each node with CLIENT REPLY OFF
+-- For fire-and-forget pipelining, use fillCacheWithDataClusterPipelined instead.
 --
 -- Current approach: Simpler implementation using RedisCommands for correctness,
 -- accepting the performance trade-off of waiting for each response.

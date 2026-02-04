@@ -7,8 +7,10 @@ import           Client                     (Client (receive, send, connect),
                                              TLSClient (..), serve,
                                              PlainTextClient (..),
                                              ConnectionStatus (..))
-import           Cluster                    (NodeAddress (..))
-import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
+import           Cluster                    (NodeAddress (..), NodeRole (..), 
+                                             ClusterNode (..), ClusterTopology (..),
+                                             topologyNodes, nodeRole, nodeAddress)
+import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
                                              ClusterCommandClient,
                                              ClusterClientState (..),
                                              ClusterError (..),
@@ -28,10 +30,15 @@ import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LB
-import           Data.Word                  (Word64, Word8)
+import           Data.Word                  (Word64, Word16)
+import           Data.Map.Strict            (Map)
+import qualified Data.Map.Strict            as Map
+import qualified Data.Vector                as V
+import           Control.Concurrent.STM     (readTVarIO)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
                                              fillCacheWithDataCluster,
+                                             fillCacheWithDataClusterPipelined,
                                              initRandomNoise)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
@@ -392,7 +399,8 @@ fillCluster state = do
     
     if serial state
       then do
-        printf "Filling cluster cache '%s' with %dGB of data using serial mode\n" (host state) (dataGBs state)
+        printf "Filling cluster cache with %dGB of data using serial mode (non-pipelined)\n" (dataGBs state)
+        -- Serial mode uses the non-pipelined version for simplicity
         if useTLS state
           then do
             clusterClient <- createClusterClientFromState state (createTLSConnector state)
@@ -405,53 +413,70 @@ fillCluster state = do
               fillCacheWithDataCluster baseSeed 0 (dataGBs state * 1024)
             closeClusterClient clusterClient
       else do
-        -- Get number of master nodes to calculate default connections (2 per node)
-        let defaultConns = if numConnections state == Just 2
-              then Nothing  -- User didn't specify, will calculate based on cluster size
-              else numConnections state
+        -- Parallel mode with pipelining: discover topology and distribute work by slots
+        printf "Discovering cluster topology for pipelined fill...\n"
         
         -- Create temporary client to get cluster info
-        masterCount <- if useTLS state
+        (masterCount, topology) <- if useTLS state
           then do
             tempClient <- createClusterClientFromState state (createTLSConnector state)
+            topo <- readTVarIO (clusterTopology tempClient)
             count <- getMasterNodeCount tempClient
             closeClusterClient tempClient
-            return count
+            return (count, topo)
           else do
             tempClient <- createClusterClientFromState state (createPlaintextConnector state)
+            topo <- readTVarIO (clusterTopology tempClient)
             count <- getMasterNodeCount tempClient
             closeClusterClient tempClient
-            return count
+            return (count, topo)
         
         -- Default to 2 threads per master node
-        let nConns = maybe (masterCount * 2) id defaultConns
-            totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
-            baseMB = totalMB `div` nConns
+        let defaultConns = if numConnections state == Just 2
+              then Nothing
+              else numConnections state
+            threadsPerNode = 2
+            nConns = maybe (masterCount * threadsPerNode) id defaultConns
+            totalMB = dataGBs state * 1024
+            mbPerThread = totalMB `div` nConns
             remainder = totalMB `mod` nConns
-            -- Each connection gets (baseMB + 1) or baseMB MB
-            -- Jobs: (connectionIdx, mbForThisConnection)
-            jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
         
-        printf "Filling cluster cache '%s' with %dGB of data using %d parallel connections (%d master nodes, %d threads per node)\n" 
-          (host state) (dataGBs state) (length jobs) masterCount (nConns `div` max 1 masterCount)
+        -- Distribute slots evenly across threads
+        -- Each thread gets assigned specific slots to ensure pipelining works
+        let slotsPerThread = max 1 (16384 `div` nConns)
+            threadJobs = [(threadIdx, 
+                          threadIdx * slotsPerThread,  -- start slot
+                          if threadIdx == nConns - 1 then 16383 else (threadIdx + 1) * slotsPerThread - 1,  -- end slot
+                          if threadIdx < remainder then mbPerThread + 1 else mbPerThread)
+                         | threadIdx <- [0..nConns - 1], mbPerThread > 0 || threadIdx < remainder]
         
-        mvars <- mapM (\(idx, mb) -> do
+        printf "Filling cluster with %dGB using %d threads (%d master nodes, %d threads per node) with pipelining\n" 
+          (dataGBs state) (length threadJobs) masterCount threadsPerNode
+        
+        -- Create jobs with pipelined fill
+        mvars <- mapM (\(threadIdx, startSlot, _endSlot, mb) -> do
             mv <- newEmptyMVar
             _ <- forkIO $ do
-                 if useTLS state
-                    then do
-                      clusterClient <- createClusterClientFromState state (createTLSConnector state)
-                      runClusterCommandClient clusterClient (createTLSConnector state) $ 
-                        fillCacheWithDataCluster baseSeed idx mb
-                      closeClusterClient clusterClient
-                    else do
-                      clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-                      runClusterCommandClient clusterClient (createPlaintextConnector state) $ 
-                        fillCacheWithDataCluster baseSeed idx mb
-                      closeClusterClient clusterClient
+                 -- Use the start slot in this thread's range for the hash tag
+                 let targetSlot = fromIntegral startSlot :: Word16
+                     nodeId = (topologySlots topology) V.! fromIntegral targetSlot
+                     nodesById = topologyNodes topology
+                 case Map.lookup nodeId nodesById of
+                   Just node -> do
+                     let addr = nodeAddress node
+                     if useTLS state
+                       then do
+                         conn <- createTLSConnector state addr
+                         fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot conn
+                       else do
+                         conn <- createPlaintextConnector state addr
+                         fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot conn
+                   Nothing -> printf "Warning: No node found for slot %d (node ID: %s)\n" targetSlot (show nodeId)
                  putMVar mv ()
-            return mv) jobs
+            return mv) threadJobs
         mapM_ takeMVar mvars
+        
+        printf "Cluster fill with pipelining complete.\n"
 
 cli :: RunState -> IO ()
 cli state = do
