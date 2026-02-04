@@ -4,7 +4,7 @@
 
 This document tracks the implementation of Redis Cluster support in the redis-client project. The core infrastructure has been completed through Phase 3, enabling the client to work with Redis Cluster deployments while maintaining backward compatibility with standalone Redis instances.
 
-**Current Status**: Phases 1-3 complete with basic functionality. Phases 4-5 remain for optimization and advanced features.
+**Current Status**: Phases 1-3 complete with basic functionality. Phases 4-8 remain: modes completion (4-6), comprehensive testing (7), and optional optimizations (8).
 
 ## Implementation Status
 
@@ -32,23 +32,87 @@ This document tracks the implementation of Redis Cluster support in the redis-cl
   - **Limitation**: Smart proxy mode not yet implemented
   - **Next Step**: Implement smart routing in tunnel mode
 
-### 🔄 Phase 4: E2E Testing (IN PROGRESS)
-- ✅ Implemented `ClusterE2E.hs` test suite with basic scenarios
-- ✅ Docker cluster infrastructure exists in `docker-cluster/`
-- ⏳ Need to integrate cluster E2E tests into CI/CD pipeline
-- ⏳ Need comprehensive test scenarios (topology changes, failures, etc.)
-- ⏳ Performance testing and optimization
+### ⏳ Phase 4: CLI Mode (NOT STARTED)
+Complete the CLI mode implementation for cluster support.
 
-### ⏳ Phase 5: Advanced Features (NOT STARTED)
-- ⏳ Fully functional CLI mode (command parsing and execution)
-- ⏳ Fully functional Fill mode with optimized bulk loading
-- ⏳ Smart tunnel mode with cluster routing
-- ⏳ Pipelining optimization for cluster operations
-- ⏳ Multi-key command splitting (MGET, MSET across slots)
-- ⏳ Enhanced error messages with node information
-- ⏳ Read replica support (READONLY/READWRITE - optional)
+- ⏳ Parse user input into RESP commands
+- ⏳ Execute commands via `ClusterCommandClient`
+- ⏳ Display responses with formatting
+- ⏳ Handle CROSSSLOT errors with helpful messages
+- ⏳ Show node information in debug mode
 
-**Current State**: Core infrastructure is solid and functional. Basic integration demonstrates cluster connectivity. Production-ready features require completing Phase 5 enhancements.
+**Implementation Guide**: Study `app/Main.hs` `repl` function (lines 303-325) for the standalone implementation pattern. The cluster version should follow the same structure but route through `ClusterCommandClient`.
+
+**Estimated Effort**: ~200-300 LOC
+
+### ⏳ Phase 5: Fill Mode (NOT STARTED)
+Complete the Fill mode implementation for cluster support.
+
+- ⏳ Calculate slots for keys to ensure even distribution
+- ⏳ Distribute data generation across cluster nodes
+- ⏳ Use parallel connections to multiple nodes
+- ⏳ Implement efficient bulk operations
+- ⏳ Add profiling to compare with standalone mode
+
+**Implementation Guide**: Study `app/Filler.hs` and the standalone `fillStandalone` function (lines 210-244) for parallel execution patterns. Adapt the seed spacing and threading approach for cluster nodes.
+
+**Key Decision**: Choose between runtime CRC16 calculation (simple) or pre-computed hash tags (optimal distribution). Start with runtime calculation.
+
+**Estimated Effort**: ~300-400 LOC
+
+### ⏳ Phase 6: Tunnel Mode (NOT STARTED)
+Complete the smart tunnel mode implementation for cluster support.
+
+- ⏳ Accept connections on localhost:6379
+- ⏳ Parse incoming RESP commands from clients
+- ⏳ Calculate slot and route to appropriate cluster node
+- ⏳ Forward responses back to client
+- ⏳ Handle redirections transparently
+
+**Implementation Guide**: Study the existing `serve` function in `lib/client/Client.hs` for tunnel implementation patterns. The smart proxy needs to parse commands before forwarding.
+
+**Estimated Effort**: ~400-500 LOC
+
+### ⏳ Phase 7: E2E Testing & CI Integration (NOT STARTED)
+Expand E2E test coverage and integrate into CI/CD after completing Phases 4-6.
+
+**Basic Tests** (already exist in `ClusterE2E.hs`):
+- ✅ Connect to cluster and query topology
+- ✅ Execute GET/SET commands
+- ✅ Route commands to correct nodes
+- ✅ Handle keys with hash tags
+
+**Additional Tests Needed**:
+- ⏳ CLI mode: Test interactive command execution
+- ⏳ Fill mode: Test bulk data distribution across nodes
+- ⏳ Tunnel mode: Test smart proxy routing
+- ⏳ MOVED/ASK redirection scenarios
+- ⏳ Topology changes (add/remove nodes)
+- ⏳ Failure scenarios (node down, network partition)
+- ⏳ Performance benchmarks (compare with standalone)
+
+**CI/CD Integration**:
+- ⏳ Create `runClusterE2ETests.sh` script (model after `rune2eTests.sh`)
+- ⏳ Update `rune2eTests.sh` to run both standalone and cluster tests
+- ⏳ Add cluster test stage to CI/CD pipeline
+
+**Implementation Guide**: Study `test/E2E.hs` extensively - it has excellent patterns for testing all three modes (fill, cli, tunnel) that should be adapted for cluster testing. **Don't reinvent the wheel** - reuse the testing patterns, process handling, and assertion strategies from the standalone E2E tests. The cluster tests should follow the same structure and style.
+
+**Estimated Effort**: ~300-400 LOC
+
+### ⏳ Phase 8: Advanced Features (NOT STARTED)
+Optional enhancements for production optimization.
+
+- ⏳ **Multi-key command splitting**: MGET/MSET across slots with result reassembly (~200-300 LOC)
+- ⏳ **Pipelining optimization**: Group commands by node, parallel execution, result ordering (~300-400 LOC)
+- ⏳ **Enhanced error messages**: Show target node, suggest hash tags for CROSSSLOT, debug routing info (~100-200 LOC)
+- ⏳ **Read replica support**: READONLY/READWRITE commands for high-throughput scenarios (~200-300 LOC, optional)
+
+**Implementation Guide**: These features build on the solid foundation from Phases 4-7. Implement based on actual user needs and performance profiling results.
+
+**Estimated Effort**: ~800-1200 LOC (varies based on features selected)
+
+**Current State**: Core infrastructure (Phases 1-3) is solid and functional. Remaining phases focus on completing user-facing functionality (4-6), comprehensive testing (7), and optional optimizations (8).
 
 ## Implemented Architecture (Phases 1-2)
 
@@ -177,9 +241,9 @@ instance RedisCommands (ClusterCommandClient client) where
 
 **Implementation Location**: `app/Main.hs` - `tunnCluster` functions
 
-## Testing (Phase 4)
+## Testing
 
-### Unit Tests (Complete)
+### Unit Tests (Complete - Part of Phases 1-2)
 **Files**: `test/ClusterSpec.hs`, `test/ClusterCommandSpec.hs`
 
 **Coverage**:
@@ -189,7 +253,7 @@ instance RedisCommands (ClusterCommandClient client) where
 - ✅ Node lookup by slot
 - ✅ Error parsing (MOVED, ASK)
 
-### E2E Tests (Basic Implementation)
+### E2E Tests (Basic Implementation - Phase 3)
 **File**: `test/ClusterE2E.hs`
 
 **Current Scenarios**:
@@ -199,12 +263,14 @@ instance RedisCommands (ClusterCommandClient client) where
 - ✅ Handle keys with hash tags
 - ✅ Execute PING and CLUSTER SLOTS
 
-**Missing Scenarios**:
+**Additional Tests Needed** (Phase 7 - after completing Phases 4-6):
+- ⏳ CLI mode command execution (requires Phase 4)
+- ⏳ Fill mode bulk loading (requires Phase 5)
+- ⏳ Tunnel mode smart proxy (requires Phase 6)
 - ⏳ MOVED/ASK redirection in practice
 - ⏳ Topology changes (add/remove nodes)
 - ⏳ Failure scenarios (node down, network partition)
 - ⏳ Performance testing (bulk operations)
-- ⏳ CI/CD integration
 
 ### Test Infrastructure
 **Docker Setup**: `docker-cluster/` directory
@@ -214,10 +280,20 @@ instance RedisCommands (ClusterCommandClient client) where
 - ✅ Configuration files for ports 6379-6383
 - ✅ `make_cluster.sh` initialization script
 
-**Integration Needed**:
-- ⏳ Add cluster tests to `rune2eTests.sh`
-- ⏳ Add cluster test runner script (`runClusterE2ETests.sh`)
-- ⏳ CI/CD pipeline integration
+**Integration Needed** (Phase 7):
+- ⏳ Create `runClusterE2ETests.sh` - model after `rune2eTests.sh`
+- ⏳ Update `rune2eTests.sh` to run both standalone and cluster tests
+- ⏳ Add cluster test stage to CI/CD pipeline
+
+**⚠️ IMPORTANT for Future Agents**: When implementing Phase 7 testing, study `test/E2E.hs` extensively. It contains excellent patterns for testing all three modes (fill, cli, tunnel) that should be adapted for cluster testing. The file demonstrates:
+- Process management and cleanup
+- Waiting for readiness signals
+- Input/output handling for interactive modes
+- Assertion strategies
+- Environment variable handling
+- Testing patterns for all three execution modes
+
+**Don't reinvent the wheel** - adapt these proven patterns rather than creating new test infrastructure from scratch.
 
 ## Command-Line Interface
 
@@ -296,80 +372,119 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 # {user:123}:profile and {user:123}:settings both hash "user:123"
 ```
 
-## Phase 5: Remaining Work
+## Remaining Work (Phases 4-8)
 
-### Priority 1: Functional Modes
-1. **CLI Mode Command Execution**
-   - Parse user input to RESP commands
-   - Execute via ClusterCommandClient
-   - Display results with node information
-   - ~200-300 LOC
+### Phase 4: CLI Mode Command Execution
+**Goal**: Enable full interactive command execution in cluster mode
 
-2. **Fill Mode Bulk Loading**
-   - Calculate slots for keys
-   - Distribute work across nodes
-   - Parallel execution
-   - ~300-400 LOC
+**Tasks**:
+1. Parse user input to RESP commands
+2. Execute via ClusterCommandClient
+3. Display results with node information
+4. Handle CROSSSLOT errors with helpful messages
 
-3. **Smart Tunnel Mode**
-   - Command parsing from tunnel clients
-   - Routing via ClusterCommandClient
-   - Response forwarding
-   - ~400-500 LOC
+**Reference Implementation**: Study `app/Main.hs` `repl` function for standalone pattern
 
-### Priority 2: Testing & Quality
-4. **Complete E2E Test Suite**
-   - Redirection scenarios
-   - Topology changes
-   - Failure handling
-   - CI/CD integration
-   - ~300-400 LOC
+**Estimated Effort**: ~200-300 LOC
 
-5. **Performance Testing**
-   - Profiling fill mode
-   - Benchmark CLI latency
-   - Optimize connection pool if needed
-   - ~200 LOC + tooling
+### Phase 5: Fill Mode Bulk Loading
+**Goal**: Enable efficient bulk data loading across cluster
 
-### Priority 3: Advanced Features
-6. **Multi-Key Command Splitting**
-   - MGET/MSET across slots
-   - Result reassembly
-   - ~200-300 LOC
+**Tasks**:
+1. Calculate slots for keys to ensure distribution
+2. Distribute work across cluster nodes
+3. Implement parallel execution across nodes
+4. Add profiling before/after comparison
 
-7. **Pipelining Optimization**
-   - Group commands by node
-   - Parallel execution
-   - Result ordering
-   - ~300-400 LOC
+**Reference Implementation**: Study `app/Filler.hs` and `fillStandalone` for parallel patterns
 
-8. **Enhanced Error Messages**
-   - Show target node in errors
-   - Suggest hash tags for CROSSSLOT
-   - Debug mode with routing info
-   - ~100-200 LOC
+**Estimated Effort**: ~300-400 LOC
+
+### Phase 6: Smart Tunnel Mode
+**Goal**: Implement intelligent proxy with cluster routing
+
+**Tasks**:
+1. Accept connections on localhost:6379
+2. Parse incoming RESP commands
+3. Calculate slot and route to appropriate node
+4. Forward responses transparently
+5. Handle redirections
+
+**Reference Implementation**: Study `lib/client/Client.hs` `serve` function for tunnel patterns
+
+**Estimated Effort**: ~400-500 LOC
+
+### Phase 7: Comprehensive E2E Testing & CI Integration
+**Goal**: Full test coverage for Phases 4-6 features
+
+**⚠️ IMPORTANT**: Complete Phases 4-6 first, then write tests for those features
+
+**Tasks**:
+1. **CLI Mode Tests**:
+   - Test interactive command execution
+   - Test error handling and display
+   
+2. **Fill Mode Tests**:
+   - Test data distribution across nodes
+   - Verify all masters receive data
+   - Test profiling output
+   
+3. **Tunnel Mode Tests**:
+   - Test smart proxy routing
+   - Test multi-client connections
+   
+4. **Advanced Scenarios**:
+   - MOVED/ASK redirection handling
+   - Topology changes (add/remove nodes)
+   - Failure scenarios (node down)
+   - Performance benchmarks vs standalone
+
+5. **CI/CD Integration**:
+   - Create `runClusterE2ETests.sh` (model after `rune2eTests.sh`)
+   - Update existing test runner to include cluster tests
+   - Add to CI/CD pipeline
+
+**Reference Implementation**: **Study `test/E2E.hs` extensively** - it has excellent patterns for testing all three modes. Don't reinvent the wheel - adapt the existing patterns:
+- Process management and cleanup
+- Waiting for readiness signals
+- Input/output handling
+- Assertion strategies
+- Environment variable handling
+
+**Estimated Effort**: ~300-400 LOC
+
+### Phase 8: Advanced Features (Optional)
+**Goal**: Production optimizations based on profiling and user needs
+
+**Features** (prioritize based on actual needs):
+1. Multi-key command splitting (MGET/MSET across slots) - ~200-300 LOC
+2. Pipelining optimization (group by node, parallel execution) - ~300-400 LOC
+3. Enhanced error messages (node info, hash tag suggestions) - ~100-200 LOC
+4. Read replica support (READONLY/READWRITE) - ~200-300 LOC
+
+**Estimated Effort**: ~800-1200 LOC (varies by features selected)
 
 ## Success Criteria
 
 ### Functional Requirements
-- ✅ Core cluster infrastructure complete
-- ✅ RedisCommands instance for ClusterCommandClient
-- ✅ Basic mode integration (structure)
-- ⏳ CLI mode fully functional
-- ⏳ Fill mode fully functional
-- ⏳ Tunnel smart mode functional
-- ⏳ All E2E tests passing
+- ✅ Core cluster infrastructure complete (Phases 1-2)
+- ✅ RedisCommands instance for ClusterCommandClient (Phase 2)
+- ✅ Basic mode integration structure (Phase 3)
+- ⏳ CLI mode fully functional (Phase 4)
+- ⏳ Fill mode fully functional (Phase 5)
+- ⏳ Tunnel smart mode functional (Phase 6)
+- ⏳ Comprehensive E2E tests passing (Phase 7)
 
 ### Quality Requirements
-- ✅ Unit test coverage >80% for cluster modules
-- ⏳ E2E tests cover all three modes in cluster configuration
-- ⏳ Performance benchmarks (vs standalone)
+- ✅ Unit test coverage >80% for cluster modules (Phases 1-2)
+- ⏳ E2E tests cover all three modes in cluster configuration (Phase 7)
+- ⏳ Performance benchmarks vs standalone (Phase 7)
 - ✅ Zero breaking changes for existing standalone users
 - ✅ Documentation for cluster usage
 
 ### Non-Functional Requirements
-- ⏳ Cluster mode adds <10% latency overhead (needs measurement)
-- ⏳ Fill mode achieves near-linear speedup with cluster size
+- ⏳ Cluster mode adds <10% latency overhead (Phase 7 measurement)
+- ⏳ Fill mode achieves near-linear speedup with cluster size (Phase 5 + Phase 7)
 - ✅ Memory overhead <10MB for typical cluster (3-10 nodes)
 - ✅ Backward compatibility maintained
 
@@ -404,23 +519,35 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 
 ## Next Steps
 
-### Immediate (Complete Phase 3)
-1. Implement CLI mode command execution
-2. Implement fill mode bulk loading
-3. Implement smart tunnel mode
-4. Add profiling before/after for fill mode
+### Phase 4: CLI Mode (First Priority)
+1. Study `app/Main.hs` `repl` function for standalone implementation pattern
+2. Implement command parsing from user input
+3. Execute via ClusterCommandClient with proper error handling
+4. Display results with optional node information
 
-### Short-Term (Complete Phase 4)
-5. Expand E2E test coverage
-6. Integrate cluster tests into CI/CD
-7. Performance testing and benchmarking
-8. Documentation updates
+### Phase 5: Fill Mode (Second Priority)
+1. Study `app/Filler.hs` for parallel execution and seed spacing patterns
+2. Implement slot calculation and key distribution
+3. Distribute work across cluster nodes
+4. Add profiling to measure performance
 
-### Long-Term (Phase 5)
-9. Multi-key command splitting
-10. Pipelining optimization
-11. Enhanced debugging and error messages
-12. Consider read replica support if requested
+### Phase 6: Tunnel Mode (Third Priority)
+1. Study `lib/client/Client.hs` `serve` function for tunnel patterns
+2. Implement command parsing from tunnel clients
+3. Route via ClusterCommandClient
+4. Handle response forwarding
+
+### Phase 7: Comprehensive Testing (After Phases 4-6)
+1. **Study `test/E2E.hs` thoroughly** - adapt its patterns for cluster testing
+2. Write tests for CLI mode features (Phase 4)
+3. Write tests for Fill mode features (Phase 5)
+4. Write tests for Tunnel mode features (Phase 6)
+5. Add advanced scenarios (redirections, failures, topology changes)
+6. Create `runClusterE2ETests.sh` following `rune2eTests.sh` structure
+7. Integrate into CI/CD pipeline
+
+### Phase 8: Advanced Features (Optional)
+Implement based on profiling results and user feedback after Phases 4-7 are complete.
 
 ## Appendix A: File Structure
 
@@ -459,15 +586,19 @@ docker-cluster/                       # ✅ Existing - 5-node cluster setup
 - `ConnectionPool.hs`: 75 LOC
 - `Main.hs` integration: ~150 LOC
 - Tests: ~400 LOC
+- Total: ~1215 LOC
 
-**Remaining** (Phase 3-5 completion): ~2000-2500 LOC
-- CLI mode: ~300 LOC
-- Fill mode: ~400 LOC
-- Tunnel smart mode: ~500 LOC
-- E2E tests: ~400 LOC
-- Optimizations: ~400-900 LOC
+**Remaining Work by Phase**:
+- **Phase 4** (CLI Mode): ~200-300 LOC
+- **Phase 5** (Fill Mode): ~300-400 LOC
+- **Phase 6** (Tunnel Mode): ~400-500 LOC
+- **Phase 7** (E2E Testing): ~300-400 LOC
+- **Phase 8** (Advanced Features): ~800-1200 LOC (optional)
 
-**Total Project**: ~4000-4500 LOC for full cluster support
+**Total Remaining**: ~1200-1600 LOC for core functionality (Phases 4-7)
+**Total with Phase 8**: ~2000-2800 LOC
+
+**Total Project**: ~3200-4800 LOC for full cluster support (depending on Phase 8 features)
 
 ## Appendix C: Known Limitations
 
@@ -495,6 +626,6 @@ docker-cluster/                       # ✅ Existing - 5-node cluster setup
 
 ---
 
-**Document Version**: 2.0  
+**Document Version**: 2.1  
 **Last Updated**: 2026-02-04  
-**Status**: Active Development - Phases 1-3 Complete
+**Status**: Active Development - Phases 1-3 Complete, Phases 4-8 Reorganized
