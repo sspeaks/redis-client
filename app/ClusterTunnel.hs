@@ -249,58 +249,30 @@ createPinnedListener connector node = do
 
 -- | Forward traffic bidirectionally between client and cluster node
 -- Also intercepts and rewrites cluster topology responses
+-- Uses sequential request-response pattern to maintain proper ordering
 forwardPinnedConnection :: (Client client) =>
   Socket ->
   client 'Connected ->
   NodeAddress ->  -- Parameter kept for potential future use
   IO ()
 forwardPinnedConnection clientSock redisConn _addr = do
-  -- Create MVars for bidirectional communication
-  clientDone <- newEmptyMVar
-  redisDone <- newEmptyMVar
-  
-  -- Client -> Redis forwarding thread
-  void $ forkIO $ 
-    finally
-      (forwardClientToRedis clientSock redisConn)
-      (putMVar clientDone ())
-  
-  -- Redis -> Client forwarding thread (with response rewriting)
-  void $ forkIO $ 
-    finally
-      (forwardRedisToClient clientSock redisConn)
-      (putMVar redisDone ())
-  
-  -- Wait for either direction to complete
-  takeMVar clientDone
-  takeMVar redisDone
-
--- | Forward data from client to Redis
-forwardClientToRedis :: (Client client) => Socket -> client 'Connected -> IO ()
-forwardClientToRedis clientSock redisConn = do
   loop
   where
     loop = do
+      -- Read command from client
       dat <- recv clientSock 4096
       if BS.null dat
         then return ()  -- Client disconnected
         else do
+          -- Forward to Redis
           send redisConn (LB.fromStrict dat)
-          loop
-
--- | Forward data from Redis to client, rewriting cluster responses
-forwardRedisToClient :: (Client client) => Socket -> client 'Connected -> IO ()
-forwardRedisToClient clientSock redisConn = do
-  loop
-  where
-    loop = do
-      dat <- receive redisConn
-      if BS.null dat
-        then return ()  -- Redis disconnected
-        else do
-          -- Check if we need to rewrite the response
-          let rewritten = rewriteClusterResponse dat
+          -- Receive response from Redis
+          response <- receive redisConn
+          -- Rewrite cluster responses
+          let rewritten = rewriteClusterResponse response
+          -- Send back to client
           sendAll clientSock rewritten
+          -- Continue loop
           loop
 
 -- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
