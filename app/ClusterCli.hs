@@ -14,6 +14,7 @@ import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy.Char8 as BSC
+import           Data.Char                  (toUpper)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
 import           Resp                       (Encodable (encode),
@@ -33,21 +34,23 @@ executeCommandInCluster cmd = do
         Right response -> liftIO $ print response
 
 -- | Route and execute command parts via ClusterCommandClient
--- Uses heuristic-based routing to avoid maintaining hardcoded command lists
+-- Uses explicit command lists to determine routing strategy
 routeAndExecuteCommand :: (Client client) => [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 routeAndExecuteCommand [] = return $ Left "Empty command"
 routeAndExecuteCommand (cmd:args) = do
-  -- Heuristic-based routing strategy:
-  -- 1. If command has no arguments, route to any master (PING, INFO, DBSIZE, etc.)
-  -- 2. If first argument exists, assume it's a key and route by slot
-  -- 3. Let Redis handle invalid commands - it will return appropriate errors
-  case args of
-    [] -> executeKeylessCommand (cmd:args)
-    (firstArg:_) -> 
-      -- Check if first argument looks like a flag/option (starts with -)
-      if BS.isPrefixOf "-" firstArg || BS.isPrefixOf "--" firstArg
-        then executeKeylessCommand (cmd:args)  -- Route to any master
-        else executeKeyedCommand firstArg (cmd:args)  -- Route by key slot
+  let cmdUpper = BS.map toUpper cmd  -- Commands are ASCII, so toUpper is safe
+      cmdStr = BS.unpack cmd
+  
+  -- Route based on command type using explicit lists
+  -- Keyless commands (no key argument) - route to any master
+  if cmdUpper `elem` keylessCommands
+    then executeKeylessCommand (cmd:args)
+    -- Keyed commands (first argument is the key) - route by key slot
+    else case args of
+      [] -> if cmdUpper `elem` requiresKeyCommands
+              then return $ Left $ "Command " ++ cmdStr ++ " requires a key argument"
+              else executeKeylessCommand (cmd:args)  -- Unknown command without args, try keyless
+      (key:_) -> executeKeyedCommand key (cmd:args)
 
 -- | Execute a keyless command (routing to any master node)
 executeKeylessCommand :: (Client client) => [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
@@ -77,3 +80,31 @@ sendRespCommand parts = do
       encoded = Builder.toLazyByteString $ encode respArray
   send client encoded
   parseWith (receive client)
+
+-- | Commands that don't require a key (route to any master)
+-- Note: This list is based on Redis 7.x commands and may need updates for newer versions
+-- See CLUSTERING_IMPLEMENTATION_PLAN.md for future work on eliminating this list
+keylessCommands :: [BS.ByteString]
+keylessCommands = 
+  [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE"
+  , "CLUSTER", "INFO", "TIME", "CLIENT", "CONFIG"
+  , "BGREWRITEAOF", "BGSAVE", "SAVE", "LASTSAVE"
+  , "SHUTDOWN", "SLAVEOF", "REPLICAOF", "ROLE"
+  , "ECHO", "SELECT", "QUIT", "COMMAND"
+  ]
+
+-- | Commands that require a key argument
+-- Note: This list is based on Redis 7.x commands and may need updates for newer versions
+-- See CLUSTERING_IMPLEMENTATION_PLAN.md for future work on eliminating this list
+requiresKeyCommands :: [BS.ByteString]
+requiresKeyCommands =
+  [ "GET", "SET", "DEL", "EXISTS", "INCR", "DECR"
+  , "HGET", "HSET", "HDEL", "HKEYS", "HVALS", "HGETALL", "HEXISTS"
+  , "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX"
+  , "SADD", "SREM", "SMEMBERS", "SCARD", "SISMEMBER"
+  , "ZADD", "ZREM", "ZRANGE", "ZCARD"
+  , "EXPIRE", "TTL", "PERSIST"
+  , "MGET", "MSET", "SETNX", "PSETEX"
+  , "APPEND", "GETRANGE", "SETRANGE", "STRLEN"
+  , "GETEX", "GETDEL", "SETEX"
+  ]
