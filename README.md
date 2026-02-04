@@ -61,7 +61,7 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 
 ### Environment Variables
 
-- `REDIS_CLIENT_FILL_CHUNK_KB` - Chunk size in KB for fill operations (default: 8192, range: 1024-8192)
+- `REDIS_CLIENT_FILL_CHUNK_KB` - Chunk size in kilobytes for fill operations (default: 8192 KB, range: 1024-8192 KB)
 
 ## Azure Redis Integration
 
@@ -153,7 +153,7 @@ rm -f *.hp *.prof *.ps *.aux *.stat
 - `hp2ps -e18in -c redis-client.hp` - Convert heap profile to PostScript
 - [Speedscope](https://www.speedscope.app/) - Interactive flamegraph viewer
 
-**Note:** Always use the `-f` flag when filling a local Docker Redis instance to avoid consuming excessive memory.
+**Note:** When filling a local Docker Redis instance, always use the `-f` flag to flush existing data first. This prevents memory issues that can occur when the Redis container accumulates too much data from multiple test runs.
 
 ## Project Structure
 
