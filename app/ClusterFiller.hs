@@ -119,7 +119,8 @@ fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode 
 
   putStrLn "Cluster fill complete!"
   where
-    -- Create jobs for a single node
+    -- | Create fill jobs for a single master node
+    -- Distributes the node's workload across multiple threads
     createJobsForNode :: Int -> Int -> Int -> (Int, ClusterNode) -> [(NodeAddress, Int, Int)]
     createJobsForNode baseMB remainder threadsPerNode (nodeIdx, node) =
       let mbForThisNode = baseMB + (if nodeIdx < remainder then 1 else 0)
@@ -130,13 +131,13 @@ fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode 
            mbPerThread + (if threadIdx < threadRemainder then 1 else 0))
          | threadIdx <- [0..threadsPerNode - 1]]
 
-    -- Calculate which slots each master is responsible for
-    -- Uses the nodeSlotsServed field from topology for efficiency
+    -- | Calculate which hash slots each master node is responsible for
+    -- Returns a map from node ID to list of slot numbers
     calculateSlotRangesPerMaster :: ClusterTopology -> [ClusterNode] -> Map Text [Word16]
     calculateSlotRangesPerMaster _ masters =
       Map.fromList [(nodeId node, expandSlotRanges (nodeSlotsServed node)) | node <- masters]
 
-    -- Expand SlotRange list into individual slot numbers
+    -- | Expand a list of SlotRange into individual slot numbers
     expandSlotRanges :: [SlotRange] -> [Word16]
     expandSlotRanges = concatMap (\r -> [slotStart r .. slotEnd r])
 
@@ -179,7 +180,7 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
               printf "Warning: Could not find node for address %s:%d\n"
                      (nodeHost addr) (nodePort addr)
             Just node -> do
-              let nId = Cluster.nodeId node
+              let nId = nodeId node
                   slots = Map.findWithDefault [] nId slotRanges
 
               when (null slots) $ do
@@ -198,6 +199,8 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
 
       return mvar
   where
+    -- | Find a cluster node by its address
+    -- Returns the first node matching the address, or Nothing if not found
     findNodeByAddress :: [ClusterNode] -> NodeAddress -> Maybe ClusterNode
     findNodeByAddress nodes addr =
       case [n | n <- nodes, nodeAddress n == addr] of
@@ -245,12 +248,8 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
             ) [0..totalChunks - 1]
 
           -- Turn replies back on
-          val <- clientReply ON
-          case val of
-            Just _ -> do
-              _ <- dbsize
-              return ()
-            Nothing -> error "clientReply returned an unexpected value"
+          _ <- clientReply ON
+          dbsize
 
     -- Run the fill action with a 10 minute timeout (600 seconds)
     -- This is generous but prevents indefinite hangs

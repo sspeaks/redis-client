@@ -13,12 +13,12 @@ import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS
-import qualified Data.ByteString.Lazy.Char8 as BSC
 import           Data.Char                  (toUpper)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
+import qualified Data.ByteString.Lazy.Char8 as BSC
 
 -- | Execute a command in cluster mode with proper routing and error handling
 -- This is the main entry point for executing user commands in cluster CLI mode

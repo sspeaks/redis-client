@@ -38,9 +38,8 @@ import           ConnectionPool              (ConnectionPool, PoolConfig (..),
                                               closePool, createPool,
                                               getOrCreateConnection)
 import           Control.Concurrent          (threadDelay)
-import           Control.Concurrent.STM      (TVar, atomically, modifyTVar',
-                                              newTVarIO, readTVar, writeTVar)
-import           Control.Concurrent.STM.TVar
+import           Control.Concurrent.STM      (TVar, atomically,
+                                              newTVarIO, readTVar, readTVarIO, writeTVar)
 import           Control.Exception           (SomeException, catch, throwIO,
                                               try)
 import           Control.Monad               (when)
@@ -50,7 +49,6 @@ import           Data.ByteString             (ByteString)
 import qualified Data.ByteString.Builder     as Builder
 import qualified Data.ByteString.Char8       as BS
 import qualified Data.ByteString.Lazy.Char8  as BSC
-import           Data.Kind                   (Type)
 import           Data.Map.Strict             (Map)
 import qualified Data.Map.Strict             as Map
 import           Data.Text                   (Text)
@@ -162,13 +160,19 @@ createClusterClient ::
   IO (ClusterClient client)
 createClusterClient config connector = do
   pool <- createPool (clusterPoolConfig config)
-  topology <- newTVarIO undefined -- Will be initialized below
-  let client = ClusterClient topology pool config
-
-  -- Discover initial topology
-  refreshTopology client connector
-
-  return client
+  
+  -- Discover initial topology before creating TVar
+  let seedNode = clusterSeedNode config
+  conn <- getOrCreateConnection pool seedNode connector
+  let clientState = ClientState conn BS.empty
+  response <- State.evalStateT (runRedisCommandClient clusterSlots) clientState
+  
+  currentTime <- getCurrentTime
+  case parseClusterSlots response currentTime of
+    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " ++ err
+    Right initialTopology -> do
+      topology <- newTVarIO initialTopology
+      return $ ClusterClient topology pool config
 
 -- | Close all connections in the cluster client
 closeClusterClient :: (Client client) => ClusterClient client -> IO ()
@@ -296,52 +300,6 @@ parseRedirectionError errorType msg =
                 _ -> Nothing
             _ -> Nothing
     _ -> Nothing
-
--- | Handle MOVED error by updating topology and retrying
-handleMoved ::
-  (Client client) =>
-  ClusterClient client ->
-  RedirectionInfo ->
-  (NodeAddress -> IO (client 'Connected)) ->
-  IO ()
-handleMoved client redir connector = do
-  -- Update topology slot mapping
-  let newAddr = NodeAddress (redirHost redir) (redirPort redir)
-  atomically $ do
-    topology <- readTVar (clusterTopology client)
-    let slots = topologySlots topology
-        updatedSlots = slots V.// [(fromIntegral (redirSlot redir), T.pack $ show newAddr)]
-        updatedTopology = topology {topologySlots = updatedSlots}
-    writeTVar (clusterTopology client) updatedTopology
-
--- | Handle ASK error by sending ASKING command and retrying
-handleAsk ::
-  (Client client) =>
-  ClusterClient client ->
-  RedirectionInfo ->
-  RedisCommandClient client a ->
-  (NodeAddress -> IO (client 'Connected)) ->
-  IO (Either ClusterError a)
-handleAsk client redir action connector = do
-  let askAddr = NodeAddress (redirHost redir) (redirPort redir)
-
-  -- Execute ASKING followed by the original command
-  result <- try $ do
-    conn <- getOrCreateConnection (clusterConnectionPool client) askAddr connector
-    let clientState = ClientState conn BS.empty
-    State.evalStateT (runRedisCommandClient $ do
-      -- Send ASKING command
-      cs <- State.get
-      let conn' = getClient cs
-      liftIO $ send conn' (Builder.toLazyByteString $ encode (RespArray [RespBulkString "ASKING"]))
-      _ <- parseWith (receive conn')
-      -- Execute original command
-      action
-      ) clientState
-
-  case result of
-    Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
-    Right value               -> return $ Right value
 
 -- | Internal helper to execute a keyed command within ClusterCommandClient monad
 executeKeyedCommand ::

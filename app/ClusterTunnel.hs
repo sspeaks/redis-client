@@ -27,6 +27,7 @@ import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import           Data.Char                  (toUpper)
+import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word8)
 import           Network.Socket             (Family (..),
@@ -262,7 +263,7 @@ createPinnedListener connector node = do
 forwardPinnedConnection :: (Client client) =>
   Socket ->
   client 'Connected ->
-  NodeAddress ->  -- Parameter kept for potential future use
+  NodeAddress ->
   IO ()
 forwardPinnedConnection clientSock redisConn addr = do
   printf "[Pinned %s:%d] Starting forwarding loop\n" (nodeHost addr) (nodePort addr)
@@ -397,10 +398,6 @@ isIPv4Address str = case parseIPv4 str of
     readMaybe s = case reads s of
       [(x, "")] -> Just x
       _ -> Nothing
-
--- | Check if string is prefix
-isPrefixOf :: String -> String -> Bool
-isPrefixOf prefix str = take (length prefix) str == prefix
 
 -- | Rewrite MOVED/ASK error messages
 rewriteRedirectionError :: String -> String

@@ -25,33 +25,37 @@ import qualified Data.Map.Strict        as Map
 
 -- | Configuration for the connection pool
 data PoolConfig = PoolConfig
-  { maxConnectionsPerNode :: Int, -- Default: 1 (can scale up)
-    connectionTimeout     :: Int,
-    maxRetries            :: Int,
-    useTLS                :: Bool
+  { maxConnectionsPerNode :: Int, -- ^ Default: 1 (can scale up)
+    connectionTimeout     :: Int, -- ^ Connection timeout in microseconds
+    maxRetries            :: Int, -- ^ Maximum retry attempts
+    useTLS                :: Bool -- ^ Whether to use TLS connections
   }
   deriving (Show)
 
 -- | Connection pool that manages connections to multiple nodes
 -- Uses TVar for thread-safe access
 data ConnectionPool client = ConnectionPool
-  { poolConnections :: TVar (Map NodeAddress (client 'Connected)),
-    poolConfig      :: PoolConfig
+  { poolConnections :: TVar (Map NodeAddress (client 'Connected)), -- ^ Active connections
+    poolConfig      :: PoolConfig                                  -- ^ Pool configuration
   }
 
 -- | Create a new empty connection pool
+-- Connections are created lazily when first requested
 createPool :: PoolConfig -> IO (ConnectionPool client)
 createPool config = do
   connections <- newTVarIO Map.empty
   return $ ConnectionPool connections config
 
--- | Get an existing connection or create a new one
+-- | Get an existing connection or create a new one for a specific node address
 -- This is lazy - connections are only created when first needed
+-- Thread-safe: Multiple threads can safely request connections
+-- 
+-- The connector function is called only if a connection doesn't exist
 getOrCreateConnection ::
   (Client client, MonadIO m) =>
   ConnectionPool client ->
   NodeAddress ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  (NodeAddress -> IO (client 'Connected)) -> -- ^ Function to create new connections
   m (client 'Connected)
 getOrCreateConnection pool addr connector = liftIO $ do
   connMap <- readTVarIO (poolConnections pool)
@@ -67,6 +71,7 @@ getOrCreateConnection pool addr connector = liftIO $ do
       return conn
 
 -- | Close all connections in the pool
+-- Exceptions during close are caught and ignored
 closePool :: (Client client) => ConnectionPool client -> IO ()
 closePool pool = do
   connMap <- readTVarIO (poolConnections pool)
