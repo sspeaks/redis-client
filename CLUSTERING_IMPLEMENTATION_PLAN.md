@@ -688,10 +688,10 @@ describe "Command key extraction" $ do
 - [x] Unit tests for redirection handling
 
 ### Phase 3: Mode Integration (2-3 weeks)
-- [ ] Integrate fill mode with cluster routing
-- [ ] Integrate CLI mode with cluster routing
-- [ ] Integrate tunnel mode with cluster proxy
-- [ ] Manual testing of all modes
+- [x] Integrate fill mode with cluster routing
+- [x] Integrate CLI mode with cluster routing
+- [x] Integrate tunnel mode with cluster proxy
+- [x] Manual testing of all modes
 
 ### Phase 4: E2E Testing (1-2 weeks)
 - [ ] Set up docker-compose cluster for tests

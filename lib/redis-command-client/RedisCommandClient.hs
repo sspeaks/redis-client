@@ -525,7 +525,9 @@ data RunState = RunState
     dataGBs :: Int,
     flush :: Bool,
     serial :: Bool,
-    numConnections :: Maybe Int
+    numConnections :: Maybe Int,
+    useCluster :: Bool,
+    tunnelMode :: String
   }
   deriving (Show)
 
