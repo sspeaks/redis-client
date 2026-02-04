@@ -10,7 +10,8 @@ module ClusterFiller
 import           Client                     (Client (..),
                                              ConnectionStatus (..))
 import           Cluster                    (ClusterNode (..), ClusterTopology (..),
-                                             NodeAddress (..), NodeRole (..))
+                                             NodeAddress (..), NodeRole (..),
+                                             SlotRange (..))
 import           ClusterCommandClient       (ClusterClient (..))
 import qualified ConnectionPool
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
@@ -123,20 +124,14 @@ fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode 
          | threadIdx <- [0..threadsPerNode - 1]]
     
     -- Calculate which slots each master is responsible for
+    -- Uses the nodeSlotsServed field from topology for efficiency
     calculateSlotRangesPerMaster :: ClusterTopology -> [ClusterNode] -> Map Text [Word16]
-    calculateSlotRangesPerMaster topology masters =
-      let slotAssignments = [(nodeId node, slot) 
-                            | node <- masters
-                            , slot <- [0..16383]
-                            , Just owner <- [findNodeForSlot topology slot]
-                            , owner == nodeId node]
-          grouped = Map.fromListWith (++) [(k, [v]) | (k, v) <- slotAssignments]
-      in grouped
+    calculateSlotRangesPerMaster _ masters =
+      Map.fromList [(nodeId node, expandSlotRanges (nodeSlotsServed node)) | node <- masters]
     
-    findNodeForSlot :: ClusterTopology -> Word16 -> Maybe Text
-    findNodeForSlot topo slot
-      | slot < 16384 = Just $ (topologySlots topo) V.! fromIntegral slot
-      | otherwise = Nothing
+    -- Expand SlotRange list into individual slot numbers
+    expandSlotRanges :: [SlotRange] -> [Word16]
+    expandSlotRanges ranges = concatMap (\r -> [slotStart r .. slotEnd r]) ranges
 
 -- | Execute a single fill job on a specific node
 executeJob ::

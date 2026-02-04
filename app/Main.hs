@@ -262,9 +262,6 @@ fillCluster state = do
         closeClusterClient clusterClient
   
   when (dataGBs state > 0) $ do
-    -- Initialize random noise buffer
-    initRandomNoise
-    
     -- Load slot mappings from file
     putStrLn "Loading slot-to-hashtag mappings..."
     slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
