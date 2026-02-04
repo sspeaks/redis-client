@@ -13,7 +13,7 @@ import Data.ByteString (ByteString)
 -- | Commands that don't require a key argument (route to any master node)
 -- These commands can be executed on any master node in the cluster
 -- Note: This list is based on Redis 7.x commands and may need updates for newer versions
--- See CLUSTERING_IMPLEMENTATION_PLAN.md Phase 15 for future work on eliminating this hardcoded list
+-- See CLUSTERING_IMPLEMENTATION_PLAN.md Phase 17 for future work on eliminating this hardcoded list
 keylessCommands :: [ByteString]
 keylessCommands =
   [ "PING",
@@ -43,7 +43,7 @@ keylessCommands =
 -- | Commands that require a key argument (route by key's hash slot)
 -- These commands must be routed to the node responsible for the key's hash slot
 -- Note: This list is based on Redis 7.x commands and may need updates for newer versions
--- See CLUSTERING_IMPLEMENTATION_PLAN.md Phase 15 for future work on eliminating this hardcoded list
+-- See CLUSTERING_IMPLEMENTATION_PLAN.md Phase 17 for future work on eliminating this hardcoded list
 requiresKeyCommands :: [ByteString]
 requiresKeyCommands =
   [ "GET",
