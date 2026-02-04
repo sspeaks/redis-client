@@ -7,7 +7,8 @@ import           Client                     (Client (receive, send, connect),
                                              TLSClient (..), serve,
                                              PlainTextClient (..),
                                              ConnectionStatus (..))
-import           Cluster                    (NodeAddress (..))
+import           Cluster                    (ClusterNode (..), ClusterTopology (..),
+                                             NodeAddress (..), NodeRole (..))
 import           ClusterCli                 (executeCommandInCluster)
 import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
                                              ClusterCommandClient,
@@ -20,9 +21,11 @@ import qualified ConnectionPool             as CP
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
+import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
+import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
@@ -36,6 +39,7 @@ import           RedisCommandClient         (ClientState (ClientState),
                                              RunState (..), parseWith,
                                              runCommandsAgainstPlaintextHost,
                                              runCommandsAgainstTLSHost)
+import qualified RedisCommandClient
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
 import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
@@ -247,6 +251,32 @@ fillStandalone state = do
             return mv) jobs
         mapM_ takeMVar mvars
 
+-- | Flush all master nodes in a cluster
+flushAllClusterNodes :: (Client client) => 
+  ClusterClient client -> 
+  (NodeAddress -> IO (client 'Connected)) -> 
+  IO ()
+flushAllClusterNodes clusterClient connector = do
+  -- Get cluster topology to find all master nodes
+  topology <- readTVarIO (clusterTopology clusterClient)
+  let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  
+  printf "Flushing %d master nodes in cluster...\n" (length masterNodes)
+  
+  -- Flush each master node
+  mapM_ (\node -> do
+      let addr = nodeAddress node
+      printf "  Flushing node %s:%d\n" (nodeHost addr) (nodePort addr)
+      -- Get connection to this specific node
+      conn <- CP.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
+      -- Run FLUSHALL on this node
+      let clientState = ClientState conn BS.empty
+      State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
+      return ()
+    ) masterNodes
+  
+  putStrLn "All master nodes flushed successfully"
+
 fillCluster :: RunState -> IO ()
 fillCluster state = do
   when (flush state) $ do
@@ -254,11 +284,11 @@ fillCluster state = do
     if useTLS state
       then do
         clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        runClusterCommandClient clusterClient (createTLSConnector state) (void flushAll)
+        flushAllClusterNodes clusterClient (createTLSConnector state)
         closeClusterClient clusterClient
       else do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        runClusterCommandClient clusterClient (createPlaintextConnector state) (void flushAll)
+        flushAllClusterNodes clusterClient (createPlaintextConnector state)
         closeClusterClient clusterClient
   
   when (dataGBs state > 0) $ do
