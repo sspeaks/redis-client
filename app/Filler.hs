@@ -134,12 +134,14 @@ fillCacheWithDataMB baseSeed threadIdx mb = do
 
 -- | Cluster-aware fill function using pipelining with slot-specific keys
 -- This version fills data for keys that hash to a specific slot range
--- Uses the RedisCommandClient interface for consistency with non-clustered fill
+-- Uses CLIENT REPLY OFF/ON for consistency with non-clustered fill
+-- Note: Hash tag {sN} ensures keys route to same node, but doesn't guarantee
+-- routing to slot N specifically. Relies on thread's direct connection to target node.
 fillCacheWithDataClusterPipelined :: (Client client) => 
   Word64 ->      -- Base seed for deterministic key generation
   Int ->         -- Thread index
   Int ->         -- MB to fill
-  Word16 ->      -- Target slot number (0-16383) 
+  Word16 ->      -- Target slot number (0-16383) - used for hash tag
   client 'Connected -> 
   IO ()
 fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
@@ -149,8 +151,8 @@ fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
   chunkKilos <- lookupChunkKilos
   
   -- Calculate total chunks needed based on actual MB requested
-  let totalKilosNeeded = mb * 1024  -- Convert MB to KB
-      totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
+  let totalKBNeeded = mb * 1024  -- Convert MB to KB
+      totalChunks = (totalKBNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
   
   printf "Thread %d: Filling %d MB (%d chunks) for slot %d with pipelining...\n" 
     threadIdx mb totalChunks targetSlot
@@ -161,9 +163,9 @@ fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
   _ <- receive client  -- Consume the OK response
   
   -- Generate commands with hash tag to route to target slot
-  -- We use a simple hash tag format: {NNN} where NNN ensures routing to the target slot
-  -- Since we can't guarantee {slotN} maps to slot N, we use the thread's slot assignment
-  -- and generate keys with that hash tag prefix
+  -- Hash tag format: {sN} where N is the target slot number
+  -- Note: The CRC16 of {sN} determines actual slot routing, not N directly
+  -- Thread connects to node owning targetSlot, so commands reach correct node
   let hashTagStr = printf "{s%d}" targetSlot :: String
       hashTag = BSC.pack hashTagStr
   
@@ -188,10 +190,11 @@ genRandomSetWithHashTag chunkKilos seed hashTag = Builder.toLazyByteString $! go
     hashTagLen = BS.length hashTag
     
     -- Pre-computed RESP protocol prefix for SET commands
-    -- Adjusted for longer keys with hash tag
+    -- Key format: {hashTag}:{512 bytes from generate512Bytes}
+    -- Total key length: hashTagLen + 1 (colon) + 512
     setPrefix :: Builder.Builder
     setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$" 
-      <> Builder.intDec (hashTagLen + 1 + 8 + 504)  -- hash tag + ":" + 8 byte seed + 504 bytes noise
+      <> Builder.intDec (hashTagLen + 1 + 512)  -- hash tag + ":" + 512 bytes (8 byte seed + 504 bytes noise)
       <> Builder.stringUtf8 "\r\n"
       <> Builder.byteString hashTag
       <> Builder.char8 ':'
