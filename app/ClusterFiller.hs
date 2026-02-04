@@ -17,6 +17,7 @@ import qualified ConnectionPool
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
                                              putMVar, takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
+import           Control.Exception          (SomeException, catch)
 import           Control.Monad              (when)
 import qualified Control.Monad.State        as State
 import           Data.Bits                  (shiftR)
@@ -153,32 +154,40 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
     else do
       mvar <- newEmptyMVar
       _ <- forkIO $ do
-        printf "Thread %d filling %dMB on node %s:%d\n" 
-               threadIdx mbToFill (nodeHost addr) (nodePort addr)
+        -- Wrap the entire thread work in exception handler to ensure mvar is always filled
+        catch (do
+          printf "Thread %d filling %dMB on node %s:%d\n" 
+                 threadIdx mbToFill (nodeHost addr) (nodePort addr)
+          
+          -- Get connection to this specific node
+          conn <- ConnectionPool.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
+          
+          -- Find which slots this node owns
+          topology <- readTVarIO (clusterTopology clusterClient)
+          let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+              maybeNode = findNodeByAddress masters addr
+          
+          case maybeNode of
+            Nothing -> do
+              printf "Warning: Could not find node for address %s:%d\n" 
+                     (nodeHost addr) (nodePort addr)
+            Just node -> do
+              let nId = Cluster.nodeId node
+                  slots = Map.findWithDefault [] nId slotRanges
+              
+              when (null slots) $ do
+                printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
+              
+              -- Fill data for this node using its slots
+              fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx
+          ) (\e -> do
+            -- If any exception occurs, log it and continue
+            printf "Error in thread %d for node %s:%d: %s\n" 
+                   threadIdx (nodeHost addr) (nodePort addr) (show (e :: SomeException))
+          )
         
-        -- Get connection to this specific node
-        conn <- ConnectionPool.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
-        
-        -- Find which slots this node owns
-        topology <- readTVarIO (clusterTopology clusterClient)
-        let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-            maybeNode = findNodeByAddress masters addr
-        
-        case maybeNode of
-          Nothing -> do
-            printf "Warning: Could not find node for address %s:%d\n" 
-                   (nodeHost addr) (nodePort addr)
-            putMVar mvar ()
-          Just node -> do
-            let nId = Cluster.nodeId node
-                slots = Map.findWithDefault [] nId slotRanges
-            
-            when (null slots) $ do
-              printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
-            
-            -- Fill data for this node using its slots
-            fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx
-            putMVar mvar ()
+        -- Always signal completion, even if there was an error
+        putMVar mvar ()
       
       return mvar
   where
@@ -206,33 +215,39 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
   
   chunkKilos <- lookupChunkKilos
   
-  -- Client state for running commands
-  let clientState = ClientState conn BS.empty
-      fillAction = do
-        -- Turn off client replies for maximum throughput
-        clientReply OFF
-        
-        -- Calculate chunks needed
-        let totalKilos = mbToFill * 1024
-            totalChunks = (totalKilos + chunkKilos - 1) `div` chunkKilos
-        
-        -- Generate and send data chunks
-        mapM_ (\chunkIdx -> do
-            ClientState client _ <- State.get
-            let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
-            send client cmd
-          ) [0..totalChunks - 1]
-        
-        -- Turn replies back on
-        val <- clientReply ON
-        case val of
-          Just _ -> do
-            _ <- dbsize
-            return ()
-          Nothing -> error "clientReply returned an unexpected value"
-  
-  -- Run the fill action in the RedisCommandClient monad
-  State.evalStateT (runRedisCommandClient fillAction) clientState
+  -- Wrap in exception handler
+  catch (do
+    -- Client state for running commands
+    let clientState = ClientState conn BS.empty
+        fillAction = do
+          -- Turn off client replies for maximum throughput
+          clientReply OFF
+          
+          -- Calculate chunks needed
+          let totalKilos = mbToFill * 1024
+              totalChunks = (totalKilos + chunkKilos - 1) `div` chunkKilos
+          
+          -- Generate and send data chunks
+          mapM_ (\chunkIdx -> do
+              ClientState client _ <- State.get
+              let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
+              send client cmd
+            ) [0..totalChunks - 1]
+          
+          -- Turn replies back on
+          val <- clientReply ON
+          case val of
+            Just _ -> do
+              _ <- dbsize
+              return ()
+            Nothing -> error "clientReply returned an unexpected value"
+    
+    -- Run the fill action in the RedisCommandClient monad
+    State.evalStateT (runRedisCommandClient fillAction) clientState
+    printf "Thread %d completed successfully\n" threadIdx
+    ) (\e -> do
+      printf "Thread %d failed with error: %s\n" threadIdx (show (e :: SomeException))
+    )
   return ()
 
 -- | Generate a chunk of SET commands using hash tags for proper slot routing
