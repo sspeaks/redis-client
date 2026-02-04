@@ -325,24 +325,6 @@ rm -f *.hp *.prof *.ps *.aux *.stat
 
 The project uses GitHub Actions for CI. Check `.github/workflows/` for the CI configuration.
 
-## Known Issues and Future Improvements
-
-### Connection Pool Limitations
-
-**Current State**: The connection pool (`lib/cluster/ConnectionPool.hs`) currently supports only one connection per node. When multiple threads try to fill data for the same node concurrently, they share a single connection, which can cause contention and thread synchronization issues.
-
-**Current Workaround**: For cluster fill mode, each thread creates its own dedicated connection using the connector directly (bypassing the pool) to avoid connection sharing. This works but isn't ideal for resource management.
-
-**Future Improvements Needed**:
-1. **Enhance ConnectionPool**: Update `ConnectionPool` to support multiple connections per node with configurable pool size
-2. **Code Audit**: Search the codebase for places where we bypass the connection pool by calling the connector directly, and migrate them to use the pool once it supports multiple connections per node
-3. **Connection Lifecycle**: Implement proper connection lifecycle management (creation, reuse, cleanup) in the pool
-4. **Metrics**: Add connection pool metrics (active connections, wait times, etc.)
-
-**Related Files**:
-- `lib/cluster/ConnectionPool.hs` - Connection pool implementation
-- `app/ClusterFiller.hs` - Currently bypasses pool for fill operations (line ~167)
-
 ## License
 
 This project is licensed under the MIT License.
