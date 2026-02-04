@@ -1,319 +1,147 @@
 # Redis Client
 
-A Haskell-based Redis client that supports both plain text and TLS connections.
+A Haskell Redis client with support for standalone and cluster modes, plaintext and TLS connections, and RESP protocol implementation.
 
-## Features
+## Quick Start
 
-- Connect to Redis using plain text or TLS
-- Send and receive RESP data
-- Perform basic Redis commands
-- Profile the application for performance analysis
-- Azure Redis Cache integration with Entra (Azure AD) authentication support
+### Installation
 
-## Usage
-
-### Azure Redis Cache Connection
-
-For easy connection to Azure Redis caches with automatic Entra (Azure AD) authentication:
-
+**Using Nix (recommended):**
 ```sh
-# If installed via Nix
-azure-redis-connect
-
-# Or run directly with Python
-python3 azure-redis-connect.py
-
-# Specify a subscription
-azure-redis-connect --subscription <subscription-id>
-# or
-python3 azure-redis-connect.py --subscription <subscription-id>
-```
-
-With a specific resource group:
-
-```sh
-azure-redis-connect --resource-group <rg-name>
-# or
-python3 azure-redis-connect.py --resource-group <rg-name>
-```
-
-The script will:
-1. Use your currently selected Azure subscription (or the one you specify)
-2. List all eligible Redis caches in your subscription
-3. Let you select a cache
-4. Choose between fill mode, CLI mode, or tunnel mode
-5. Automatically handle Entra authentication when needed
-
-#### Prerequisites for Azure Integration
-
-- Azure CLI installed and configured (`az login`)
-- Python 3.6 or later
-- Appropriate Azure permissions to list and access Redis caches
-
-### Building the Project
-
-#### Using Cabal
-
-To build the project with Cabal, use the following command:
-
-```sh
-cabal build
-```
-
-#### Using Nix
-
-To build the project with Nix, use the following command:
-
-```sh
-nix-build
-```
-
-To install both `redis-client` and `azure-redis-connect` to your profile:
-
-```sh
-# Install from the current directory
+# Install from current directory
 nix profile install .#
 
 # Or install directly from GitHub
 nix profile install github:sspeaks/redis-client
 ```
 
-This will install both executables to your PATH, making them available system-wide.
-
-### Running the Client
-
-To run the client, use the following command:
-
+**Using Cabal:**
 ```sh
-cabal run redis-client -- [OPTIONS]
+cabal build
+cabal install
 ```
 
-### Options
+### Basic Usage
 
-- `-h`, `--host HOST`: Host to connect to
-- `-u`, `--username USERNAME`: Username to authenticate with (default: 'default')
-- `-a`, `--password PASSWORD`: Password to authenticate with
-- `-t`, `--tls`: Use TLS
-- `-d`, `--data GBs`: Random data amount to send in GB
-- `-f`, `--flush`: Flush the database
-- `-s`, `--serial`: Run in serial mode (no concurrency)
-- `-n`, `--connections NUM`: Number of parallel connections (default: 2)
+The client has three modes: `cli` (interactive), `fill` (testing), and `tunn` (TLS proxy).
 
-### Performance Tuning Environment Variables
-
-For optimal cache filling performance, you can tune this environment variable:
-
-- `REDIS_CLIENT_FILL_CHUNK_KB`: Chunk size in KB (default: 8192)
-  - Larger chunks reduce network round-trips but use more memory
-  - Recommended range: 1024-8192 KB
-
-### Examples
-
-#### Connect to a Redis host and flush the database
-
+**Interactive CLI:**
 ```sh
-cabal run redis-client -- fill -h localhost -f
+redis-client cli -h localhost
+redis-client cli -h localhost -c          # Cluster mode
+redis-client cli -h localhost -t          # With TLS
 ```
 
-#### Connect to a Redis host using TLS and fill the cache with 1GB of data
-
+**Fill cache with data:**
 ```sh
-cabal run redis-client -- fill -h localhost -t -d 1
+redis-client fill -h localhost -d 5       # Fill 5GB
+redis-client fill -h localhost -d 5 -c    # Fill 5GB in cluster
+redis-client fill -h localhost -f         # Flush database
 ```
 
-#### High-performance cache filling with custom settings
-
+**TLS Tunnel:**
 ```sh
-# Use 4MB chunks for maximum throughput
-REDIS_CLIENT_FILL_CHUNK_KB=4096 cabal run redis-client -- fill -h localhost -d 5
+redis-client tunn -h localhost -t
+redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 ```
 
-#### Conservative memory usage for resource-constrained environments
+### Command Options
+
+- `-h`, `--host HOST` - Host to connect to (required)
+- `-p`, `--port PORT` - Port (default: 6379 for plaintext, 6380 for TLS)
+- `-u`, `--username USERNAME` - Username (default: 'default')
+- `-a`, `--password PASSWORD` - Password
+- `-t`, `--tls` - Use TLS connection
+- `-c`, `--cluster` - Redis Cluster mode
+- `-d`, `--data GBs` - Amount of random data to fill (in GB)
+- `-f`, `--flush` - Flush database before filling
+- `-s`, `--serial` - Serial mode (no concurrency)
+- `-n`, `--connections NUM` - Parallel connections (default: 2)
+- `--tunnel-mode MODE` - Tunnel mode: 'smart' or 'pinned' (default: 'smart')
+
+### Environment Variables
+
+- `REDIS_CLIENT_FILL_CHUNK_KB` - Chunk size in KB for fill operations (default: 8192, range: 1024-8192)
+
+## Azure Redis Integration
+
+Connect to Azure Redis caches with automatic Entra (Azure AD) authentication:
 
 ```sh
-# Use smaller chunks for lower memory usage
-REDIS_CLIENT_FILL_CHUNK_KB=1024 cabal run redis-client -- fill -h localhost -d 1
+# Interactive mode
+azure-redis-connect
+
+# Specify subscription
+azure-redis-connect --subscription <subscription-id>
+
+# Specify resource group
+azure-redis-connect --resource-group <rg-name>
 ```
 
-## Profiling
+**Prerequisites:** Azure CLI (`az login`), Python 3.6+, and Azure permissions for Redis access.
 
-To enable profiling, use the following command:
+See [AZURE_EXAMPLES.md](AZURE_EXAMPLES.md) for detailed examples.
 
-```sh
-cabal run redis-client --enable-profiling -- +RTS -hT -pj -RTS -h localhost -d 1 -f
-```
+## Development
 
-### Profiling Tools
-
-- `hp2ps`: Convert heap profile to PostScript
-  - `hp2ps -e18in -c redis-client.hp`
-- `evince`: View PostScript files
-- [Speedscope](https://www.speedscope.app/): Interactive flamegraph viewer
-
-### Helpful Resources
-
-- [Detecting Lazy Memory Leaks in Haskell](https://stackoverflow.com/questions/61666819/haskell-how-to-detect-lazy-memory-leaks)
-- [Tools for Analyzing Performance of a Haskell Program](https://stackoverflow.com/questions/3276240/tools-for-analyzing-performance-of-a-haskell-program)
-
-### RTS Options
-
-To include RTS options in the executable, use:
+### Building
 
 ```sh
-"-with-rtsopts=-hT"
-```
+# Using Makefile (handles Nix if available)
+make build
 
-## Development and Testing
+# Or directly with Cabal
+cabal build
 
-### Quick Start with Makefile
-
-The project includes a Makefile with common development tasks:
-
-```sh
-make help           # Show all available commands
-make build          # Build the project
-make test           # Run all tests (unit + e2e)
-make test-unit      # Run unit tests only
-make test-e2e       # Run end-to-end tests
-make redis-start    # Start local Redis for testing
-make redis-stop     # Stop local Redis
-make profile        # Build with profiling enabled
-make clean          # Clean build artifacts
+# Or with Nix
+nix-build
 ```
 
 ### Running Tests
 
-#### 1. Unit Tests
-
-Unit tests can be run without Redis:
-
+**Unit tests** (no Redis required):
 ```sh
-cabal test RespSpec
-# or
 make test-unit
-```
-
-#### 2. End-to-End Tests
-
-E2E tests require a running Redis instance. There are two ways to run them:
-
-**Option A: Using Docker Compose (Full E2E Suite)**
-
-This runs the complete test suite in Docker containers:
-
-```sh
-./rune2eTests.sh
 # or
-make test-e2e
+cabal test RespSpec ClusterSpec ClusterCommandSpec
 ```
 
-**Option B: Local Development**
-
-For faster iteration during development:
-
+**End-to-end tests** (requires Docker and Nix):
 ```sh
-# Start Redis locally
-make redis-start
+make test-e2e               # Standalone Redis E2E
+make test-cluster-e2e       # Cluster E2E
+make test                   # Run all tests
+```
 
-# Build and run tests
-cabal build
+**Manual testing with local Redis:**
+```sh
+make redis-start            # Start standalone Redis
+make redis-cluster-start    # Start Redis cluster
+
+# Run tests...
 cabal test
 
-# Stop Redis when done
-make redis-stop
+make redis-stop             # Stop standalone Redis
+make redis-cluster-stop     # Stop Redis cluster
 ```
 
-#### 3. Run All Tests
+### Profiling
+
+Profile before and after changes to detect regressions:
 
 ```sh
-make test
-```
-
-### Setting Up a Local Redis Instance
-
-#### Quick Method (Simple Redis)
-
-Use the provided script to start a simple Redis instance:
-
-```sh
-./start-redis-local.sh
-```
-
-This creates a Docker container named `redis-client-dev` accessible at `localhost:6379`.
-
-#### Using Docker Compose (Full Setup with TLS)
-
-For the complete setup including TLS support:
-
-```sh
-docker compose up -d redis
-```
-
-This uses the configuration in `docker-compose.yml` and `redis.conf`.
-
-#### Manual Docker Command
-
-```sh
-docker run -d --name redis-client-dev -p 6379:6379 redis:latest
-```
-
-### Stopping Redis
-
-```sh
-# Using the script
-./stop-redis-local.sh
-
-# Using Docker Compose
-docker compose stop redis
-
-# Using Docker directly
-docker stop redis-client-dev
-
-# Remove the container
-docker rm redis-client-dev
-```
-
-### Testing Workflow Examples
-
-**1. Quick development cycle:**
-```sh
-make redis-start     # Start Redis once
-make build           # Build the project
-make test-unit       # Run unit tests
-# ... make changes ...
-make test-unit       # Test again
-make redis-stop      # Stop when done
-```
-
-**2. Full test before PR:**
-```sh
-make test            # Runs all tests (starts/stops Redis automatically)
-```
-
-**3. Manual testing:**
-```sh
-make redis-start
-cabal run redis-client -- fill -h localhost -f -d 1
-make redis-stop
-```
-
-### Profiling with Redis
-
-To profile the application with a local Redis instance:
-
-```sh
-# Start Redis
+# Start local Redis (if needed)
 make redis-start
 
-# Profile before changes (use -f flag for local Docker Redis)
+# Profile with -p flag (easiest to compare)
 cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
 
-# Make your changes...
+# Make changes...
 
-# Profile after changes
+# Profile again
 cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
 
-# Compare the .prof files
+# Compare .prof files for regressions
 # Stop Redis
 make redis-stop
 
@@ -321,10 +149,22 @@ make redis-stop
 rm -f *.hp *.prof *.ps *.aux *.stat
 ```
 
-### CI/CD Integration
+**Profiling tools:**
+- `hp2ps -e18in -c redis-client.hp` - Convert heap profile to PostScript
+- [Speedscope](https://www.speedscope.app/) - Interactive flamegraph viewer
 
-The project uses GitHub Actions for CI. Check `.github/workflows/` for the CI configuration.
+**Note:** Always use the `-f` flag when filling a local Docker Redis instance to avoid consuming excessive memory.
+
+## Project Structure
+
+- `app/` - Main executable (cli, fill, tunnel modes)
+- `lib/resp/` - RESP protocol implementation
+- `lib/client/` - Connection management (plaintext and TLS)
+- `lib/redis-command-client/` - Redis command execution
+- `lib/cluster/` - Cluster support and connection pooling
+- `lib/crc16/` - CRC16 for hash slot calculation
+- `test/` - Unit and E2E tests
 
 ## License
 
-This project is licensed under the MIT License.
+MIT License
