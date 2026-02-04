@@ -272,57 +272,69 @@ generateClusterChunk ::
   Word64 ->
   LB.ByteString
 generateClusterChunk slotMappings slots chunkKilos seed =
-  Builder.toLazyByteString $ go chunkKilos seed
+  Builder.toLazyByteString $! go chunkKilos seed
   where
     !numSlots = VU.length slots
 
+    -- Pre-computed RESP protocol constants - hoisted out of loop
+    setPrefix :: Builder.Builder
+    setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$512\r\n"
+    {-# INLINE setPrefix #-}
+
+    valuePrefix :: Builder.Builder
+    valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
+    {-# INLINE valuePrefix #-}
+
+    commandSuffix :: Builder.Builder
+    commandSuffix = Builder.stringUtf8 "\r\n"
+    {-# INLINE commandSuffix #-}
+
     go :: Int -> Word64 -> Builder.Builder
     go 0 _ = mempty
-    go n s =
-      let slotIdx = fromIntegral s `mod` numSlots
+    go n !s =
+      let !slotIdx = fromIntegral s `mod` numSlots
           -- O(1) Vector lookup instead of O(n) list indexing
           !slot = slots `VU.unsafeIndex` slotIdx
           -- O(1) Vector lookup instead of O(log n) Map lookup
           !hashTag = slotMappings `V.unsafeIndex` fromIntegral slot
 
-          keySeed = s
-          valSeed = s * 6364136223846793005 + 1442695040888963407
-          nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
+          !keySeed = s
+          !valSeed = s * 6364136223846793005 + 1442695040888963407
+          !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
 
-          keyData = generate512BytesWithHashTag hashTag keySeed
-          valData = generate512Bytes valSeed
-
-          setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$512\r\n"
-          valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
-          commandSuffix = Builder.stringUtf8 "\r\n"
+          !keyData = generate512BytesWithHashTag hashTag keySeed
+          !valData = generate512Bytes valSeed
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
+    {-# INLINE go #-}
 
     -- Generate key with hash tag prefix to ensure proper routing
     -- Empty hash tag means no routing needed, fall back to regular generation
     generate512BytesWithHashTag :: BS.ByteString -> Word64 -> Builder.Builder
-    generate512BytesWithHashTag hashTag seed
+    generate512BytesWithHashTag hashTag !seed
       | BS.null hashTag = generate512Bytes seed
       | otherwise =
-          let tagLen = BS.length hashTag
+          let !tagLen = BS.length hashTag
               -- Format: {hashtag}:seed:padding
               -- We need exactly 512 bytes total
-              seedBytes = Builder.word64LE seed  -- 8 bytes
-              prefix = Builder.char8 '{' <> Builder.byteString hashTag <> Builder.stringUtf8 "}:"
-              prefixLen = 2 + tagLen + 1  -- { + tag + }:
+              !seedBytes = Builder.word64LE seed  -- 8 bytes
+              !prefix = Builder.char8 '{' <> Builder.byteString hashTag <> Builder.stringUtf8 "}:"
+              !prefixLen = 2 + tagLen + 1  -- { + tag + }:
 
               -- Fill remaining bytes with noise
-              totalPrefix = prefixLen + 8  -- prefix + seed
-              paddingNeeded = 512 - totalPrefix
+              !totalPrefix = prefixLen + 8  -- prefix + seed
+              !paddingNeeded = 512 - totalPrefix
 
-              scrambled = seed * 6364136223846793005 + 1442695040888963407
-              offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
-              padding = BS.take paddingNeeded (BS.drop offset randomNoise)
+              !scrambled = seed * 6364136223846793005 + 1442695040888963407
+              !offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
+              !padding = BS.take paddingNeeded (BS.drop offset randomNoise)
           in prefix <> seedBytes <> Builder.byteString padding
+    {-# INLINE generate512BytesWithHashTag #-}
 
--- | Generate 512 bytes of data (same as in Filler.hs)
-generate512Bytes :: Word64 -> Builder.Builder
-generate512Bytes s =
-  let scrambled = s * 6364136223846793005 + 1442695040888963407
-      offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
-      chunk = BS.take 504 (BS.drop offset randomNoise)
-  in Builder.word64LE s <> Builder.byteString chunk
+    -- | Generate 512 bytes of data (same as in Filler.hs)
+    generate512Bytes :: Word64 -> Builder.Builder
+    generate512Bytes !s =
+      let !scrambled = s * 6364136223846793005 + 1442695040888963407
+          !offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
+          !chunk = BS.take 504 (BS.drop offset randomNoise)
+      in Builder.word64LE s <> Builder.byteString chunk
+    {-# INLINE generate512Bytes #-}
