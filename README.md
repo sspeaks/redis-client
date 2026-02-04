@@ -61,7 +61,7 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 
 ### Environment Variables
 
-- `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory.
+- `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory. Use smaller values (1024-2048 KB) in memory-constrained environments or larger values (4096-8192 KB) for maximum throughput.
 
 ## Azure Redis Integration
 
