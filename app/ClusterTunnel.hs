@@ -14,6 +14,8 @@ import           Cluster                    (ClusterNode (..),
 import           ClusterCommandClient       (ClusterClient (..),
                                              ClusterError (..))
 import qualified ClusterCommandClient
+import           ClusterCommands            (keylessCommands,
+                                             requiresKeyCommands)
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -441,26 +443,4 @@ rewriteClusterNodesLine line =
            _ -> line
        _ -> line
 
--- | Commands that don't require a key (route to any master)
-keylessCommands :: [BS.ByteString]
-keylessCommands = 
-  [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE"
-  , "CLUSTER", "INFO", "TIME", "CLIENT", "CONFIG"
-  , "BGREWRITEAOF", "BGSAVE", "SAVE", "LASTSAVE"
-  , "SHUTDOWN", "SLAVEOF", "REPLICAOF", "ROLE"
-  , "ECHO", "SELECT", "QUIT", "COMMAND"
-  ]
-
--- | Commands that require a key argument
-requiresKeyCommands :: [BS.ByteString]
-requiresKeyCommands =
-  [ "GET", "SET", "DEL", "EXISTS", "INCR", "DECR"
-  , "HGET", "HSET", "HDEL", "HKEYS", "HVALS", "HGETALL", "HEXISTS"
-  , "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX"
-  , "SADD", "SREM", "SMEMBERS", "SCARD", "SISMEMBER"
-  , "ZADD", "ZREM", "ZRANGE", "ZCARD"
-  , "EXPIRE", "TTL", "PERSIST"
-  , "MGET", "MSET", "SETNX", "PSETEX"
-  , "APPEND", "GETRANGE", "SETRANGE", "STRLEN"
-  , "GETEX", "GETDEL", "SETEX"
-  ]
+-- End of ClusterTunnel module
