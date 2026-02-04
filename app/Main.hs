@@ -10,21 +10,26 @@ import           Client                     (Client (receive, send, connect),
 import           Cluster                    (NodeAddress (..))
 import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
                                              ClusterCommandClient,
+                                             ClusterClientState (..),
+                                             ClusterError (..),
                                              createClusterClient,
                                              closeClusterClient,
+                                             executeClusterCommand,
+                                             executeKeylessClusterCommand,
                                              runClusterCommandClient)
 import qualified ConnectionPool             as CP
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
-import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BS
-import           Data.Word                  (Word64)
+import qualified Data.ByteString.Lazy.Char8 as LB
+import           Data.Word                  (Word64, Word8)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
+                                             fillCacheWithDataCluster,
                                              initRandomNoise)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
@@ -33,14 +38,29 @@ import           RedisCommandClient         (ClientState (ClientState),
                                              runCommandsAgainstPlaintextHost,
                                              runCommandsAgainstTLSHost)
 import           Resp                       (Encodable (encode),
-                                             RespData (RespArray, RespBulkString))
+                                             RespData (RespArray, RespBulkString, RespError),
+                                             parseRespData)
+import qualified Resp
+import qualified Data.Attoparsec.ByteString as Atto
+import           Control.Exception          (SomeException, bracket, finally, handle)
+import           Control.Monad              (forever, unless, void, when)
+import qualified Data.ByteString            as B
+import           Data.ByteString.Lazy       (fromStrict)
+import           Network.Socket             (AddrInfo (..), Family (AF_INET),
+                                             Socket, SocketOption (..),
+                                             SocketType (Stream), SockAddr (SockAddrInet),
+                                             defaultProtocol,
+                                             setSocketOption, socket, tupleToHostAddress)
+import qualified Network.Socket             as S
+import           Network.Socket.ByteString  (recv)
+import           Network.Socket.ByteString.Lazy (sendAll)
+import           System.IO                  (hFlush, hIsTerminalDevice, isEOF, stdin, stdout)
 import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
                                              OptDescr (Option), getOpt,
                                              usageInfo)
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs)
 import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hIsTerminalDevice, isEOF, stdin)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
 
@@ -165,15 +185,116 @@ tunnCluster state = do
   putStrLn "Starting tunnel mode (cluster)"
   putStrLn $ "Tunnel mode: " ++ tunnelMode state
   case tunnelMode state of
-    "smart" -> do
-      putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
-      putStrLn "Note: Smart cluster proxy is not yet fully implemented"
-      putStrLn "Falling back to pinned mode"
-      tunnClusterPinned state
+    "smart" -> tunnClusterSmart state
     "pinned" -> tunnClusterPinned state
     _ -> do
       printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
       exitFailure
+
+tunnClusterSmart :: RunState -> IO ()
+tunnClusterSmart state = do
+  if not (useTLS state)
+    then do
+      putStrLn "Smart cluster proxy mode (plaintext)"
+      putStrLn "Note: This is a basic implementation that forwards commands to appropriate cluster nodes."
+      putStrLn "Each incoming connection creates its own cluster client for routing."
+      
+      -- Create the initial cluster client to verify connectivity
+      testClient <- createClusterClientFromState state (createPlaintextConnector state)
+      closeClusterClient testClient
+      putStrLn "Cluster connectivity verified"
+      
+      -- Start the proxy server
+      bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
+        setSocketOption sock ReuseAddr 1
+        S.bind sock (SockAddrInet 6379 (tupleToHostAddress (127, 0, 0, 1)))
+        S.listen sock 1024
+        putStrLn "Listening on localhost:6379"
+        hFlush stdout
+        forever $ do
+          (clientSock, _) <- S.accept sock
+          putStrLn "Accepted connection from client"
+          hFlush stdout
+          _ <- forkIO $ handle (\(e :: SomeException) -> do
+              putStrLn $ "Client connection error: " ++ show e
+              S.close clientSock
+            ) $ do
+            -- Each connection gets its own cluster client
+            clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+            finally
+              (proxyClusterConnection clientSock clusterClient (createPlaintextConnector state))
+              (do
+                S.close clientSock
+                closeClusterClient clusterClient
+              )
+          return ()
+    else do
+      putStrLn "TLS tunnel to cluster not yet implemented."
+      putStrLn "Use plaintext mode or wait for future enhancements."
+      exitFailure
+  where
+    -- Proxy a single client connection through the cluster
+    proxyClusterConnection :: Socket -> ClusterClient PlainTextClient -> (NodeAddress -> IO (PlainTextClient 'Connected)) -> IO ()
+    proxyClusterConnection clientSock clusterClient connector = loop
+      where
+        loop = do
+          -- Receive command from client
+          dat <- recv clientSock 4096
+          when (not $ B.null dat) $ do
+            -- Parse the RESP command to determine routing
+            case Atto.parseOnly parseRespData (B.toStrict $ fromStrict dat) of
+              Right respCommand -> do
+                -- Execute through cluster client
+                result <- executeRespCommand clusterClient connector respCommand
+                case result of
+                  Right response -> do
+                    -- Send response back to client
+                    let responseBytes = Builder.toLazyByteString $ encode response
+                    sendAll clientSock responseBytes
+                  Left err -> do
+                    -- Send error back to client
+                    let errorMsg = RespError $ "ERR Cluster proxy error: " ++ show err
+                        errorBytes = Builder.toLazyByteString $ encode errorMsg
+                    sendAll clientSock errorBytes
+              Left err -> do
+                -- Send parse error back to client
+                let errorMsg = RespError $ "ERR Parse error: " ++ err
+                    errorBytes = Builder.toLazyByteString $ encode errorMsg
+                sendAll clientSock errorBytes
+            loop
+    
+    -- Execute a RESP command through the cluster
+    executeRespCommand :: ClusterClient PlainTextClient -> (NodeAddress -> IO (PlainTextClient 'Connected)) -> RespData -> IO (Either ClusterError RespData)
+    executeRespCommand client connector respCommand = do
+      case respCommand of
+        RespArray (RespBulkString cmdName : args) -> do
+          let cmdUpper = LB.map toUpperChar cmdName
+              -- Helper to create RedisCommandClient action that sends raw command
+              sendRaw = do
+                ClientState conn _ <- State.get
+                send conn (Builder.toLazyByteString $ encode respCommand)
+                parseWith (receive conn)
+          
+          -- Route based on command type
+          if cmdUpper `elem` keylessCommands
+            then executeKeylessClusterCommand client sendRaw connector
+            else case args of
+              (RespBulkString key : _) -> 
+                executeClusterCommand client (LB.toStrict key) sendRaw connector
+              _ -> executeKeylessClusterCommand client sendRaw connector
+        _ -> return $ Left $ ConnectionError "Invalid command format"
+    
+    -- Commands that don't require a key for routing (as Lazy ByteStrings)
+    keylessCommands = 
+      [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE", "INFO"
+      , "CLUSTER", "CONFIG", "CLIENT", "COMMAND", "ECHO", "QUIT"
+      ]
+    
+    -- Convert character to uppercase
+    toUpperChar :: Char -> Char
+    toUpperChar c
+      | c >= 'a' && c <= 'z' = toEnum (fromEnum c - 32)
+      | otherwise = c
 
 tunnClusterPinned :: RunState -> IO ()
 tunnClusterPinned state = do
@@ -258,16 +379,50 @@ fillCluster state = do
         closeClusterClient clusterClient
   
   when (dataGBs state > 0) $ do
-    putStrLn "Note: Cluster fill mode is a basic implementation for Phase 3."
-    putStrLn "It demonstrates cluster integration but is not optimized for bulk data loading."
-    putStrLn "For production use, consider implementing pipelining or use specialized tools."
-    putStrLn ""
-    -- For Phase 3, we acknowledge that efficient bulk filling in cluster mode
-    -- requires more sophisticated implementation (pipelining, bulk operations)
-    -- which would be part of Phase 5 (Advanced Features).
-    -- For now, we demonstrate the integration is in place.
-    printf "Cluster fill mode integrated. To actually fill data, use standalone mode.\n"
-    printf "Future enhancement: Implement optimized cluster fill with pipelining.\n"
+    initRandomNoise -- Ensure noise buffer is initialized once and shared
+    baseSeed <- randomIO :: IO Word64
+    
+    if serial state
+      then do
+        printf "Filling cluster cache '%s' with %dGB of data using serial mode\n" (host state) (dataGBs state)
+        if useTLS state
+          then do
+            clusterClient <- createClusterClientFromState state (createTLSConnector state)
+            runClusterCommandClient clusterClient (createTLSConnector state) $ 
+              fillCacheWithDataCluster baseSeed 0 (dataGBs state * 1024)
+            closeClusterClient clusterClient
+          else do
+            clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+            runClusterCommandClient clusterClient (createPlaintextConnector state) $ 
+              fillCacheWithDataCluster baseSeed 0 (dataGBs state * 1024)
+            closeClusterClient clusterClient
+      else do
+        -- Use numConnections (defaults to 2 for cluster)
+        let nConns = maybe 2 id (numConnections state)
+            totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
+            baseMB = totalMB `div` nConns
+            remainder = totalMB `mod` nConns
+            -- Each connection gets (baseMB + 1) or baseMB MB
+            -- Jobs: (connectionIdx, mbForThisConnection)
+            jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
+        printf "Filling cluster cache '%s' with %dGB of data using %d parallel connections\n" (host state) (dataGBs state) (length jobs)
+        mvars <- mapM (\(idx, mb) -> do
+            mv <- newEmptyMVar
+            _ <- forkIO $ do
+                 if useTLS state
+                    then do
+                      clusterClient <- createClusterClientFromState state (createTLSConnector state)
+                      runClusterCommandClient clusterClient (createTLSConnector state) $ 
+                        fillCacheWithDataCluster baseSeed idx mb
+                      closeClusterClient clusterClient
+                    else do
+                      clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+                      runClusterCommandClient clusterClient (createPlaintextConnector state) $ 
+                        fillCacheWithDataCluster baseSeed idx mb
+                      closeClusterClient clusterClient
+                 putMVar mv ()
+            return mv) jobs
+        mapM_ takeMVar mvars
 
 cli :: RunState -> IO ()
 cli state = do
@@ -335,13 +490,25 @@ replCluster isTTY = loop
         Just cmd -> do
           when isTTY $ liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
-            -- Note: This is a basic implementation for Phase 3
-            -- A full implementation would parse RESP commands and route them properly
-            -- For now, we acknowledge the limitation
-            liftIO $ putStrLn $ "Note: Cluster CLI command execution is a placeholder."
-            liftIO $ putStrLn $ "For full cluster CLI support, use redis-cli."
-            liftIO $ putStrLn $ "Future enhancement: Parse and execute RESP commands via cluster client."
-            loop
+            -- Parse the command into RESP format
+            let cmdWords = words cmd
+            case cmdWords of
+              [] -> loop
+              _ -> do
+                -- Build a RESP array from the command words
+                let respCommand = RespArray $ map (RespBulkString . BS.pack) cmdWords
+                
+                -- Get the cluster client state to execute raw commands
+                ClusterClientState client connector <- State.get
+                
+                -- Execute the command - we need to determine if it's keyed or keyless
+                result <- liftIO $ executeRawCommand client connector respCommand
+                
+                case result of
+                  Right response -> liftIO $ print response
+                  Left err -> liftIO $ putStrLn $ "Error: " ++ show err
+                
+                loop
     readCommand
       | isTTY = readline "> "
       | otherwise = do
@@ -349,3 +516,40 @@ replCluster isTTY = loop
           if eof
             then return Nothing
             else liftIO $ Just <$> getLine
+    
+    -- Execute a raw RESP command, extracting keys if needed
+    executeRawCommand :: (Client client) => 
+      ClusterClient client -> 
+      (NodeAddress -> IO (client 'Connected)) -> 
+      RespData -> 
+      IO (Either ClusterError RespData)
+    executeRawCommand client connector respCommand = do
+      case respCommand of
+        RespArray (RespBulkString cmdName : args) -> do
+          let cmdUpper = LB.map toUpperChar cmdName
+              -- Helper to create RedisCommandClient action that sends raw command
+              sendRaw = do
+                ClientState conn _ <- State.get
+                send conn (Builder.toLazyByteString $ encode respCommand)
+                parseWith (receive conn)
+          
+          -- Route based on command type
+          if cmdUpper `elem` keylessCommands
+            then executeKeylessClusterCommand client sendRaw connector
+            else case args of
+              (RespBulkString key : _) -> 
+                executeClusterCommand client (LB.toStrict key) sendRaw connector
+              _ -> executeKeylessClusterCommand client sendRaw connector
+        _ -> return $ Left $ ConnectionError "Invalid command format"
+    
+    -- Commands that don't require a key for routing (as Lazy ByteStrings)
+    keylessCommands = 
+      [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE", "INFO"
+      , "CLUSTER", "CONFIG", "CLIENT", "COMMAND", "ECHO", "QUIT"
+      ]
+    
+    -- Convert character to uppercase
+    toUpperChar :: Char -> Char
+    toUpperChar c
+      | c >= 'a' && c <= 'z' = toEnum (fromEnum c - 32)
+      | otherwise = c

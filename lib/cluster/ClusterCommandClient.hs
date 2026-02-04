@@ -15,6 +15,8 @@ module ClusterCommandClient
     closeClusterClient,
     -- * Running Commands
     runClusterCommandClient,
+    executeClusterCommand,
+    executeKeylessClusterCommand,
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)

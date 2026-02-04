@@ -195,6 +195,7 @@ executable redis-client
                     , readline
                     , cluster
                     , stm
+                    , network
     hs-source-dirs:   app
     other-modules: Filler
     default-language: GHC2021
