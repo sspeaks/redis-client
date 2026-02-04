@@ -116,14 +116,15 @@ Test edge cases, failure scenarios, and cluster-specific behaviors.
 - Topology changes (simulate node add/remove)
 - Node failure scenarios
 - Network partition handling
-- Connection pool behavior under load
-- Concurrent multi-threaded access
+- Current connection pool behavior under load (single connection per node)
+- Concurrent multi-threaded access with existing infrastructure
 
 #### Implementation Notes
 - May require docker-compose modifications to simulate failures
 - Use docker pause/unpause for node failures
 - Test topology refresh on MOVED errors
 - Verify retry logic and exponential backoff
+- Note: Tests existing connection pool (one connection per node); enhanced pool (Phase 12) is optional future work
 
 ---
 
@@ -138,9 +139,10 @@ Establish performance baselines and compare cluster vs standalone.
 #### Scope
 - Benchmark fill mode: cluster vs standalone throughput
 - Measure cluster mode latency overhead
-- Profile connection pool contention
+- Profile current connection pool contention (single connection per node)
 - Measure memory usage (various cluster sizes)
 - Document performance characteristics
+- Determine if connection pool enhancement (Phase 12) is needed
 
 #### Implementation Notes
 - Use `cabal run --enable-profiling -- {flags}` with `-p` RTS flag
@@ -148,6 +150,7 @@ Establish performance baselines and compare cluster vs standalone.
 - Test with various data sizes (1GB, 5GB, 10GB)
 - Test with various thread counts
 - Document results in README or separate PERFORMANCE.md
+- Profiling results inform whether Phase 12 enhancement is necessary
 
 #### Success Criteria
 - Cluster mode adds <10% latency overhead
