@@ -114,16 +114,22 @@ make test                   # Run all tests
 ```
 
 **Manual testing with local Redis:**
+
+For interactive testing or running unit tests manually:
 ```sh
 make redis-start            # Start standalone Redis
 make redis-cluster-start    # Start Redis cluster
 
-# Run tests...
-cabal test
+# Run unit tests or manual commands
+cabal test RespSpec ClusterSpec ClusterCommandSpec
+# or
+cabal run redis-client -- fill -h localhost -d 1
 
 make redis-stop             # Stop standalone Redis
 make redis-cluster-stop     # Stop Redis cluster
 ```
+
+Note: Do NOT start Redis manually before running E2E tests (`make test-e2e` or `make test-cluster-e2e`). Those tests manage their own Docker instances.
 
 ### Profiling
 
