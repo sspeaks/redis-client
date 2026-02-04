@@ -8,14 +8,12 @@ import           Client                     (Client (receive, send, connect),
                                              PlainTextClient (..),
                                              ConnectionStatus (..))
 import           Cluster                    (NodeAddress (..))
+import           ClusterCli                 (executeCommandInCluster)
 import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
                                              ClusterCommandClient,
-                                             ClusterClientState (..),
-                                             ClusterError (..),
                                              createClusterClient,
                                              closeClusterClient,
                                              runClusterCommandClient)
-import qualified ClusterCommandClient
 import qualified ConnectionPool             as CP
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
@@ -24,9 +22,7 @@ import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy.Char8 as BSC
-import           Data.Char                  (toUpper)
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
@@ -349,77 +345,3 @@ replCluster isTTY = loop
           if eof
             then return Nothing
             else liftIO $ Just <$> getLine
-    
-    -- Execute a command in cluster mode with proper routing and error handling
-    executeCommandInCluster cmd = do
-      let parts = words cmd
-      case parts of
-        [] -> return ()
-        (command:args) -> do
-          result <- executeClusterCommandParts (map BS.pack (command:args))
-          case result of
-            Left err -> liftIO $ putStrLn $ "Error: " ++ err
-            Right response -> liftIO $ print response
-    
-    -- Execute command parts via ClusterCommandClient with proper routing
-    executeClusterCommandParts [] = return $ Left "Empty command"
-    executeClusterCommandParts (cmd:args) = do
-      let cmdUpper = BS.map toUpper cmd  -- Commands are ASCII, so toUpper is safe
-          cmdStr = BS.unpack cmd
-      
-      -- Route based on command type
-      -- Keyless commands (no key argument)
-      if cmdUpper `elem` keylessCommands
-        then executeKeylessRaw (cmd:args)
-        -- Keyed commands (first argument is the key)
-        else case args of
-          [] -> if cmdUpper `elem` requiresKeyCommands
-                  then return $ Left $ "Command " ++ cmdStr ++ " requires a key argument"
-                  else executeKeylessRaw (cmd:args)
-          (key:_) -> executeKeyedRaw key (cmd:args)
-    
-    -- Execute a keyless command (routing to any master node)
-    executeKeylessRaw parts = do
-      ClusterClientState clusterClient connector <- State.get
-      result <- liftIO $ ClusterCommandClient.executeKeylessClusterCommand clusterClient (sendAndReceive parts) connector
-      return $ case result of
-        Left err -> Left (show err)
-        Right resp -> Right resp
-    
-    -- Execute a keyed command (routing by key's slot)
-    executeKeyedRaw key parts = do
-      ClusterClientState clusterClient connector <- State.get
-      result <- liftIO $ ClusterCommandClient.executeClusterCommand clusterClient key (sendAndReceive parts) connector
-      return $ case result of
-        Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg ++ "\nHint: Use hash tags like {user}:key to ensure keys map to the same slot"
-        Left err -> Left (show err)
-        Right resp -> Right resp
-    
-    -- Send RESP command and receive response
-    sendAndReceive parts = do
-      ClientState client _ <- State.get
-      let respArray = RespArray $ map (RespBulkString . BSC.fromStrict) parts
-          encoded = Builder.toLazyByteString $ encode respArray
-      send client encoded
-      parseWith (receive client)
-    
-    -- Commands that don't require a key (route to any master)
-    -- Note: This list is based on Redis 7.x commands and may need updates for newer versions
-    keylessCommands = 
-      [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE"
-      , "CLUSTER", "INFO", "TIME", "CLIENT", "CONFIG"
-      , "BGREWRITEAOF", "BGSAVE", "SAVE", "LASTSAVE"
-      , "SHUTDOWN", "SLAVEOF", "REPLICAOF", "ROLE"
-      ]
-    
-    -- Commands that require a key argument
-    -- Note: This list is based on Redis 7.x commands and may need updates for newer versions
-    requiresKeyCommands =
-      [ "GET", "SET", "DEL", "EXISTS", "INCR", "DECR"
-      , "HGET", "HSET", "HDEL", "HKEYS", "HVALS", "HGETALL"
-      , "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN"
-      , "SADD", "SREM", "SMEMBERS", "SCARD", "SISMEMBER"
-      , "ZADD", "ZREM", "ZRANGE", "ZCARD"
-      , "EXPIRE", "TTL", "PERSIST"
-      , "MGET", "MSET", "SETNX", "PSETEX"
-      ]

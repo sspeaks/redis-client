@@ -32,18 +32,33 @@ This document tracks the implementation of Redis Cluster support in the redis-cl
   - **Limitation**: Smart proxy mode not yet implemented
   - **Next Step**: Implement smart routing in tunnel mode
 
-### ⏳ Phase 4: CLI Mode (NOT STARTED)
+### ✅ Phase 4: CLI Mode (COMPLETE)
 Complete the CLI mode implementation for cluster support.
 
-- ⏳ Parse user input into RESP commands
-- ⏳ Execute commands via `ClusterCommandClient`
-- ⏳ Display responses with formatting
-- ⏳ Handle CROSSSLOT errors with helpful messages
-- ⏳ Show node information in debug mode
+- ✅ Parse user input into RESP commands
+- ✅ Execute commands via `ClusterCommandClient`
+- ✅ Display responses with formatting
+- ✅ Handle CROSSSLOT errors with helpful messages
+- ⏳ Show node information in debug mode (optional enhancement)
 
 **Implementation Guide**: Study `app/Main.hs` `repl` function (lines 303-325) for the standalone implementation pattern. The cluster version should follow the same structure but route through `ClusterCommandClient`.
 
-**Estimated Effort**: ~200-300 LOC
+**Command Routing Strategy**: 
+The initial implementation used hardcoded command lists to determine routing. This approach has limitations:
+- **Issue**: Lists must be manually maintained as Redis evolves
+- **Issue**: Unknown commands fail with confusing errors
+- **Issue**: Multi-key commands with varying key positions are hard to handle
+
+**Improved Approach (Phase 4.1 Enhancement)**:
+1. **Heuristic-based routing**: Analyze command structure dynamically
+   - If command has no arguments → route to any master (e.g., PING, INFO)
+   - If first argument looks like a key (doesn't start with special chars) → route by key slot
+   - Otherwise → route to any master and let Redis handle errors
+2. **Graceful fallback**: When routing by key fails with certain errors (MOVED, etc.), automatically retry
+3. **Extract to separate module**: Move CLI logic to `app/ClusterCli.hs` for better organization
+4. **Optional**: Parse Redis command spec JSON (from Redis repo) to build accurate routing tables
+
+**Estimated Effort**: ~200-300 LOC (complete), ~100 LOC for enhancement
 
 ### ⏳ Phase 5: Fill Mode (NOT STARTED)
 Complete the Fill mode implementation for cluster support.
