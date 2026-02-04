@@ -93,12 +93,11 @@ Complete the Fill mode implementation for cluster support.
 - ⏳ Calculate slots for keys to ensure even distribution
 - ⏳ Distribute data generation across cluster nodes
 - ⏳ Use parallel connections to multiple nodes
+- ⏳ Use 2 threads for each node unless otherwise specified
 - ⏳ Implement efficient bulk operations
-- ⏳ Add profiling to compare with standalone mode
+- ⏳ Utilize the flat txt file that maps Slot number to hashtag that maps to it.
 
 **Implementation Guide**: Study `app/Filler.hs` and the standalone `fillStandalone` function (lines 210-244) for parallel execution patterns. Adapt the seed spacing and threading approach for cluster nodes.
-
-**Key Decision**: Choose between runtime CRC16 calculation (simple) or pre-computed hash tags (optimal distribution). Start with runtime calculation.
 
 **Estimated Effort**: ~300-400 LOC
 
@@ -111,7 +110,7 @@ Complete the smart tunnel mode implementation for cluster support.
 - ⏳ Forward responses back to client
 - ⏳ Handle redirections transparently
 
-**Implementation Guide**: Study the existing `serve` function in `lib/client/Client.hs` for tunnel implementation patterns. The smart proxy needs to parse commands before forwarding.
+**Implementation Guide**: Study the existing `serve` function in `lib/client/Client.hs` for tunnel implementation patterns. The smart proxy needs to parse commands before forwarding. You might be able to reuse some existing logic used by the ClusterCLI to determine which commands are keyed and which aren't.
 
 **Estimated Effort**: ~400-500 LOC
 
@@ -133,11 +132,6 @@ Expand E2E test coverage and integrate into CI/CD after completing Phases 4-6.
 - ⏳ Failure scenarios (node down, network partition)
 - ⏳ Performance benchmarks (compare with standalone)
 
-**CI/CD Integration**:
-- ⏳ Create `runClusterE2ETests.sh` script (model after `rune2eTests.sh`)
-- ⏳ Update `rune2eTests.sh` to run both standalone and cluster tests
-- ⏳ Add cluster test stage to CI/CD pipeline
-
 **Implementation Guide**: Study `test/E2E.hs` extensively - it has excellent patterns for testing all three modes (fill, cli, tunnel) that should be adapted for cluster testing. **Don't reinvent the wheel** - reuse the testing patterns, process handling, and assertion strategies from the standalone E2E tests. The cluster tests should follow the same structure and style.
 
 **Estimated Effort**: ~300-400 LOC
@@ -149,6 +143,7 @@ Optional enhancements for production optimization.
 - ⏳ **Pipelining optimization**: Group commands by node, parallel execution, result ordering (~300-400 LOC)
 - ⏳ **Enhanced error messages**: Show target node, suggest hash tags for CROSSSLOT, debug routing info (~100-200 LOC)
 - ⏳ **Read replica support**: READONLY/READWRITE commands for high-throughput scenarios (~200-300 LOC, optional)
+- ⏳ **Explore mode auto-detection**: Fill/CLI/Tunneling could automatically determine that they should run in cluster mode
 
 **Implementation Guide**: These features build on the solid foundation from Phases 4-7. Implement based on actual user needs and performance profiling results.
 
