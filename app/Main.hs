@@ -364,7 +364,7 @@ replCluster isTTY = loop
     -- Execute command parts via ClusterCommandClient with proper routing
     executeClusterCommandParts [] = return $ Left "Empty command"
     executeClusterCommandParts (cmd:args) = do
-      let cmdUpper = BS.map toUpper cmd
+      let cmdUpper = BS.map toUpper cmd  -- Commands are ASCII, so toUpper is safe
           cmdStr = BS.unpack cmd
       
       -- Route based on command type
@@ -404,6 +404,7 @@ replCluster isTTY = loop
       parseWith (receive client)
     
     -- Commands that don't require a key (route to any master)
+    -- Note: This list is based on Redis 7.x commands and may need updates for newer versions
     keylessCommands = 
       [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE"
       , "CLUSTER", "INFO", "TIME", "CLIENT", "CONFIG"
@@ -412,6 +413,7 @@ replCluster isTTY = loop
       ]
     
     -- Commands that require a key argument
+    -- Note: This list is based on Redis 7.x commands and may need updates for newer versions
     requiresKeyCommands =
       [ "GET", "SET", "DEL", "EXISTS", "INCR", "DECR"
       , "HGET", "HSET", "HDEL", "HKEYS", "HVALS", "HGETALL"
