@@ -3,23 +3,24 @@
 
 module Main where
 
-import           Client                     (Client (receive, send, connect),
-                                             TLSClient (..), serve,
+import           Client                     (Client (connect, receive, send),
+                                             ConnectionStatus (..),
                                              PlainTextClient (..),
-                                             ConnectionStatus (..))
-import           Cluster                    (ClusterNode (..), ClusterTopology (..),
+                                             TLSClient (..), serve)
+import           Cluster                    (ClusterNode (..),
+                                             ClusterTopology (..),
                                              NodeAddress (..), NodeRole (..))
 import           ClusterCli                 (executeCommandInCluster)
 import           ClusterCommandClient       (ClusterClient (..),
-                                             ClusterConfig (..),
                                              ClusterCommandClient,
-                                             createClusterClient,
+                                             ClusterConfig (..),
                                              closeClusterClient,
+                                             createClusterClient,
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData,
                                              loadSlotMappings)
-import qualified ConnectionPool             as CP
 import           ConnectionPool             (PoolConfig (PoolConfig))
+import qualified ConnectionPool             as CP
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -30,17 +31,18 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromMaybe)
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
                                              initRandomNoise)
+import qualified RedisCommandClient
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
                                              RedisCommands (flushAll),
                                              RunState (..), parseWith,
                                              runCommandsAgainstPlaintextHost,
                                              runCommandsAgainstTLSHost)
-import qualified RedisCommandClient
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
 import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
@@ -118,24 +120,24 @@ main = do
 
 -- | Create cluster connector for plaintext connections
 createPlaintextConnector :: RunState -> (NodeAddress -> IO (PlainTextClient 'Connected))
-createPlaintextConnector _ = \addr -> do
+createPlaintextConnector _ addr = do
   let notConnected = NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
   connect notConnected
 
 -- | Create cluster connector for TLS connections
 createTLSConnector :: RunState -> (NodeAddress -> IO (TLSClient 'Connected))
-createTLSConnector _ = \addr -> do
+createTLSConnector _ addr = do
   let notConnected = NotConnectedTLSClient (nodeHost addr) (Just $ nodePort addr)
   connect notConnected
 
 -- | Create a cluster client from RunState
-createClusterClientFromState :: (Client client) => 
-  RunState -> 
-  (NodeAddress -> IO (client 'Connected)) -> 
+createClusterClientFromState :: (Client client) =>
+  RunState ->
+  (NodeAddress -> IO (client 'Connected)) ->
   IO (ClusterClient client)
 createClusterClientFromState state connector = do
   let defaultPort = if useTLS state then 6380 else 6379
-      seedNode = NodeAddress (host state) (maybe defaultPort id (port state))
+      seedNode = NodeAddress (host state) (fromMaybe defaultPort (port state))
       poolConfig = PoolConfig
         { CP.maxConnectionsPerNode = 10  -- Max connections per node
         , CP.connectionTimeout = 300     -- 5 minutes timeout
@@ -206,11 +208,11 @@ fill state = do
     putStrLn "No data specified or data is 0GB or fewer\n"
     putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
     exitFailure
-  
+
   if useCluster state
     then fillCluster state
     else fillStandalone state
-  
+
   -- Exit with success only if we filled data, otherwise failure
   -- This maintains the original behavior where flush-only exits with failure
   when (dataGBs state > 0) exitSuccess
@@ -234,7 +236,7 @@ fillStandalone state = do
           else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state)
       else do
         -- Use numConnections (defaults to 8)
-        let nConns = maybe 8 id (numConnections state)
+        let nConns = fromMaybe 8 (numConnections state)
             totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
             baseMB = totalMB `div` nConns
             remainder = totalMB `mod` nConns
@@ -253,17 +255,17 @@ fillStandalone state = do
         mapM_ takeMVar mvars
 
 -- | Flush all master nodes in a cluster
-flushAllClusterNodes :: (Client client) => 
-  ClusterClient client -> 
-  (NodeAddress -> IO (client 'Connected)) -> 
+flushAllClusterNodes :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
   IO ()
 flushAllClusterNodes clusterClient connector = do
   -- Get cluster topology to find all master nodes
   topology <- readTVarIO (clusterTopology clusterClient)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-  
+
   printf "Flushing %d master nodes in cluster...\n" (length masterNodes)
-  
+
   -- Flush each master node
   mapM_ (\node -> do
       let addr = nodeAddress node
@@ -275,7 +277,7 @@ flushAllClusterNodes clusterClient connector = do
       _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
       return ()
     ) masterNodes
-  
+
   putStrLn "All master nodes flushed successfully"
 
 fillCluster :: RunState -> IO ()
@@ -291,32 +293,32 @@ fillCluster state = do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
         flushAllClusterNodes clusterClient (createPlaintextConnector state)
         closeClusterClient clusterClient
-  
+
   when (dataGBs state > 0) $ do
     -- Load slot mappings from file
     putStrLn "Loading slot-to-hashtag mappings..."
     slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
     printf "Loaded %d slot mappings\n" (Map.size slotMappings)
-    
+
     -- Get base seed for randomness
     baseSeed <- randomIO :: IO Word64
-    
+
     -- Determine number of threads per node
-    let threadsPerNode = maybe 2 id (numConnections state)
-    
-    printf "Starting cluster fill: %dGB across cluster with %d threads per node\n" 
+    let threadsPerNode = fromMaybe 2 (numConnections state)
+
+    printf "Starting cluster fill: %dGB across cluster with %d threads per node\n"
            (dataGBs state) threadsPerNode
-    
+
     -- Create cluster client and fill data
     if useTLS state
       then do
         clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        fillClusterWithData clusterClient (createTLSConnector state) slotMappings 
+        fillClusterWithData clusterClient (createTLSConnector state) slotMappings
                            (dataGBs state) threadsPerNode baseSeed
         closeClusterClient clusterClient
       else do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        fillClusterWithData clusterClient (createPlaintextConnector state) slotMappings 
+        fillClusterWithData clusterClient (createPlaintextConnector state) slotMappings
                            (dataGBs state) threadsPerNode baseSeed
         closeClusterClient clusterClient
 
