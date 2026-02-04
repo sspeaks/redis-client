@@ -353,11 +353,23 @@ rewriteRespData (RespBulkString bs) =
   let text = LBSC.unpack bs
   in if ' ' `elem` text && ':' `elem` text
        then RespBulkString (rewriteClusterNodesText bs)  -- CLUSTER NODES format
-       else RespBulkString (LBSC.pack "127.0.0.1")       -- Plain hostname/IP in CLUSTER SLOTS
+       else if looksLikeHostname text
+              then RespBulkString (LBSC.pack "127.0.0.1")  -- Plain hostname/IP in CLUSTER SLOTS
+              else RespBulkString bs  -- Other bulk string (like node ID), leave as-is
 rewriteRespData (RespArray items) =
   -- Recursively rewrite array items (handles CLUSTER SLOTS)
   RespArray (map rewriteRespData items)
 rewriteRespData other = other
+
+-- | Check if a string looks like a hostname or IP address
+-- Heuristic: contains dots (for IPs like 1.2.3.4) or looks like a domain (has dots and alphanumeric)
+-- But NOT if it looks like a node ID (long hex string)
+looksLikeHostname :: String -> Bool
+looksLikeHostname str
+  | null str = False
+  | length str > 35 = False  -- Node IDs are 40 chars, hostnames are typically shorter
+  | '.' `elem` str = True    -- Has dots, likely an IP or domain
+  | otherwise = False
 
 -- | Check if string is prefix
 isPrefixOf :: String -> String -> Bool
