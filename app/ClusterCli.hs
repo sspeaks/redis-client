@@ -9,16 +9,18 @@ import           Client                     (Client (receive, send))
 import           ClusterCommandClient       (ClusterClientState (..),
                                              ClusterError (..))
 import qualified ClusterCommandClient
+import           ClusterCommands            (keylessCommands,
+                                             requiresKeyCommands)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS
-import qualified Data.ByteString.Lazy.Char8 as BSC
 import           Data.Char                  (toUpper)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
+import qualified Data.ByteString.Lazy.Char8 as BSC
 
 -- | Execute a command in cluster mode with proper routing and error handling
 -- This is the main entry point for executing user commands in cluster CLI mode
@@ -80,31 +82,3 @@ sendRespCommand parts = do
       encoded = Builder.toLazyByteString $ encode respArray
   send client encoded
   parseWith (receive client)
-
--- | Commands that don't require a key (route to any master)
--- Note: This list is based on Redis 7.x commands and may need updates for newer versions
--- See CLUSTERING_IMPLEMENTATION_PLAN.md for future work on eliminating this list
-keylessCommands :: [BS.ByteString]
-keylessCommands = 
-  [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE"
-  , "CLUSTER", "INFO", "TIME", "CLIENT", "CONFIG"
-  , "BGREWRITEAOF", "BGSAVE", "SAVE", "LASTSAVE"
-  , "SHUTDOWN", "SLAVEOF", "REPLICAOF", "ROLE"
-  , "ECHO", "SELECT", "QUIT", "COMMAND"
-  ]
-
--- | Commands that require a key argument
--- Note: This list is based on Redis 7.x commands and may need updates for newer versions
--- See CLUSTERING_IMPLEMENTATION_PLAN.md for future work on eliminating this list
-requiresKeyCommands :: [BS.ByteString]
-requiresKeyCommands =
-  [ "GET", "SET", "DEL", "EXISTS", "INCR", "DECR"
-  , "HGET", "HSET", "HDEL", "HKEYS", "HVALS", "HGETALL", "HEXISTS"
-  , "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX"
-  , "SADD", "SREM", "SMEMBERS", "SCARD", "SISMEMBER"
-  , "ZADD", "ZREM", "ZRANGE", "ZCARD"
-  , "EXPIRE", "TTL", "PERSIST"
-  , "MGET", "MSET", "SETNX", "PSETEX"
-  , "APPEND", "GETRANGE", "SETRANGE", "STRLEN"
-  , "GETEX", "GETDEL", "SETEX"
-  ]

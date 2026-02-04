@@ -2,9 +2,9 @@
 
 ## Current Status
 
-**Completed**: Phases 1-6 (Core infrastructure, CLI mode, Fill mode, Tunnel mode)  
-**Next Priority**: Phase 7 - Code Refactoring & Housecleaning  
-**Document Version**: 4.1  
+**Completed**: Phases 1-7 (Core infrastructure, CLI mode, Fill mode, Tunnel mode, Code refactoring)  
+**Next Priority**: Phase 8 - Connection Pool Usage Audit  
+**Document Version**: 4.2  
 **Last Updated**: 2026-02-04
 
 ---
@@ -95,7 +95,7 @@ Audit codebase to identify places where code creates connections directly using 
 - Code uses ConnectionPool consistently where appropriate
 - Direct connector usage is documented with justification
 - All tests pass after migrations
-- Identify if ConnectionPool needs enhancement (informs Phase 14)
+- Identify if ConnectionPool needs enhancement (informs Phase 16)
 
 ---
 
@@ -212,7 +212,7 @@ Test edge cases, failure scenarios, and cluster-specific behaviors.
 - Use docker pause/unpause for node failures
 - Test topology refresh on MOVED errors
 - Verify retry logic and exponential backoff
-- Note: Tests existing connection pool (one connection per node); enhanced pool (Phase 14) is optional future work
+- Note: Tests existing connection pool (one connection per node); enhanced pool (Phase 16) is optional future work
 
 ---
 
@@ -230,7 +230,7 @@ Establish performance baselines and compare cluster vs standalone.
 - Profile current connection pool contention (single connection per node)
 - Measure memory usage (various cluster sizes)
 - Document performance characteristics
-- Determine if connection pool enhancement (Phase 14) is needed
+- Determine if connection pool enhancement (Phase 16) is needed
 
 #### Implementation Notes
 - Use `cabal run --enable-profiling -- {flags}` with `-p` RTS flag
@@ -238,7 +238,7 @@ Establish performance baselines and compare cluster vs standalone.
 - Test with various data sizes (1GB, 5GB, 10GB)
 - Test with various thread counts
 - Document results in README or separate PERFORMANCE.md
-- Profiling results inform whether Phase 14 enhancement is necessary
+- Profiling results inform whether Phase 14-16 enhancements are necessary
 
 #### Success Criteria
 - Cluster mode adds <10% latency overhead
@@ -248,7 +248,128 @@ Establish performance baselines and compare cluster vs standalone.
 
 ---
 
-### Phase 14: Connection Pool Enhancement
+### Phase 14: Fill Mode Configuration Enhancement
+**Status**: NOT STARTED  
+**Prerequisites**: Phase 13 complete  
+**Estimated Effort**: ~50-100 LOC
+
+#### Goal
+Add configurable parameters for fill mode to enable fine-tuning of key/value sizes and command batching for optimal performance.
+
+#### Context
+Currently, fill mode uses hardcoded values:
+- Key size: 512 bytes (fixed)
+- Value size: 512 bytes (fixed)
+- Chunk size: Configurable via `REDIS_CLIENT_FILL_CHUNK_KB` environment variable (default 8192 KB)
+- Number of commands per chunk: Derived from chunk size and key/value size
+
+To optimize fill performance for different cache configurations and network conditions, we need configurable control over:
+1. **Key/Value size**: Affects network payload and Redis memory layout
+2. **Commands per pipeline**: Number of commands batched together (pipelining depth)
+
+#### Scope
+- Add command-line flags for key size and value size
+- Add flag for explicit control of commands per pipeline batch
+- Update `Filler.hs` and `ClusterFiller.hs` to use configurable sizes
+- Maintain backward compatibility with environment variable
+- Document new flags in README and help text
+- Validate parameter ranges (e.g., key size 1-65536 bytes, value size 1-524288 bytes)
+
+#### Key Files to Modify
+- `app/Main.hs` - Add new command-line arguments
+- `app/Filler.hs` - Update `fillCacheWithDataMB` to accept size parameters
+- `app/ClusterFiller.hs` - Update `fillNodeWithData` and `generateClusterChunk` for configurable sizes
+- `README.md` - Document new flags
+
+#### Implementation Notes
+- New flags:
+  - `--key-size BYTES` - Size of each key in bytes (default: 512)
+  - `--value-size BYTES` - Size of each value in bytes (default: 512)
+  - `--pipeline-depth NUM` - Number of SET commands per pipeline batch (overrides chunk size calculation)
+- Keep `REDIS_CLIENT_FILL_CHUNK_KB` for backward compatibility
+- If `--pipeline-depth` is set, it takes precedence over chunk size calculation
+- Chunk size = `pipeline-depth * (key-size + value-size + protocol overhead)`
+- Add validation: reject invalid combinations or values outside reasonable ranges
+
+#### Success Criteria
+- All new flags work correctly in both standalone and cluster modes
+- Backward compatibility maintained (existing behavior unchanged when flags not specified)
+- All tests pass
+- README updated with examples
+- Performance can be tuned via flags (validated in Phase 15)
+
+---
+
+### Phase 15: Fill Mode Performance Optimization
+**Status**: NOT STARTED  
+**Prerequisites**: Phase 14 complete  
+**Estimated Effort**: ~20-50 LOC (mostly testing/tuning)
+
+#### Goal
+Systematically tune fill mode parameters (key/value size, pipeline depth, thread count) to determine optimal values for maximum cache fill throughput.
+
+#### Context
+With Phase 14 adding configurable parameters, we can now empirically determine the best settings for different scenarios:
+- Different cluster sizes (3, 5, 10 nodes)
+- Different network conditions (local, cross-region)
+- Different Redis configurations (memory limits, persistence settings)
+
+#### Scope
+- Create benchmark script to test various parameter combinations
+- Test matrix:
+  - Key sizes: 64, 128, 256, 512, 1024 bytes
+  - Value sizes: 512, 1024, 2048, 4096, 8192 bytes
+  - Pipeline depths: 100, 500, 1000, 2000, 5000, 10000 commands
+  - Thread counts: 1, 2, 4, 8, 16 per node
+- Measure throughput (MB/s, keys/s) for each combination
+- Document optimal settings for different scenarios
+- Update README with recommended configurations
+- Consider adding "fast" preset profile in code
+
+#### Key Files
+- Create `benchmark/fill-performance.sh` - Benchmark script
+- Update `README.md` or create `PERFORMANCE.md` - Document findings
+- Potentially update `app/Main.hs` - Add preset profiles (e.g., `--preset fast`)
+
+#### Implementation Notes
+- Use consistent test environment (e.g., docker-compose cluster with 5 nodes)
+- Measure baseline performance first
+- Test standalone vs cluster for comparison
+- Profile memory usage to ensure no memory leaks
+- Consider network bandwidth limitations
+- Document hardware specs used for benchmarks
+- Results will vary by environment; provide general guidelines
+
+#### Benchmark Approach
+```bash
+# Example benchmark iterations
+for key_size in 64 128 256 512 1024; do
+  for value_size in 512 1024 2048 4096; do
+    for pipeline in 100 500 1000 2000 5000; do
+      for threads in 2 4 8; do
+        # Profile before
+        cabal run --enable-profiling -- fill -h localhost -c -d 1 -f \
+          --key-size $key_size --value-size $value_size \
+          --pipeline-depth $pipeline -n $threads +RTS -p -RTS
+        # Record: throughput, time, memory usage
+      done
+    done
+  done
+done
+```
+
+#### Success Criteria
+- Complete benchmark results documented
+- Optimal parameters identified for:
+  - Maximum throughput scenario
+  - Balanced throughput/memory scenario  
+  - Low-resource scenario
+- README updated with recommended settings
+- Performance improvement over default settings demonstrated (target: >20% improvement)
+
+---
+
+### Phase 16: Connection Pool Enhancement
 **Status**: NOT STARTED  
 **Prerequisites**: Phase 13 complete (profiling may reveal need)  
 **Estimated Effort**: ~150-200 LOC
@@ -282,7 +403,7 @@ Enhance connection pool to support multiple connections per node and eliminate d
 
 ---
 
-### Phase 15: Command Routing Enhancement
+### Phase 17: Command Routing Enhancement
 **Status**: NOT STARTED  
 **Prerequisites**: None (can be done independently)  
 **Estimated Effort**: ~200-300 LOC
@@ -333,7 +454,7 @@ Alternative approaches considered but not recommended:
 
 ---
 
-### Phase 16: Azure Script Cluster Support
+### Phase 18: Azure Script Cluster Support
 **Status**: NOT STARTED  
 **Prerequisites**: None (can be done independently)  
 **Estimated Effort**: ~100-150 LOC
@@ -371,7 +492,7 @@ The script currently only supports standalone Azure Redis caches. Azure Redis En
 
 ---
 
-### Phase 17: Multi-Key Command Splitting (Optional)
+### Phase 19: Multi-Key Command Splitting (Optional)
 **Status**: NOT STARTED  
 **Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~200-300 LOC
@@ -401,7 +522,7 @@ Enable MGET/MSET commands to work across multiple slots by splitting and reassem
 
 ---
 
-### Phase 18: Enhanced Error Messages (Optional)
+### Phase 20: Enhanced Error Messages (Optional)
 **Status**: NOT STARTED  
 **Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~100-150 LOC
@@ -431,7 +552,7 @@ Suggestion: Use hash tags like {user:123}:profile
 
 ---
 
-### Phase 19: Pipelining Optimization (Optional)
+### Phase 21: Pipelining Optimization (Optional)
 **Status**: NOT STARTED  
 **Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~300-400 LOC
@@ -454,7 +575,7 @@ Optimize command execution by grouping commands by target node.
 
 ---
 
-### Phase 20: Read Replica Support (Optional)
+### Phase 22: Read Replica Support (Optional)
 **Status**: NOT STARTED  
 **Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~200-300 LOC
@@ -701,10 +822,10 @@ MGET {user:123}:profile {user:123}:settings  # Works across multi-key!
 ## Known Limitations
 
 ### Current Limitations
-1. **Multi-key commands**: Use first key only (no splitting) - See Phase 15
+1. **Multi-key commands**: Use first key only (no splitting) - See Phase 19
 2. **Connection pool**: One connection per node - See Phase 12
 3. **Command routing**: Hardcoded lists - See Phase 13
-4. **No read replicas**: Master-only routing - See Phase 18
+4. **No read replicas**: Master-only routing - See Phase 22
 5. **No pipelining**: Commands executed individually - See 17
 
 ### Acceptable Trade-offs

@@ -115,6 +115,7 @@ library cluster
     exposed-modules:  Cluster
                     , ConnectionPool
                     , ClusterCommandClient
+                    , ClusterCommands
 
 test-suite RespSpec
     type:             exitcode-stdio-1.0
