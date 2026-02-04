@@ -19,6 +19,7 @@ import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (SomeException, catch)
 import           Control.Monad              (when)
+import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State        as State
 import           Data.Bits                  (shiftR)
 import qualified Data.ByteString            as BS
@@ -35,11 +36,12 @@ import           Filler                     (lookupChunkKilos)
 import           RedisCommandClient         (ClientReplyValues (..),
                                              ClientState (..),
                                              RedisCommands (..),
+                                             parseWith,
                                              runRedisCommandClient)
+import qualified Resp
 import           System.IO                  (IOMode (..), hGetContents,
                                              openFile)
 import           System.Timeout             (timeout)
-import           Text.Printf                (printf)
 import           Text.Printf                (printf)
 
 -- | Mapping from slot number to hash tag that routes to that slot
@@ -222,27 +224,46 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
     -- Client state for running commands
     let clientState = ClientState conn BS.empty
         fillAction = do
-          -- Turn off client replies for maximum throughput
-          clientReply OFF
+          -- TEMPORARILY DISABLED: Turn off client replies for maximum throughput
+          -- Keeping replies ON to diagnose any errors from Redis
+          -- clientReply OFF
           
           -- Calculate chunks needed
           let totalKilos = mbToFill * 1024
               totalChunks = (totalKilos + chunkKilos - 1) `div` chunkKilos
           
-          -- Generate and send data chunks
-          mapM_ (\chunkIdx -> do
+          -- Generate and send data chunks WITH replies to catch errors
+          -- This is slower but helps diagnose issues
+          responses <- mapM (\chunkIdx -> do
               ClientState client _ <- State.get
               let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
               send client cmd
-            ) [0..totalChunks - 1]
+              -- Parse response to catch any errors
+              resp <- parseWith (receive client)
+              return (chunkIdx, resp)
+            ) [0..min 10 (totalChunks - 1)]  -- Only check first 10 chunks for diagnostics
           
-          -- Turn replies back on
-          val <- clientReply ON
-          case val of
-            Just _ -> do
-              _ <- dbsize
-              return ()
-            Nothing -> error "clientReply returned an unexpected value"
+          -- Log any error responses
+          liftIO $ mapM_ (\(idx, resp) -> 
+              case resp of
+                Resp.RespError err -> printf "Thread %d chunk %d got error: %s\n" threadIdx idx err
+                Resp.RespSimpleString "OK" -> return ()
+                other -> printf "Thread %d chunk %d got unexpected response: %s\n" threadIdx idx (show other)
+            ) responses
+          
+          -- Continue with remaining chunks if we got past the first 10
+          when (totalChunks > 10) $ do
+            mapM_ (\chunkIdx -> do
+                ClientState client _ <- State.get
+                let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
+                send client cmd
+                _ <- parseWith (receive client)  -- Still parse but don't log
+                return ()
+              ) [10..totalChunks - 1]
+          
+          -- Verify with DBSIZE
+          _ <- dbsize
+          return ()
     
     -- Run the fill action with a 10 minute timeout (600 seconds)
     -- This is generous but prevents indefinite hangs
