@@ -137,9 +137,15 @@ createPlaintextConnector state addr = do
 
 -- | Create cluster connector for TLS connections
 -- Connects and authenticates to each node
+-- Uses the original seed hostname for TLS certificate validation to avoid
+-- hostname mismatch errors when CLUSTER SLOTS returns IP addresses
 createTLSConnector :: RunState -> (NodeAddress -> IO (TLSClient 'Connected))
 createTLSConnector state addr = do
-  let notConnected = NotConnectedTLSClient (nodeHost addr) (Just $ nodePort addr)
+  -- For TLS, use the original seed hostname for certificate validation
+  -- but connect to the actual node address (which may be an IP from CLUSTER SLOTS)
+  let hostnameForCert = host state  -- Use seed hostname for certificate validation
+      targetAddress = nodeHost addr  -- Use actual node address for connection
+      notConnected = NotConnectedTLSClientWithHostname hostnameForCert targetAddress (Just $ nodePort addr)
   client <- connect notConnected
   -- Authenticate if password is provided
   if null (password state)

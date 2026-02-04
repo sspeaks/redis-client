@@ -2,7 +2,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Client (Client (..), serve, PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient, TLSTunnel), ConnectionStatus (..), resolve) where
+module Client (Client (..), serve, PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname, TLSTunnel), ConnectionStatus (..), resolve) where
 
 import Control.Concurrent (forkIO)
 import Control.Exception (IOException, bracket, catch, finally, throwIO)
@@ -102,6 +102,10 @@ instance Client PlainTextClient where
 
 data TLSClient (a :: ConnectionStatus) where
   NotConnectedTLSClient :: String -> Maybe Int -> TLSClient 'NotConnected
+  -- | TLS client with separate hostname for certificate validation
+  -- This is useful for cluster mode where CLUSTER SLOTS returns IP addresses
+  -- but we need to use the original hostname for TLS certificate validation
+  NotConnectedTLSClientWithHostname :: String -> String -> Maybe Int -> TLSClient 'NotConnected
   ConnectedTLSClient :: String -> Word32 -> Socket -> Context -> TLSClient 'Connected
   TLSTunnel :: TLSClient 'Connected -> TLSClient 'Server
 
@@ -136,6 +140,40 @@ instance Client TLSClient where
     context <- contextNew sock clientParams
     handshake context
     return $ ConnectedTLSClient hostname ipCorrectEndian sock context
+  
+  -- | Connect using a specific address but with a different hostname for certificate validation
+  -- This is useful when connecting to cluster nodes by IP address but needing to validate
+  -- against the cluster's hostname certificate
+  connect (NotConnectedTLSClientWithHostname certHostname targetAddress port) = liftIO $ do
+    ipCorrectEndian <- resolve targetAddress
+    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian, addrCanonName = Just certHostname}
+    sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
+    setSocketOption sock NoDelay 1     -- Disable Nagle's algorithm
+    setSocketOption sock KeepAlive 1   -- Enable keep-alive
+    S.connect sock (addrAddress addrInfo)
+    store <- getSystemCertificateStore
+    insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
+    let allowInsecure = maybe False (not . null) insecureFlag
+        baseParams =
+          -- Use certHostname for certificate validation, not the target IP address
+          (defaultParamsClient certHostname "redis-server")
+            { clientSupported =
+                def
+                  { supportedVersions = [TLS13, TLS12],
+                    supportedCiphers = ciphersuite_strong
+                  },
+              clientShared =
+                def
+                  { sharedCAStore = store
+                  }
+            }
+        clientParams =
+          if allowInsecure
+            then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
+            else baseParams
+    context <- contextNew sock clientParams
+    handshake context
+    return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
 
   close :: (MonadIO m) => TLSClient 'Connected -> m ()
   close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx `finally` S.close sock
