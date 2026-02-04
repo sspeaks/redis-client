@@ -10,7 +10,8 @@ import           Client                     (Client (receive, send, connect),
 import           Cluster                    (ClusterNode (..), ClusterTopology (..),
                                              NodeAddress (..), NodeRole (..))
 import           ClusterCli                 (executeCommandInCluster)
-import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
+import           ClusterCommandClient       (ClusterClient (..),
+                                             ClusterConfig (..),
                                              ClusterCommandClient,
                                              createClusterClient,
                                              closeClusterClient,
@@ -24,7 +25,7 @@ import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
-import qualified Control.Monad.State.Strict as State
+import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
@@ -271,7 +272,7 @@ flushAllClusterNodes clusterClient connector = do
       conn <- CP.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
       -- Run FLUSHALL on this node
       let clientState = ClientState conn BS.empty
-      State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
+      _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
       return ()
     ) masterNodes
   
