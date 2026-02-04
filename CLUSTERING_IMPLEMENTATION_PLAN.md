@@ -694,15 +694,18 @@ describe "Command key extraction" $ do
 - [x] Manual testing of all modes
 
 ### Phase 4: E2E Testing (1-2 weeks)
-- [ ] Set up docker-compose cluster for tests
-- [ ] Implement `ClusterE2E.hs` test suite
+- [x] Set up docker-compose cluster for tests
+- [x] Implement `ClusterE2E.hs` test suite
 - [ ] Verify all test scenarios pass
 - [ ] Performance testing and optimization
 
 ### Phase 5: Advanced Features (2-3 weeks, Optional)
-- [ ] Pipelining optimization
-- [ ] Multi-key command splitting
-- [ ] Enhanced error messages and debugging
+- [x] Cluster fill mode implemented (command-by-command with routing)
+- [x] Cluster CLI mode implemented (full RESP command parsing and routing)
+- [x] Cluster tunnel mode implemented (smart proxy with command routing)
+- [ ] Pipelining optimization (future enhancement)
+- [ ] Multi-key command splitting (future enhancement)
+- [ ] Enhanced error messages and debugging (ongoing)
 
 **Total Estimated Effort**: 9-13 weeks (can be parallelized)
 

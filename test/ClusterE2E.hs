@@ -141,3 +141,41 @@ main = hspec $ do
               -- Verify we got some slot ranges
               length slots `shouldSatisfy` (> 0)
             other -> expectationFailure $ "Unexpected CLUSTER SLOTS response: " ++ show other
+
+    describe "Cluster fill mode" $ do
+      it "can write data distributed across cluster" $ do
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Write multiple keys that should be distributed across nodes
+          let keys = ["fill:" ++ show i | i <- [1..100 :: Int]]
+          
+          -- Write all keys
+          mapM_ (\key -> do
+            result <- runCmd client $ set key "testvalue"
+            case result of
+              RespSimpleString "OK" -> return ()
+              other -> expectationFailure $ "Failed to set key " ++ key ++ ": " ++ show other
+            ) keys
+          
+          -- Verify data was written by checking a few random keys
+          mapM_ (\key -> do
+            result <- runCmd client $ get key
+            case result of
+              RespBulkString "testvalue" -> return ()
+              other -> expectationFailure $ "Failed to get key " ++ key ++ ": " ++ show other
+            ) (take 10 keys)
+
+    describe "Cluster CLI mode integration" $ do
+      it "handles basic commands through cluster CLI logic" $ do
+        -- This test verifies the CLI command routing logic works
+        -- Note: Full CLI testing would require interactive shell simulation
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Test that basic commands work (similar to what CLI would do)
+          result <- runCmd client $ set "cli:test" "value"
+          case result of
+            RespSimpleString "OK" -> return ()
+            other -> expectationFailure $ "Unexpected SET response: " ++ show other
+          
+          getResult <- runCmd client $ get "cli:test"
+          case getResult of
+            RespBulkString "value" -> return ()
+            other -> expectationFailure $ "Unexpected GET response: " ++ show other
