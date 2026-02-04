@@ -58,11 +58,11 @@ import qualified Data.Text                   as T
 import           Data.Time.Clock             (UTCTime, getCurrentTime)
 import qualified Data.Vector                 as V
 import           Data.Word                   (Word16)
+import qualified RedisCommandClient
 import           RedisCommandClient          (ClientState (..),
                                               RedisCommandClient (..),
                                               RedisCommands (..), parseWith,
                                               runRedisCommandClient)
-import qualified RedisCommandClient
 import           Resp                        (Encodable (..), RespData (..))
 
 -- | Error types specific to cluster operations
@@ -111,12 +111,12 @@ data ClusterClientState client = ClusterClientState
 -- | Monad for executing Redis commands on a cluster
 -- Wraps StateT to abstract away the client state and connector
 data ClusterCommandClient client a where
-  ClusterCommandClient :: (Client client) => 
-    { runClusterCommandClientM :: State.StateT (ClusterClientState client) IO a } 
+  ClusterCommandClient :: (Client client) =>
+    { runClusterCommandClientM :: State.StateT (ClusterClientState client) IO a }
     -> ClusterCommandClient client a
 
 -- | Run a ClusterCommandClient action with the given cluster client and connector
-runClusterCommandClient :: 
+runClusterCommandClient ::
   (Client client) =>
   ClusterClient client ->
   (NodeAddress -> IO (client 'Connected)) ->
@@ -254,7 +254,7 @@ executeKeylessClusterCommand client action connector = do
   -- Find any master node to execute the command on
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
   case masterNodes of
-    [] -> return $ Left $ TopologyError "No master nodes available"
+    []       -> return $ Left $ TopologyError "No master nodes available"
     (node:_) -> executeOnNode client (nodeAddress node) action connector
 
 -- | Retry logic with exponential backoff
@@ -364,7 +364,7 @@ executeKeylessCommand action = do
 
 -- | Helper to unwrap Either ClusterError or fail
 unwrapClusterResult :: (Client client) => Either ClusterError a -> ClusterCommandClient client a
-unwrapClusterResult (Right a) = pure a
+unwrapClusterResult (Right a)  = pure a
 unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
 
 -- | Execute a keyed command and unwrap the result
@@ -385,21 +385,21 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   set k v = executeKeyed k (RedisCommandClient.set k v)
   get k = executeKeyed k (RedisCommandClient.get k)
   mget keys = case keys of
-    [] -> executeKeyless (RedisCommandClient.mget [])
+    []    -> executeKeyless (RedisCommandClient.mget [])
     (k:_) -> executeKeyed k (RedisCommandClient.mget keys)
   setnx k v = executeKeyed k (RedisCommandClient.setnx k v)
   decr k = executeKeyed k (RedisCommandClient.decr k)
   psetex k ms v = executeKeyed k (RedisCommandClient.psetex k ms v)
   bulkSet kvs = case kvs of
-    [] -> executeKeyless (RedisCommandClient.bulkSet [])
+    []         -> executeKeyless (RedisCommandClient.bulkSet [])
     ((k, _):_) -> executeKeyed k (RedisCommandClient.bulkSet kvs)
   flushAll = executeKeyless RedisCommandClient.flushAll
   dbsize = executeKeyless RedisCommandClient.dbsize
   del keys = case keys of
-    [] -> executeKeyless (RedisCommandClient.del [])
+    []    -> executeKeyless (RedisCommandClient.del [])
     (k:_) -> executeKeyed k (RedisCommandClient.del keys)
   exists keys = case keys of
-    [] -> executeKeyless (RedisCommandClient.exists [])
+    []    -> executeKeyless (RedisCommandClient.exists [])
     (k:_) -> executeKeyed k (RedisCommandClient.exists keys)
   incr k = executeKeyed k (RedisCommandClient.incr k)
   hset k f v = executeKeyed k (RedisCommandClient.hset k f v)

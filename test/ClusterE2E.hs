@@ -2,15 +2,16 @@
 
 module Main where
 
-import Client (Client (..), PlainTextClient (NotConnectedPlainTextClient))
-import Cluster (NodeAddress (..), calculateSlot)
-import ClusterCommandClient
-import ConnectionPool (PoolConfig (..))
-import Control.Exception (bracket)
-import qualified Data.ByteString.Char8 as BS
+import           Client                     (Client (..),
+                                             PlainTextClient (NotConnectedPlainTextClient))
+import           Cluster                    (NodeAddress (..), calculateSlot)
+import           ClusterCommandClient
+import           ConnectionPool             (PoolConfig (..))
+import           Control.Exception          (bracket)
+import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
-import Resp (RespData (..))
-import Test.Hspec
+import           Resp                       (RespData (..))
+import           Test.Hspec
 
 -- | Create a cluster client for testing
 createTestClusterClient :: IO (ClusterClient PlainTextClient)
@@ -34,7 +35,7 @@ createTestClusterClient = do
 
 -- | Helper to run cluster commands using the RedisCommands instance
 runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
-runCmd client action = runClusterCommandClient client connector action
+runCmd client = runClusterCommandClient client connector
   where
     connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
@@ -50,13 +51,13 @@ main = hspec $ do
       it "can execute GET/SET commands on cluster" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           let key = "cluster:test:key"
-          
+
           -- SET command
           setResult <- runCmd client $ set key "testvalue"
           case setResult of
             RespSimpleString "OK" -> return ()
             other -> expectationFailure $ "Unexpected SET response: " ++ show other
-          
+
           -- GET command
           getResult <- runCmd client $ get key
           case getResult of
@@ -67,7 +68,7 @@ main = hspec $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           -- Test with multiple keys that should hash to different slots
           let keys = ["key1", "key2", "key3", "key4", "key5"]
-          
+
           -- Set all keys
           mapM_ (\key -> do
             result <- runCmd client $ set key ("value_" ++ key)
@@ -75,7 +76,7 @@ main = hspec $ do
               RespSimpleString "OK" -> return ()
               other -> expectationFailure $ "Unexpected SET response for " ++ key ++ ": " ++ show other
             ) keys
-          
+
           -- Get all keys and verify
           mapM_ (\key -> do
             result <- runCmd client $ get key
@@ -89,16 +90,16 @@ main = hspec $ do
           -- Keys with same hash tag should go to same slot
           let key1 = "{user:123}:profile"
               key2 = "{user:123}:settings"
-          
+
           -- Both keys should hash to the same slot
           slot1 <- calculateSlot (BS.pack key1)
           slot2 <- calculateSlot (BS.pack key2)
           slot1 `shouldBe` slot2
-          
+
           -- Set both keys
           result1 <- runCmd client $ set key1 "profile_data"
           result2 <- runCmd client $ set key2 "settings_data"
-          
+
           case (result1, result2) of
             (RespSimpleString "OK", RespSimpleString "OK") -> return ()
             _ -> expectationFailure "Failed to set keys with hash tags"
@@ -106,19 +107,19 @@ main = hspec $ do
       it "can execute multiple operations in sequence" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           let key = "counter:test"
-          
+
           -- SET initial value
           setResult <- runCmd client $ set key "0"
           case setResult of
             RespSimpleString "OK" -> return ()
             _ -> expectationFailure "Failed to set initial counter value"
-          
+
           -- INCR
           incrResult <- runCmd client $ incr key
           case incrResult of
             RespInteger 1 -> return ()
             other -> expectationFailure $ "Unexpected INCR response: " ++ show other
-          
+
           -- GET to verify
           getResult <- runCmd client $ get key
           case getResult of
