@@ -259,16 +259,45 @@ fillCluster state = do
         closeClusterClient clusterClient
   
   when (dataGBs state > 0) $ do
-    putStrLn "Note: Cluster fill mode is a basic implementation for Phase 3."
-    putStrLn "It demonstrates cluster integration but is not optimized for bulk data loading."
-    putStrLn "For production use, consider implementing pipelining or use specialized tools."
-    putStrLn ""
-    -- For Phase 3, we acknowledge that efficient bulk filling in cluster mode
-    -- requires more sophisticated implementation (pipelining, bulk operations)
-    -- which would be part of Phase 5 (Advanced Features).
-    -- For now, we demonstrate the integration is in place.
-    printf "Cluster fill mode integrated. To actually fill data, use standalone mode.\n"
-    printf "Future enhancement: Implement optimized cluster fill with pipelining.\n"
+    initRandomNoise -- Ensure noise buffer is initialized once and shared
+    baseSeed <- randomIO :: IO Word64
+    if serial state
+      then do
+        printf "Filling cluster cache (seed node: '%s') with %dGB of data using serial mode\n" (host state) (dataGBs state)
+        if useTLS state
+          then do
+            clusterClient <- createClusterClientFromState state (createTLSConnector state)
+            runClusterCommandClient clusterClient (createTLSConnector state) $ fillCacheWithData baseSeed 0 (dataGBs state)
+            closeClusterClient clusterClient
+          else do
+            clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+            runClusterCommandClient clusterClient (createPlaintextConnector state) $ fillCacheWithData baseSeed 0 (dataGBs state)
+            closeClusterClient clusterClient
+      else do
+        -- Use numConnections (defaults to 2 for cluster to avoid overwhelming nodes)
+        let nConns = maybe 2 id (numConnections state)
+            totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
+            baseMB = totalMB `div` nConns
+            remainder = totalMB `mod` nConns
+            -- Each connection gets (baseMB + 1) or baseMB MB
+            -- Jobs: (connectionIdx, mbForThisConnection)
+            jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
+        printf "Filling cluster cache (seed node: '%s') with %dGB of data using %d parallel connections\n" (host state) (dataGBs state) (length jobs)
+        mvars <- mapM (\(idx, mb) -> do
+            mv <- newEmptyMVar
+            _ <- forkIO $ do
+                 if useTLS state
+                    then do
+                      clusterClient <- createClusterClientFromState state (createTLSConnector state)
+                      runClusterCommandClient clusterClient (createTLSConnector state) $ fillCacheWithDataMB baseSeed idx mb
+                      closeClusterClient clusterClient
+                    else do
+                      clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+                      runClusterCommandClient clusterClient (createPlaintextConnector state) $ fillCacheWithDataMB baseSeed idx mb
+                      closeClusterClient clusterClient
+                 putMVar mv ()
+            return mv) jobs
+        mapM_ takeMVar mvars
 
 cli :: RunState -> IO ()
 cli state = do
