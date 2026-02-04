@@ -169,7 +169,7 @@ createClusterClient config connector = do
   
   currentTime <- getCurrentTime
   case parseClusterSlots response currentTime of
-    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " ++ err
+    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
     Right initialTopology -> do
       topology <- newTVarIO initialTopology
       return $ ClusterClient topology pool config
@@ -194,7 +194,7 @@ refreshTopology client connector = do
 
   currentTime <- getCurrentTime
   case parseClusterSlots response currentTime of
-    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " ++ err
+    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
     Right topology -> atomically $ writeTVar (clusterTopology client) topology
 
 -- | Execute a Redis command with cluster awareness and automatic redirection handling

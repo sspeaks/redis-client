@@ -249,7 +249,8 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
 
           -- Turn replies back on
           _ <- clientReply ON
-          dbsize
+          _ <- dbsize
+          return ()
 
     -- Run the fill action with a 10 minute timeout (600 seconds)
     -- This is generous but prevents indefinite hangs
