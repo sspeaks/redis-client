@@ -132,7 +132,17 @@ fillCacheWithDataMB baseSeed threadIdx mb = do
 
 -- | Cluster-aware fill function that uses the RedisCommands interface
 -- This works with any monad that implements RedisCommands (including ClusterCommandClient)
--- Note: Cannot use CLIENT REPLY OFF with RedisCommands interface as each command waits for response
+--
+-- PERFORMANCE NOTE: This implementation does not use CLIENT REPLY OFF or pipelining
+-- because the RedisCommands interface waits for a response after each command.
+-- For fire-and-forget pipelining, a future enhancement would need to:
+--   1. Pre-calculate hash tags that map to each slot (0-16383)
+--   2. Group commands by target node based on slot ownership
+--   3. Use raw client send/receive instead of RedisCommands
+--   4. Pipeline all commands to each node with CLIENT REPLY OFF
+--
+-- Current approach: Simpler implementation using RedisCommands for correctness,
+-- accepting the performance trade-off of waiting for each response.
 fillCacheWithDataCluster :: (RedisCommands m, MonadIO m) => Word64 -> Int -> Int -> m ()
 fillCacheWithDataCluster baseSeed threadIdx mb = do
   -- deterministic start seed for this thread based on the global baseSeed
