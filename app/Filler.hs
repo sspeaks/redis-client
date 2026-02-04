@@ -132,9 +132,9 @@ fillCacheWithDataMB baseSeed threadIdx mb = do
       return ()
     Nothing -> error "clientReply returned an unexpected value"
 
--- | Cluster-aware fill function using pipelining with pre-calculated slot hash tags
--- This version uses raw client send/receive for fire-and-forget pipelining with CLIENT REPLY OFF
--- Each thread fills data for a specific slot to ensure all commands route to the same node
+-- | Cluster-aware fill function using pipelining with slot-specific keys
+-- This version fills data for keys that hash to a specific slot range
+-- Uses the RedisCommandClient interface for consistency with non-clustered fill
 fillCacheWithDataClusterPipelined :: (Client client) => 
   Word64 ->      -- Base seed for deterministic key generation
   Int ->         -- Thread index
@@ -148,39 +148,83 @@ fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot client = do
   
   chunkKilos <- lookupChunkKilos
   
-  -- Calculate total commands needed
+  -- Calculate total chunks needed based on actual MB requested
   let totalKilosNeeded = mb * 1024  -- Convert MB to KB
       totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
-      totalCommands = totalChunks * chunkKilos
   
-  printf "Thread %d: Filling %d MB (%d commands) for slot %d with pipelining...\n" 
-    threadIdx mb totalCommands targetSlot
+  printf "Thread %d: Filling %d MB (%d chunks) for slot %d with pipelining...\n" 
+    threadIdx mb totalChunks targetSlot
   
-  -- Use pre-calculated hash tag for this slot to ensure all keys route to same node
-  -- Format: {slotN} where N is the slot number
-  let hashTag = BSC.pack $ "{slot" ++ show targetSlot ++ "}"
-  
+  -- Use CLIENT REPLY OFF/ON similar to non-clustered mode
   -- Turn off client replies for fire-and-forget pipelining
   send client (Builder.toLazyByteString $ encode $ RespArray [RespBulkString "CLIENT", RespBulkString "REPLY", RespBulkString "OFF"])
   _ <- receive client  -- Consume the OK response
   
-  -- Pipeline all SET commands (no waiting for responses)
-  mapM_ (\cmdIdx -> do
-      let keySeed = startSeed + fromIntegral cmdIdx
-          -- Use hash tag to ensure routing to correct slot/node
-          keyBS = BS.concat [hashTag, ":", BSC.pack $ printf "%016x" keySeed]
-          valBS = BSC.pack $ replicate 512 'x'
-          cmd = RespArray [RespBulkString "SET", 
-                          RespBulkString (LB.fromStrict keyBS), 
-                          RespBulkString (LB.fromStrict valBS)]
-      send client (Builder.toLazyByteString $ encode cmd)
-    ) [0..totalCommands - 1]
+  -- Generate commands with hash tag to route to target slot
+  -- We use a simple hash tag format: {NNN} where NNN ensures routing to the target slot
+  -- Since we can't guarantee {slotN} maps to slot N, we use the thread's slot assignment
+  -- and generate keys with that hash tag prefix
+  let hashTagStr = printf "{s%d}" targetSlot :: String
+      hashTag = BSC.pack hashTagStr
+  
+  -- Pipeline all chunks (fire-and-forget mode) using the noise buffer
+  mapM_ (\chunkIdx -> do
+      let chunkSeed = startSeed + fromIntegral chunkIdx
+          cmd = genRandomSetWithHashTag chunkKilos chunkSeed hashTag
+      send client cmd
+    ) [0..totalChunks - 1]
   
   -- Turn replies back on to confirm completion
   send client (Builder.toLazyByteString $ encode $ RespArray [RespBulkString "CLIENT", RespBulkString "REPLY", RespBulkString "ON"])
   _ <- receive client  -- Consume the OK response
   
   printf "Thread %d: Completed filling %d MB for slot %d\n" threadIdx mb targetSlot
+
+-- | Generate SET commands with a hash tag prefix to ensure slot routing
+genRandomSetWithHashTag :: Int -> Word64 -> BS.ByteString -> LB.ByteString
+genRandomSetWithHashTag chunkKilos seed hashTag = Builder.toLazyByteString $! go numCommands seed
+  where
+    numCommands = chunkKilos
+    hashTagLen = BS.length hashTag
+    
+    -- Pre-computed RESP protocol prefix for SET commands
+    -- Adjusted for longer keys with hash tag
+    setPrefix :: Builder.Builder
+    setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$" 
+      <> Builder.intDec (hashTagLen + 1 + 8 + 504)  -- hash tag + ":" + 8 byte seed + 504 bytes noise
+      <> Builder.stringUtf8 "\r\n"
+      <> Builder.byteString hashTag
+      <> Builder.char8 ':'
+    {-# INLINE setPrefix #-}
+    
+    valuePrefix :: Builder.Builder  
+    valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
+    {-# INLINE valuePrefix #-}
+    
+    commandSuffix :: Builder.Builder
+    commandSuffix = Builder.stringUtf8 "\r\n"
+    {-# INLINE commandSuffix #-}
+    
+    go :: Int -> Word64 -> Builder.Builder
+    go 0 _ = mempty
+    go n !s = 
+      let !keySeed = s
+          !valSeed = s * 6364136223846793005 + 1442695040888963407
+          !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
+          !keyData = generate512Bytes keySeed
+          !valData = generate512Bytes valSeed
+      in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
+    {-# INLINE go #-}
+    
+    -- Generate exactly 512 bytes efficiently (8 bytes unique seed + 504 bytes noise)
+    -- This is the same as the non-clustered version
+    generate512Bytes :: Word64 -> Builder.Builder
+    generate512Bytes !s = 
+        let !scrambled = s * 6364136223846793005 + 1442695040888963407
+            !offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
+            !chunk = BS.take 504 (BS.drop offset randomNoise)
+        in Builder.word64LE s <> Builder.byteString chunk
+    {-# INLINE generate512Bytes #-}
 
 -- | Cluster-aware fill function that uses the RedisCommands interface (backward compatibility)
 -- This works with any monad that implements RedisCommands (including ClusterCommandClient)

@@ -438,6 +438,10 @@ fillCluster state = do
             threadsPerNode = 2
             nConns = maybe (masterCount * threadsPerNode) id defaultConns
             totalMB = dataGBs state * 1024
+            -- Distribute MB evenly: base amount per thread + 1 extra for first 'remainder' threads
+            -- Example: 1024MB / 6 threads = 170 base + 4 remainder
+            -- First 4 threads get 171MB, last 2 get 170MB
+            -- Total: 4*171 + 2*170 = 684 + 340 = 1024MB ✓
             mbPerThread = totalMB `div` nConns
             remainder = totalMB `mod` nConns
         
@@ -445,8 +449,8 @@ fillCluster state = do
         -- Each thread gets assigned specific slots to ensure pipelining works
         let slotsPerThread = max 1 (16384 `div` nConns)
             threadJobs = [(threadIdx, 
-                          threadIdx * slotsPerThread,  -- start slot
-                          if threadIdx == nConns - 1 then 16383 else (threadIdx + 1) * slotsPerThread - 1,  -- end slot
+                          threadIdx * slotsPerThread,  -- startSlot
+                          if threadIdx == nConns - 1 then 16383 else (threadIdx + 1) * slotsPerThread - 1,  -- endSlot
                           if threadIdx < remainder then mbPerThread + 1 else mbPerThread)
                          | threadIdx <- [0..nConns - 1], mbPerThread > 0 || threadIdx < remainder]
         
