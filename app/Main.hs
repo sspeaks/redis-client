@@ -14,6 +14,8 @@ import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
                                              createClusterClient,
                                              closeClusterClient,
                                              runClusterCommandClient)
+import           ClusterFiller              (fillClusterWithData,
+                                             loadSlotMappings)
 import qualified ConnectionPool             as CP
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
@@ -23,6 +25,7 @@ import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
+import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
@@ -259,16 +262,35 @@ fillCluster state = do
         closeClusterClient clusterClient
   
   when (dataGBs state > 0) $ do
-    putStrLn "Note: Cluster fill mode is a basic implementation for Phase 3."
-    putStrLn "It demonstrates cluster integration but is not optimized for bulk data loading."
-    putStrLn "For production use, consider implementing pipelining or use specialized tools."
-    putStrLn ""
-    -- For Phase 3, we acknowledge that efficient bulk filling in cluster mode
-    -- requires more sophisticated implementation (pipelining, bulk operations)
-    -- which would be part of Phase 5 (Advanced Features).
-    -- For now, we demonstrate the integration is in place.
-    printf "Cluster fill mode integrated. To actually fill data, use standalone mode.\n"
-    printf "Future enhancement: Implement optimized cluster fill with pipelining.\n"
+    -- Initialize random noise buffer
+    initRandomNoise
+    
+    -- Load slot mappings from file
+    putStrLn "Loading slot-to-hashtag mappings..."
+    slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
+    printf "Loaded %d slot mappings\n" (Map.size slotMappings)
+    
+    -- Get base seed for randomness
+    baseSeed <- randomIO :: IO Word64
+    
+    -- Determine number of threads per node
+    let threadsPerNode = maybe 2 id (numConnections state)
+    
+    printf "Starting cluster fill: %dGB across cluster with %d threads per node\n" 
+           (dataGBs state) threadsPerNode
+    
+    -- Create cluster client and fill data
+    if useTLS state
+      then do
+        clusterClient <- createClusterClientFromState state (createTLSConnector state)
+        fillClusterWithData clusterClient (createTLSConnector state) slotMappings 
+                           (dataGBs state) threadsPerNode baseSeed
+        closeClusterClient clusterClient
+      else do
+        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+        fillClusterWithData clusterClient (createPlaintextConnector state) slotMappings 
+                           (dataGBs state) threadsPerNode baseSeed
+        closeClusterClient clusterClient
 
 cli :: RunState -> IO ()
 cli state = do
