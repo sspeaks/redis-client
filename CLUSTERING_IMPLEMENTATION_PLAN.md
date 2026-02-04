@@ -1045,6 +1045,85 @@ Implement Phase 1-4 (9-11 weeks) for production-ready cluster support. Phase 5 (
 
 The proposed approach maintains backward compatibility, leverages existing strengths, and follows Redis cluster best practices. The result will be a high-performance, cluster-native Redis client that maintains the simplicity and directness that characterizes the current implementation.
 
+## Known Limitations and Future Work
+
+### Command Routing Limitations
+
+**Issue**: The CLI and tunnel modes use a hardcoded list of "keyless commands" to determine routing strategy.
+
+**Current Implementation**:
+```haskell
+keylessCommands = 
+  [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE", "INFO"
+  , "CLUSTER", "CONFIG", "CLIENT", "COMMAND", "ECHO", "QUIT"
+  ]
+```
+
+**Limitations**:
+1. **Error-prone maintenance**: New Redis commands require manual list updates
+2. **Incomplete coverage**: May miss commands added in newer Redis versions
+3. **Simplistic key detection**: Assumes first argument after command is always the key
+4. **Multi-key commands**: Doesn't handle commands with multiple keys (MGET, MSET, etc.)
+5. **Complex commands**: Commands like EVAL (keys after numkeys arg) or XREAD (keys in middle) are not properly handled
+
+**Impact**:
+- Most common commands work correctly
+- Edge cases may route incorrectly (e.g., sending to wrong node)
+- Multi-key operations across slots will fail with CROSSSLOT errors
+
+**Future Enhancement Strategies**:
+
+**Option A: Redis Command Metadata** (Recommended)
+- Parse Redis `COMMAND` output to get command specifications
+- Dynamically determine key positions for each command
+- Example: `COMMAND INFO GET` returns `[key_start, key_end, key_step]`
+- Pro: Accurate, automatically supports new commands
+- Con: Requires initial COMMAND query, more complex
+
+**Option B: Heuristic-Based Routing**
+- If first arg looks like a subcommand (all uppercase, matches known patterns), route as keyless
+- Otherwise, treat first arg as key
+- Example: `CLUSTER INFO` → keyless, `GET mykey` → keyed
+- Pro: Simpler, works for most cases
+- Con: Heuristics can fail, still requires some hardcoding
+
+**Option C: Conservative Fallback**
+- Maintain whitelist for known keyless commands
+- For unknown commands, attempt to parse first arg as key
+- On MOVED/ASK errors, retry with keyless routing
+- Pro: Self-correcting, graceful degradation
+- Con: Extra round-trips on errors
+
+**Recommendation for Future Implementation**:
+Combine Option A (command metadata) with Option C (fallback). Query Redis for command specs on startup, cache them, and use conservative fallback for any missing entries.
+
+**Related Code Locations**:
+- `app/Main.hs`: Lines 600-603 (keylessCommands list)
+- `app/Main.hs`: Lines 574-597 (executeRawCommand routing logic)
+- `app/Main.hs`: Lines 275-294 (executeRespCommand routing logic)
+
+### Other Known Limitations
+
+**Pipelining Scope**:
+- Current pipelined fill uses pre-calculated slot tags
+- General pipelining across arbitrary commands not yet implemented
+- Future work: Group arbitrary commands by slot and pipeline per node
+
+**Multi-Key Command Handling**:
+- No automatic splitting of multi-key commands across slots
+- Commands like `MGET key1 key2 key3` fail if keys map to different slots
+- Future work: Detect multi-key commands, split into per-slot groups, execute in parallel
+
+**Error Messages**:
+- CROSSSLOT errors could be more helpful (suggest using hash tags)
+- Topology errors could provide recovery suggestions
+- Future work: Enhanced error messages with actionable guidance
+
+**Tunnel Mode**:
+- Currently implements plaintext tunnel (inconsistent with standalone TLS-only tunnel)
+- Buffer size limited to 4096 bytes (may truncate large commands)
+- Future work: Make TLS-only for consistency, implement proper RESP parsing for unlimited command size
+
 ## Appendix A: Hash Tag Examples
 
 Redis cluster uses hash tags to force keys into the same slot:
