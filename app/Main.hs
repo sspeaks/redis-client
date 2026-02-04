@@ -35,6 +35,7 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromMaybe)
+import qualified Data.Vector                as V
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
@@ -354,7 +355,7 @@ fillCluster state = do
     -- Load slot mappings from file
     putStrLn "Loading slot-to-hashtag mappings..."
     slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
-    printf "Loaded %d slot mappings\n" (Map.size slotMappings)
+    printf "Loaded %d slot mappings\n" (V.length slotMappings)
 
     -- Get base seed for randomness
     baseSeed <- randomIO :: IO Word64
