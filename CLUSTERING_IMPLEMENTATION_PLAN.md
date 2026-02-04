@@ -1,218 +1,464 @@
-# Redis Cluster Support - Implementation Status
+# Redis Cluster Support - Implementation Plan
 
-## Executive Summary
+## Current Status
 
-This document tracks the implementation of Redis Cluster support in the redis-client project. The core infrastructure and user-facing modes have been completed through Phase 6, enabling the client to work with Redis Cluster deployments while maintaining backward compatibility with standalone Redis instances.
+**Completed**: Phases 1-6 (Core infrastructure, CLI mode, Fill mode, Tunnel mode)  
+**Next Priority**: Phase 7 - E2E Testing for Fill Mode  
+**Document Version**: 4.0  
+**Last Updated**: 2026-02-04
 
-**Current Status**: Phases 1-6 complete. CLI mode (Phase 4), Fill mode (Phase 5), and Tunnel modes (Phase 6) are fully functional. Remaining: Comprehensive testing (Phase 7) and optional optimizations (Phase 8).
+---
 
-## Implementation Status
+## What's Next? 
 
-### ✅ Phase 1: Foundation (COMPLETE)
-- ✅ Implemented `Cluster.hs` - topology management, slot calculation, hash tag extraction
-- ✅ Implemented `ConnectionPool.hs` - thread-safe connection pooling
-- ✅ Implemented slot routing with CRC16 hash
-- ✅ Unit tests for slot calculation and hash tag extraction (`ClusterSpec.hs`)
+### 🎯 Phase 7: E2E Testing - Fill Mode (READY TO START)
 
-### ✅ Phase 2: Command Execution (COMPLETE)
-- ✅ Created `ClusterCommandClient.hs` - cluster-aware command client
-- ✅ Implemented `RedisCommands` instance for `ClusterCommandClient`
-- ✅ MOVED/ASK error handling infrastructure in place
-- ✅ Retry logic with exponential backoff
-- ✅ Unit tests for cluster command client (`ClusterCommandSpec.hs`)
+**Priority**: HIGH  
+**Prerequisites**: None (Phase 5 complete)  
+**Estimated Effort**: ~100-150 LOC
 
-### ✅ Phase 3: Mode Integration (COMPLETE - Basic Implementation)
-- ✅ CLI mode: Structure integrated, basic REPL placeholder
-  - **Limitation**: Currently displays placeholder message instead of executing commands
-  - **Next Step**: Implement full command parsing and execution via cluster client
-- ✅ Fill mode: Structure integrated, demonstrates cluster connection
-  - **Limitation**: Does not perform actual bulk filling in cluster mode
-  - **Next Step**: Implement optimized bulk data distribution across cluster nodes
-- ✅ Tunnel mode: Structure integrated, pinned mode available
-  - **Limitation**: Smart proxy mode not yet implemented
-  - **Next Step**: Implement smart routing in tunnel mode
+#### Goal
+Create comprehensive E2E tests for cluster fill mode to verify data distribution, parallel execution, and performance.
 
-### ✅ Phase 4: CLI Mode (COMPLETE)
-Complete the CLI mode implementation for cluster support.
+#### Scope
+- Test bulk data distribution across cluster nodes
+- Verify all master nodes receive data
+- Test with various configurations (serial/parallel, different data sizes)
+- Validate hash tag usage and slot distribution
+- Test fire-and-forget mode efficiency
 
-- ✅ Parse user input into RESP commands
-- ✅ Execute commands via `ClusterCommandClient`
-- ✅ Display responses with formatting
-- ✅ Handle CROSSSLOT errors with helpful messages
-- ⏳ Show node information in debug mode (optional enhancement)
+#### Key Files to Study
+- `test/E2E.hs` - Reference implementation for standalone fill tests (lines ~80-150)
+- `app/ClusterFiller.hs` - Implementation being tested
+- `test/ClusterE2E.hs` - Existing basic cluster tests
+- `runClusterE2ETests.sh` - Test execution script
 
-**Implementation Guide**: Study `app/Main.hs` `repl` function (lines 303-325) for the standalone implementation pattern. The cluster version should follow the same structure but route through `ClusterCommandClient`.
+#### Implementation Notes
+- **IMPORTANT**: Study `test/E2E.hs` extensively - it has excellent patterns for testing fill mode that should be adapted
+- Reuse process management, readiness checking, and assertion patterns
+- Test with docker-cluster setup (5 nodes)
+- Verify data exists on multiple nodes after fill
+- Test both `-f` (flush) and without flush scenarios
+- Test configurable thread count via `-n` flag
 
-**Current Command Routing Strategy**: 
-The implementation uses explicit command lists to determine routing:
-- **Keyless commands**: Defined in `keylessCommands` list - routed to any master node
-  - Examples: PING, INFO, CLUSTER, FLUSHALL, CONFIG, etc.
-- **Keyed commands**: Defined in `requiresKeyCommands` list - routed by key's hash slot
-  - Examples: GET, SET, HGET, LPUSH, ZADD, etc.
-- **Unknown commands**: If not in either list and has arguments, treated as keyed command
+#### Success Criteria
+- All fill mode E2E tests pass
+- Tests verify data distribution across cluster nodes
+- Tests run in CI/CD environment
+- Performance metrics captured (keys/sec, total time)
 
-**Limitations of Current Approach**:
-- **Issue**: Lists must be manually maintained as Redis evolves with new commands
-- **Issue**: Unknown commands may route incorrectly if they don't follow standard patterns
-- **Issue**: Multi-key commands with varying key positions are handled by routing to first key's slot
+---
 
-**Future Work - Command Routing Improvements (Post Phase 4)**:
+## Remaining Phases (Priority Order)
 
-Several approaches could eliminate the hardcoded command lists:
+### Phase 8: E2E Testing - CLI Mode
+**Status**: NOT STARTED  
+**Prerequisites**: Phase 7 complete  
+**Estimated Effort**: ~100-150 LOC
 
-1. **Parse Redis Command Metadata** (Recommended)
-   - Redis publishes command metadata via `COMMAND` and `COMMAND DOCS`
-   - Could fetch this at startup and build routing tables dynamically
-   - Would always be up-to-date with the connected Redis version
-   - Estimated effort: ~200-300 LOC
+#### Goal
+Create comprehensive E2E tests for cluster CLI mode interactive command execution.
 
-2. **Heuristic-based Routing with Fallback**
-   - Try routing by key slot, fall back to keyless on specific errors
-   - Simple but may cause unnecessary round-trips
-   - Estimated effort: ~100-150 LOC
+#### Scope
+- Test interactive command execution (GET, SET, etc.)
+- Test keyless commands (PING, INFO, CLUSTER)
+- Test multi-key commands on same slot
+- Test CROSSSLOT error handling and messages
+- Test hash tag usage
 
-3. **Parse Redis Command JSON Spec**
-   - Redis repo contains JSON spec of all commands
-   - Could be embedded at build time or loaded from file
-   - Always accurate but requires keeping spec file updated
-   - Estimated effort: ~150-200 LOC
+#### Implementation Notes
+- Adapt patterns from `test/E2E.hs` CLI tests (lines ~40-80)
+- Use process I/O handling for interactive REPL
+- Test commands that route to different nodes
+- Verify proper error messages for CROSSSLOT errors
 
-4. **Hybrid Approach**
-   - Keep minimal list of most common commands
-   - Use `COMMAND` metadata for unknown commands
-   - Provides best balance of performance and maintenance
-   - Estimated effort: ~250-350 LOC
+---
 
-**Recommendation**: Implement approach #1 (Parse Redis Command Metadata) in a future phase after completing Phases 5-7. This provides the most maintainable and accurate solution.
+### Phase 9: E2E Testing - Tunnel Mode
+**Status**: NOT STARTED  
+**Prerequisites**: Phase 8 complete  
+**Estimated Effort**: ~100-150 LOC
 
-**Estimated Effort**: ~200-300 LOC (current implementation complete), ~200-300 LOC for future enhancement
+#### Goal
+Create comprehensive E2E tests for both tunnel modes (smart and pinned).
 
-### ✅ Phase 5: Fill Mode (COMPLETE)
-Complete the Fill mode implementation for cluster support.
+#### Scope
+**Smart Mode Tests**:
+- Single listener makes cluster appear as single-node cache
+- Commands route transparently by hash slot
+- MOVED/ASK handled internally
+- Multiple concurrent clients
 
-- ✅ Calculate slots for keys to ensure even distribution
-- ✅ Distribute data generation across cluster nodes
-- ✅ Use parallel connections to multiple nodes
-- ✅ Use 2 threads for each node unless otherwise specified (configurable via -n flag)
-- ✅ Implement efficient bulk operations (fire-and-forget mode)
-- ✅ Utilize the flat txt file that maps Slot number to hashtag that maps to it
+**Pinned Mode Tests**:
+- One listener per cluster node on matching ports
+- Response rewriting (CLUSTER NODES, CLUSTER SLOTS)
+- Redirection error rewriting (MOVED, ASK)
+- Host address replacement (remote → 127.0.0.1)
 
-**Implementation Complete**: Created `app/ClusterFiller.hs` (300 LOC) with cluster-specific fill logic. Key features:
-- Loads 16,384 slot-to-hashtag mappings from `cluster_slot_mapping.txt`
-- Distributes work evenly across cluster master nodes
-- Spawns configurable threads per node (default: 2, via -n flag)
-- Generates keys with hash tags (`{tag}:seed:padding`) for proper routing
-- Uses CLIENT REPLY OFF/ON for maximum throughput
-- Maintains same parallel execution pattern as standalone mode
+#### Implementation Notes
+- Adapt patterns from `test/E2E.hs` tunnel tests (lines ~150-250)
+- Test both smart and pinned modes separately
+- Verify TLS termination works correctly
+- Test multiple concurrent client connections
 
-**Actual Effort**: 300 LOC (ClusterFiller module) + 20 LOC (Main.hs updates)
+---
 
-**Status**: Code complete, builds successfully, all unit tests passing. Ready for performance profiling in production cluster environment.
+### Phase 10: E2E Testing - Advanced Scenarios
+**Status**: NOT STARTED  
+**Prerequisites**: Phases 7-9 complete  
+**Estimated Effort**: ~100-150 LOC
 
-### ✅ Phase 6: Tunnel Mode (COMPLETE)
-Complete the tunnel mode implementation for cluster support.
+#### Goal
+Test edge cases, failure scenarios, and cluster-specific behaviors.
 
-#### Tunnel Mode Overview
+#### Scope
+- MOVED/ASK redirection in practice
+- Topology changes (simulate node add/remove)
+- Node failure scenarios
+- Network partition handling
+- Connection pool behavior under load
+- Concurrent multi-threaded access
 
-The primary purpose of tunnel mode is to **terminate TLS and handle authentication** so local applications don't need to worry about these concerns. There are two distinct tunnel modes for cluster support:
+#### Implementation Notes
+- May require docker-compose modifications to simulate failures
+- Use docker pause/unpause for node failures
+- Test topology refresh on MOVED errors
+- Verify retry logic and exponential backoff
 
-**Pinned Tunnel Mode**:
-- Creates **one listening socket for every node in the cluster**
-- Each listening socket listens on the **same port that the corresponding cluster node is listening on**
-- For example, if a cluster has 5 nodes listening on ports 6379-6383, the tunnel creates 5 local listeners on ports 6379-6383
-- Each local listener establishes a dedicated TLS connection to its corresponding cluster node
-- Applications connect to `localhost:6379`, `localhost:6380`, etc., and the tunnel forwards traffic to the appropriate cluster node
-- **Response rewriting**: Must intercept and rewrite cluster topology responses (`CLUSTER NODES`, `CLUSTER SLOTS`) and redirection errors (`MOVED`, `ASK`) to replace remote host addresses with `127.0.0.1` to prevent confusion for cluster clients connecting to the tunnel
-- This mode preserves cluster topology visibility to the application, which must still understand Redis Cluster protocol
-- **Use case**: When local applications need to be cluster-aware but want to offload TLS/authentication
+---
 
-**Smart Tunnel Mode**:
-- Makes a clustered cache **appear as if it were a single-node cache** to local applications
-- Creates a single listening socket (typically on `localhost:6379`)
-- Accepts connections from local applications that don't know about Redis Cluster
-- Parses incoming RESP commands to determine routing
-- Calculates hash slots and routes commands to the appropriate cluster nodes transparently
-- Handles MOVED/ASK redirections internally without exposing them to the application
-- Returns responses as if they came from a single Redis instance
-- **Use case**: When local applications are cluster-unaware but you need the benefits of a clustered backend
+### Phase 11: Performance Benchmarking & Profiling
+**Status**: NOT STARTED  
+**Prerequisites**: Phases 7-10 complete  
+**Estimated Effort**: ~50-100 LOC + profiling time
 
-#### Implementation Tasks
+#### Goal
+Establish performance baselines and compare cluster vs standalone.
 
-**Smart Mode Tasks**:
-- ✅ Accept connections on localhost:6379
-- ✅ Parse incoming RESP commands from clients
-- ✅ Calculate slot and route to appropriate cluster node
-- ✅ Forward responses back to client
-- ✅ Handle redirections transparently
+#### Scope
+- Benchmark fill mode: cluster vs standalone throughput
+- Measure cluster mode latency overhead
+- Profile connection pool contention
+- Measure memory usage (various cluster sizes)
+- Document performance characteristics
 
-**Pinned Mode Tasks**:
-- ✅ Query cluster topology to discover all nodes
-- ✅ Create one listening socket per cluster node on the same port
-- ✅ Establish and maintain TLS connections to each cluster node
-- ✅ Forward traffic bidirectionally between local socket and cluster node
-- ✅ Handle authentication for each cluster node connection
-- ✅ Intercept and rewrite cluster responses: `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED` errors, and `ASK` errors to replace remote hosts with `127.0.0.1`
+#### Implementation Notes
+- Use `cabal run --enable-profiling -- {flags}` with `-p` RTS flag
+- Compare before/after profiles
+- Test with various data sizes (1GB, 5GB, 10GB)
+- Test with various thread counts
+- Document results in README or separate PERFORMANCE.md
 
-**Implementation Complete**: Created `app/ClusterTunnel.hs` (400 LOC) with both tunnel modes. Key features:
-- Smart proxy mode with command parsing and transparent routing
-- Pinned mode with per-node listeners and response rewriting
-- Both modes handle TLS termination and authentication
-- Command routing uses same keyless/keyed command lists as CLI mode
-- Response rewriting for cluster topology and redirection errors
+#### Success Criteria
+- Cluster mode adds <10% latency overhead
+- Fill mode achieves near-linear speedup with cluster size
+- Memory overhead <10MB for typical cluster (3-10 nodes)
+- Performance metrics documented
 
-**Actual Effort**: 400 LOC (ClusterTunnel module) + 40 LOC (Main.hs updates) + 5 LOC (Resp.hs parseStrict)
+---
 
-**Status**: Code complete, builds successfully, all unit tests passing. Ready for E2E testing with actual cluster.
+### Phase 12: Connection Pool Enhancement
+**Status**: NOT STARTED  
+**Prerequisites**: Phase 11 complete (profiling may reveal need)  
+**Estimated Effort**: ~150-200 LOC
 
-### ⏳ Phase 7: E2E Testing & CI Integration (NOT STARTED)
-Expand E2E test coverage and integrate into CI/CD after completing Phases 4-6.
+#### Goal
+Enhance connection pool to support multiple connections per node and eliminate direct connector usage.
 
-**Basic Tests** (already exist in `ClusterE2E.hs`):
-- ✅ Connect to cluster and query topology
-- ✅ Execute GET/SET commands
-- ✅ Route commands to correct nodes
-- ✅ Handle keys with hash tags
+#### Context
+**Current Limitation**: Connection pool (`lib/cluster/ConnectionPool.hs`) currently supports only one connection per node. When multiple threads fill data for the same node, they share a single connection, causing contention.
 
-**Additional Tests Needed**:
-- ⏳ CLI mode: Test interactive command execution
-- ⏳ Fill mode: Test bulk data distribution across nodes
-- ⏳ Tunnel mode: Test smart proxy routing
-- ⏳ MOVED/ASK redirection scenarios
-- ⏳ Topology changes (add/remove nodes)
-- ⏳ Failure scenarios (node down, network partition)
-- ⏳ Performance benchmarks (compare with standalone)
+**Current Workaround**: `ClusterFiller.hs` creates dedicated connections per thread, bypassing the pool.
 
-**Implementation Guide**: Study `test/E2E.hs` extensively - it has excellent patterns for testing all three modes (fill, cli, tunnel) that should be adapted for cluster testing. **Don't reinvent the wheel** - reuse the testing patterns, process handling, and assertion strategies from the standalone E2E tests. The cluster tests should follow the same structure and style.
+#### Scope
+- Update `ConnectionPool.hs` to support multiple connections per node
+- Add configurable pool size per node
+- Implement proper connection lifecycle management
+- Add connection pool metrics (active, idle, wait times)
+- Audit codebase for direct connector usage
+- Migrate code to use enhanced pool
 
+#### Key Files
+- `lib/cluster/ConnectionPool.hs` - Pool implementation
+- `app/ClusterFiller.hs` - Currently bypasses pool (line ~167)
+- Search codebase for other bypass locations
+
+#### Implementation Notes
+- May not be needed if profiling shows single connection sufficient
+- Consider connection pooling libraries
+- Add pool size configuration to ClusterConfig
+- Maintain backward compatibility
+
+---
+
+### Phase 13: Command Routing Enhancement
+**Status**: NOT STARTED  
+**Prerequisites**: None (can be done independently)  
+**Estimated Effort**: ~200-300 LOC
+
+#### Goal
+Eliminate hardcoded command lists by dynamically parsing Redis command metadata.
+
+#### Context
+**Current Limitation**: Command routing uses manually maintained lists:
+- `keylessCommands` - routed to any master
+- `requiresKeyCommands` - routed by key's hash slot
+- Unknown commands treated as keyed commands
+
+**Issues**:
+- Lists must be manually updated as Redis evolves
+- Unknown commands may route incorrectly
+- Multi-key commands with varying key positions handled suboptimally
+
+#### Scope
+Implement dynamic command metadata parsing:
+1. Fetch metadata via `COMMAND` and `COMMAND DOCS` at startup
+2. Build routing tables dynamically
+3. Always stay up-to-date with connected Redis version
+4. Remove hardcoded command lists
+
+#### Implementation Approach (Recommended)
+**Option 1: Parse Redis Command Metadata** (Recommended)
+- Fetch via `COMMAND` and `COMMAND DOCS`
+- Build routing tables at startup
+- Cache for session lifetime
+- Always accurate for Redis version
+
+Alternative approaches considered but not recommended:
+- Option 2: Heuristic with fallback (may cause extra round-trips)
+- Option 3: Parse JSON spec (requires keeping spec updated)
+- Option 4: Hybrid (added complexity)
+
+#### Key Files to Modify
+- `lib/cluster/ClusterCommandClient.hs` - Command routing logic
+- `app/ClusterCli.hs` - CLI command routing
+- `app/ClusterTunnel.hs` - Tunnel command routing
+
+#### Success Criteria
+- No hardcoded command lists
+- Routing accurate for any Redis version
+- Backward compatible with existing behavior
+- Unit tests for metadata parsing
+
+---
+
+### Phase 14: Azure Script Cluster Support
+**Status**: NOT STARTED  
+**Prerequisites**: None (can be done independently)  
+**Estimated Effort**: ~100-150 LOC
+
+#### Goal
+Update `azure-redis-connect.py` to detect and support Azure Redis Enterprise clusters.
+
+#### Context
+The script currently only supports standalone Azure Redis caches. Azure Redis Enterprise supports clustering, and the script should detect this and pass the `-c` flag to redis-client.
+
+#### Scope
+- Detect if Azure Redis cache is a cluster (Enterprise tier with clustering enabled)
+- Automatically add `--cluster` flag when launching redis-client
+- Display cluster information in cache listing (node count, shard count)
+- Update help text and examples for cluster support
+- Test with both standalone and clustered Azure Redis caches
+
+#### Implementation Notes
+- Use `az redis show` to get cache details
+- Check `sku.name` for Enterprise tier
+- Check `redisConfiguration.clusterEnabled` or similar property
+- Add cluster indicator in cache display table
+- Pass `--cluster` flag to redis-client invocation
+
+#### Key Files
+- `azure-redis-connect.py` - Main script (528 lines)
+- `AzureRedisConnector.list_redis_caches()` - Add cluster detection
+- `AzureRedisConnector.display_caches()` - Add cluster indicator
+- `AzureRedisConnector.launch_redis_client()` - Add cluster flag
+
+#### Testing
+- Test with standalone Azure Redis cache
+- Test with clustered Azure Redis Enterprise cache
+- Verify correct flags passed in each case
+
+---
+
+### Phase 15: Multi-Key Command Splitting (Optional)
+**Status**: NOT STARTED  
+**Prerequisites**: Phases 7-11 complete  
+**Estimated Effort**: ~200-300 LOC
+
+#### Goal
+Enable MGET/MSET commands to work across multiple slots by splitting and reassembling.
+
+#### Scope
+- Detect multi-key commands with keys in different slots
+- Split into multiple single-slot commands
+- Execute in parallel to appropriate nodes
+- Reassemble results in correct order
+- Return as if single command executed
+
+#### Commands to Support
+- MGET - split GETs, reassemble values
+- MSET - split SETs, execute parallel
+- DEL - split DELs, sum deleted count
+- EXISTS - split EXISTS, sum counts
+- UNLINK - split UNLINKs, sum count
+
+#### Implementation Notes
+- Add command splitting logic to `ClusterCommandClient.hs`
+- Requires parallel execution and result aggregation
+- Maintain order for MGET results
+- Handle partial failures appropriately
+
+---
+
+### Phase 16: Enhanced Error Messages (Optional)
+**Status**: NOT STARTED  
+**Prerequisites**: Phases 7-11 complete  
+**Estimated Effort**: ~100-150 LOC
+
+#### Goal
+Improve error messages to help users debug cluster issues.
+
+#### Scope
+- Show target node information in errors
+- Suggest hash tags for CROSSSLOT errors
+- Add debug mode showing routing decisions
+- Display slot calculations for keys
+- Show which node executed command
+
+#### Examples
+```
+Error: CROSSSLOT Keys in request don't hash to the same slot
+Keys: user:123:profile (slot 5461) -> node-1
+      user:456:profile (slot 7892) -> node-2
+Suggestion: Use hash tags like {user:123}:profile
+```
+
+#### Implementation Notes
+- Enhance error handling in `ClusterCommandClient.hs`
+- Add debug flag to show routing info
+- Include node and slot info in error messages
+
+---
+
+### Phase 17: Pipelining Optimization (Optional)
+**Status**: NOT STARTED  
+**Prerequisites**: Phases 7-11 complete  
 **Estimated Effort**: ~300-400 LOC
 
-### ⏳ Phase 8: Advanced Features (NOT STARTED)
-Optional enhancements for production optimization.
+#### Goal
+Optimize command execution by grouping commands by target node.
 
-- ⏳ **Multi-key command splitting**: MGET/MSET across slots with result reassembly (~200-300 LOC)
-- ⏳ **Pipelining optimization**: Group commands by node, parallel execution, result ordering (~300-400 LOC)
-- ⏳ **Enhanced error messages**: Show target node, suggest hash tags for CROSSSLOT, debug routing info (~100-200 LOC)
-- ⏳ **Read replica support**: READONLY/READWRITE commands for high-throughput scenarios (~200-300 LOC, optional)
-- ⏳ **Explore mode auto-detection**: Fill/CLI/Tunneling could automatically determine that they should run in cluster mode
+#### Scope
+- Accept batch of commands
+- Group by target node (slot calculation)
+- Execute in parallel to each node
+- Reassemble results in original order
+- Reduce round-trip latency
 
-**Implementation Guide**: These features build on the solid foundation from Phases 4-7. Implement based on actual user needs and performance profiling results.
+#### Implementation Notes
+- Useful for bulk operations
+- Requires careful result ordering
+- May help fill mode performance
+- Add to `ClusterCommandClient.hs`
 
-**Estimated Effort**: ~800-1200 LOC (varies based on features selected)
+---
 
-**Current State**: Core infrastructure (Phases 1-3) is solid and functional. Remaining phases focus on completing user-facing functionality (4-6), comprehensive testing (7), and optional optimizations (8).
+### Phase 18: Read Replica Support (Optional)
+**Status**: NOT STARTED  
+**Prerequisites**: Phases 7-11 complete  
+**Estimated Effort**: ~200-300 LOC
 
-## Implemented Architecture (Phases 1-2)
+#### Goal
+Support routing read commands to replica nodes for increased throughput.
 
-### 1. Cluster Topology Management (`lib/cluster/Cluster.hs`)
-**Status**: ✅ Complete
+#### Scope
+- Detect replica nodes in topology
+- Route read-only commands to replicas
+- Implement READONLY/READWRITE commands
+- Add configuration for read preference
+- Handle replica lag considerations
 
-**Core Functions**:
-- `calculateSlot :: ByteString -> IO Word16` - Calculate hash slot for a key using CRC16
-- `extractHashTag :: ByteString -> ByteString` - Extract hash tag from keys like `{user}:profile`
-- `parseClusterSlots :: RespData -> UTCTime -> Either String ClusterTopology` - Parse CLUSTER SLOTS response
-- `findNodeForSlot :: ClusterTopology -> Word16 -> Maybe Text` - Find node ID for a slot
+#### Implementation Notes
+- Add replica tracking to `Cluster.hs`
+- Update routing logic for read commands
+- Add configuration options
+- Useful for high-read workloads
 
-**Data Structure**:
+---
+
+## Completed Work (Phases 1-6)
+
+### ✅ Phase 1-2: Core Infrastructure (COMPLETE)
+
+**Implemented Files**:
+- `lib/cluster/Cluster.hs` - Topology management, slot calculation, hash tag extraction (153 LOC)
+- `lib/cluster/ClusterCommandClient.hs` - Cluster-aware command client (439 LOC)
+- `lib/cluster/ConnectionPool.hs` - Thread-safe connection pooling (75 LOC)
+- `test/ClusterSpec.hs`, `test/ClusterCommandSpec.hs` - Unit tests (~400 LOC)
+
+**Key Features**:
+- CRC16-based slot calculation (16,384 slots)
+- Hash tag extraction: `{user}:profile` → `"user"`
+- CLUSTER SLOTS response parsing
+- Thread-safe connection pool using STM
+- Full RedisCommands instance for cluster client
+- MOVED/ASK error handling with retry logic
+- Unit test coverage >80%
+
+### ✅ Phase 3: Mode Integration (COMPLETE)
+
+Integrated cluster support into all three modes:
+- CLI mode: Interactive REPL with cluster-aware routing
+- Fill mode: Parallel data distribution across cluster
+- Tunnel mode: TLS termination with smart and pinned modes
+
+### ✅ Phase 4: CLI Mode (COMPLETE)
+
+**Implemented**: `app/ClusterCli.hs` (110 LOC)
+
+**Features**:
+- Parse user input into RESP commands
+- Execute via ClusterCommandClient
+- Display responses with formatting
+- Handle CROSSSLOT errors with helpful messages
+- Support keyless commands (PING, INFO, CLUSTER)
+- Support keyed commands with automatic routing
+
+### ✅ Phase 5: Fill Mode (COMPLETE)
+
+**Implemented**: `app/ClusterFiller.hs` (300 LOC)
+
+**Features**:
+- Loads 16,384 slot-to-hashtag mappings from `cluster_slot_mapping.txt`
+- Distributes work evenly across cluster master nodes
+- Configurable threads per node (default: 2, via `-n` flag)
+- Generates keys with hash tags (`{tag}:seed:padding`)
+- Uses CLIENT REPLY OFF/ON for maximum throughput
+- Fire-and-forget mode for efficiency
+
+### ✅ Phase 6: Tunnel Mode (COMPLETE)
+
+**Implemented**: `app/ClusterTunnel.hs` (400 LOC)
+
+**Smart Mode**:
+- Single listener (localhost:6379)
+- Makes cluster appear as single-node cache
+- Transparent command routing by hash slot
+- MOVED/ASK handled internally
+
+**Pinned Mode**:
+- One listener per cluster node on matching ports
+- Response rewriting (CLUSTER NODES, CLUSTER SLOTS, MOVED, ASK)
+- Host address replacement (remote → 127.0.0.1)
+- TLS termination and authentication for each node
+
+---
+
+## Architecture Overview
+
+### Core Components
+
+**Cluster Topology** (`lib/cluster/Cluster.hs`):
 ```haskell
 data ClusterTopology = ClusterTopology
   { topologySlots      :: Vector Text,           -- 16384 slots -> node IDs
@@ -221,200 +467,77 @@ data ClusterTopology = ClusterTopology
   }
 ```
 
-**Key Features**:
-- ✅ Slot calculation using existing CRC16 (mod 16384)
-- ✅ Hash tag extraction: `{user}:profile` → `"user"`
-- ✅ CLUSTER SLOTS response parsing
-- ✅ Fast O(1) node lookup by slot
+**Connection Pool** (`lib/cluster/ConnectionPool.hs`):
+- Thread-safe using STM TVar
+- One connection per node (currently)
+- Lazy connection creation
+- Connection reuse across commands
 
-### 2. Connection Pool (`lib/cluster/ConnectionPool.hs`)
-**Status**: ✅ Complete
+**Command Client** (`lib/cluster/ClusterCommandClient.hs`):
+- Implements full RedisCommands type class
+- Automatic routing by slot calculation
+- MOVED/ASK error handling
+- Retry with exponential backoff
 
-**Design**: Thread-safe connection pool using STM, one connection per node (extendable if needed)
+### Command Routing Strategy
 
-```haskell
-data ConnectionPool client = ConnectionPool
-  { poolConnections :: TVar (Map NodeAddress (client 'Connected)),
-    poolConfig      :: PoolConfig
-  }
+**Keyless Commands** → Any master node:
+- PING, INFO, CLUSTER, FLUSHALL, CONFIG, etc.
+
+**Keyed Commands** → Node owning key's hash slot:
+- GET, SET, HGET, LPUSH, ZADD, etc.
+
+**Multi-Key Commands** → First key's slot:
+- MGET, MSET, DEL (limitation: all keys must be on same slot)
+
+### File Structure
+
+```
+lib/cluster/
+├── Cluster.hs                    # Topology, slot calc, hash tags
+├── ClusterCommandClient.hs      # Command client + RedisCommands instance
+└── ConnectionPool.hs             # Thread-safe connection pool
+
+app/
+├── ClusterCli.hs                 # CLI mode implementation
+├── ClusterFiller.hs              # Fill mode implementation  
+└── ClusterTunnel.hs              # Tunnel mode implementation
+
+test/
+├── ClusterSpec.hs                # Unit tests for Cluster.hs
+├── ClusterCommandSpec.hs         # Unit tests for command client
+└── ClusterE2E.hs                 # Basic E2E tests
 ```
 
-**Key Features**:
-- ✅ Thread-safe with STM `TVar`
-- ✅ Lazy connection creation
-- ✅ Connection reuse across commands
-- 📝 Can be extended to multiple connections per node if profiling shows contention
+---
 
-### 3. Cluster Command Client (`lib/cluster/ClusterCommandClient.hs`)
-**Status**: ✅ Complete
+## Testing Infrastructure
 
-**Design**: Wraps `RedisCommandClient` with cluster-aware routing
+### Unit Tests (Complete)
+- `test/ClusterSpec.hs` - Hash tag extraction, slot calculation
+- `test/ClusterCommandSpec.hs` - Command routing, error handling
+- Coverage >80% for cluster modules
 
-```haskell
-data ClusterClient client = ClusterClient
-  { clusterTopology       :: TVar ClusterTopology,
-    clusterConnectionPool :: ConnectionPool client,
-    clusterConfig         :: ClusterConfig
-  }
+### E2E Tests (Partial)
+- `test/ClusterE2E.hs` - Basic topology and command tests
+- More comprehensive tests needed (Phases 7-10)
 
-instance RedisCommands (ClusterCommandClient client) where
-  -- All ~40 Redis commands implemented with automatic routing
-```
+### Test Environment
+- Docker cluster setup: `docker-cluster/` (5 nodes, ports 6379-6383)
+- Test script: `runClusterE2ETests.sh`
+- CI integration: Needed (Phase 10)
 
-**Key Features**:
-- ✅ Implements full `RedisCommands` type class
-- ✅ Automatic command routing:
-  - Keyed commands (SET, GET, etc.): Route to node owning key's slot
-  - Multi-key commands (MGET, DEL): Route using first key's slot
-  - Keyless commands (PING, FLUSHALL): Route to any master node
-- ✅ MOVED/ASK error handling infrastructure
-- ✅ Retry with exponential backoff
-- ✅ Topology refresh on connection
-
-## Mode Integration (Phase 3)
-
-### CLI Mode
-**Status**: ✅ Structure integrated, ⏳ Functionality placeholder
-
-**Current State**: 
-- Creates cluster client and connects successfully
-- REPL loop exists but displays placeholder message
-- Structure and error handling in place
-
-**What's Needed for Full Functionality**:
-1. Parse user input into RESP commands
-2. Execute commands via `ClusterCommandClient`
-3. Display responses and errors with node information
-4. Handle CROSSSLOT errors with helpful messages
-
-**Implementation Location**: `app/Main.hs` - `replCluster` function
-
-### Fill Mode
-**Status**: ✅ Structure integrated, ⏳ Functionality placeholder
-
-**Current State**:
-- Creates cluster client and connects successfully
-- Can flush cluster (FLUSHALL via any master)
-- Demonstrates cluster integration
-- Displays informational message about limitations
-
-**What's Needed for Full Functionality**:
-1. Distribute data generation across cluster nodes
-2. Calculate slots for keys to ensure even distribution
-3. Use parallel connections to multiple nodes
-4. Implement bulk operations or pipelining for efficiency
-
-**Implementation Options**:
-- **Option A**: Runtime CRC16 calculation for each key (simple, realistic)
-- **Option B**: Pre-computed hash tags for perfect distribution
-- **Option C**: Leverage MOVED redirections (not recommended - high overhead)
-
-**Implementation Location**: `app/Main.hs` - `fillCluster` function
-
-### Tunnel Mode
-**Status**: ✅ Pinned mode implemented, ⏳ Smart mode placeholder
-
-**Primary Purpose**: Terminate TLS and handle authentication so local applications don't need to manage these concerns.
-
-**Current State**:
-- Pinned mode: Can forward to single seed node (basic implementation)
-- Smart mode: Placeholder with fallback to pinned
-- TLS support structure in place
-
-**Pinned Mode (Full Implementation Needed)**:
-- Should create one listening socket per cluster node
-- Each socket listens on the same port as its corresponding cluster node
-- Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
-- Must intercept cluster responses (`CLUSTER NODES`, `CLUSTER SLOTS`) and redirection errors (`MOVED`, `ASK`) and rewrite host addresses to `127.0.0.1`
-- Applications remain cluster-aware but benefit from TLS termination and authentication handling
-
-**Smart Mode (Full Implementation Needed)**:
-- Makes clustered cache appear as a single-node cache to applications
-- Single listening socket (e.g., `localhost:6379`)
-- Transparently routes commands based on hash slot calculation
-- Handles MOVED/ASK redirections internally
-- Applications don't need to understand Redis Cluster protocol
-
-**What's Needed for Full Smart Mode**:
-1. Accept connections on localhost:6379
-2. Parse incoming RESP commands
-3. Calculate slot and route to appropriate node
-4. Forward responses back to client
-5. Handle redirections transparently
-
-**What's Needed for Full Pinned Mode**:
-1. Query cluster topology to discover all nodes
-2. Create listening socket for each node on matching port
-3. Establish TLS connection to each cluster node
-4. Forward traffic bidirectionally
-5. Handle per-node authentication
-6. Intercept and rewrite cluster responses and redirection errors (replace remote hosts with `127.0.0.1` in `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED`, `ASK`)
-
-**Implementation Location**: `app/Main.hs` - `tunnCluster` functions
-
-## Testing
-
-### Unit Tests (Complete - Part of Phases 1-2)
-**Files**: `test/ClusterSpec.hs`, `test/ClusterCommandSpec.hs`
-
-**Coverage**:
-- ✅ Hash tag extraction (all edge cases)
-- ✅ Slot calculation (range validation, consistency)
-- ✅ Topology parsing (simple and complex responses)
-- ✅ Node lookup by slot
-- ✅ Error parsing (MOVED, ASK)
-
-### E2E Tests (Basic Implementation - Phase 3)
-**File**: `test/ClusterE2E.hs`
-
-**Current Scenarios**:
-- ✅ Connect to cluster and query topology
-- ✅ Execute GET/SET commands
-- ✅ Route commands to correct nodes
-- ✅ Handle keys with hash tags
-- ✅ Execute PING and CLUSTER SLOTS
-
-**Additional Tests Needed** (Phase 7 - after completing Phases 4-6):
-- ⏳ CLI mode command execution (requires Phase 4)
-- ⏳ Fill mode bulk loading (requires Phase 5)
-- ⏳ Tunnel mode smart proxy (requires Phase 6)
-- ⏳ MOVED/ASK redirection in practice
-- ⏳ Topology changes (add/remove nodes)
-- ⏳ Failure scenarios (node down, network partition)
-- ⏳ Performance testing (bulk operations)
-
-### Test Infrastructure
-**Docker Setup**: `docker-cluster/` directory
-
-**Available**:
-- ✅ 5-node cluster setup (docker-compose)
-- ✅ Configuration files for ports 6379-6383
-- ✅ `make_cluster.sh` initialization script
-
-**Integration Needed** (Phase 7):
-- ⏳ Create `runClusterE2ETests.sh` - model after `rune2eTests.sh`
-- ⏳ Update `rune2eTests.sh` to run both standalone and cluster tests
-- ⏳ Add cluster test stage to CI/CD pipeline
-
-**⚠️ IMPORTANT for Future Agents**: When implementing Phase 7 testing, study `test/E2E.hs` extensively. It contains excellent patterns for testing all three modes (fill, cli, tunnel) that should be adapted for cluster testing. The file demonstrates:
-- Process management and cleanup
-- Waiting for readiness signals
-- Input/output handling for interactive modes
-- Assertion strategies
-- Environment variable handling
-- Testing patterns for all three execution modes
-
-**Don't reinvent the wheel** - adapt these proven patterns rather than creating new test infrastructure from scratch.
+---
 
 ## Command-Line Interface
 
-### Current Flags
+### Usage
 ```bash
 redis-client [mode] [OPTIONS]
 
 Modes:
   cli     Interactive Redis command-line interface
-  fill    Fill Redis cache with random data
+  fill    Fill Redis with random data
   tunn    Start TLS tunnel proxy
 
 Cluster Options:
@@ -440,328 +563,120 @@ Fill Options:
 # Cluster CLI
 redis-client cli -h node1 -c
 
-# Cluster fill
-redis-client fill -h node1 -d 5 -c
+# Cluster fill (5GB, flush first, 4 threads per node)
+redis-client fill -h node1 -d 5 -f -n 4 -c
 
-# Cluster tunnel - pinned mode
-# Creates one listener per cluster node on matching ports
-# Example: 5 nodes → 5 local sockets (localhost:6379-6383)
+# Cluster tunnel - pinned mode (TLS termination)
 redis-client tunn -h node1 -t -c --tunnel-mode pinned
 
-# Cluster tunnel - smart mode
-# Single listener that makes cluster appear as single-node cache
-# Routes commands transparently based on hash slot calculation
+# Cluster tunnel - smart mode (single-node appearance)
 redis-client tunn -h node1 -t -c --tunnel-mode smart
 ```
+
+---
 
 ## Redis Cluster Protocol Reference
 
 ### Key Concepts
-1. **Slot Assignment**: 16384 hash slots distributed across master nodes
-2. **Slot Calculation**: `HASH_SLOT = CRC16(key) & 16383`
-3. **Redirection**: `-MOVED slot host:port` or `-ASK slot host:port` errors
-4. **Cluster Discovery**: `CLUSTER SLOTS` command reveals topology
-5. **Hash Tags**: Keys like `{user}:profile` hash on `user` only
+- **16,384 hash slots** distributed across master nodes
+- **Slot calculation**: `CRC16(key) & 16383`
+- **Hash tags**: `{user}:profile` hashes only `"user"`
+- **Discovery**: `CLUSTER SLOTS` reveals topology
+- **Redirection**: `-MOVED` (permanent), `-ASK` (temporary)
 
 ### Error Types
 ```
 -MOVED 3999 127.0.0.1:6381       # Permanent redirection
--ASK 3999 127.0.0.1:6381         # Temporary redirection (requires ASKING)
--CLUSTERDOWN                      # Cluster is down
--TRYAGAIN                         # Retry the operation
--CROSSSLOT                        # Keys map to different slots
+-ASK 3999 127.0.0.1:6381         # Temporary (requires ASKING first)
+-CLUSTERDOWN                      # Cluster unavailable
+-TRYAGAIN                         # Retry operation
+-CROSSSLOT                        # Keys in different slots
 ```
 
-### Hash Tag Examples
+### Hash Tag Usage
 ```bash
-# Different slots (likely different nodes)
+# Different slots - may route to different nodes
 SET user:123:profile "Alice"
 SET user:123:settings "..."
 
-# Same slot (guaranteed same node)
+# Same slot - guaranteed same node (hash tag: "user:123")
 SET {user:123}:profile "Alice"
 SET {user:123}:settings "..."
-MGET {user:123}:profile {user:123}:settings  # Works!
-
-# Only content inside {} is hashed
-# {user:123}:profile and {user:123}:settings both hash "user:123"
+MGET {user:123}:profile {user:123}:settings  # Works across multi-key!
 ```
 
-## Remaining Work (Phases 4-8)
+---
 
-### Phase 4: CLI Mode Command Execution
-**Goal**: Enable full interactive command execution in cluster mode
+## Known Limitations
 
-**Tasks**:
-1. Parse user input to RESP commands
-2. Execute via ClusterCommandClient
-3. Display results with node information
-4. Handle CROSSSLOT errors with helpful messages
+### Current Limitations
+1. **Multi-key commands**: Use first key only (no splitting) - See Phase 15
+2. **Connection pool**: One connection per node - See Phase 12
+3. **Command routing**: Hardcoded lists - See Phase 13
+4. **No read replicas**: Master-only routing - See Phase 18
+5. **No pipelining**: Commands executed individually - See 17
 
-**Reference Implementation**: Study `app/Main.hs` `repl` function for standalone pattern
+### Acceptable Trade-offs
+1. Explicit `--cluster` flag (vs auto-detection)
+2. Manual topology refresh via MOVED (vs periodic)
+3. Single connection per node (sufficient for most workloads)
+4. No pub/sub or transaction support yet
 
-**Estimated Effort**: ~200-300 LOC
-
-### Phase 5: Fill Mode Bulk Loading
-**Goal**: Enable efficient bulk data loading across cluster
-
-**Tasks**:
-1. Calculate slots for keys to ensure distribution
-2. Distribute work across cluster nodes
-3. Implement parallel execution across nodes
-4. Add profiling before/after comparison
-
-**Reference Implementation**: Study `app/Filler.hs` and `fillStandalone` for parallel patterns
-
-**Estimated Effort**: ~300-400 LOC
-
-### Phase 6: Tunnel Mode (Smart and Pinned)
-**Goal**: Implement TLS termination and authentication offloading with two distinct modes
-
-**Primary Purpose**: Terminate TLS connections and handle authentication so local applications don't need to manage these concerns.
-
-**Smart Tunnel Mode Tasks**:
-1. Accept connections on localhost:6379 (single listening socket)
-2. Parse incoming RESP commands from cluster-unaware applications
-3. Calculate slot and route to appropriate cluster node
-4. Forward responses transparently
-5. Handle MOVED/ASK redirections internally (invisible to application)
-6. Make clustered cache appear as single-node cache
-
-**Pinned Tunnel Mode Tasks**:
-1. Query cluster topology to discover all nodes and their ports
-2. Create one listening socket per cluster node on matching port
-3. Establish and maintain TLS connections to each cluster node
-4. Forward traffic bidirectionally between local socket and cluster node
-5. Handle per-node authentication
-6. Intercept `CLUSTER NODES` and `CLUSTER SLOTS` responses and rewrite host addresses to `127.0.0.1`
-7. Intercept `MOVED` and `ASK` redirection errors and rewrite host addresses to `127.0.0.1`
-8. Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
-
-**Reference Implementation**: Study `lib/client/Client.hs` `serve` function for tunnel patterns
-
-**Estimated Effort**: ~400-500 LOC (Smart Mode), ~300-400 LOC (Pinned Mode enhancements)
-
-### Phase 7: Comprehensive E2E Testing & CI Integration
-**Goal**: Full test coverage for Phases 4-6 features
-
-**⚠️ IMPORTANT**: Complete Phases 4-6 first, then write tests for those features
-
-**Tasks**:
-1. **CLI Mode Tests**:
-   - Test interactive command execution
-   - Test error handling and display
-   
-2. **Fill Mode Tests**:
-   - Test data distribution across nodes
-   - Verify all masters receive data
-   - Test profiling output
-   
-3. **Tunnel Mode Tests**:
-   - Test smart proxy routing
-   - Test multi-client connections
-   
-4. **Advanced Scenarios**:
-   - MOVED/ASK redirection handling
-   - Topology changes (add/remove nodes)
-   - Failure scenarios (node down)
-   - Performance benchmarks vs standalone
-
-5. **CI/CD Integration**:
-   - Create `runClusterE2ETests.sh` (model after `rune2eTests.sh`)
-   - Update existing test runner to include cluster tests
-   - Add to CI/CD pipeline
-
-**Reference Implementation**: **Study `test/E2E.hs` extensively** - it has excellent patterns for testing all three modes. Don't reinvent the wheel - adapt the existing patterns:
-- Process management and cleanup
-- Waiting for readiness signals
-- Input/output handling
-- Assertion strategies
-- Environment variable handling
-
-**Estimated Effort**: ~300-400 LOC
-
-### Phase 8: Advanced Features (Optional)
-**Goal**: Production optimizations based on profiling and user needs
-
-**Features** (prioritize based on actual needs):
-1. Multi-key command splitting (MGET/MSET across slots) - ~200-300 LOC
-2. Pipelining optimization (group by node, parallel execution) - ~300-400 LOC
-3. Enhanced error messages (node info, hash tag suggestions) - ~100-200 LOC
-4. Read replica support (READONLY/READWRITE) - ~200-300 LOC
-
-**Estimated Effort**: ~800-1200 LOC (varies by features selected)
+---
 
 ## Success Criteria
 
 ### Functional Requirements
-- ✅ Core cluster infrastructure complete (Phases 1-2)
-- ✅ RedisCommands instance for ClusterCommandClient (Phase 2)
-- ✅ Basic mode integration structure (Phase 3)
+- ✅ Core cluster infrastructure (Phases 1-2)
+- ✅ Full RedisCommands instance (Phase 2)
 - ✅ CLI mode fully functional (Phase 4)
 - ✅ Fill mode fully functional (Phase 5)
-- ✅ Tunnel smart and pinned modes functional (Phase 6)
-- ⏳ Comprehensive E2E tests passing (Phase 7)
+- ✅ Tunnel modes functional (Phase 6)
+- ⏳ Comprehensive E2E tests (Phases 7-10)
+- ⏳ Performance benchmarks (Phase 11)
 
 ### Quality Requirements
-- ✅ Unit test coverage >80% for cluster modules (Phases 1-2)
-- ⏳ E2E tests cover all three modes in cluster configuration (Phase 7)
-- ⏳ Performance benchmarks vs standalone (Phase 7)
-- ✅ Zero breaking changes for existing standalone users
-- ✅ Documentation for cluster usage
+- ✅ Unit test coverage >80% for cluster modules
+- ⏳ E2E tests for all three modes
+- ⏳ Performance benchmarks vs standalone
+- ✅ Zero breaking changes for standalone users
+- ✅ Documentation complete
 
-### Non-Functional Requirements
-- ⏳ Cluster mode adds <10% latency overhead (Phase 7 measurement)
-- ⏳ Fill mode achieves near-linear speedup with cluster size (Phase 5 + Phase 7)
-- ✅ Memory overhead <10MB for typical cluster (3-10 nodes)
+### Performance Requirements (to be validated in Phase 11)
+- ⏳ Cluster mode adds <10% latency overhead
+- ⏳ Fill mode near-linear speedup with cluster size
+- ✅ Memory overhead <10MB (3-10 node clusters)
 - ✅ Backward compatibility maintained
-
-## Backward Compatibility
-
-**Guarantee**: All existing standalone Redis usage remains unchanged
-
-**How**:
-- Default behavior: No `--cluster` flag = standalone mode
-- Same commands work identically
-- Same flags and options
-- No code changes required for existing users
-
-**Detection**: Explicit `--cluster` flag required (no auto-detection)
-- **Pro**: Clear, explicit, debuggable
-- **Pro**: No extra round-trip on connection
-- **Con**: Users must know their deployment type
-
-## Architecture Strengths
-
-**Leveraged Existing Infrastructure**:
-1. ✅ CRC16 implementation ready for slot calculation
-2. ✅ Parallel execution proven in fill mode
-3. ✅ Docker cluster setup exists
-4. ✅ Clean architecture enables extension without breaking changes
-
-**Design Decisions**:
-1. ✅ Used Text node IDs to break circular dependencies
-2. ✅ Single connection per node (simple, sufficient, extensible)
-3. ✅ STM for thread-safe pool management
-4. ✅ Type class instance for transparent cluster usage
-
-## Next Steps
-
-### Phase 7: Comprehensive Testing (Current Priority)
-1. **Study `test/E2E.hs` thoroughly** - adapt its patterns for cluster testing
-2. Write tests for CLI mode features (Phase 4)
-3. Write tests for Fill mode features (Phase 5)
-4. Write tests for Tunnel mode features (Phase 6)
-5. Add advanced scenarios (redirections, failures, topology changes)
-6. Create `runClusterE2ETests.sh` following `rune2eTests.sh` structure
-7. Integrate into CI/CD pipeline
-8. Profile and benchmark performance vs standalone
-
-### Phase 8: Advanced Features (Optional)
-Implement based on profiling results and user feedback after Phase 7 is complete.
-
-## Appendix A: File Structure
-
-```
-lib/
-├── cluster/
-│   ├── Cluster.hs                    # ✅ Topology, slot calc, hash tags
-│   ├── ClusterCommandClient.hs      # ✅ Main cluster client + RedisCommands
-│   └── ConnectionPool.hs             # ✅ Thread-safe connection pool
-├── client/Client.hs                  # ✅ Existing - connection primitives
-├── redis-command-client/
-│   └── RedisCommandClient.hs         # ✅ Existing - command monad
-├── crc16/
-│   ├── Crc16.hs                      # ✅ Existing - slot hash function
-│   └── crc16.c                       # ✅ Existing - C implementation
-└── resp/Resp.hs                      # ✅ Existing - RESP protocol
-
-app/
-├── Main.hs                           # ✅ Mode integration complete
-├── ClusterCli.hs                     # ✅ CLI mode cluster implementation
-├── ClusterFiller.hs                  # ✅ Fill mode cluster implementation (Phase 5)
-├── ClusterTunnel.hs                  # ✅ Tunnel mode cluster implementation (Phase 6)
-└── Filler.hs                         # ✅ Existing - standalone fill logic
-
-test/
-├── ClusterSpec.hs                    # ✅ Unit tests
-├── ClusterCommandSpec.hs             # ✅ Command client tests
-├── ClusterE2E.hs                     # ✅ Basic E2E tests
-├── Spec.hs                           # ✅ Existing - RESP tests
-└── E2E.hs                            # ✅ Existing - standalone E2E
-
-docker-cluster/                       # ✅ Existing - 5-node cluster setup
-```
-
-## Appendix B: Estimated Effort
-
-**Completed** (Phases 1-6): ~2290 LOC
-- **Phase 1-2** (Core Infrastructure):
-  - `Cluster.hs`: 153 LOC
-  - `ClusterCommandClient.hs`: 439 LOC
-  - `ConnectionPool.hs`: 75 LOC
-  - Tests (ClusterSpec, ClusterCommandSpec): ~400 LOC
-- **Phase 3-4** (CLI Mode):
-  - `ClusterCli.hs`: 110 LOC
-  - `Main.hs` CLI integration: ~50 LOC
-- **Phase 5** (Fill Mode):
-  - `ClusterFiller.hs`: 300 LOC
-  - `Main.hs` Fill integration: ~20 LOC
-- **Phase 6** (Tunnel Mode):
-  - `ClusterTunnel.hs`: 400 LOC
-  - `Main.hs` Tunnel integration: ~40 LOC
-  - `Resp.hs` parseStrict function: ~5 LOC
-- **Total Completed**: ~1992 LOC (code) + ~400 LOC (tests) = ~2392 LOC
-
-**Remaining Work by Phase**:
-- **Phase 7** (E2E Testing): ~300-400 LOC
-- **Phase 8** (Advanced Features): ~800-1200 LOC (optional)
-
-**Total Remaining**: ~300-400 LOC for comprehensive testing (Phase 7)
-**Total with Phase 8**: ~1100-1600 LOC
-
-**Total Project**: ~2700-4000 LOC for full cluster support (depending on Phase 8 features)
-
-## Appendix C: Known Limitations
-
-### Current Limitations
-1. Multi-key commands use first key only (no splitting)
-2. No automatic topology refresh (manual refresh via MOVED)
-3. No read replica support (master-only)
-4. Command routing uses hardcoded lists (see Phase 4 notes for future improvements)
-
-### Connection Pool Limitations
-
-**Current State**: The connection pool (`lib/cluster/ConnectionPool.hs`) currently supports only one connection per node. When multiple threads try to fill data for the same node concurrently, they share a single connection, which can cause contention and thread synchronization issues.
-
-**Current Workaround**: For cluster fill mode (Phase 5), each thread creates its own dedicated connection using the connector directly (bypassing the pool) to avoid connection sharing. This works but isn't ideal for resource management.
-
-**Future Improvements Needed**:
-1. **Enhance ConnectionPool**: Update `ConnectionPool` to support multiple connections per node with configurable pool size
-2. **Code Audit**: Search the codebase for places where we bypass the connection pool by calling the connector directly, and migrate them to use the pool once it supports multiple connections per node
-3. **Connection Lifecycle**: Implement proper connection lifecycle management (creation, reuse, cleanup) in the pool
-4. **Metrics**: Add connection pool metrics (active connections, wait times, etc.)
-
-**Related Files**:
-- `lib/cluster/ConnectionPool.hs` - Connection pool implementation
-- `app/ClusterFiller.hs` - Currently bypasses pool for fill operations (line ~167)
-
-### Acceptable Trade-offs
-1. Single connection per node (sufficient for most workloads)
-2. No pipelining optimization (can add later)
-3. Explicit --cluster flag (vs auto-detection)
-4. No READONLY/READWRITE support (not needed initially)
-
-### Future Enhancements (Beyond Phase 5)
-1. Connection pool scaling (if profiling shows need)
-2. Topology caching across restarts
-3. Circuit breaker pattern for failed nodes
-4. Read replica support
-5. Pub/Sub cluster routing
-6. Transaction (MULTI/EXEC) cluster support
 
 ---
 
-**Document Version**: 3.0  
-**Last Updated**: 2026-02-04  
-**Status**: Active Development - Phases 1-6 Complete, Phase 7 Next
+## For Future Agents
+
+### Before Starting a Phase
+1. Read the phase description carefully
+2. Check prerequisites are complete
+3. Study referenced files and patterns
+4. Understand the scope and success criteria
+
+### Testing Guidance
+- **ALWAYS** study `test/E2E.hs` before writing cluster E2E tests
+- Reuse existing patterns for process management, I/O, assertions
+- Test with docker-cluster setup (5 nodes)
+- Don't reinvent the wheel - adapt proven patterns
+
+### Profiling Guidance (Phase 11)
+- Use `cabal run --enable-profiling -- {flags}` with `-p` RTS flag
+- Profile BEFORE and AFTER changes
+- Compare profiles to detect regressions
+- Remove profiling artifacts when done (*.hp, *.prof, *.ps, *.aux, *.stat)
+
+### General Development
+- Make minimal changes
+- Run `cabal test` after changes
+- Run `./rune2eTests.sh` and `./runClusterE2ETests.sh` after changes
+- If Redis isn't running locally, start with docker
+- Use `-f` flag in fill mode if Redis is in docker (RAM considerations)
+
+---
+
+**End of Document**
