@@ -348,8 +348,12 @@ rewriteRespData (RespError msg) =
     then RespError (rewriteRedirectionError msg)
     else RespError msg
 rewriteRespData (RespBulkString bs) =
-  -- Handle CLUSTER NODES response
-  RespBulkString (rewriteClusterNodesText bs)
+  -- Check if this looks like CLUSTER NODES format (contains spaces and : for host:port)
+  -- or if it's just a plain hostname/IP (for CLUSTER SLOTS)
+  let text = LBSC.unpack bs
+  in if ' ' `elem` text && ':' `elem` text
+       then RespBulkString (rewriteClusterNodesText bs)  -- CLUSTER NODES format
+       else RespBulkString (LBSC.pack "127.0.0.1")       -- Plain hostname/IP in CLUSTER SLOTS
 rewriteRespData (RespArray items) =
   -- Recursively rewrite array items (handles CLUSTER SLOTS)
   RespArray (map rewriteRespData items)
