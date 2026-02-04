@@ -38,6 +38,8 @@ import           RedisCommandClient         (ClientReplyValues (..),
                                              runRedisCommandClient)
 import           System.IO                  (IOMode (..), hGetContents,
                                              openFile)
+import           System.Timeout             (timeout)
+import           Text.Printf                (printf)
 import           Text.Printf                (printf)
 
 -- | Mapping from slot number to hash tag that routes to that slot
@@ -215,7 +217,7 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
   
   chunkKilos <- lookupChunkKilos
   
-  -- Wrap in exception handler
+  -- Wrap in exception handler and timeout
   catch (do
     -- Client state for running commands
     let clientState = ClientState conn BS.empty
@@ -242,9 +244,12 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
               return ()
             Nothing -> error "clientReply returned an unexpected value"
     
-    -- Run the fill action in the RedisCommandClient monad
-    State.evalStateT (runRedisCommandClient fillAction) clientState
-    printf "Thread %d completed successfully\n" threadIdx
+    -- Run the fill action with a 10 minute timeout (600 seconds)
+    -- This is generous but prevents indefinite hangs
+    result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState
+    case result of
+      Just _ -> printf "Thread %d completed successfully\n" threadIdx
+      Nothing -> printf "Thread %d timed out after 10 minutes\n" threadIdx
     ) (\e -> do
       printf "Thread %d failed with error: %s\n" threadIdx (show (e :: SomeException))
     )
