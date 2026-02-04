@@ -28,6 +28,7 @@ import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import           Data.Char                  (toUpper)
 import qualified Data.Map.Strict            as Map
+import           Data.Word                  (Word8)
 import           Network.Socket             (Family (..),
                                              SockAddr (..), Socket,
                                              SocketOption (..), SocketType (..),
@@ -341,35 +342,61 @@ rewriteClusterResponse dat =
       in LB.toStrict $ Builder.toLazyByteString $ encode rewritten
 
 -- | Rewrite RespData to replace hosts with localhost
+-- Handles three types of responses:
+-- 1. MOVED/ASK errors: "MOVED slot host:port" -> "MOVED slot 127.0.0.1:port"
+-- 2. CLUSTER NODES bulk strings: multi-line text with "node-id host:port@cport ..."
+-- 3. CLUSTER SLOTS bulk strings: plain IPv4 addresses like "9.169.243.75"
 rewriteRespData :: RespData -> RespData
 rewriteRespData (RespError msg) =
-  -- Handle MOVED and ASK errors
+  -- Handle MOVED and ASK errors: rewrite "host:port" to "127.0.0.1:port"
   if "MOVED" `isPrefixOf` msg || "ASK" `isPrefixOf` msg
     then RespError (rewriteRedirectionError msg)
     else RespError msg
 rewriteRespData (RespBulkString bs) =
-  -- Check if this looks like CLUSTER NODES format (contains spaces and : for host:port)
-  -- or if it's just a plain hostname/IP (for CLUSTER SLOTS)
   let text = LBSC.unpack bs
-  in if ' ' `elem` text && ':' `elem` text
-       then RespBulkString (rewriteClusterNodesText bs)  -- CLUSTER NODES format
-       else if looksLikeHostname text
-              then RespBulkString (LBSC.pack "127.0.0.1")  -- Plain hostname/IP in CLUSTER SLOTS
-              else RespBulkString bs  -- Other bulk string (like node ID), leave as-is
+  in if isClusterNodesFormat text
+       -- CLUSTER NODES format: multi-line text with node info
+       then RespBulkString (rewriteClusterNodesText bs)
+       -- Plain IPv4 address from CLUSTER SLOTS: replace with 127.0.0.1
+       else if isIPv4Address text
+              then RespBulkString (LBSC.pack "127.0.0.1")
+              -- Other bulk strings (node IDs, etc.): leave unchanged
+              else RespBulkString bs
 rewriteRespData (RespArray items) =
-  -- Recursively rewrite array items (handles CLUSTER SLOTS)
+  -- Recursively rewrite array items (handles nested structures in CLUSTER SLOTS)
   RespArray (map rewriteRespData items)
 rewriteRespData other = other
 
--- | Check if a string looks like a hostname or IP address
--- Heuristic: contains dots (for IPs like 1.2.3.4) or looks like a domain (has dots and alphanumeric)
--- But NOT if it looks like a node ID (long hex string)
-looksLikeHostname :: String -> Bool
-looksLikeHostname str
-  | null str = False
-  | length str > 35 = False  -- Node IDs are 40 chars, hostnames are typically shorter
-  | '.' `elem` str = True    -- Has dots, likely an IP or domain
-  | otherwise = False
+-- | Check if a bulk string is in CLUSTER NODES format
+-- CLUSTER NODES format contains spaces and colons, e.g.:
+-- "node-id host:port@cport flags master..."
+isClusterNodesFormat :: String -> Bool
+isClusterNodesFormat text = ' ' `elem` text && ':' `elem` text
+
+-- | Check if a string is a valid IPv4 address
+-- Uses the same parsing logic as Client.parseIPv4
+-- Redis CLUSTER SLOTS responses contain IPv4 addresses, not hostnames
+isIPv4Address :: String -> Bool
+isIPv4Address str = case parseIPv4 str of
+  Just _  -> True
+  Nothing -> False
+  where
+    -- Parse IPv4 address string (e.g., "127.0.0.1")
+    -- Copied from Client.hs to avoid circular dependencies
+    parseIPv4 :: String -> Maybe ()
+    parseIPv4 s = case words $ map (\c -> if c == '.' then ' ' else c) s of
+      [a, b, c, d] -> do
+        _ <- readMaybe a :: Maybe Word8
+        _ <- readMaybe b :: Maybe Word8
+        _ <- readMaybe c :: Maybe Word8
+        _ <- readMaybe d :: Maybe Word8
+        return ()
+      _ -> Nothing
+    
+    readMaybe :: Read a => String -> Maybe a
+    readMaybe s = case reads s of
+      [(x, "")] -> Just x
+      _ -> Nothing
 
 -- | Check if string is prefix
 isPrefixOf :: String -> String -> Bool
