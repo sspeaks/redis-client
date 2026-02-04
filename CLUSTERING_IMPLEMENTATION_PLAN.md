@@ -122,7 +122,7 @@ The primary purpose of tunnel mode is to **terminate TLS and handle authenticati
 - For example, if a cluster has 5 nodes listening on ports 6379-6383, the tunnel creates 5 local listeners on ports 6379-6383
 - Each local listener establishes a dedicated TLS connection to its corresponding cluster node
 - Applications connect to `localhost:6379`, `localhost:6380`, etc., and the tunnel forwards traffic to the appropriate cluster node
-- **Response rewriting**: Must intercept `CLUSTER NODES` and `CLUSTER SLOTS` responses and replace remote host addresses with `127.0.0.1` to prevent confusion for cluster clients connecting to the tunnel
+- **Response rewriting**: Must intercept and rewrite cluster topology responses (`CLUSTER NODES`, `CLUSTER SLOTS`) and redirection errors (`MOVED`, `ASK`) to replace remote host addresses with `127.0.0.1` to prevent confusion for cluster clients connecting to the tunnel
 - This mode preserves cluster topology visibility to the application, which must still understand Redis Cluster protocol
 - **Use case**: When local applications need to be cluster-aware but want to offload TLS/authentication
 
@@ -151,7 +151,7 @@ The primary purpose of tunnel mode is to **terminate TLS and handle authenticati
 - ⏳ Establish and maintain TLS connections to each cluster node
 - ⏳ Forward traffic bidirectionally between local socket and cluster node
 - ⏳ Handle authentication for each cluster node connection
-- ⏳ Intercept and rewrite `CLUSTER NODES` and `CLUSTER SLOTS` responses to replace remote hosts with `127.0.0.1`
+- ⏳ Intercept and rewrite cluster responses: `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED` errors, and `ASK` errors to replace remote hosts with `127.0.0.1`
 
 **Implementation Guide**: Study the existing `serve` function in `lib/client/Client.hs` for tunnel implementation patterns. The smart proxy needs to parse commands before forwarding. You might be able to reuse some existing logic used by the ClusterCLI to determine which commands are keyed and which aren't.
 
@@ -318,7 +318,7 @@ instance RedisCommands (ClusterCommandClient client) where
 - Should create one listening socket per cluster node
 - Each socket listens on the same port as its corresponding cluster node
 - Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
-- Must intercept `CLUSTER NODES` and `CLUSTER SLOTS` responses and rewrite host addresses to `127.0.0.1`
+- Must intercept cluster responses (`CLUSTER NODES`, `CLUSTER SLOTS`) and redirection errors (`MOVED`, `ASK`) and rewrite host addresses to `127.0.0.1`
 - Applications remain cluster-aware but benefit from TLS termination and authentication handling
 
 **Smart Mode (Full Implementation Needed)**:
@@ -341,7 +341,7 @@ instance RedisCommands (ClusterCommandClient client) where
 3. Establish TLS connection to each cluster node
 4. Forward traffic bidirectionally
 5. Handle per-node authentication
-6. Intercept and rewrite `CLUSTER NODES` and `CLUSTER SLOTS` responses (replace remote hosts with `127.0.0.1`)
+6. Intercept and rewrite cluster responses and redirection errors (replace remote hosts with `127.0.0.1` in `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED`, `ASK`)
 
 **Implementation Location**: `app/Main.hs` - `tunnCluster` functions
 
@@ -528,7 +528,8 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 4. Forward traffic bidirectionally between local socket and cluster node
 5. Handle per-node authentication
 6. Intercept `CLUSTER NODES` and `CLUSTER SLOTS` responses and rewrite host addresses to `127.0.0.1`
-7. Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
+7. Intercept `MOVED` and `ASK` redirection errors and rewrite host addresses to `127.0.0.1`
+8. Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
 
 **Reference Implementation**: Study `lib/client/Client.hs` `serve` function for tunnel patterns
 
