@@ -110,17 +110,52 @@ Complete the Fill mode implementation for cluster support.
 **Status**: Code complete, builds successfully, all unit tests passing. Ready for performance profiling in production cluster environment.
 
 ### ⏳ Phase 6: Tunnel Mode (NOT STARTED)
-Complete the smart tunnel mode implementation for cluster support.
+Complete the tunnel mode implementation for cluster support.
 
+#### Tunnel Mode Overview
+
+The primary purpose of tunnel mode is to **terminate TLS and handle authentication** so local applications don't need to worry about these concerns. There are two distinct tunnel modes for cluster support:
+
+**Pinned Tunnel Mode**:
+- Creates **one listening socket for every node in the cluster**
+- Each listening socket listens on the **same port that the corresponding cluster node is listening on**
+- For example, if a cluster has 5 nodes listening on ports 6379-6383, the tunnel creates 5 local listeners on ports 6379-6383
+- Each local listener establishes a dedicated TLS connection to its corresponding cluster node
+- Applications connect to `localhost:6379`, `localhost:6380`, etc., and the tunnel forwards traffic to the appropriate cluster node
+- **Response rewriting**: Must intercept and rewrite cluster topology responses (`CLUSTER NODES`, `CLUSTER SLOTS`) and redirection errors (`MOVED`, `ASK`) to replace remote host addresses with `127.0.0.1` to prevent confusion for cluster clients connecting to the tunnel
+- This mode preserves cluster topology visibility to the application, which must still understand Redis Cluster protocol
+- **Use case**: When local applications need to be cluster-aware but want to offload TLS/authentication
+
+**Smart Tunnel Mode**:
+- Makes a clustered cache **appear as if it were a single-node cache** to local applications
+- Creates a single listening socket (typically on `localhost:6379`)
+- Accepts connections from local applications that don't know about Redis Cluster
+- Parses incoming RESP commands to determine routing
+- Calculates hash slots and routes commands to the appropriate cluster nodes transparently
+- Handles MOVED/ASK redirections internally without exposing them to the application
+- Returns responses as if they came from a single Redis instance
+- **Use case**: When local applications are cluster-unaware but you need the benefits of a clustered backend
+
+#### Implementation Tasks
+
+**Smart Mode Tasks**:
 - ⏳ Accept connections on localhost:6379
 - ⏳ Parse incoming RESP commands from clients
 - ⏳ Calculate slot and route to appropriate cluster node
 - ⏳ Forward responses back to client
 - ⏳ Handle redirections transparently
 
+**Pinned Mode Tasks**:
+- ⏳ Query cluster topology to discover all nodes
+- ⏳ Create one listening socket per cluster node on the same port
+- ⏳ Establish and maintain TLS connections to each cluster node
+- ⏳ Forward traffic bidirectionally between local socket and cluster node
+- ⏳ Handle authentication for each cluster node connection
+- ⏳ Intercept and rewrite cluster responses: `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED` errors, and `ASK` errors to replace remote hosts with `127.0.0.1`
+
 **Implementation Guide**: Study the existing `serve` function in `lib/client/Client.hs` for tunnel implementation patterns. The smart proxy needs to parse commands before forwarding. You might be able to reuse some existing logic used by the ClusterCLI to determine which commands are keyed and which aren't.
 
-**Estimated Effort**: ~400-500 LOC
+**Estimated Effort**: ~400-500 LOC (Smart Mode), ~300-400 LOC (Pinned Mode enhancements)
 
 ### ⏳ Phase 7: E2E Testing & CI Integration (NOT STARTED)
 Expand E2E test coverage and integrate into CI/CD after completing Phases 4-6.
@@ -272,10 +307,26 @@ instance RedisCommands (ClusterCommandClient client) where
 ### Tunnel Mode
 **Status**: ✅ Pinned mode implemented, ⏳ Smart mode placeholder
 
+**Primary Purpose**: Terminate TLS and handle authentication so local applications don't need to manage these concerns.
+
 **Current State**:
-- Pinned mode: Can forward to single seed node
+- Pinned mode: Can forward to single seed node (basic implementation)
 - Smart mode: Placeholder with fallback to pinned
 - TLS support structure in place
+
+**Pinned Mode (Full Implementation Needed)**:
+- Should create one listening socket per cluster node
+- Each socket listens on the same port as its corresponding cluster node
+- Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
+- Must intercept cluster responses (`CLUSTER NODES`, `CLUSTER SLOTS`) and redirection errors (`MOVED`, `ASK`) and rewrite host addresses to `127.0.0.1`
+- Applications remain cluster-aware but benefit from TLS termination and authentication handling
+
+**Smart Mode (Full Implementation Needed)**:
+- Makes clustered cache appear as a single-node cache to applications
+- Single listening socket (e.g., `localhost:6379`)
+- Transparently routes commands based on hash slot calculation
+- Handles MOVED/ASK redirections internally
+- Applications don't need to understand Redis Cluster protocol
 
 **What's Needed for Full Smart Mode**:
 1. Accept connections on localhost:6379
@@ -283,6 +334,14 @@ instance RedisCommands (ClusterCommandClient client) where
 3. Calculate slot and route to appropriate node
 4. Forward responses back to client
 5. Handle redirections transparently
+
+**What's Needed for Full Pinned Mode**:
+1. Query cluster topology to discover all nodes
+2. Create listening socket for each node on matching port
+3. Establish TLS connection to each cluster node
+4. Forward traffic bidirectionally
+5. Handle per-node authentication
+6. Intercept and rewrite cluster responses and redirection errors (replace remote hosts with `127.0.0.1` in `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED`, `ASK`)
 
 **Implementation Location**: `app/Main.hs` - `tunnCluster` functions
 
@@ -374,13 +433,17 @@ Fill Options:
 # Cluster CLI
 redis-client cli -h node1 -c
 
-# Cluster fill (structure in place, needs implementation)
+# Cluster fill
 redis-client fill -h node1 -d 5 -c
 
-# Cluster tunnel - pinned mode (works)
+# Cluster tunnel - pinned mode
+# Creates one listener per cluster node on matching ports
+# Example: 5 nodes → 5 local sockets (localhost:6379-6383)
 redis-client tunn -h node1 -t -c --tunnel-mode pinned
 
-# Cluster tunnel - smart mode (not yet implemented)
+# Cluster tunnel - smart mode
+# Single listener that makes cluster appear as single-node cache
+# Routes commands transparently based on hash slot calculation
 redis-client tunn -h node1 -t -c --tunnel-mode smart
 ```
 
@@ -445,19 +508,32 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 
 **Estimated Effort**: ~300-400 LOC
 
-### Phase 6: Smart Tunnel Mode
-**Goal**: Implement intelligent proxy with cluster routing
+### Phase 6: Tunnel Mode (Smart and Pinned)
+**Goal**: Implement TLS termination and authentication offloading with two distinct modes
 
-**Tasks**:
-1. Accept connections on localhost:6379
-2. Parse incoming RESP commands
-3. Calculate slot and route to appropriate node
+**Primary Purpose**: Terminate TLS connections and handle authentication so local applications don't need to manage these concerns.
+
+**Smart Tunnel Mode Tasks**:
+1. Accept connections on localhost:6379 (single listening socket)
+2. Parse incoming RESP commands from cluster-unaware applications
+3. Calculate slot and route to appropriate cluster node
 4. Forward responses transparently
-5. Handle redirections
+5. Handle MOVED/ASK redirections internally (invisible to application)
+6. Make clustered cache appear as single-node cache
+
+**Pinned Tunnel Mode Tasks**:
+1. Query cluster topology to discover all nodes and their ports
+2. Create one listening socket per cluster node on matching port
+3. Establish and maintain TLS connections to each cluster node
+4. Forward traffic bidirectionally between local socket and cluster node
+5. Handle per-node authentication
+6. Intercept `CLUSTER NODES` and `CLUSTER SLOTS` responses and rewrite host addresses to `127.0.0.1`
+7. Intercept `MOVED` and `ASK` redirection errors and rewrite host addresses to `127.0.0.1`
+8. Example: 5-node cluster on ports 6379-6383 → 5 local listeners on `localhost:6379-6383`
 
 **Reference Implementation**: Study `lib/client/Client.hs` `serve` function for tunnel patterns
 
-**Estimated Effort**: ~400-500 LOC
+**Estimated Effort**: ~400-500 LOC (Smart Mode), ~300-400 LOC (Pinned Mode enhancements)
 
 ### Phase 7: Comprehensive E2E Testing & CI Integration
 **Goal**: Full test coverage for Phases 4-6 features
