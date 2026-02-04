@@ -29,6 +29,9 @@ import           Data.Map.Strict         (Map)
 import qualified Data.Map.Strict         as Map
 import           Data.Text               (Text)
 import qualified Data.Text               as T
+import           Data.Vector             (Vector)
+import qualified Data.Vector             as V
+import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64, Word8)
 import           Filler                  (lookupChunkKilos)
 import           RedisCommandClient      (ClientReplyValues (..),
@@ -38,8 +41,9 @@ import           System.IO               (IOMode (..), hGetContents, openFile)
 import           System.Timeout          (timeout)
 import           Text.Printf             (printf)
 
--- | Mapping from slot number to hash tag that routes to that slot
-type SlotMapping = Map Word16 BS.ByteString
+-- | Mapping from slot number (0-16383) to hash tag that routes to that slot
+-- Uses Vector for O(1) lookup instead of Map's O(log n)
+type SlotMapping = Vector BS.ByteString
 
 -- 128MB of pre-computed random noise for key/value generation
 -- Same pattern as Filler.hs
@@ -52,12 +56,16 @@ randomNoise = fst $ BS.unfoldrN (128 * 1024 * 1024) step 0
 
 -- | Load slot-to-hashtag mappings from file
 -- File format: "slotNumber hashTag" per line
+-- Returns a Vector of 16384 elements for O(1) slot lookup
 loadSlotMappings :: FilePath -> IO SlotMapping
 loadSlotMappings filepath = do
   content <- openFile filepath ReadMode >>= hGetContents
   let entries = map parseLine $ lines content
       validEntries = [(slot, tag) | Just (slot, tag) <- entries]
-  return $ Map.fromList validEntries
+      -- Build a Map first, then convert to Vector for O(1) access
+      entryMap = Map.fromList validEntries
+  -- Create a vector of 16384 slots, empty ByteString for missing entries
+  return $ V.generate 16384 (\i -> Map.findWithDefault BS.empty (fromIntegral i) entryMap)
   where
     parseLine :: String -> Maybe (Word16, BS.ByteString)
     parseLine line =
@@ -209,6 +217,9 @@ fillNodeWithData ::
 fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
   when (null slots) $ return ()
 
+  -- Convert slots list to Vector for O(1) access in the hot loop
+  let !slotsVec = VU.fromList slots
+
   -- Deterministic seed for this thread
   let threadSeed = baseSeed + (fromIntegral threadIdx * 1000000000)
 
@@ -229,7 +240,7 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
           -- Generate and send data chunks (no replies expected)
           mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
+              let cmd = generateClusterChunk slotMappings slotsVec chunkKilos (threadSeed + fromIntegral chunkIdx)
               send client cmd
             ) [0..totalChunks - 1]
 
@@ -246,67 +257,84 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
     result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState
     case result of
       Just _ -> return ()
-      Nothing -> printf "Thread %d for slots %d to %d timed out after 10 minutes\n" threadIdx (head slots) (last slots)
+      Nothing -> printf "Thread %d for slots timed out after 10 minutes\n" threadIdx
     ) (\e -> do
       printf "Thread %d failed with error: %s\n" threadIdx (show (e :: SomeException))
     )
   return ()
 
 -- | Generate a chunk of SET commands using hash tags for proper slot routing
+-- Uses Vector for O(1) slot lookup instead of list indexing
 generateClusterChunk ::
   SlotMapping ->
-  [Word16] ->
+  VU.Vector Word16 ->
   Int ->
   Word64 ->
   LB.ByteString
 generateClusterChunk slotMappings slots chunkKilos seed =
-  Builder.toLazyByteString $ go chunkKilos seed
+  Builder.toLazyByteString $! go chunkKilos seed
   where
-    numSlots = length slots
+    !numSlots = VU.length slots
+
+    -- Pre-computed RESP protocol constants - hoisted out of loop
+    setPrefix :: Builder.Builder
+    setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$512\r\n"
+    {-# INLINE setPrefix #-}
+
+    valuePrefix :: Builder.Builder
+    valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
+    {-# INLINE valuePrefix #-}
+
+    commandSuffix :: Builder.Builder
+    commandSuffix = Builder.stringUtf8 "\r\n"
+    {-# INLINE commandSuffix #-}
 
     go :: Int -> Word64 -> Builder.Builder
     go 0 _ = mempty
-    go n s =
-      let slotIdx = fromIntegral s `mod` numSlots
-          slot = slots !! slotIdx
-          maybeHashTag = Map.lookup slot slotMappings
+    go n !s =
+      let !slotIdx = fromIntegral s `mod` numSlots
+          -- O(1) Vector lookup instead of O(n) list indexing
+          !slot = slots `VU.unsafeIndex` slotIdx
+          -- O(1) Vector lookup instead of O(log n) Map lookup
+          !hashTag = slotMappings `V.unsafeIndex` fromIntegral slot
 
-          keySeed = s
-          valSeed = s * 6364136223846793005 + 1442695040888963407
-          nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
+          !keySeed = s
+          !valSeed = s * 6364136223846793005 + 1442695040888963407
+          !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
 
-          keyData = generate512BytesWithHashTag maybeHashTag keySeed
-          valData = generate512Bytes valSeed
-
-          setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$512\r\n"
-          valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
-          commandSuffix = Builder.stringUtf8 "\r\n"
+          !keyData = generate512BytesWithHashTag hashTag keySeed
+          !valData = generate512Bytes valSeed
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
+    {-# INLINE go #-}
 
     -- Generate key with hash tag prefix to ensure proper routing
-    generate512BytesWithHashTag :: Maybe BS.ByteString -> Word64 -> Builder.Builder
-    generate512BytesWithHashTag Nothing seed = generate512Bytes seed
-    generate512BytesWithHashTag (Just hashTag) seed =
-      let tagLen = BS.length hashTag
-          -- Format: {hashtag}:seed:padding
-          -- We need exactly 512 bytes total
-          seedBytes = Builder.word64LE seed  -- 8 bytes
-          prefix = Builder.char8 '{' <> Builder.byteString hashTag <> Builder.stringUtf8 "}:"
-          prefixLen = 2 + tagLen + 1  -- { + tag + }:
+    -- Empty hash tag means no routing needed, fall back to regular generation
+    generate512BytesWithHashTag :: BS.ByteString -> Word64 -> Builder.Builder
+    generate512BytesWithHashTag hashTag !seed
+      | BS.null hashTag = generate512Bytes seed
+      | otherwise =
+          let !tagLen = BS.length hashTag
+              -- Format: {hashtag}:seed:padding
+              -- We need exactly 512 bytes total
+              !seedBytes = Builder.word64LE seed  -- 8 bytes
+              !prefix = Builder.char8 '{' <> Builder.byteString hashTag <> Builder.stringUtf8 "}:"
+              !prefixLen = 2 + tagLen + 1  -- { + tag + }:
 
-          -- Fill remaining bytes with noise
-          totalPrefix = prefixLen + 8  -- prefix + seed
-          paddingNeeded = 512 - totalPrefix
+              -- Fill remaining bytes with noise
+              !totalPrefix = prefixLen + 8  -- prefix + seed
+              !paddingNeeded = 512 - totalPrefix
 
-          scrambled = seed * 6364136223846793005 + 1442695040888963407
-          offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
-          padding = BS.take paddingNeeded (BS.drop offset randomNoise)
-      in prefix <> seedBytes <> Builder.byteString padding
+              !scrambled = seed * 6364136223846793005 + 1442695040888963407
+              !offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
+              !padding = BS.take paddingNeeded (BS.drop offset randomNoise)
+          in prefix <> seedBytes <> Builder.byteString padding
+    {-# INLINE generate512BytesWithHashTag #-}
 
--- | Generate 512 bytes of data (same as in Filler.hs)
-generate512Bytes :: Word64 -> Builder.Builder
-generate512Bytes s =
-  let scrambled = s * 6364136223846793005 + 1442695040888963407
-      offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
-      chunk = BS.take 504 (BS.drop offset randomNoise)
-  in Builder.word64LE s <> Builder.byteString chunk
+    -- | Generate 512 bytes of data (same as in Filler.hs)
+    generate512Bytes :: Word64 -> Builder.Builder
+    generate512Bytes !s =
+      let !scrambled = s * 6364136223846793005 + 1442695040888963407
+          !offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
+          !chunk = BS.take 504 (BS.drop offset randomNoise)
+      in Builder.word64LE s <> Builder.byteString chunk
+    {-# INLINE generate512Bytes #-}

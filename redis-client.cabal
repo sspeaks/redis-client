@@ -198,8 +198,10 @@ executable redis-client
                     , containers
                     , text
                     , vector
+                    , network
     hs-source-dirs:   app
     other-modules:    Filler
                     , ClusterCli
                     , ClusterFiller
+                    , ClusterTunnel
     default-language: GHC2021

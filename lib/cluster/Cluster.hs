@@ -137,13 +137,22 @@ parseClusterSlots (RespArray slots) currentTime = do
 
     buildNodeMap :: Map Text ClusterNode -> (SlotRange, [(Text, NodeAddress)]) -> Map Text ClusterNode
     buildNodeMap nodeMap (range, nodeInfos) =
-      foldl insertNode nodeMap nodeInfos
+      case nodeInfos of
+        [] -> nodeMap  -- No nodes in this range (shouldn't happen)
+        (masterId, masterAddr) : replicaInfos ->
+          -- Insert master node
+          let nodeMapWithMaster = insertNode nodeMap (masterId, masterAddr) Master
+              -- Insert replica nodes
+              nodeMapWithReplicas = foldl (\nm (replicaId, replicaAddr) -> 
+                                            insertNode nm (replicaId, replicaAddr) Replica) 
+                                          nodeMapWithMaster replicaInfos
+          in nodeMapWithReplicas
       where
-        insertNode :: Map Text ClusterNode -> (Text, NodeAddress) -> Map Text ClusterNode
-        insertNode nm (nodeId, addr) =
+        insertNode :: Map Text ClusterNode -> (Text, NodeAddress) -> NodeRole -> Map Text ClusterNode
+        insertNode nm (nodeId, addr) role =
           if Map.member nodeId nm
             then nm -- Node already exists, don't overwrite
-            else Map.insert nodeId (ClusterNode nodeId addr Master [range] []) nm
+            else Map.insert nodeId (ClusterNode nodeId addr role [range] []) nm
 parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ show other
 
 -- | Find the node responsible for a given slot

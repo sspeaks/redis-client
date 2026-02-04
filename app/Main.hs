@@ -19,11 +19,14 @@ import           ClusterCommandClient       (ClusterClient (..),
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData,
                                              loadSlotMappings)
+import           ClusterTunnel              (servePinnedProxy,
+                                             serveSmartProxy)
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import qualified ConnectionPool             as CP
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
+
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State        as State
@@ -32,6 +35,7 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromMaybe)
+import qualified Data.Vector                as V
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
@@ -51,7 +55,8 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs)
 import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hIsTerminalDevice, isEOF, stdin)
+import           System.IO                  (hIsTerminalDevice, isEOF,
+                                             stdin, stdout)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
 
@@ -119,16 +124,40 @@ main = do
       when (mode == "fill") $ fill state
 
 -- | Create cluster connector for plaintext connections
+-- Connects and authenticates to each node
 createPlaintextConnector :: RunState -> (NodeAddress -> IO (PlainTextClient 'Connected))
-createPlaintextConnector _ addr = do
+createPlaintextConnector state addr = do
   let notConnected = NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
-  connect notConnected
+  client <- connect notConnected
+  -- Authenticate if password is provided
+  if null (password state)
+    then return client
+    else do
+      _ <- State.evalStateT 
+             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
+             (ClientState client BS.empty)
+      return client
 
 -- | Create cluster connector for TLS connections
+-- Connects and authenticates to each node
+-- Uses the original seed hostname for TLS certificate validation to avoid
+-- hostname mismatch errors when CLUSTER SLOTS returns IP addresses
 createTLSConnector :: RunState -> (NodeAddress -> IO (TLSClient 'Connected))
-createTLSConnector _ addr = do
-  let notConnected = NotConnectedTLSClient (nodeHost addr) (Just $ nodePort addr)
-  connect notConnected
+createTLSConnector state addr = do
+  -- For TLS, use the original seed hostname for certificate validation
+  -- but connect to the actual node address (which may be an IP from CLUSTER SLOTS)
+  let hostnameForCert = host state  -- Use seed hostname for certificate validation
+      targetAddress = nodeHost addr  -- Use actual node address for connection
+      notConnected = NotConnectedTLSClientWithHostname hostnameForCert targetAddress (Just $ nodePort addr)
+  client <- connect notConnected
+  -- Authenticate if password is provided
+  if null (password state)
+    then return client
+    else do
+      _ <- State.evalStateT 
+             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
+             (ClientState client BS.empty)
+      return client
 
 -- | Create a cluster client from RunState
 createClusterClientFromState :: (Client client) =>
@@ -175,32 +204,43 @@ tunnCluster :: RunState -> IO ()
 tunnCluster state = do
   putStrLn "Starting tunnel mode (cluster)"
   putStrLn $ "Tunnel mode: " ++ tunnelMode state
-  case tunnelMode state of
-    "smart" -> do
-      putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
-      putStrLn "Note: Smart cluster proxy is not yet fully implemented"
-      putStrLn "Falling back to pinned mode"
-      tunnClusterPinned state
-    "pinned" -> tunnClusterPinned state
-    _ -> do
-      printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
-      exitFailure
+  
+  -- Create cluster client
+  if useTLS state
+    then do
+      let connector = createTLSConnector state
+      clusterClient <- createClusterClientFromState state connector
+      case tunnelMode state of
+        "smart" -> do
+          putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
+          serveSmartProxy clusterClient connector
+        "pinned" -> do
+          putStrLn "Pinned mode: Creating one listener per cluster node"
+          servePinnedProxy clusterClient connector
+        _ -> do
+          printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
+          exitFailure
+    else do
+      let connector = createPlaintextConnector state
+      clusterClient <- createClusterClientFromState state connector
+      case tunnelMode state of
+        "smart" -> do
+          putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
+          putStrLn "Note: TLS is recommended for production use"
+          serveSmartProxy clusterClient connector
+        "pinned" -> do
+          putStrLn "Pinned mode: Creating one listener per cluster node"
+          putStrLn "Note: TLS is recommended for production use"
+          servePinnedProxy clusterClient connector
+        _ -> do
+          printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
+          exitFailure
 
 tunnClusterPinned :: RunState -> IO ()
 tunnClusterPinned state = do
   putStrLn "Pinned mode: Connection forwarding to seed node"
-  putStrLn "Note: This is a basic implementation for Phase 3."
-  putStrLn "A full implementation would forward connections through the cluster client."
-  putStrLn "Future enhancement: Implement proper connection forwarding with cluster routing."
-  if useTLS state
-    then do
-      -- Note: For Phase 3, we demonstrate the structure but acknowledge
-      -- that full tunnel implementation requires more work
-      putStrLn "TLS tunnel to cluster not fully implemented."
-      putStrLn "Use standalone tunnel mode or wait for Phase 5 enhancements."
-    else do
-      putStrLn "Tunnel mode is only supported with TLS enabled\n"
-      exitFailure
+  putStrLn "Note: This function is deprecated. Use tunnCluster instead."
+  tunnCluster state
 
 fill :: RunState -> IO ()
 fill state = do
@@ -298,7 +338,7 @@ fillCluster state = do
     -- Load slot mappings from file
     putStrLn "Loading slot-to-hashtag mappings..."
     slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
-    printf "Loaded %d slot mappings\n" (Map.size slotMappings)
+    printf "Loaded %d slot mappings\n" (V.length slotMappings)
 
     -- Get base seed for randomness
     baseSeed <- randomIO :: IO Word64

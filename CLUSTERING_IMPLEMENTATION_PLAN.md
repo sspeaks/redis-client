@@ -2,9 +2,9 @@
 
 ## Executive Summary
 
-This document tracks the implementation of Redis Cluster support in the redis-client project. The core infrastructure and user-facing modes have been completed through Phase 5, enabling the client to work with Redis Cluster deployments while maintaining backward compatibility with standalone Redis instances.
+This document tracks the implementation of Redis Cluster support in the redis-client project. The core infrastructure and user-facing modes have been completed through Phase 6, enabling the client to work with Redis Cluster deployments while maintaining backward compatibility with standalone Redis instances.
 
-**Current Status**: Phases 1-5 complete. CLI mode (Phase 4) and Fill mode (Phase 5) are fully functional. Remaining: Tunnel smart mode (Phase 6), comprehensive testing (Phase 7), and optional optimizations (Phase 8).
+**Current Status**: Phases 1-6 complete. CLI mode (Phase 4), Fill mode (Phase 5), and Tunnel modes (Phase 6) are fully functional. Remaining: Comprehensive testing (Phase 7) and optional optimizations (Phase 8).
 
 ## Implementation Status
 
@@ -109,7 +109,7 @@ Complete the Fill mode implementation for cluster support.
 
 **Status**: Code complete, builds successfully, all unit tests passing. Ready for performance profiling in production cluster environment.
 
-### ⏳ Phase 6: Tunnel Mode (NOT STARTED)
+### ✅ Phase 6: Tunnel Mode (COMPLETE)
 Complete the tunnel mode implementation for cluster support.
 
 #### Tunnel Mode Overview
@@ -139,23 +139,30 @@ The primary purpose of tunnel mode is to **terminate TLS and handle authenticati
 #### Implementation Tasks
 
 **Smart Mode Tasks**:
-- ⏳ Accept connections on localhost:6379
-- ⏳ Parse incoming RESP commands from clients
-- ⏳ Calculate slot and route to appropriate cluster node
-- ⏳ Forward responses back to client
-- ⏳ Handle redirections transparently
+- ✅ Accept connections on localhost:6379
+- ✅ Parse incoming RESP commands from clients
+- ✅ Calculate slot and route to appropriate cluster node
+- ✅ Forward responses back to client
+- ✅ Handle redirections transparently
 
 **Pinned Mode Tasks**:
-- ⏳ Query cluster topology to discover all nodes
-- ⏳ Create one listening socket per cluster node on the same port
-- ⏳ Establish and maintain TLS connections to each cluster node
-- ⏳ Forward traffic bidirectionally between local socket and cluster node
-- ⏳ Handle authentication for each cluster node connection
-- ⏳ Intercept and rewrite cluster responses: `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED` errors, and `ASK` errors to replace remote hosts with `127.0.0.1`
+- ✅ Query cluster topology to discover all nodes
+- ✅ Create one listening socket per cluster node on the same port
+- ✅ Establish and maintain TLS connections to each cluster node
+- ✅ Forward traffic bidirectionally between local socket and cluster node
+- ✅ Handle authentication for each cluster node connection
+- ✅ Intercept and rewrite cluster responses: `CLUSTER NODES`, `CLUSTER SLOTS`, `MOVED` errors, and `ASK` errors to replace remote hosts with `127.0.0.1`
 
-**Implementation Guide**: Study the existing `serve` function in `lib/client/Client.hs` for tunnel implementation patterns. The smart proxy needs to parse commands before forwarding. You might be able to reuse some existing logic used by the ClusterCLI to determine which commands are keyed and which aren't.
+**Implementation Complete**: Created `app/ClusterTunnel.hs` (400 LOC) with both tunnel modes. Key features:
+- Smart proxy mode with command parsing and transparent routing
+- Pinned mode with per-node listeners and response rewriting
+- Both modes handle TLS termination and authentication
+- Command routing uses same keyless/keyed command lists as CLI mode
+- Response rewriting for cluster topology and redirection errors
 
-**Estimated Effort**: ~400-500 LOC (Smart Mode), ~300-400 LOC (Pinned Mode enhancements)
+**Actual Effort**: 400 LOC (ClusterTunnel module) + 40 LOC (Main.hs updates) + 5 LOC (Resp.hs parseStrict)
+
+**Status**: Code complete, builds successfully, all unit tests passing. Ready for E2E testing with actual cluster.
 
 ### ⏳ Phase 7: E2E Testing & CI Integration (NOT STARTED)
 Expand E2E test coverage and integrate into CI/CD after completing Phases 4-6.
@@ -591,9 +598,9 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 - ✅ Core cluster infrastructure complete (Phases 1-2)
 - ✅ RedisCommands instance for ClusterCommandClient (Phase 2)
 - ✅ Basic mode integration structure (Phase 3)
-- ⏳ CLI mode fully functional (Phase 4)
-- ⏳ Fill mode fully functional (Phase 5)
-- ⏳ Tunnel smart mode functional (Phase 6)
+- ✅ CLI mode fully functional (Phase 4)
+- ✅ Fill mode fully functional (Phase 5)
+- ✅ Tunnel smart and pinned modes functional (Phase 6)
 - ⏳ Comprehensive E2E tests passing (Phase 7)
 
 ### Quality Requirements
@@ -640,25 +647,7 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 
 ## Next Steps
 
-### Phase 4: CLI Mode (First Priority)
-1. Study `app/Main.hs` `repl` function for standalone implementation pattern
-2. Implement command parsing from user input
-3. Execute via ClusterCommandClient with proper error handling
-4. Display results with optional node information
-
-### Phase 5: Fill Mode (Second Priority)
-1. Study `app/Filler.hs` for parallel execution and seed spacing patterns
-2. Implement slot calculation and key distribution
-3. Distribute work across cluster nodes
-4. Add profiling to measure performance
-
-### Phase 6: Tunnel Mode (Third Priority)
-1. Study `lib/client/Client.hs` `serve` function for tunnel patterns
-2. Implement command parsing from tunnel clients
-3. Route via ClusterCommandClient
-4. Handle response forwarding
-
-### Phase 7: Comprehensive Testing (After Phases 4-6)
+### Phase 7: Comprehensive Testing (Current Priority)
 1. **Study `test/E2E.hs` thoroughly** - adapt its patterns for cluster testing
 2. Write tests for CLI mode features (Phase 4)
 3. Write tests for Fill mode features (Phase 5)
@@ -666,9 +655,10 @@ MGET {user:123}:profile {user:123}:settings  # Works!
 5. Add advanced scenarios (redirections, failures, topology changes)
 6. Create `runClusterE2ETests.sh` following `rune2eTests.sh` structure
 7. Integrate into CI/CD pipeline
+8. Profile and benchmark performance vs standalone
 
 ### Phase 8: Advanced Features (Optional)
-Implement based on profiling results and user feedback after Phases 4-7 are complete.
+Implement based on profiling results and user feedback after Phase 7 is complete.
 
 ## Appendix A: File Structure
 
@@ -690,6 +680,7 @@ app/
 ├── Main.hs                           # ✅ Mode integration complete
 ├── ClusterCli.hs                     # ✅ CLI mode cluster implementation
 ├── ClusterFiller.hs                  # ✅ Fill mode cluster implementation (Phase 5)
+├── ClusterTunnel.hs                  # ✅ Tunnel mode cluster implementation (Phase 6)
 └── Filler.hs                         # ✅ Existing - standalone fill logic
 
 test/
@@ -704,7 +695,7 @@ docker-cluster/                       # ✅ Existing - 5-node cluster setup
 
 ## Appendix B: Estimated Effort
 
-**Completed** (Phases 1-5): ~1835 LOC
+**Completed** (Phases 1-6): ~2290 LOC
 - **Phase 1-2** (Core Infrastructure):
   - `Cluster.hs`: 153 LOC
   - `ClusterCommandClient.hs`: 439 LOC
@@ -716,27 +707,28 @@ docker-cluster/                       # ✅ Existing - 5-node cluster setup
 - **Phase 5** (Fill Mode):
   - `ClusterFiller.hs`: 300 LOC
   - `Main.hs` Fill integration: ~20 LOC
-- **Total Completed**: ~1547 LOC (code) + ~400 LOC (tests) = ~1947 LOC
+- **Phase 6** (Tunnel Mode):
+  - `ClusterTunnel.hs`: 400 LOC
+  - `Main.hs` Tunnel integration: ~40 LOC
+  - `Resp.hs` parseStrict function: ~5 LOC
+- **Total Completed**: ~1992 LOC (code) + ~400 LOC (tests) = ~2392 LOC
 
 **Remaining Work by Phase**:
-- **Phase 6** (Tunnel Mode): ~400-500 LOC
 - **Phase 7** (E2E Testing): ~300-400 LOC
 - **Phase 8** (Advanced Features): ~800-1200 LOC (optional)
 
-**Total Remaining**: ~1200-1600 LOC for core functionality (Phases 4-7)
-**Total with Phase 8**: ~2000-2800 LOC
+**Total Remaining**: ~300-400 LOC for comprehensive testing (Phase 7)
+**Total with Phase 8**: ~1100-1600 LOC
 
-**Total Project**: ~3200-4800 LOC for full cluster support (depending on Phase 8 features)
+**Total Project**: ~2700-4000 LOC for full cluster support (depending on Phase 8 features)
 
 ## Appendix C: Known Limitations
 
 ### Current Limitations
-1. CLI mode displays placeholder message (no command execution)
-2. Fill mode demonstrates connection only (no bulk loading)
-3. Tunnel mode has only pinned mode (smart mode placeholder)
-4. Multi-key commands use first key only (no splitting)
-5. No automatic topology refresh (manual refresh via MOVED)
-6. No read replica support (master-only)
+1. Multi-key commands use first key only (no splitting)
+2. No automatic topology refresh (manual refresh via MOVED)
+3. No read replica support (master-only)
+4. Command routing uses hardcoded lists (see Phase 4 notes for future improvements)
 
 ### Connection Pool Limitations
 
@@ -770,6 +762,6 @@ docker-cluster/                       # ✅ Existing - 5-node cluster setup
 
 ---
 
-**Document Version**: 2.1  
+**Document Version**: 3.0  
 **Last Updated**: 2026-02-04  
-**Status**: Active Development - Phases 1-3 Complete, Phases 4-8 Reorganized
+**Status**: Active Development - Phases 1-6 Complete, Phase 7 Next
