@@ -3,18 +3,106 @@
 ## Current Status
 
 **Completed**: Phases 1-6 (Core infrastructure, CLI mode, Fill mode, Tunnel mode)  
-**Next Priority**: Phase 7 - E2E Testing for Fill Mode  
-**Document Version**: 4.0  
+**Next Priority**: Phase 7 - Code Refactoring & Housecleaning  
+**Document Version**: 4.1  
 **Last Updated**: 2026-02-04
 
 ---
 
 ## What's Next? 
 
-### 🎯 Phase 7: E2E Testing - Fill Mode (READY TO START)
+### 🎯 Phase 7: Code Refactoring & Housecleaning (READY TO START)
 
 **Priority**: HIGH  
-**Prerequisites**: None (Phase 5 complete)  
+**Prerequisites**: None (Phases 1-6 complete)  
+**Estimated Effort**: ~50-150 LOC changes
+
+#### Goal
+Clean up and refactor existing cluster code for better maintainability, consistency, and readability.
+
+#### Scope
+- Remove dead code or unused imports
+- Standardize error handling patterns across modules
+- Consolidate duplicate code patterns
+- Improve code documentation and comments where needed
+- Ensure consistent naming conventions
+- Clean up any TODO or FIXME comments (address or document them)
+- Format code consistently
+
+#### Key Files to Review
+- `lib/cluster/Cluster.hs` - Core topology management
+- `lib/cluster/ClusterCommandClient.hs` - Command client implementation
+- `lib/cluster/ConnectionPool.hs` - Connection pool
+- `app/ClusterCli.hs` - CLI mode
+- `app/ClusterFiller.hs` - Fill mode
+- `app/ClusterTunnel.hs` - Tunnel mode
+
+#### Implementation Notes
+- Focus on improving code quality without changing functionality
+- Run all tests after refactoring to ensure no regressions
+- Use automated formatting tools where available
+- Document any design decisions or trade-offs
+- Keep changes small and focused
+
+#### Success Criteria
+- All existing tests continue to pass
+- Code follows consistent style and conventions
+- No unused imports or dead code
+- Improved code documentation
+
+---
+
+### Phase 8: Connection Pool Usage Audit
+
+**Priority**: HIGH  
+**Prerequisites**: Phase 7 complete  
+**Estimated Effort**: ~50-100 LOC investigation + potential fixes
+
+#### Goal
+Audit codebase to identify places where code creates connections directly using connectors instead of using the ConnectionPool, and migrate to use the pool consistently.
+
+#### Context
+**Current Issue**: Code in multiple places bypasses the ConnectionPool and creates connections directly using connectors. This defeats the purpose of having a connection pool and may lead to connection proliferation and resource leaks.
+
+**Known Cases**:
+- `app/ClusterFiller.hs` - Creates dedicated connections per thread (line ~167)
+- `app/ClusterTunnel.hs` - Creates connections for pinned listeners
+- Potentially other locations
+
+#### Scope
+- Audit all cluster-related code for direct connector usage
+- Identify which uses are necessary vs which should use the pool
+- Document why certain direct uses are acceptable (e.g., long-lived tunnel connections)
+- Migrate code to use ConnectionPool where appropriate
+- Add comments explaining why direct connector usage is needed where it remains
+
+#### Key Files to Audit
+- `app/ClusterFiller.hs` - Known to bypass pool
+- `app/ClusterTunnel.hs` - Known to create direct connections
+- `app/ClusterCli.hs` - Verify pool usage
+- `lib/cluster/ClusterCommandClient.hs` - Should use pool properly
+- Search codebase for `connector` usage patterns
+
+#### Implementation Notes
+- Use grep/ripgrep to find all connector usage: `grep -r "connector" --include="*.hs"`
+- Categorize uses as: (1) Already using pool, (2) Should use pool, (3) Legitimately direct
+- For category (2), refactor to use `getOrCreateConnection` from ConnectionPool
+- For category (3), add documentation explaining why
+- Consider if ConnectionPool needs enhancements to support all use cases
+
+#### Success Criteria
+- Complete audit of connector usage documented
+- Code uses ConnectionPool consistently where appropriate
+- Direct connector usage is documented with justification
+- All tests pass after migrations
+- Identify if ConnectionPool needs enhancement (informs Phase 14)
+
+---
+
+### Phase 9: E2E Testing - Fill Mode
+
+**Priority**: HIGH  
+**Prerequisites**: Phase 8 complete  
 **Estimated Effort**: ~100-150 LOC
 
 #### Goal
@@ -51,9 +139,9 @@ Create comprehensive E2E tests for cluster fill mode to verify data distribution
 
 ## Remaining Phases (Priority Order)
 
-### Phase 8: E2E Testing - CLI Mode
+### Phase 10: E2E Testing - CLI Mode
 **Status**: NOT STARTED  
-**Prerequisites**: Phase 7 complete  
+**Prerequisites**: Phase 9 complete  
 **Estimated Effort**: ~100-150 LOC
 
 #### Goal
@@ -74,9 +162,9 @@ Create comprehensive E2E tests for cluster CLI mode interactive command executio
 
 ---
 
-### Phase 9: E2E Testing - Tunnel Mode
+### Phase 11: E2E Testing - Tunnel Mode
 **Status**: NOT STARTED  
-**Prerequisites**: Phase 8 complete  
+**Prerequisites**: Phase 10 complete  
 **Estimated Effort**: ~100-150 LOC
 
 #### Goal
@@ -103,9 +191,9 @@ Create comprehensive E2E tests for both tunnel modes (smart and pinned).
 
 ---
 
-### Phase 10: E2E Testing - Advanced Scenarios
+### Phase 12: E2E Testing - Advanced Scenarios
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 7-9 complete  
+**Prerequisites**: Phases 9-11 complete  
 **Estimated Effort**: ~100-150 LOC
 
 #### Goal
@@ -124,13 +212,13 @@ Test edge cases, failure scenarios, and cluster-specific behaviors.
 - Use docker pause/unpause for node failures
 - Test topology refresh on MOVED errors
 - Verify retry logic and exponential backoff
-- Note: Tests existing connection pool (one connection per node); enhanced pool (Phase 12) is optional future work
+- Note: Tests existing connection pool (one connection per node); enhanced pool (Phase 14) is optional future work
 
 ---
 
-### Phase 11: Performance Benchmarking & Profiling
+### Phase 13: Performance Benchmarking & Profiling
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 7-10 complete  
+**Prerequisites**: Phases 9-12 complete  
 **Estimated Effort**: ~50-100 LOC + profiling time
 
 #### Goal
@@ -142,7 +230,7 @@ Establish performance baselines and compare cluster vs standalone.
 - Profile current connection pool contention (single connection per node)
 - Measure memory usage (various cluster sizes)
 - Document performance characteristics
-- Determine if connection pool enhancement (Phase 12) is needed
+- Determine if connection pool enhancement (Phase 14) is needed
 
 #### Implementation Notes
 - Use `cabal run --enable-profiling -- {flags}` with `-p` RTS flag
@@ -150,7 +238,7 @@ Establish performance baselines and compare cluster vs standalone.
 - Test with various data sizes (1GB, 5GB, 10GB)
 - Test with various thread counts
 - Document results in README or separate PERFORMANCE.md
-- Profiling results inform whether Phase 12 enhancement is necessary
+- Profiling results inform whether Phase 14 enhancement is necessary
 
 #### Success Criteria
 - Cluster mode adds <10% latency overhead
@@ -160,9 +248,9 @@ Establish performance baselines and compare cluster vs standalone.
 
 ---
 
-### Phase 12: Connection Pool Enhancement
+### Phase 14: Connection Pool Enhancement
 **Status**: NOT STARTED  
-**Prerequisites**: Phase 11 complete (profiling may reveal need)  
+**Prerequisites**: Phase 13 complete (profiling may reveal need)  
 **Estimated Effort**: ~150-200 LOC
 
 #### Goal
@@ -194,7 +282,7 @@ Enhance connection pool to support multiple connections per node and eliminate d
 
 ---
 
-### Phase 13: Command Routing Enhancement
+### Phase 15: Command Routing Enhancement
 **Status**: NOT STARTED  
 **Prerequisites**: None (can be done independently)  
 **Estimated Effort**: ~200-300 LOC
@@ -245,7 +333,7 @@ Alternative approaches considered but not recommended:
 
 ---
 
-### Phase 14: Azure Script Cluster Support
+### Phase 16: Azure Script Cluster Support
 **Status**: NOT STARTED  
 **Prerequisites**: None (can be done independently)  
 **Estimated Effort**: ~100-150 LOC
@@ -283,9 +371,9 @@ The script currently only supports standalone Azure Redis caches. Azure Redis En
 
 ---
 
-### Phase 15: Multi-Key Command Splitting (Optional)
+### Phase 17: Multi-Key Command Splitting (Optional)
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 7-11 complete  
+**Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~200-300 LOC
 
 #### Goal
@@ -313,9 +401,9 @@ Enable MGET/MSET commands to work across multiple slots by splitting and reassem
 
 ---
 
-### Phase 16: Enhanced Error Messages (Optional)
+### Phase 18: Enhanced Error Messages (Optional)
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 7-11 complete  
+**Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~100-150 LOC
 
 #### Goal
@@ -343,9 +431,9 @@ Suggestion: Use hash tags like {user:123}:profile
 
 ---
 
-### Phase 17: Pipelining Optimization (Optional)
+### Phase 19: Pipelining Optimization (Optional)
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 7-11 complete  
+**Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~300-400 LOC
 
 #### Goal
@@ -366,9 +454,9 @@ Optimize command execution by grouping commands by target node.
 
 ---
 
-### Phase 18: Read Replica Support (Optional)
+### Phase 20: Read Replica Support (Optional)
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 7-11 complete  
+**Prerequisites**: Phases 9-13 complete  
 **Estimated Effort**: ~200-300 LOC
 
 #### Goal
@@ -523,12 +611,12 @@ test/
 
 ### E2E Tests (Partial)
 - `test/ClusterE2E.hs` - Basic topology and command tests
-- More comprehensive tests needed (Phases 7-10)
+- More comprehensive tests needed (Phases 9-13)
 
 ### Test Environment
 - Docker cluster setup: `docker-cluster/` (5 nodes, ports 6379-6383)
 - Test script: `runClusterE2ETests.sh`
-- CI integration: Needed (Phase 10)
+- CI integration: Needed (Phase 12)
 
 ---
 
@@ -635,8 +723,10 @@ MGET {user:123}:profile {user:123}:settings  # Works across multi-key!
 - ✅ CLI mode fully functional (Phase 4)
 - ✅ Fill mode fully functional (Phase 5)
 - ✅ Tunnel modes functional (Phase 6)
-- ⏳ Comprehensive E2E tests (Phases 7-10)
-- ⏳ Performance benchmarks (Phase 11)
+- ⏳ Code refactoring and housecleaning (Phase 7)
+- ⏳ Connection pool usage audit (Phase 8)
+- ⏳ Comprehensive E2E tests (Phases 9-13)
+- ⏳ Performance benchmarks (Phase 13)
 
 ### Quality Requirements
 - ✅ Unit test coverage >80% for cluster modules
@@ -645,7 +735,7 @@ MGET {user:123}:profile {user:123}:settings  # Works across multi-key!
 - ✅ Zero breaking changes for standalone users
 - ✅ Documentation complete
 
-### Performance Requirements (to be validated in Phase 11)
+### Performance Requirements (to be validated in Phase 13)
 - ⏳ Cluster mode adds <10% latency overhead
 - ⏳ Fill mode near-linear speedup with cluster size
 - ✅ Memory overhead <10MB (3-10 node clusters)
@@ -667,7 +757,7 @@ MGET {user:123}:profile {user:123}:settings  # Works across multi-key!
 - Test with docker-cluster setup (5 nodes)
 - Don't reinvent the wheel - adapt proven patterns
 
-### Profiling Guidance (Phase 11)
+### Profiling Guidance (Phase 13)
 - Use `cabal run --enable-profiling -- {flags}` with `-p` RTS flag
 - Profile BEFORE and AFTER changes
 - Compare profiles to detect regressions
