@@ -13,13 +13,11 @@ import           Cluster                    (ClusterNode (..), ClusterTopology (
                                              NodeAddress (..), NodeRole (..),
                                              SlotRange (..))
 import           ClusterCommandClient       (ClusterClient (..))
-import qualified ConnectionPool
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
                                              putMVar, takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (SomeException, catch)
 import           Control.Monad              (when)
-import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State        as State
 import           Data.Bits                  (shiftR)
 import qualified Data.ByteString            as BS
@@ -36,9 +34,7 @@ import           Filler                     (lookupChunkKilos)
 import           RedisCommandClient         (ClientReplyValues (..),
                                              ClientState (..),
                                              RedisCommands (..),
-                                             parseWith,
                                              runRedisCommandClient)
-import qualified Resp
 import           System.IO                  (IOMode (..), hGetContents,
                                              openFile)
 import           System.Timeout             (timeout)
@@ -163,8 +159,9 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
           printf "Thread %d filling %dMB on node %s:%d\n" 
                  threadIdx mbToFill (nodeHost addr) (nodePort addr)
           
-          -- Get connection to this specific node
-          conn <- ConnectionPool.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
+          -- Create a unique connection for this thread using connector directly
+          -- This avoids connection pool contention where threads share connections
+          conn <- connector addr
           
           -- Find which slots this node owns
           topology <- readTVarIO (clusterTopology clusterClient)
@@ -224,46 +221,27 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
     -- Client state for running commands
     let clientState = ClientState conn BS.empty
         fillAction = do
-          -- TEMPORARILY DISABLED: Turn off client replies for maximum throughput
-          -- Keeping replies ON to diagnose any errors from Redis
-          -- clientReply OFF
+          -- Turn off client replies for maximum throughput (fire-and-forget)
+          clientReply OFF
           
           -- Calculate chunks needed
           let totalKilos = mbToFill * 1024
               totalChunks = (totalKilos + chunkKilos - 1) `div` chunkKilos
           
-          -- Generate and send data chunks WITH replies to catch errors
-          -- This is slower but helps diagnose issues
-          responses <- mapM (\chunkIdx -> do
+          -- Generate and send data chunks (no replies expected)
+          mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
               let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
               send client cmd
-              -- Parse response to catch any errors
-              resp <- parseWith (receive client)
-              return (chunkIdx, resp)
-            ) [0..min 10 (totalChunks - 1)]  -- Only check first 10 chunks for diagnostics
+            ) [0..totalChunks - 1]
           
-          -- Log any error responses
-          liftIO $ mapM_ (\(idx, resp) -> 
-              case resp of
-                Resp.RespError err -> printf "Thread %d chunk %d got error: %s\n" threadIdx idx err
-                Resp.RespSimpleString "OK" -> return ()
-                other -> printf "Thread %d chunk %d got unexpected response: %s\n" threadIdx idx (show other)
-            ) responses
-          
-          -- Continue with remaining chunks if we got past the first 10
-          when (totalChunks > 10) $ do
-            mapM_ (\chunkIdx -> do
-                ClientState client _ <- State.get
-                let cmd = generateClusterChunk slotMappings slots chunkKilos (threadSeed + fromIntegral chunkIdx)
-                send client cmd
-                _ <- parseWith (receive client)  -- Still parse but don't log
-                return ()
-              ) [10..totalChunks - 1]
-          
-          -- Verify with DBSIZE
-          _ <- dbsize
-          return ()
+          -- Turn replies back on
+          val <- clientReply ON
+          case val of
+            Just _ -> do
+              _ <- dbsize
+              return ()
+            Nothing -> error "clientReply returned an unexpected value"
     
     -- Run the fill action with a 10 minute timeout (600 seconds)
     -- This is generous but prevents indefinite hangs
