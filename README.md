@@ -54,7 +54,7 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 - `-t`, `--tls` - Use TLS connection
 - `-c`, `--cluster` - Redis Cluster mode
 - `-d`, `--data GBs` - Amount of random data to fill (in GB)
-- `-f`, `--flush` - Flush database before filling
+- `-f`, `--flush` - Flush database before filling (recommended for local Docker Redis to prevent memory buildup)
 - `-s`, `--serial` - Serial mode (no concurrency)
 - `-n`, `--connections NUM` - Parallel connections (default: 2)
 - `--tunnel-mode MODE` - Tunnel mode: 'smart' or 'pinned' (default: 'smart')
@@ -152,8 +152,6 @@ rm -f *.hp *.prof *.ps *.aux *.stat
 **Profiling tools:**
 - `hp2ps -e18in -c redis-client.hp` - Convert heap profile to PostScript
 - [Speedscope](https://www.speedscope.app/) - Interactive flamegraph viewer
-
-**Note:** When filling a local Docker Redis instance, always use the `-f` flag to flush existing data first. This prevents memory issues that can occur when the Redis container accumulates too much data from multiple test runs.
 
 ## Project Structure
 
