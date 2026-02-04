@@ -54,14 +54,14 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 - `-t`, `--tls` - Use TLS connection
 - `-c`, `--cluster` - Redis Cluster mode
 - `-d`, `--data GBs` - Amount of random data to fill (in GB)
-- `-f`, `--flush` - Flush database before filling (recommended for local Docker Redis to prevent memory buildup)
+- `-f`, `--flush` - Flush database before filling (deletes all data; use only in testing)
 - `-s`, `--serial` - Serial mode (no concurrency)
 - `-n`, `--connections NUM` - Parallel connections (default: 2)
 - `--tunnel-mode MODE` - Tunnel mode: 'smart' or 'pinned' (default: 'smart')
 
 ### Environment Variables
 
-- `REDIS_CLIENT_FILL_CHUNK_KB` - Chunk size in kilobytes for fill operations (default: 8192 KB, range: 1024-8192 KB)
+- `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory.
 
 ## Azure Redis Integration
 
