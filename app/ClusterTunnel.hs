@@ -307,18 +307,14 @@ forwardPinnedConnection clientSock redisConn addr = do
               hFlush stdout
               
               -- Rewrite cluster responses
-              let rewritten = rewriteClusterResponse response
-              if rewritten /= response
-                then do
-                  printf "[Pinned %s:%d] [Req %d] Response rewritten (original: %d bytes, rewritten: %d bytes)\n" 
-                    (nodeHost addr) (nodePort addr) reqNum (BS.length response) (BS.length rewritten)
-                  hFlush stdout
-                else do
-                  printf "[Pinned %s:%d] [Req %d] Response not rewritten\n" (nodeHost addr) (nodePort addr) reqNum
-                  hFlush stdout
+              -- NOTE: In pinned mode, we don't rewrite topology responses
+              -- The client should see the actual cluster topology and handle it
+              -- Each pinned tunnel maps to one node, client manages cluster routing
+              let rewritten = response  -- Pass through as-is
               
               -- Send back to client
-              printf "[Pinned %s:%d] [Req %d] Sending response back to client...\n" (nodeHost addr) (nodePort addr) reqNum
+              printf "[Pinned %s:%d] [Req %d] Sending response back to client (%d bytes, not rewritten)...\n" 
+                (nodeHost addr) (nodePort addr) reqNum (BS.length response)
               hFlush stdout
               sendAll clientSock rewritten
               printf "[Pinned %s:%d] [Req %d] Response sent to client\n" (nodeHost addr) (nodePort addr) reqNum
