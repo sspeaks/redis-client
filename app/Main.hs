@@ -8,6 +8,7 @@ import           Client                     (Client (receive, send, connect),
                                              PlainTextClient (..),
                                              ConnectionStatus (..))
 import           Cluster                    (NodeAddress (..))
+import           ClusterCli                 (executeCommandInCluster)
 import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
                                              ClusterCommandClient,
                                              createClusterClient,
@@ -21,7 +22,7 @@ import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Lazy.Char8 as BS
+import qualified Data.ByteString.Lazy.Char8 as BSC
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
@@ -312,7 +313,7 @@ repl isTTY = do
         Just cmd -> do
           when isTTY $ liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
-            (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS.pack)) . words $ cmd
+            (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BSC.pack)) . words $ cmd
             response <- parseWith (receive client)
             liftIO $ print response
             loop client
@@ -335,12 +336,7 @@ replCluster isTTY = loop
         Just cmd -> do
           when isTTY $ liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
-            -- Note: This is a basic implementation for Phase 3
-            -- A full implementation would parse RESP commands and route them properly
-            -- For now, we acknowledge the limitation
-            liftIO $ putStrLn $ "Note: Cluster CLI command execution is a placeholder."
-            liftIO $ putStrLn $ "For full cluster CLI support, use redis-cli."
-            liftIO $ putStrLn $ "Future enhancement: Parse and execute RESP commands via cluster client."
+            executeCommandInCluster cmd
             loop
     readCommand
       | isTTY = readline "> "

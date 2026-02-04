@@ -32,18 +32,60 @@ This document tracks the implementation of Redis Cluster support in the redis-cl
   - **Limitation**: Smart proxy mode not yet implemented
   - **Next Step**: Implement smart routing in tunnel mode
 
-### ⏳ Phase 4: CLI Mode (NOT STARTED)
+### ✅ Phase 4: CLI Mode (COMPLETE)
 Complete the CLI mode implementation for cluster support.
 
-- ⏳ Parse user input into RESP commands
-- ⏳ Execute commands via `ClusterCommandClient`
-- ⏳ Display responses with formatting
-- ⏳ Handle CROSSSLOT errors with helpful messages
-- ⏳ Show node information in debug mode
+- ✅ Parse user input into RESP commands
+- ✅ Execute commands via `ClusterCommandClient`
+- ✅ Display responses with formatting
+- ✅ Handle CROSSSLOT errors with helpful messages
+- ⏳ Show node information in debug mode (optional enhancement)
 
 **Implementation Guide**: Study `app/Main.hs` `repl` function (lines 303-325) for the standalone implementation pattern. The cluster version should follow the same structure but route through `ClusterCommandClient`.
 
-**Estimated Effort**: ~200-300 LOC
+**Current Command Routing Strategy**: 
+The implementation uses explicit command lists to determine routing:
+- **Keyless commands**: Defined in `keylessCommands` list - routed to any master node
+  - Examples: PING, INFO, CLUSTER, FLUSHALL, CONFIG, etc.
+- **Keyed commands**: Defined in `requiresKeyCommands` list - routed by key's hash slot
+  - Examples: GET, SET, HGET, LPUSH, ZADD, etc.
+- **Unknown commands**: If not in either list and has arguments, treated as keyed command
+
+**Limitations of Current Approach**:
+- **Issue**: Lists must be manually maintained as Redis evolves with new commands
+- **Issue**: Unknown commands may route incorrectly if they don't follow standard patterns
+- **Issue**: Multi-key commands with varying key positions are handled by routing to first key's slot
+
+**Future Work - Command Routing Improvements (Post Phase 4)**:
+
+Several approaches could eliminate the hardcoded command lists:
+
+1. **Parse Redis Command Metadata** (Recommended)
+   - Redis publishes command metadata via `COMMAND` and `COMMAND DOCS`
+   - Could fetch this at startup and build routing tables dynamically
+   - Would always be up-to-date with the connected Redis version
+   - Estimated effort: ~200-300 LOC
+
+2. **Heuristic-based Routing with Fallback**
+   - Try routing by key slot, fall back to keyless on specific errors
+   - Simple but may cause unnecessary round-trips
+   - Estimated effort: ~100-150 LOC
+
+3. **Parse Redis Command JSON Spec**
+   - Redis repo contains JSON spec of all commands
+   - Could be embedded at build time or loaded from file
+   - Always accurate but requires keeping spec file updated
+   - Estimated effort: ~150-200 LOC
+
+4. **Hybrid Approach**
+   - Keep minimal list of most common commands
+   - Use `COMMAND` metadata for unknown commands
+   - Provides best balance of performance and maintenance
+   - Estimated effort: ~250-350 LOC
+
+**Recommendation**: Implement approach #1 (Parse Redis Command Metadata) in a future phase after completing Phases 5-7. This provides the most maintainable and accurate solution.
+
+**Estimated Effort**: ~200-300 LOC (current implementation complete), ~200-300 LOC for future enhancement
 
 ### ⏳ Phase 5: Fill Mode (NOT STARTED)
 Complete the Fill mode implementation for cluster support.
