@@ -232,12 +232,20 @@ createPinnedListener connector node = do
         redisConn <- connector addr
         
         -- Handle forwarding in a separate thread
-        void $ forkIO $ 
+        void $ forkIO $ do
+          result <- try $ forwardPinnedConnection clientSock redisConn addr
+          case result of
+            Left (e :: SomeException) -> do
+              printf "[Port %d] Forwarding error: %s\n" localPort (show e)
+              hFlush stdout
+            Right _ -> do
+              printf "[Port %d] Forwarding completed normally\n" localPort
+              hFlush stdout
           finally
-            (forwardPinnedConnection clientSock redisConn addr)
             (do
               S.close clientSock
               close redisConn)
+            (return ())
     
     case result of
       Left (e :: SomeException) -> do
@@ -255,25 +263,60 @@ forwardPinnedConnection :: (Client client) =>
   client 'Connected ->
   NodeAddress ->  -- Parameter kept for potential future use
   IO ()
-forwardPinnedConnection clientSock redisConn _addr = do
-  loop
+forwardPinnedConnection clientSock redisConn addr = do
+  printf "[Pinned %s:%d] Starting forwarding loop\n" (nodeHost addr) (nodePort addr)
+  hFlush stdout
+  loop 1
   where
-    loop = do
+    loop :: Int -> IO ()
+    loop reqNum = do
       -- Read command from client
+      printf "[Pinned %s:%d] [Req %d] Waiting for client data...\n" (nodeHost addr) (nodePort addr) reqNum
+      hFlush stdout
       dat <- recv clientSock 4096
       if BS.null dat
-        then return ()  -- Client disconnected
+        then do
+          printf "[Pinned %s:%d] [Req %d] Client disconnected (received empty data)\n" (nodeHost addr) (nodePort addr) reqNum
+          hFlush stdout
+          return ()  -- Client disconnected
         else do
+          printf "[Pinned %s:%d] [Req %d] Received %d bytes from client: %s\n" 
+            (nodeHost addr) (nodePort addr) reqNum (BS.length dat) (show $ BS.take 100 dat)
+          hFlush stdout
+          
           -- Forward to Redis
+          printf "[Pinned %s:%d] [Req %d] Forwarding to Redis...\n" (nodeHost addr) (nodePort addr) reqNum
+          hFlush stdout
           send redisConn (LB.fromStrict dat)
+          
           -- Receive response from Redis
+          printf "[Pinned %s:%d] [Req %d] Waiting for Redis response...\n" (nodeHost addr) (nodePort addr) reqNum
+          hFlush stdout
           response <- receive redisConn
+          printf "[Pinned %s:%d] [Req %d] Received %d bytes from Redis: %s\n" 
+            (nodeHost addr) (nodePort addr) reqNum (BS.length response) (show $ BS.take 100 response)
+          hFlush stdout
+          
           -- Rewrite cluster responses
           let rewritten = rewriteClusterResponse response
+          if rewritten /= response
+            then do
+              printf "[Pinned %s:%d] [Req %d] Response rewritten (original: %d bytes, rewritten: %d bytes)\n" 
+                (nodeHost addr) (nodePort addr) reqNum (BS.length response) (BS.length rewritten)
+              hFlush stdout
+            else do
+              printf "[Pinned %s:%d] [Req %d] Response not rewritten\n" (nodeHost addr) (nodePort addr) reqNum
+              hFlush stdout
+          
           -- Send back to client
+          printf "[Pinned %s:%d] [Req %d] Sending response back to client...\n" (nodeHost addr) (nodePort addr) reqNum
+          hFlush stdout
           sendAll clientSock rewritten
+          printf "[Pinned %s:%d] [Req %d] Response sent to client\n" (nodeHost addr) (nodePort addr) reqNum
+          hFlush stdout
+          
           -- Continue loop
-          loop
+          loop (reqNum + 1)
 
 -- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
 -- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses
