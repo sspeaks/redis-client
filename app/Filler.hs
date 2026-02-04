@@ -152,8 +152,7 @@ fillCacheWithDataCluster baseSeed threadIdx mb = do
   -- Generate and execute SET commands
   mapM_ (\cmdIdx -> do
       let keySeed = startSeed + fromIntegral cmdIdx
-          valSeed = keySeed * 6364136223846793005 + 1442695040888963407
-          -- Generate key and value as hex strings (printable and safe)
+          -- Generate key as hex string (printable and safe)
           keyStr = "cluster:" ++ show threadIdx ++ ":" ++ printf "%016x" keySeed
           valStr = replicate 512 'x' -- Simple value placeholder
       -- Use the RedisCommands interface which handles cluster routing
