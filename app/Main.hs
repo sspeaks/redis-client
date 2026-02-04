@@ -121,16 +121,34 @@ main = do
       when (mode == "fill") $ fill state
 
 -- | Create cluster connector for plaintext connections
+-- Connects and authenticates to each node
 createPlaintextConnector :: RunState -> (NodeAddress -> IO (PlainTextClient 'Connected))
-createPlaintextConnector _ addr = do
+createPlaintextConnector state addr = do
   let notConnected = NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
-  connect notConnected
+  client <- connect notConnected
+  -- Authenticate if password is provided
+  if null (password state)
+    then return client
+    else do
+      _ <- State.evalStateT 
+             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
+             (ClientState client BS.empty)
+      return client
 
 -- | Create cluster connector for TLS connections
+-- Connects and authenticates to each node
 createTLSConnector :: RunState -> (NodeAddress -> IO (TLSClient 'Connected))
-createTLSConnector _ addr = do
+createTLSConnector state addr = do
   let notConnected = NotConnectedTLSClient (nodeHost addr) (Just $ nodePort addr)
-  connect notConnected
+  client <- connect notConnected
+  -- Authenticate if password is provided
+  if null (password state)
+    then return client
+    else do
+      _ <- State.evalStateT 
+             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
+             (ClientState client BS.empty)
+      return client
 
 -- | Create a cluster client from RunState
 createClusterClientFromState :: (Client client) =>
