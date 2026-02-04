@@ -18,8 +18,3 @@ result
 __pycache__
 *.pyc
 *.pyo
-
-# Build artifacts
-*.hi
-*.o
-verify_mapping
