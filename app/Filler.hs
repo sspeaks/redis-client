@@ -132,15 +132,13 @@ fillCacheWithDataMB baseSeed threadIdx mb = do
 
 -- | Cluster-aware fill function that uses the RedisCommands interface
 -- This works with any monad that implements RedisCommands (including ClusterCommandClient)
+-- Note: Cannot use CLIENT REPLY OFF with RedisCommands interface as each command waits for response
 fillCacheWithDataCluster :: (RedisCommands m, MonadIO m) => Word64 -> Int -> Int -> m ()
 fillCacheWithDataCluster baseSeed threadIdx mb = do
   -- deterministic start seed for this thread based on the global baseSeed
   let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
   
   chunkKilos <- liftIO lookupChunkKilos
-  
-  -- Turn off client replies for performance (fire-and-forget)
-  clientReply OFF
   
   -- Calculate total commands needed
   let totalKilosNeeded = mb * 1024  -- Convert MB to KB
@@ -150,6 +148,7 @@ fillCacheWithDataCluster baseSeed threadIdx mb = do
   liftIO $ printf "Thread %d: Filling %d MB (%d commands)...\n" threadIdx mb totalCommands
   
   -- Generate and execute SET commands
+  -- Each command waits for response from cluster (cannot use fire-and-forget with RedisCommands)
   mapM_ (\cmdIdx -> do
       let keySeed = startSeed + fromIntegral cmdIdx
           -- Generate key as hex string (printable and safe)
@@ -160,11 +159,4 @@ fillCacheWithDataCluster baseSeed threadIdx mb = do
       return ()
     ) [0..totalCommands - 1]
   
-  -- Turn replies back on to confirm completion
-  val <- clientReply ON
-  case val of 
-    Just _ -> do
-      _ <- dbsize -- Consume the response
-      liftIO $ printf "Thread %d: Completed filling %d MB\n" threadIdx mb
-      return ()
-    Nothing -> liftIO $ error "clientReply returned an unexpected value"
+  liftIO $ printf "Thread %d: Completed filling %d MB\n" threadIdx mb

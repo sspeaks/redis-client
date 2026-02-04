@@ -17,6 +17,8 @@ module ClusterCommandClient
     runClusterCommandClient,
     executeClusterCommand,
     executeKeylessClusterCommand,
+    executeOnAllMasters,
+    getMasterNodeCount,
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)
@@ -242,7 +244,7 @@ executeOnNode client nodeAddr action connector = do
     Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
     Right value               -> return $ Right value
 
--- | Execute a keyless command on any available node (e.g., PING, AUTH, FLUSHALL)
+-- | Execute a keyless command on any available node (e.g., PING, AUTH)
 executeKeylessClusterCommand ::
   (Client client) =>
   ClusterClient client ->
@@ -256,6 +258,35 @@ executeKeylessClusterCommand client action connector = do
   case masterNodes of
     [] -> return $ Left $ TopologyError "No master nodes available"
     (node:_) -> executeOnNode client (nodeAddress node) action connector
+
+-- | Execute a command on all master nodes (e.g., FLUSHALL)
+executeOnAllMasters ::
+  (Client client) =>
+  ClusterClient client ->
+  RedisCommandClient client a ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  IO (Either ClusterError [a])
+executeOnAllMasters client action connector = do
+  topology <- readTVarIO (clusterTopology client)
+  let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  case masterNodes of
+    [] -> return $ Left $ TopologyError "No master nodes available"
+    nodes -> do
+      results <- mapM (\node -> executeOnNode client (nodeAddress node) action connector) nodes
+      -- Check if all succeeded
+      case sequence results of
+        Right values -> return $ Right values
+        Left err -> return $ Left err
+
+-- | Get the number of master nodes in the cluster
+getMasterNodeCount ::
+  (Client client) =>
+  ClusterClient client ->
+  IO Int
+getMasterNodeCount client = do
+  topology <- readTVarIO (clusterTopology client)
+  let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  return $ length masterNodes
 
 -- | Retry logic with exponential backoff
 withRetry ::

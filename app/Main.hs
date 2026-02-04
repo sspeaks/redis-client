@@ -16,6 +16,8 @@ import           ClusterCommandClient       (ClusterClient, ClusterConfig (..),
                                              closeClusterClient,
                                              executeClusterCommand,
                                              executeKeylessClusterCommand,
+                                             executeOnAllMasters,
+                                             getMasterNodeCount,
                                              runClusterCommandClient)
 import qualified ConnectionPool             as CP
 import           ConnectionPool             (PoolConfig (PoolConfig))
@@ -367,15 +369,21 @@ fillStandalone state = do
 fillCluster :: RunState -> IO ()
 fillCluster state = do
   when (flush state) $ do
-    printf "Flushing cluster cache (seed node: '%s')\n" (host state)
+    printf "Flushing cluster cache (all master nodes)\n"
     if useTLS state
       then do
         clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        runClusterCommandClient clusterClient (createTLSConnector state) (void flushAll)
+        result <- executeOnAllMasters clusterClient (void flushAll) (createTLSConnector state)
+        case result of
+          Right _ -> putStrLn "Successfully flushed all master nodes"
+          Left err -> putStrLn $ "Error flushing cluster: " ++ show err
         closeClusterClient clusterClient
       else do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        runClusterCommandClient clusterClient (createPlaintextConnector state) (void flushAll)
+        result <- executeOnAllMasters clusterClient (void flushAll) (createPlaintextConnector state)
+        case result of
+          Right _ -> putStrLn "Successfully flushed all master nodes"
+          Left err -> putStrLn $ "Error flushing cluster: " ++ show err
         closeClusterClient clusterClient
   
   when (dataGBs state > 0) $ do
@@ -397,15 +405,36 @@ fillCluster state = do
               fillCacheWithDataCluster baseSeed 0 (dataGBs state * 1024)
             closeClusterClient clusterClient
       else do
-        -- Use numConnections (defaults to 2 for cluster)
-        let nConns = maybe 2 id (numConnections state)
+        -- Get number of master nodes to calculate default connections (2 per node)
+        let defaultConns = if numConnections state == Just 2
+              then Nothing  -- User didn't specify, will calculate based on cluster size
+              else numConnections state
+        
+        -- Create temporary client to get cluster info
+        masterCount <- if useTLS state
+          then do
+            tempClient <- createClusterClientFromState state (createTLSConnector state)
+            count <- getMasterNodeCount tempClient
+            closeClusterClient tempClient
+            return count
+          else do
+            tempClient <- createClusterClientFromState state (createPlaintextConnector state)
+            count <- getMasterNodeCount tempClient
+            closeClusterClient tempClient
+            return count
+        
+        -- Default to 2 threads per master node
+        let nConns = maybe (masterCount * 2) id defaultConns
             totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
             baseMB = totalMB `div` nConns
             remainder = totalMB `mod` nConns
             -- Each connection gets (baseMB + 1) or baseMB MB
             -- Jobs: (connectionIdx, mbForThisConnection)
             jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
-        printf "Filling cluster cache '%s' with %dGB of data using %d parallel connections\n" (host state) (dataGBs state) (length jobs)
+        
+        printf "Filling cluster cache '%s' with %dGB of data using %d parallel connections (%d master nodes, %d threads per node)\n" 
+          (host state) (dataGBs state) (length jobs) masterCount (nConns `div` max 1 masterCount)
+        
         mvars <- mapM (\(idx, mb) -> do
             mv <- newEmptyMVar
             _ <- forkIO $ do
