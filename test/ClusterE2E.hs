@@ -3,13 +3,28 @@
 module Main where
 
 import Client (Client (..), PlainTextClient (NotConnectedPlainTextClient))
-import Cluster (NodeAddress (..), calculateSlot)
+import Cluster (NodeAddress (..), calculateSlot, ClusterTopology (..), ClusterNode (..), topologySlots, topologyNodes, nodeAddress)
 import ClusterCommandClient
 import ConnectionPool (PoolConfig (..))
-import Control.Exception (bracket)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.STM (readTVarIO)
+import Control.Exception (bracket, finally, handle, SomeException, IOException, try)
+import Control.Monad (void, when)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BSL
+import qualified Data.Map.Strict as Map
+import qualified Data.Vector as V
+import Data.Word (Word16, Word64)
+import Filler (fillCacheWithDataClusterPipelined, initRandomNoise)
 import Resp (RespData (..))
+import RedisCommandClient (RedisCommands (..))
+import System.Directory (findExecutable)
+import System.Environment (getExecutablePath)
+import System.FilePath (takeDirectory, (</>))
+import System.IO (BufferMode (LineBuffering), Handle, hSetBuffering, hGetLine, hIsEOF)
+import System.Process (CreateProcess (..), ProcessHandle, StdStream (CreatePipe), proc, 
+                       terminateProcess, withCreateProcess)
+import System.Timeout (timeout)
 import Test.Hspec
 
 -- | Create a cluster client for testing
@@ -179,3 +194,154 @@ main = hspec $ do
           case getResult of
             RespBulkString "value" -> return ()
             other -> expectationFailure $ "Unexpected GET response: " ++ show other
+    
+    describe "Cluster fill mode tests" $ do
+      it "tests fillCacheWithDataClusterPipelined completes successfully" $ do
+        -- Initialize random noise buffer
+        initRandomNoise
+        
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Get a connection to a specific node for a slot
+          topology <- readTVarIO (clusterTopology client)
+          let slot0NodeId = (topologySlots topology) V.! 0
+              nodesById = topologyNodes topology
+          
+          case Map.lookup slot0NodeId nodesById of
+            Just node -> do
+              let addr = nodeAddress node
+              -- Connect directly to the node owning slot 0
+              conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr))
+              
+              -- Fill 1MB of data for slot 0
+              let baseSeed = 12345 :: Word64
+                  threadIdx = 0
+                  mb = 1
+                  targetSlot = 0 :: Word16
+              
+              -- This should complete without throwing an exception
+              fillCacheWithDataClusterPipelined baseSeed threadIdx mb targetSlot conn
+              
+              -- Verify a key was written by using the cluster client
+              result <- runCmd client $ get "{slot0}:0000000000000000"
+              case result of
+                RespBulkString val -> val `shouldSatisfy` (not . BSL.null)
+                _ -> expectationFailure $ "Key was not found after fill"
+            Nothing -> expectationFailure "Could not find node for slot 0"
+      
+      it "verifies keys land on correct nodes using slot calculation" $ do
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Use a hash tag to force a specific slot
+          let testKey = "{user123}:profile"
+          
+          -- Calculate which slot this key should go to
+          slot <- calculateSlot (BS.pack testKey)
+          
+          -- Get the topology to find which node owns this slot
+          topology <- readTVarIO (clusterTopology client)
+          let nodeId = (topologySlots topology) V.! fromIntegral slot
+              nodesById = topologyNodes topology
+          
+          case Map.lookup nodeId nodesById of
+            Just node -> do
+              -- Write the key through the cluster client
+              result <- runCmd client $ set testKey "test-value"
+              result `shouldBe` RespSimpleString "OK"
+              
+              -- Verify by reading back through cluster client
+              getResult <- runCmd client $ get testKey
+              case getResult of
+                RespBulkString val | BSL.toStrict val == BS.pack "test-value" -> return ()
+                _ -> expectationFailure $ "Expected test-value, got: " ++ show getResult
+            Nothing -> expectationFailure $ "Could not find node for slot " ++ show slot
+    
+    describe "Cluster tunnel mode tests" $ do
+      it "tunnel proxies commands to cluster nodes" $ do
+        -- Get the redis-client executable path
+        exePath <- getExecutablePath
+        let redisClient = takeDirectory exePath </> "redis-client"
+        
+        -- Check if executable exists, otherwise try to find it
+        execExists <- findExecutable "redis-client"
+        let finalPath = case execExists of
+              Just path -> path
+              Nothing -> redisClient
+        
+        let cp = (proc finalPath ["tunn", "--cluster", "--host", "localhost"])
+              { std_out = CreatePipe,
+                std_err = CreatePipe
+              }
+        
+        withCreateProcess cp $ \_ mOut mErr ph ->
+          case (mOut, mErr) of
+            (Just hout, Just herr) -> do
+              hSetBuffering hout LineBuffering
+              hSetBuffering herr LineBuffering
+              let cleanup = terminateProcess ph
+              
+              finally
+                (do
+                  -- Wait for tunnel to start (with timeout)
+                  ready <- timeout (5 * 1000000) $ waitForListening hout herr
+                  case ready of
+                    Nothing -> do
+                      cleanup
+                      stdoutRest <- drainHandle hout
+                      stderrRest <- drainHandle herr
+                      expectationFailure $ unlines
+                        [ "Tunnel did not start within timeout."
+                        , "stdout:", stdoutRest
+                        , "stderr:", stderrRest
+                        ]
+                    Just False -> do
+                      cleanup
+                      stdoutRest <- drainHandle hout
+                      stderrRest <- drainHandle herr
+                      expectationFailure $ unlines
+                        [ "Tunnel failed to start."
+                        , "stdout:", stdoutRest
+                        , "stderr:", stderrRest
+                        ]
+                    Just True -> do
+                      -- Give tunnel a moment to fully initialize
+                      threadDelay 500000
+                      
+                      -- Create a client that connects through the tunnel
+                      tunnelClient <- createTestClusterClient  -- This connects to localhost:6379
+                      
+                      -- Execute commands through the tunnel
+                      result <- runCmd tunnelClient $ set "tunnel:test" "via-tunnel"
+                      result `shouldBe` RespSimpleString "OK"
+                      
+                      getResult <- runCmd tunnelClient $ get "tunnel:test"
+                      getResult `shouldBe` RespBulkString "via-tunnel"
+                      
+                      closeClusterClient tunnelClient
+                )
+                cleanup
+            _ -> expectationFailure "Failed to create tunnel process"
+
+-- Helper to wait for tunnel to report it's listening
+waitForListening :: Handle -> Handle -> IO Bool
+waitForListening hout herr = do
+  let checkOutput = do
+        eof <- hIsEOF hout
+        if eof
+          then return False
+          else do
+            line <- hGetLine hout
+            if "Listening on localhost:6379" `elem` words line
+              then return True
+              else checkOutput
+  
+  handle (\(_ :: IOException) -> return False) checkOutput
+
+-- Helper to drain remaining output from a handle
+drainHandle :: Handle -> IO String
+drainHandle h = handle (\(_ :: IOException) -> return "") $ do
+  eof <- hIsEOF h
+  if eof
+    then return ""
+    else do
+      line <- hGetLine h
+      rest <- drainHandle h
+      return $ line ++ "\n" ++ rest

@@ -171,7 +171,7 @@ executable EndToEnd
 executable ClusterEndToEnd
     default-language: GHC2021
     main-is:          ClusterE2E.hs
-    hs-source-dirs:   test
+    hs-source-dirs:   test, app
     build-depends:    base >=4.19 && <5
                     , hspec
                     , redis-command-client
@@ -179,6 +179,15 @@ executable ClusterEndToEnd
                     , bytestring
                     , client
                     , resp
+                    , containers
+                    , vector
+                    , stm
+                    , process
+                    , directory
+                    , filepath
+                    , mtl
+                    , random
+    other-modules:    Filler
 
 executable redis-client
     import:           warnings
