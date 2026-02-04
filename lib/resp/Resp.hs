@@ -129,3 +129,7 @@ parseMap = do
       k <- parseRespData
       v <- parseRespData
       return (k, v)
+
+-- | Parse strict ByteString into RespData
+parseStrict :: SB8.ByteString -> Either String RespData
+parseStrict = StrictParse.parseOnly parseRespData

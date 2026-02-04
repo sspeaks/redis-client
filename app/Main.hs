@@ -19,6 +19,8 @@ import           ClusterCommandClient       (ClusterClient (..),
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData,
                                              loadSlotMappings)
+import           ClusterTunnel              (servePinnedProxy,
+                                             serveSmartProxy)
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import qualified ConnectionPool             as CP
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
@@ -175,32 +177,43 @@ tunnCluster :: RunState -> IO ()
 tunnCluster state = do
   putStrLn "Starting tunnel mode (cluster)"
   putStrLn $ "Tunnel mode: " ++ tunnelMode state
-  case tunnelMode state of
-    "smart" -> do
-      putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
-      putStrLn "Note: Smart cluster proxy is not yet fully implemented"
-      putStrLn "Falling back to pinned mode"
-      tunnClusterPinned state
-    "pinned" -> tunnClusterPinned state
-    _ -> do
-      printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
-      exitFailure
+  
+  -- Create cluster client
+  if useTLS state
+    then do
+      let connector = createTLSConnector state
+      clusterClient <- createClusterClientFromState state connector
+      case tunnelMode state of
+        "smart" -> do
+          putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
+          serveSmartProxy clusterClient connector
+        "pinned" -> do
+          putStrLn "Pinned mode: Creating one listener per cluster node"
+          servePinnedProxy clusterClient connector
+        _ -> do
+          printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
+          exitFailure
+    else do
+      let connector = createPlaintextConnector state
+      clusterClient <- createClusterClientFromState state connector
+      case tunnelMode state of
+        "smart" -> do
+          putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
+          putStrLn "Note: TLS is recommended for production use"
+          serveSmartProxy clusterClient connector
+        "pinned" -> do
+          putStrLn "Pinned mode: Creating one listener per cluster node"
+          putStrLn "Note: TLS is recommended for production use"
+          servePinnedProxy clusterClient connector
+        _ -> do
+          printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
+          exitFailure
 
 tunnClusterPinned :: RunState -> IO ()
 tunnClusterPinned state = do
   putStrLn "Pinned mode: Connection forwarding to seed node"
-  putStrLn "Note: This is a basic implementation for Phase 3."
-  putStrLn "A full implementation would forward connections through the cluster client."
-  putStrLn "Future enhancement: Implement proper connection forwarding with cluster routing."
-  if useTLS state
-    then do
-      -- Note: For Phase 3, we demonstrate the structure but acknowledge
-      -- that full tunnel implementation requires more work
-      putStrLn "TLS tunnel to cluster not fully implemented."
-      putStrLn "Use standalone tunnel mode or wait for Phase 5 enhancements."
-    else do
-      putStrLn "Tunnel mode is only supported with TLS enabled\n"
-      exitFailure
+  putStrLn "Note: This function is deprecated. Use tunnCluster instead."
+  tunnCluster state
 
 fill :: RunState -> IO ()
 fill state = do

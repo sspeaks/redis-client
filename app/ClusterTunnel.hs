@@ -1,0 +1,399 @@
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
+
+module ClusterTunnel
+  ( serveSmartProxy
+  , servePinnedProxy
+  ) where
+
+import           Client                     (Client (..), ConnectionStatus(..))
+import           Cluster                    (ClusterNode (..),
+                                             ClusterTopology (..),
+                                             NodeAddress (..), NodeRole (..))
+import           ClusterCommandClient       (ClusterClient (..),
+                                             ClusterError (..))
+import qualified ClusterCommandClient
+import           Control.Concurrent         (MVar, forkIO, newEmptyMVar, putMVar,
+                                             takeMVar)
+import           Control.Concurrent.STM     (readTVarIO)
+import           Control.Exception          (SomeException, bracket,
+                                             finally, throwIO, try)
+import           Control.Monad              (forever, void, when)
+import qualified Control.Monad.State.Strict as State
+import qualified Data.ByteString            as BS
+import qualified Data.ByteString.Builder    as Builder
+import qualified Data.ByteString.Char8      as BSC
+import qualified Data.ByteString.Lazy       as LB
+import qualified Data.ByteString.Lazy.Char8 as LBSC
+import           Data.Char                  (toUpper)
+import qualified Data.Map.Strict            as Map
+import           Network.Socket             (Family (..),
+                                             SockAddr (..), Socket,
+                                             SocketOption (..), SocketType (..),
+                                             bind, defaultProtocol, listen,
+                                             setSocketOption, socket,
+                                             tupleToHostAddress)
+import qualified Network.Socket             as S
+import           Network.Socket.ByteString  (recv, sendAll)
+import           RedisCommandClient         (ClientState (..), RedisCommandClient,
+                                             parseWith)
+import           Resp                       (Encodable (encode),
+                                             RespData (..))
+import qualified Resp
+import           System.IO                  (BufferMode (LineBuffering), hFlush,
+                                             hSetBuffering, stdout)
+import           Text.Printf                (printf)
+
+-- | Smart proxy mode: Makes cluster appear as single Redis instance
+-- Creates single listening socket and routes commands to appropriate nodes
+serveSmartProxy :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  IO ()
+serveSmartProxy clusterClient connector = do
+  hSetBuffering stdout LineBuffering
+  bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
+    setSocketOption sock ReuseAddr 1
+    bind sock (SockAddrInet 6379 (tupleToHostAddress (127, 0, 0, 1)))
+    listen sock 1024
+    putStrLn "Smart proxy listening on localhost:6379"
+    putStrLn "Cluster will appear as single Redis instance to clients"
+    hFlush stdout
+    
+    -- Accept connections in a loop
+    forever $ do
+      (clientSock, clientAddr) <- S.accept sock
+      printf "Accepted connection from %s\n" (show clientAddr)
+      hFlush stdout
+      
+      -- Handle each client in a separate thread
+      void $ forkIO $ 
+        finally
+          (handleSmartProxyClient clusterClient connector clientSock)
+          (S.close clientSock)
+
+-- | Handle a single client connection in smart proxy mode
+handleSmartProxyClient :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  Socket ->
+  IO ()
+handleSmartProxyClient clusterClient connector clientSock = do
+  loop
+  where
+    loop = do
+      -- Receive data from client
+      dat <- recv clientSock 4096
+      if BS.null dat
+        then putStrLn "Client disconnected"
+        else do
+          -- Parse RESP command
+          case Resp.parseStrict dat of
+            Left err -> do
+              printf "Failed to parse RESP: %s\n" err
+              -- Send error back to client
+              let errorResp = RespError ("ERR Failed to parse command: " ++ err)
+              sendAll clientSock (LB.toStrict $ Builder.toLazyByteString $ encode errorResp)
+              loop
+            Right respData -> do
+              -- Route and execute the command
+              result <- routeSmartProxyCommand clusterClient connector respData
+              case result of
+                Left err -> do
+                  printf "Command execution error: %s\n" err
+                  let errorResp = RespError ("ERR " ++ err)
+                  sendAll clientSock (LB.toStrict $ Builder.toLazyByteString $ encode errorResp)
+                Right response -> do
+                  -- Send response back to client
+                  sendAll clientSock (LB.toStrict $ Builder.toLazyByteString $ encode response)
+              loop
+
+-- | Route and execute a command in smart proxy mode
+routeSmartProxyCommand :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  RespData ->
+  IO (Either String RespData)
+routeSmartProxyCommand clusterClient connector respData = do
+  case respData of
+    RespArray (RespBulkString cmd : args) -> do
+      let cmdUpper = BSC.map toUpper (LBSC.toStrict cmd)
+          cmdStr = BSC.unpack cmdUpper
+      
+      -- Check if it's a keyless command
+      if cmdUpper `elem` keylessCommands
+        then executeKeylessCommand clusterClient connector respData
+        else case args of
+          [] -> if cmdUpper `elem` requiresKeyCommands
+                  then return $ Left $ "Command " ++ cmdStr ++ " requires a key argument"
+                  else executeKeylessCommand clusterClient connector respData
+          (RespBulkString key : _) -> do
+            -- Execute keyed command
+            executeKeyedCommand clusterClient connector (LBSC.toStrict key) respData
+          _ -> return $ Left "Invalid command format"
+    _ -> return $ Left "Expected array command"
+
+-- | Execute a keyless command (route to any master)
+executeKeylessCommand :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  RespData ->
+  IO (Either String RespData)
+executeKeylessCommand clusterClient connector respData = do
+  result <- ClusterCommandClient.executeKeylessClusterCommand 
+              clusterClient 
+              (sendRespCommand respData) 
+              connector
+  return $ case result of
+    Left err -> Left (show err)
+    Right resp -> Right resp
+
+-- | Execute a keyed command (route by slot)
+executeKeyedCommand :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  BS.ByteString ->
+  RespData ->
+  IO (Either String RespData)
+executeKeyedCommand clusterClient connector key respData = do
+  result <- ClusterCommandClient.executeClusterCommand
+              clusterClient
+              key
+              (sendRespCommand respData)
+              connector
+  return $ case result of
+    Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
+    Left err -> Left (show err)
+    Right resp -> Right resp
+
+-- | Send RESP command via RedisCommandClient
+sendRespCommand :: (Client client) => RespData -> RedisCommandClient client RespData
+sendRespCommand respData = do
+  ClientState client _ <- State.get
+  let encoded = Builder.toLazyByteString $ encode respData
+  send client encoded
+  parseWith (receive client)
+
+-- | Pinned proxy mode: One listener per cluster node
+-- Each listener forwards to its corresponding cluster node
+servePinnedProxy :: (Client client) =>
+  ClusterClient client ->
+  (NodeAddress -> IO (client 'Connected)) ->
+  IO ()
+servePinnedProxy clusterClient connector = do
+  hSetBuffering stdout LineBuffering
+  
+  -- Get cluster topology
+  topology <- readTVarIO (clusterTopology clusterClient)
+  let masters = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+  
+  when (null masters) $ do
+    putStrLn "ERROR: No master nodes found in cluster topology"
+    throwIO (userError "No master nodes in cluster")
+  
+  printf "Pinned proxy mode: Creating %d listeners for cluster nodes\n" (length masters)
+  
+  -- Create a listener for each master node
+  mvars <- mapM (createPinnedListener connector) masters
+  
+  putStrLn "All pinned listeners started. Press Ctrl+C to stop."
+  hFlush stdout
+  
+  -- Wait for all threads to complete (they won't unless there's an error)
+  mapM_ takeMVar mvars
+
+-- | Create a listener for a specific cluster node
+createPinnedListener :: (Client client) =>
+  (NodeAddress -> IO (client 'Connected)) ->
+  ClusterNode ->
+  IO (MVar ())
+createPinnedListener connector node = do
+  mvar <- newEmptyMVar
+  let addr = nodeAddress node
+      localPort = nodePort addr
+  
+  void $ forkIO $ do
+    result <- try $ bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
+      setSocketOption sock ReuseAddr 1
+      bind sock (SockAddrInet (fromIntegral localPort) (tupleToHostAddress (127, 0, 0, 1)))
+      listen sock 1024
+      printf "Pinned listener on localhost:%d -> %s:%d\n" 
+        localPort (nodeHost addr) (nodePort addr)
+      hFlush stdout
+      
+      -- Accept connections for this node
+      forever $ do
+        (clientSock, clientAddr) <- S.accept sock
+        printf "[Port %d] Accepted connection from %s\n" localPort (show clientAddr)
+        hFlush stdout
+        
+        -- Connect to the actual cluster node
+        redisConn <- connector addr
+        
+        -- Handle forwarding in a separate thread
+        void $ forkIO $ 
+          finally
+            (forwardPinnedConnection clientSock redisConn addr)
+            (do
+              S.close clientSock
+              close redisConn)
+    
+    case result of
+      Left (e :: SomeException) -> do
+        printf "Pinned listener on port %d failed: %s\n" localPort (show e)
+        putMVar mvar ()
+      Right _ -> putMVar mvar ()
+  
+  return mvar
+
+-- | Forward traffic bidirectionally between client and cluster node
+-- Also intercepts and rewrites cluster topology responses
+forwardPinnedConnection :: (Client client) =>
+  Socket ->
+  client 'Connected ->
+  NodeAddress ->  -- Parameter kept for potential future use
+  IO ()
+forwardPinnedConnection clientSock redisConn _addr = do
+  -- Create MVars for bidirectional communication
+  clientDone <- newEmptyMVar
+  redisDone <- newEmptyMVar
+  
+  -- Client -> Redis forwarding thread
+  void $ forkIO $ 
+    finally
+      (forwardClientToRedis clientSock redisConn)
+      (putMVar clientDone ())
+  
+  -- Redis -> Client forwarding thread (with response rewriting)
+  void $ forkIO $ 
+    finally
+      (forwardRedisToClient clientSock redisConn)
+      (putMVar redisDone ())
+  
+  -- Wait for either direction to complete
+  takeMVar clientDone
+  takeMVar redisDone
+
+-- | Forward data from client to Redis
+forwardClientToRedis :: (Client client) => Socket -> client 'Connected -> IO ()
+forwardClientToRedis clientSock redisConn = do
+  loop
+  where
+    loop = do
+      dat <- recv clientSock 4096
+      if BS.null dat
+        then return ()  -- Client disconnected
+        else do
+          send redisConn (LB.fromStrict dat)
+          loop
+
+-- | Forward data from Redis to client, rewriting cluster responses
+forwardRedisToClient :: (Client client) => Socket -> client 'Connected -> IO ()
+forwardRedisToClient clientSock redisConn = do
+  loop
+  where
+    loop = do
+      dat <- receive redisConn
+      if BS.null dat
+        then return ()  -- Redis disconnected
+        else do
+          -- Check if we need to rewrite the response
+          let rewritten = rewriteClusterResponse dat
+          sendAll clientSock rewritten
+          loop
+
+-- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
+-- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses
+rewriteClusterResponse :: BS.ByteString -> BS.ByteString
+rewriteClusterResponse dat =
+  case Resp.parseStrict dat of
+    Left _ -> dat  -- Can't parse, return as-is
+    Right respData -> 
+      let rewritten = rewriteRespData respData
+      in LB.toStrict $ Builder.toLazyByteString $ encode rewritten
+
+-- | Rewrite RespData to replace hosts with localhost
+rewriteRespData :: RespData -> RespData
+rewriteRespData (RespError msg) =
+  -- Handle MOVED and ASK errors
+  if "MOVED" `isPrefixOf` msg || "ASK" `isPrefixOf` msg
+    then RespError (rewriteRedirectionError msg)
+    else RespError msg
+rewriteRespData (RespBulkString bs) =
+  -- Handle CLUSTER NODES response
+  RespBulkString (rewriteClusterNodesText bs)
+rewriteRespData (RespArray items) =
+  -- Recursively rewrite array items (handles CLUSTER SLOTS)
+  RespArray (map rewriteRespData items)
+rewriteRespData other = other
+
+-- | Check if string is prefix
+isPrefixOf :: String -> String -> Bool
+isPrefixOf prefix str = take (length prefix) str == prefix
+
+-- | Rewrite MOVED/ASK error messages
+rewriteRedirectionError :: String -> String
+rewriteRedirectionError msg =
+  -- MOVED 3999 host:port -> MOVED 3999 127.0.0.1:port
+  -- ASK 3999 host:port -> ASK 3999 127.0.0.1:port
+  let parts = words msg
+  in case parts of
+       [errType, slot, hostPort] -> 
+         case break (== ':') hostPort of
+           (_, ':':port) -> errType ++ " " ++ slot ++ " 127.0.0.1:" ++ port
+           _ -> msg
+       _ -> msg
+
+-- | Rewrite CLUSTER NODES response text
+rewriteClusterNodesText :: LBSC.ByteString -> LBSC.ByteString
+rewriteClusterNodesText bs =
+  let text = LBSC.unpack bs
+      textLines = lines text
+      rewritten = map rewriteClusterNodesLine textLines
+  in LBSC.pack (unlines rewritten)
+
+-- | Rewrite a single line from CLUSTER NODES
+rewriteClusterNodesLine :: String -> String
+rewriteClusterNodesLine line =
+  let parts = words line
+  in case parts of
+       (nodeId:hostPort:rest) ->
+         case break (== ':') hostPort of
+           (_, '@':_) ->
+             -- Format: host:port@cport
+             case break (== '@') hostPort of
+               (hp, cport) ->
+                 case break (== ':') hp of
+                   (_, ':':port) -> 
+                     nodeId ++ " 127.0.0.1:" ++ port ++ cport ++ " " ++ unwords rest
+                   _ -> line
+           (_, ':':port) ->
+             -- Format: host:port
+             nodeId ++ " 127.0.0.1:" ++ port ++ " " ++ unwords rest
+           _ -> line
+       _ -> line
+
+-- | Commands that don't require a key (route to any master)
+keylessCommands :: [BS.ByteString]
+keylessCommands = 
+  [ "PING", "AUTH", "FLUSHALL", "FLUSHDB", "DBSIZE"
+  , "CLUSTER", "INFO", "TIME", "CLIENT", "CONFIG"
+  , "BGREWRITEAOF", "BGSAVE", "SAVE", "LASTSAVE"
+  , "SHUTDOWN", "SLAVEOF", "REPLICAOF", "ROLE"
+  , "ECHO", "SELECT", "QUIT", "COMMAND"
+  ]
+
+-- | Commands that require a key argument
+requiresKeyCommands :: [BS.ByteString]
+requiresKeyCommands =
+  [ "GET", "SET", "DEL", "EXISTS", "INCR", "DECR"
+  , "HGET", "HSET", "HDEL", "HKEYS", "HVALS", "HGETALL", "HEXISTS"
+  , "LPUSH", "RPUSH", "LPOP", "RPOP", "LRANGE", "LLEN", "LINDEX"
+  , "SADD", "SREM", "SMEMBERS", "SCARD", "SISMEMBER"
+  , "ZADD", "ZREM", "ZRANGE", "ZCARD"
+  , "EXPIRE", "TTL", "PERSIST"
+  , "MGET", "MSET", "SETNX", "PSETEX"
+  , "APPEND", "GETRANGE", "SETRANGE", "STRLEN"
+  , "GETEX", "GETDEL", "SETEX"
+  ]
