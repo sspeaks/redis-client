@@ -60,6 +60,7 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , useCluster = False
   , tunnelMode = "smart"
   , keySize = 512
+  , valueSize = 512
   })
 
 getRedisClientPath :: IO FilePath
@@ -446,6 +447,80 @@ main = do
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
             let expected = 1048576
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --value-size 128 creates values of correct size" $ do
+        void $ runRedisAction flushAll
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "128"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("value size: 128 bytes" `isInfixOf`)
+        -- Verify some keys exist
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> n `shouldSatisfy` (> 0)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --value-size 2048 creates larger values" $ do
+        void $ runRedisAction flushAll
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "2048"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("value size: 2048 bytes" `isInfixOf`)
+
+      it "fill rejects invalid --value-size values" $ do
+        (code1, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--value-size", "0"] ""
+        code1 `shouldNotBe` ExitSuccess
+        (code2, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--value-size", "600000"] ""
+        code2 `shouldNotBe` ExitSuccess
+
+      it "fill with --value-size 1024 fills accurate memory (1GB)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "1024"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=512, valueSize=1024, bytesPerCommand = 512 + 1024 = 1536 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: ceiling(1,073,741,824 / 1536) = 698,880 keys
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 698880
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --value-size 8192 fills accurate memory (1GB)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "8192"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=512, valueSize=8192, bytesPerCommand = 512 + 8192 = 8704 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: ceiling(1,073,741,824 / 8704) = 123,362 keys
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 123362
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with custom --key-size and --value-size fills accurate memory (1GB)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256", "--value-size", "1024"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=256, valueSize=1024, bytesPerCommand = 256 + 1024 = 1280 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: ceiling(1,073,741,824 / 1280) = 838,861 keys
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 838861
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
