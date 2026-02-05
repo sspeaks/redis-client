@@ -13,7 +13,7 @@ import           ClusterCommandClient
 import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (IOException, SomeException, bracket, evaluate, finally, try)
+import           Control.Exception          (IOException, bracket, evaluate, finally, try)
 import           Control.Monad              (void, when)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
@@ -981,24 +981,26 @@ main = hspec $ do
                             length masterNodes `shouldSatisfy` (>= 3)
                             
                             -- Connect to one of the pinned listeners (using first master's port)
-                            let firstMaster = head masterNodes
-                                addr = nodeAddress firstMaster
-                                localPort = nodePort addr
-                            
-                            conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
-                            
-                            -- Execute a command through pinned proxy
-                            result1 <- runRedisCommand conn (set "pinned:test" "value")
-                            result1 `shouldBe` RespSimpleString "OK"
-                            
-                            result2 <- runRedisCommand conn (get "pinned:test")
-                            result2 `shouldBe` RespBulkString "value"
-                            
-                            close conn
-                            
-                            -- Clean up
-                            _ <- runCmd client (del ["pinned:test"])
-                            pure ()
+                            case masterNodes of
+                              [] -> expectationFailure "No master nodes found in cluster topology"
+                              (firstMaster:_) -> do
+                                let addr = nodeAddress firstMaster
+                                    localPort = nodePort addr
+                                
+                                conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
+                                
+                                -- Execute a command through pinned proxy
+                                result1 <- runRedisCommand conn (set "pinned:test" "value")
+                                result1 `shouldBe` RespSimpleString "OK"
+                                
+                                result2 <- runRedisCommand conn (get "pinned:test")
+                                result2 `shouldBe` RespBulkString "value"
+                                
+                                close conn
+                                
+                                -- Clean up
+                                _ <- runCmd client (del ["pinned:test"])
+                                pure ()
                   )
                   cleanup
               _ -> do
@@ -1037,33 +1039,34 @@ main = hspec $ do
                               expectationFailure "Need at least 2 master nodes for this test"
                             
                             -- Connect to two different pinned listeners
-                            let node1 = head masterNodes
-                                node2 = masterNodes !! 1
-                                addr1 = nodeAddress node1
-                                addr2 = nodeAddress node2
-                                port1 = nodePort addr1
-                                port2 = nodePort addr2
-                            
-                            conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
-                            conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
-                            
-                            -- Set a key through each listener
-                            _ <- runRedisCommand conn1 (set "pinned:node1:key" "from-node1")
-                            _ <- runRedisCommand conn2 (set "pinned:node2:key" "from-node2")
-                            
-                            -- Verify keys are set
-                            result1 <- runRedisCommand conn1 (get "pinned:node1:key")
-                            result1 `shouldBe` RespBulkString "from-node1"
-                            
-                            result2 <- runRedisCommand conn2 (get "pinned:node2:key")
-                            result2 `shouldBe` RespBulkString "from-node2"
-                            
-                            close conn1
-                            close conn2
-                            
-                            -- Clean up (using cluster client to reach correct nodes)
-                            _ <- runCmd client (del ["pinned:node1:key", "pinned:node2:key"])
-                            pure ()
+                            case masterNodes of
+                              (node1:node2:_) -> do
+                                let addr1 = nodeAddress node1
+                                    addr2 = nodeAddress node2
+                                    port1 = nodePort addr1
+                                    port2 = nodePort addr2
+                                
+                                conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
+                                conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
+                                
+                                -- Set a key through each listener
+                                _ <- runRedisCommand conn1 (set "pinned:node1:key" "from-node1")
+                                _ <- runRedisCommand conn2 (set "pinned:node2:key" "from-node2")
+                                
+                                -- Verify keys are set
+                                result1 <- runRedisCommand conn1 (get "pinned:node1:key")
+                                result1 `shouldBe` RespBulkString "from-node1"
+                                
+                                result2 <- runRedisCommand conn2 (get "pinned:node2:key")
+                                result2 `shouldBe` RespBulkString "from-node2"
+                                
+                                close conn1
+                                close conn2
+                                
+                                -- Clean up (using cluster client to reach correct nodes)
+                                _ <- runCmd client (del ["pinned:node1:key", "pinned:node2:key"])
+                                pure ()
+                              _ -> expectationFailure "Expected at least 2 master nodes"
                   )
                   cleanup
               _ -> do
@@ -1097,27 +1100,30 @@ main = hspec $ do
                           bracket createTestClusterClient closeClusterClient $ \client -> do
                             topology <- readTVarIO (clusterTopology client)
                             let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
-                            let firstMaster = head masterNodes
-                                addr = nodeAddress firstMaster
-                                localPort = nodePort addr
                             
-                            conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
-                            
-                            -- Execute CLUSTER SLOTS through pinned proxy
-                            -- The response should have addresses rewritten to 127.0.0.1
-                            result <- runRedisCommand conn clusterSlots
-                            
-                            -- Verify result is an array (CLUSTER SLOTS returns array of slot ranges)
-                            case result of
-                              RespArray slots -> do
-                                -- Should have multiple slot ranges
-                                length slots `shouldSatisfy` (> 0)
-                                -- Note: Full validation of address rewriting would require parsing
-                                -- the complex nested array structure. Just verify it's valid RESP.
-                                pure ()
-                              other -> expectationFailure $ "Expected RespArray from CLUSTER SLOTS, got: " ++ show other
-                            
-                            close conn
+                            case masterNodes of
+                              [] -> expectationFailure "No master nodes found in cluster topology"
+                              (firstMaster:_) -> do
+                                let addr      = nodeAddress firstMaster
+                                    localPort = nodePort addr
+                                
+                                conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
+                                
+                                -- Execute CLUSTER SLOTS through pinned proxy
+                                -- The response should have addresses rewritten to 127.0.0.1
+                                result <- runRedisCommand conn clusterSlots
+                                
+                                -- Verify result is an array (CLUSTER SLOTS returns array of slot ranges)
+                                case result of
+                                  RespArray slots -> do
+                                    -- Should have multiple slot ranges
+                                    length slots `shouldSatisfy` (> 0)
+                                    -- Note: Full validation of address rewriting would require parsing
+                                    -- the complex nested array structure. Just verify it's valid RESP.
+                                    pure ()
+                                  other -> expectationFailure $ "Expected RespArray from CLUSTER SLOTS, got: " ++ show other
+                                
+                                close conn
                   )
                   cleanup
               _ -> do
