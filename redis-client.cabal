@@ -173,6 +173,11 @@ executable EndToEnd
 executable ClusterEndToEnd
     default-language: GHC2021
     main-is:          ClusterE2E.hs
+    other-modules:    ClusterE2E.Basic
+                    , ClusterE2E.Fill
+                    , ClusterE2E.Cli
+                    , ClusterE2E.Tunnel
+                    , ClusterE2E.Utils
     hs-source-dirs:   test
     build-depends:    base >=4.19 && <5
                     , hspec

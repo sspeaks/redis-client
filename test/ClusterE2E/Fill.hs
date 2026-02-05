@@ -1,0 +1,153 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module ClusterE2E.Fill (spec) where
+
+import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close, Client)
+import           Cluster                    (NodeAddress (..), NodeRole (..),
+                                             ClusterNode (..), ClusterTopology (..), SlotRange(..))
+import           ClusterCommandClient       (closeClusterClient, clusterTopology)
+import           ClusterE2E.Utils
+import           ClusterSlotMapping         (getKeyForNode)
+import           Control.Concurrent         (threadDelay)
+import           Control.Concurrent.STM     (readTVarIO)
+import           Control.Exception          (bracket)
+import qualified Data.ByteString.Char8      as BSC
+import qualified Data.ByteString.Lazy.Char8 as BSL
+import           Data.List                  (isInfixOf)
+import qualified Data.Map.Strict            as Map
+import           RedisCommandClient         (RedisCommands (..))
+import           Resp                       (RespData (..))
+import           System.Exit                (ExitCode (..))
+import           System.Process             (proc, readCreateProcessWithExitCode)
+import           Test.Hspec
+
+spec :: Spec
+spec = describe "Cluster Fill Mode" $ do
+  it "fill --data 1 with --cluster writes keys across cluster" $ do
+    redisClient <- getRedisClientPath
+
+    -- Run fill with -f to flush before filling
+    (code, stdoutOut, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"])
+      ""
+
+    code `shouldBe` ExitSuccess
+    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+
+    -- Verify keys were distributed across cluster
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      -- ClusterFiller uses 512-byte keys and 512-byte values (hardcoded in ClusterFiller.hs)
+      -- For 1GB: 1GB / (512 + 512 bytes) = 1,048,576 keys exactly
+      totalKeys `shouldBe` 1048576
+
+  it "fill --flush clears all nodes in cluster" $ do
+    redisClient <- getRedisClientPath
+    let runRedisClient args = readCreateProcessWithExitCode (proc redisClient args)
+
+    -- First flush the cluster to start with a clean state (previous tests may have left data)
+    _ <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
+    threadDelay 100000
+
+    -- Get cluster topology to identify master nodes
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      topology <- readTVarIO (clusterTopology client)
+      let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+
+      -- Create keys that route to different masters using hash tags from slot mapping
+      -- For each master, create a key using its first slot's hash tag
+      mapM_ (\node -> do
+        case nodeSlotsServed node of
+          (range:_) -> do
+            let slot = slotStart range
+                keyBS = getKeyForNode node ("testkey:" ++ show slot)
+                key = BSC.unpack keyBS
+
+            result <- runCmd client $ set key ("value" ++ show slot)
+            case result of
+              RespSimpleString "OK" -> return ()
+              other -> expectationFailure $ "Failed to set key " ++ key ++ ": " ++ show other
+
+            -- Verify the key was set on the correct node by connecting directly
+            let addr = nodeAddress node
+            conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+            getResult <- runRedisCommand conn (get key)
+            close conn
+            case getResult of
+              RespBulkString val -> val `shouldBe` BSL.pack ("value" ++ show slot)
+              other -> expectationFailure $ "Key not found on expected node: " ++ show other
+          [] -> return ()  -- Skip nodes with no slots
+        ) masterNodes
+
+    threadDelay 100000
+
+    -- Verify keys exist across all nodes
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      topology <- readTVarIO (clusterTopology client)
+      let masterCount = length [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+      totalKeys <- countClusterKeys client
+      -- We created one key per master node, so should have exactly that many
+      totalKeys `shouldBe` fromIntegral masterCount
+
+    -- Flush the cluster using only the -f flag (no --data)
+    (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
+    code `shouldNotBe` ExitSuccess  -- Exits with failure when only flushing
+    stdoutOut `shouldSatisfy` ("Flushing" `isInfixOf`)
+
+    threadDelay 100000
+
+    -- Verify all keys are gone from all nodes after flush
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      totalKeys `shouldBe` 0
+
+  it "fill with -n flag controls thread count" $ do
+    redisClient <- getRedisClientPath
+
+    -- Run fill with 4 threads per node
+    (code, stdoutOut, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-n", "4", "-f"])
+      ""
+
+    code `shouldBe` ExitSuccess
+    stdoutOut `shouldSatisfy` ("with 4 threads per node" `isInfixOf`)
+
+    -- Verify data was filled with exact count
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      totalKeys `shouldBe` 1048576
+
+  it "fill distributes data across multiple master nodes" $ do
+    redisClient <- getRedisClientPath
+
+    -- Fill the cluster
+    (code, _, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"])
+      ""
+
+    code `shouldBe` ExitSuccess
+
+    -- Verify data is distributed across multiple masters
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      topology <- readTVarIO (clusterTopology client)
+      let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+
+      -- Should have multiple masters in the cluster
+      length masterNodes `shouldSatisfy` (> 1)
+
+      -- Query DBSIZE from each master directly to verify distribution
+      keysPerNode <- mapM (\node -> do
+        let addr = nodeAddress node
+        conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+        result <- runRedisCommand conn dbsize
+        close conn
+        case result of
+          RespInteger n -> return n
+          _ -> return 0
+        ) masterNodes
+
+      -- Each master should have some keys (verifying distribution)
+      mapM_ (\keys -> keys `shouldSatisfy` (> 0)) keysPerNode
+
+      -- Total should be exactly 1048576 keys
+      sum keysPerNode `shouldBe` 1048576
