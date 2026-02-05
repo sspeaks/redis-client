@@ -185,6 +185,8 @@ executable ClusterEndToEnd
                     , process
                     , stm
                     , containers
+                    , vector
+                    , mtl
 
 executable redis-client
     import:           warnings
