@@ -19,6 +19,7 @@ import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSL
+import           Data.Char                  (toLower)
 import           Data.List                  (isInfixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Vector                (Vector)
@@ -125,6 +126,11 @@ loadSlotMappings filepath = do
           [(slot, "")] -> Just (slot, BSC.pack tag)
           _            -> Nothing
         _ -> Nothing
+
+-- | Delay between CLI commands in microseconds (200ms)
+-- This gives time for command execution and output to be available
+cliCommandDelayMicros :: Int
+cliCommandDelayMicros = 200000
 
 main :: IO ()
 main = hspec $ do
@@ -380,12 +386,12 @@ main = hspec $ do
           -- Execute SET command
           hPutStrLn hin "SET cli:test:key value123"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
           
           -- Execute GET command
           hPutStrLn hin "GET cli:test:key"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
@@ -416,7 +422,7 @@ main = hspec $ do
           -- Execute PING command
           hPutStrLn hin "PING"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
@@ -447,7 +453,7 @@ main = hspec $ do
           -- Execute CLUSTER SLOTS command
           hPutStrLn hin "CLUSTER SLOTS"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
@@ -479,20 +485,20 @@ main = hspec $ do
           -- Set two keys with same hash tag (should go to same slot)
           hPutStrLn hin "SET {user:100}:name alice"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "SET {user:100}:email alice@example.com"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Get both keys
           hPutStrLn hin "GET {user:100}:name"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "GET {user:100}:email"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
@@ -524,7 +530,7 @@ main = hspec $ do
           -- Try MGET with keys that hash to different slots (should trigger CROSSSLOT error)
           hPutStrLn hin "MGET key1 key2 key3"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
@@ -538,9 +544,9 @@ main = hspec $ do
           -- Wait for process to finish
           exitCode <- waitForProcess ph
 
-          -- Verify - should contain CROSSSLOT error message
+          -- Verify - should contain CROSSSLOT error message (case-insensitive)
           exitCode `shouldBe` ExitSuccess
-          stdoutOut `shouldSatisfy` (\s -> "CROSSSLOT" `isInfixOf` s || "crossslot" `isInfixOf` s)
+          stdoutOut `shouldSatisfy` (isInfixOf "crossslot" . map toLower)
 
       it "cli mode can execute multi-key commands on same slot using hash tags" $ do
         redisClient <- getRedisClientPath
@@ -555,20 +561,20 @@ main = hspec $ do
           -- Set keys with same hash tag
           hPutStrLn hin "SET {slot:1}:key1 value1"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "SET {slot:1}:key2 value2"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "SET {slot:1}:key3 value3"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Try MGET with keys that have the same hash tag (should work)
           hPutStrLn hin "MGET {slot:1}:key1 {slot:1}:key2 {slot:1}:key3"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
@@ -601,28 +607,28 @@ main = hspec $ do
           -- Set multiple keys that should hash to different slots
           hPutStrLn hin "SET route:key1 value1"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "SET route:key2 value2"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "SET route:key3 value3"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Get the keys back
           hPutStrLn hin "GET route:key1"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "GET route:key2"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           hPutStrLn hin "GET route:key3"
           hFlush hin
-          threadDelay 200000
+          threadDelay cliCommandDelayMicros
 
           -- Exit CLI
           hPutStrLn hin "exit"
