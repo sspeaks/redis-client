@@ -13,7 +13,6 @@ module ClusterCommandClient
     -- * Client Lifecycle
     createClusterClient,
     closeClusterClient,
-    refreshTopology,
     -- * Running Commands
     runClusterCommandClient,
     executeClusterCommand,

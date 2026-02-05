@@ -187,7 +187,6 @@ executable ClusterEndToEnd
                     , containers
                     , vector
                     , mtl
-                    , time
 
 executable redis-client
     import:           warnings
