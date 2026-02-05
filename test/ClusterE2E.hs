@@ -1,8 +1,9 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import           Client                     (Client (..),
+import           Client                     (Client (..), ConnectionStatus (..),
                                              PlainTextClient (NotConnectedPlainTextClient))
 import           Cluster                    (NodeAddress (..), NodeRole (..), 
                                              ClusterNode (..), ClusterTopology (..),
@@ -13,7 +14,7 @@ import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (IOException, bracket, evaluate, try)
-import           Control.Monad              (void)
+import           Control.Monad              (void, when)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Char8      as BSC
@@ -77,6 +78,11 @@ getRedisClientPath = do
         Just path -> return path
         Nothing -> error $ "Could not locate redis-client executable starting from " <> binDir
 
+-- | Helper to run a RedisCommand against a plain connection
+runRedisCommand :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient a -> IO a
+runRedisCommand conn cmd = 
+  State.evalStateT (case cmd of RedisCommandClient m -> m) (ClientState conn BS.empty)
+
 -- | Count total keys across all master nodes in cluster by querying each master directly
 countClusterKeys :: ClusterClient PlainTextClient -> IO Integer
 countClusterKeys client = do
@@ -88,8 +94,7 @@ countClusterKeys client = do
   sizes <- mapM (\node -> do
     let addr = nodeAddress node
     conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-    -- Create a RedisCommandClient to run the command
-    result <- State.evalStateT (case dbsize of RedisCommandClient m -> m) (ClientState conn BS.empty)
+    result <- runRedisCommand conn dbsize
     close conn
     case result of
       RespInteger n -> return n
@@ -269,7 +274,10 @@ main = hspec $ do
               (range:_) -> do
                 let slot = slotStart range
                     hashTag = slotMappings V.! fromIntegral slot
-                    key = "{" ++ BSC.unpack hashTag ++ "}:testkey:" ++ show slot
+                -- Validate hash tag is non-empty
+                when (BS.null hashTag) $
+                  expectationFailure $ "Empty hash tag for slot " ++ show slot
+                let key = "{" ++ BSC.unpack hashTag ++ "}:testkey:" ++ show slot
                 result <- runCmd client $ set key ("value" ++ show slot)
                 case result of
                   RespSimpleString "OK" -> return ()
@@ -278,7 +286,7 @@ main = hspec $ do
                 -- Verify the key was set on the correct node by connecting directly
                 let addr = nodeAddress node
                 conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-                getResult <- State.evalStateT (case get key of RedisCommandClient m -> m) (ClientState conn BS.empty)
+                getResult <- runRedisCommand conn (get key)
                 close conn
                 case getResult of
                   RespBulkString val -> val `shouldBe` BSL.pack ("value" ++ show slot)
@@ -305,7 +313,6 @@ main = hspec $ do
         -- Verify all keys are gone from all nodes
         bracket createTestClusterClient closeClusterClient $ \client -> do
           totalKeys <- countClusterKeys client
-          totalKeys `shouldBe` 0
           totalKeys `shouldBe` 0
 
       it "fill with -n flag controls thread count" $ do
@@ -362,7 +369,7 @@ main = hspec $ do
           keysPerNode <- mapM (\node -> do
             let addr = nodeAddress node
             conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-            result <- State.evalStateT (case dbsize of RedisCommandClient m -> m) (ClientState conn BS.empty)
+            result <- runRedisCommand conn dbsize
             close conn
             case result of
               RespInteger n -> return n
