@@ -2,39 +2,68 @@ services:
   redis1:
     image: redis
     hostname: redis1.local
-    network_mode: host
+    container_name: redis-cluster-node1
+    ports:
+      - "6379:6379"
+      - "16379:16379"
     volumes:
       - ./redis1.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - redis-cluster-net
 
   redis2:
     image: redis
     hostname: redis2.local
-    network_mode: host
+    container_name: redis-cluster-node2
+    ports:
+      - "6380:6380"
+      - "16380:16380"
     volumes:
       - ./redis2.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - redis-cluster-net
 
   redis3:
     image: redis
     hostname: redis3.local
-    network_mode: host
+    container_name: redis-cluster-node3
+    ports:
+      - "6381:6381"
+      - "16381:16381"
     volumes:
       - ./redis3.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - redis-cluster-net
 
   redis4:
     image: redis
     hostname: redis4.local
-    network_mode: host
+    container_name: redis-cluster-node4
+    ports:
+      - "6382:6382"
+      - "16382:16382"
     volumes:
       - ./redis4.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - redis-cluster-net
 
   redis5:
     image: redis
     hostname: redis5.local
-    network_mode: host
+    container_name: redis-cluster-node5
+    ports:
+      - "6383:6383"
+      - "16383:16383"
     volumes:
       - ./redis5.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - redis-cluster-net
+
+networks:
+  redis-cluster-net:
+    driver: bridge

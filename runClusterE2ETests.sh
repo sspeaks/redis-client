@@ -10,7 +10,7 @@ cd docker-cluster
 
 # Start the cluster
 echo "Starting Redis cluster nodes..."
-docker-compose up -d
+docker compose up -d
 
 # Wait for nodes to be ready
 echo "Waiting for Redis nodes to be ready..."
@@ -20,7 +20,7 @@ sleep 5
 echo "Creating Redis cluster..."
 ./make_cluster.sh || {
     echo "Cluster creation failed. Cleaning up..."
-    docker-compose down
+    docker compose down
     exit 1
 }
 
@@ -51,7 +51,7 @@ if [ "$CLUSTER_READY" = false ]; then
   echo ""
   echo "Cluster nodes:"
   redis-cli -p 6379 cluster nodes
-  docker-compose down
+  docker compose down
   exit 1
 fi
 
@@ -63,7 +63,7 @@ echo "Building cluster E2E test Docker image..."
 nix-build e2eClusterDockerImg.nix || {
     echo "Failed to build Docker image"
     cd docker-cluster
-    docker-compose down
+    docker compose down
     exit 1
 }
 
@@ -71,13 +71,24 @@ nix-build e2eClusterDockerImg.nix || {
 echo "Loading cluster E2E test Docker image..."
 docker load < result
 
-# Run the cluster E2E tests in Docker
-echo "Running cluster E2E tests in Docker container..."
-docker run --network=host clustere2etests:latest  || {
+# Get the actual network name created by docker compose
+# Docker compose prefixes the network name with the project name (usually the directory name)
+NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Name}}" | grep -E 'redis-cluster-net$' | head -n 1)
+
+if [ -z "$NETWORK_NAME" ]; then
+  echo "Error: Could not find redis-cluster-net network"
+  cd docker-cluster
+  docker compose down
+  exit 1
+fi
+
+# Run the cluster E2E tests in Docker on the same network as the cluster
+echo "Running cluster E2E tests in Docker container on network $NETWORK_NAME..."
+docker run --network="$NETWORK_NAME" clustere2etests:latest  || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
     cd docker-cluster
-    docker-compose down
+    docker compose down
     # Clean up docker image
     docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
     rm -f result
@@ -87,7 +98,7 @@ docker run --network=host clustere2etests:latest  || {
 # Cleanup
 echo "Cleaning up..."
 cd docker-cluster
-docker-compose down
+docker compose down
 cd ..
 docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
 rm -f result
