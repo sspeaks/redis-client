@@ -72,6 +72,7 @@ defaultRunState = RunState
   , useCluster = False
   , tunnelMode = "smart"
   , keySize = 512
+  , valueSize = 512
   }
 
 options :: [OptDescr (RunState -> IO RunState)]
@@ -93,7 +94,14 @@ options =
           then ioError (userError "Key size must be at least 1 byte")
           else if size > 65536
             then ioError (userError "Key size must not exceed 65536 bytes")
-            else return $ opt {keySize = size}) "BYTES") "Size of each key in bytes (default: 512, range: 1-65536)"
+            else return $ opt {keySize = size}) "BYTES") "Size of each key in bytes (default: 512, range: 1-65536)",
+    Option [] ["value-size"] (ReqArg (\arg opt -> do
+        let size = read arg :: Int
+        if size < 1
+          then ioError (userError "Value size must be at least 1 byte")
+          else if size > 524288
+            then ioError (userError "Value size must not exceed 524288 bytes")
+            else return $ opt {valueSize = size}) "BYTES") "Size of each value in bytes (default: 512, range: 1-524288)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -288,10 +296,10 @@ fillStandalone state = do
     baseSeed <- randomIO :: IO Word64
     if serial state
       then do
-        printf "Filling cache '%s' with %dGB of data using serial mode (key size: %d bytes)\n" (host state) (dataGBs state) (keySize state)
+        printf "Filling cache '%s' with %dGB of data using serial mode (key size: %d bytes, value size: %d bytes)\n" (host state) (dataGBs state) (keySize state) (valueSize state)
         if useTLS state
-          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (keySize state)
-          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (keySize state)
+          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (keySize state) (valueSize state)
+          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (keySize state) (valueSize state)
       else do
         -- Use numConnections (defaults to 8)
         let nConns = fromMaybe 8 (numConnections state)
@@ -301,13 +309,13 @@ fillStandalone state = do
             -- Each connection gets (baseMB + 1) or baseMB MB
             -- Jobs: (connectionIdx, mbForThisConnection)
             jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
-        printf "Filling cache '%s' with %dGB of data using %d parallel connections (key size: %d bytes)\n" (host state) (dataGBs state) (length jobs) (keySize state)
+        printf "Filling cache '%s' with %dGB of data using %d parallel connections (key size: %d bytes, value size: %d bytes)\n" (host state) (dataGBs state) (length jobs) (keySize state) (valueSize state)
         mvars <- mapM (\(idx, mb) -> do
             mv <- newEmptyMVar
             _ <- forkIO $ do
                  if useTLS state
-                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (keySize state)
-                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (keySize state)
+                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (keySize state) (valueSize state)
+                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (keySize state) (valueSize state)
                  putMVar mv ()
             return mv) jobs
         mapM_ takeMVar mvars
@@ -359,20 +367,20 @@ fillCluster state = do
     -- Determine number of threads per node
     let threadsPerNode = fromMaybe 2 (numConnections state)
 
-    printf "Starting cluster fill: %dGB across cluster with %d threads per node (key size: %d bytes)\n"
-           (dataGBs state) threadsPerNode (keySize state)
+    printf "Starting cluster fill: %dGB across cluster with %d threads per node (key size: %d bytes, value size: %d bytes)\n"
+           (dataGBs state) threadsPerNode (keySize state) (valueSize state)
 
     -- Create cluster client and fill data
     if useTLS state
       then do
         clusterClient <- createClusterClientFromState state (createTLSConnector state)
         fillClusterWithData clusterClient (createTLSConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state)
+                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state)
         closeClusterClient clusterClient
       else do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
         fillClusterWithData clusterClient (createPlaintextConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state)
+                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state)
         closeClusterClient clusterClient
 
 cli :: RunState -> IO ()

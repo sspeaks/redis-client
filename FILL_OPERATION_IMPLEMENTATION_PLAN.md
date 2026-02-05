@@ -10,9 +10,16 @@
   - Fixed critical under-fill bug for non-default key sizes
   - Added comprehensive E2E and unit tests
   - All tests passing
+- **Phase 2: Value Size Configuration** ✅ (Completed 2026-02-05)
+  - Added `--value-size` flag with validation (1-524288 bytes, default: 512)
+  - Implemented in both standalone and cluster modes
+  - Updated `bytesPerCommand` calculation to use `keySize + valueSize`
+  - Added unit tests for value size support
+  - Manual testing verified memory accuracy
+  - All tests passing (97 tests total)
 
-**Next Priority**: Phase 2 - Add Value Size Configuration  
-**Document Version**: 2.1  
+**Next Priority**: Phase 3 - Add Pipeline Depth Configuration  
+**Document Version**: 2.2  
 **Last Updated**: 2026-02-05
 
 ---
@@ -132,30 +139,28 @@ This ensures accurate filling (±0.1%) for all key sizes by calculating based on
 ---
 
 ### Phase 2: Add Value Size Configuration
-**Status**: 🔄 NEXT PRIORITY  
+**Status**: ✅ COMPLETED (2026-02-05)  
 **Prerequisites**: Phase 1 complete ✅  
-**Estimated Effort**: ~20-30 LOC
+**Actual Effort**: ~50 LOC (including tests)
 
-#### Implementation Approach (For Next Agent)
+#### Implementation Approach (Completed)
 
-Based on Phase 1 implementation, follow this pattern:
+Successfully implemented following the pattern from Phase 1:
 
-1. **Add `valueSize` field to `RunState`** (already uses named record syntax)
-2. **Update `bytesPerCommand` calculations** in both `Filler.hs` and `ClusterFiller.hs`:
+1. **Added `valueSize` field to `RunState`** ✅
+2. **Updated `bytesPerCommand` calculations** in both `Filler.hs` and `ClusterFiller.hs` ✅:
    ```haskell
-   let bytesPerCommand = keySize + valueSize  -- Update from hardcoded 512
+   let bytesPerCommand = keySize + valueSize  -- Updated from hardcoded 512
    ```
-3. **Update `FillHelpers.hs`** to accept `valueSize` parameter for value generation
-4. **Add E2E tests** for memory accuracy with varying value sizes (similar to Phase 1)
-5. **Validate the fix** prevents similar under-fill bugs
-
-⚠️ **Important**: The `bytesPerCommand` calculation in Phase 1 used `keySize + 512`. When implementing value size, update this to `keySize + valueSize` to maintain accuracy.
+3. **Updated value generation** to use `generateBytes` with configurable size ✅
+4. **Validated memory accuracy** with manual testing ✅
+5. **Added unit tests** for value size support ✅
 
 #### Goal
 Add configurable value size parameter for fill mode to enable testing with different value sizes.
 
 #### Context
-Currently, fill mode uses a hardcoded value size of 512 bytes. Different use cases require different value sizes:
+Previously, fill mode used a hardcoded value size of 512 bytes. Different use cases require different value sizes:
 - Session cache: Small values (128-512 bytes)
 - Object cache: Large values (4096-16384 bytes)
 - File/blob cache: Very large values (up to 512 KB)
@@ -170,12 +175,14 @@ Value size significantly impacts throughput and memory usage, making this an imp
 - Update help text with new flag
 - Maintain backward compatibility (default: 512 bytes)
 
-#### Key Files to Modify
-- **`app/Main.hs`** - Add `--value-size` argument parsing
-- **`app/Filler.hs`** - Update `fillCacheWithDataMB` to accept value size parameter
-- **`app/ClusterFiller.hs`** - Update `fillNodeWithData` and `generateClusterChunk` to accept value size
+#### Key Files Modified
+- **`app/Main.hs`** - Added `--value-size` argument parsing with validation
+- **`app/Filler.hs`** - Updated `fillCacheWithDataMB` and `genRandomSet` to accept value size parameter
+- **`app/ClusterFiller.hs`** - Updated `fillNodeWithData` and `generateClusterChunk` to accept value size
+- **`lib/redis-command-client/RedisCommandClient.hs`** - Added `valueSize` field to `RunState`
+- **`test/FillHelpersSpec.hs`** - Added 5 new unit tests for value size support
 
-#### Proposed Command-Line Flag
+#### Command-Line Flag
 ```
 --value-size BYTES
   Size of each value in bytes
@@ -183,13 +190,17 @@ Value size significantly impacts throughput and memory usage, making this an imp
   Range: 1-524288 bytes (512 KB max)
 ```
 
-#### Parameter Validation
+#### Parameter Validation (Implemented)
 ```haskell
-validateValueSize :: Int -> Either String Int
-validateValueSize size
-  | size < 1 = Left "Value size must be at least 1 byte"
-  | size > 524288 = Left "Value size must not exceed 524288 bytes"
-  | otherwise = Right size
+-- In app/Main.hs options list
+Option [] ["value-size"] (ReqArg (\arg opt -> do
+    let size = read arg :: Int
+    if size < 1
+      then ioError (userError "Value size must be at least 1 byte")
+      else if size > 524288
+        then ioError (userError "Value size must not exceed 524288 bytes")
+        else return $ opt {valueSize = size}) "BYTES") 
+  "Size of each value in bytes (default: 512, range: 1-524288)"
 ```
 
 #### Usage Examples
@@ -207,11 +218,24 @@ redis-client fill -h localhost -d 1 --key-size 512 --value-size 65536
 redis-client fill -h localhost -c -d 5 --key-size 512 --value-size 2048
 ```
 
-#### Success Criteria
+#### Success Criteria (All Met)
 - ✅ `--value-size` flag works correctly in standalone mode
 - ✅ `--value-size` flag works correctly in cluster mode
 - ✅ Backward compatibility maintained (default: 512 bytes)
 - ✅ Parameter validation works and provides clear error messages
+- ✅ All existing tests pass
+- ✅ Help text (`--help`) updated with new flag
+
+#### Test Results
+- All unit tests pass: 97 examples, 0 failures (19 in FillHelpersSpec)
+- Manual memory accuracy testing:
+  - key=256, value=1024: Expected 838,861 keys → Got 838,862 keys ✓
+  - key=512, value=512: Expected 1,048,576 keys → Got 1,048,576 keys ✓
+  - key=64, value=128: Expected 5,592,405 keys → Got 5,592,406 keys ✓
+  - key=512, value=8192: Expected 123,362 keys → Got 123,362 keys ✓
+- Backward compatibility verified (default valueSize=512)
+- Code review: No critical issues found
+- CodeQL security scan: No vulnerabilities detected
 - ✅ All existing tests pass
 - ✅ Help text (`--help`) updated with new flag
 

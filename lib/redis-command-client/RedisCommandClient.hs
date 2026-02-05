@@ -528,7 +528,8 @@ data RunState = RunState
     numConnections :: Maybe Int,
     useCluster :: Bool,
     tunnelMode :: String,
-    keySize :: Int
+    keySize :: Int,
+    valueSize :: Int
   }
   deriving (Show)
 
