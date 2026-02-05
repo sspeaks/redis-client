@@ -1,5 +1,14 @@
 #! /usr/bin/env nix-shell
 #! nix-shell -i bash -p  redis
+#
+# Script to create a Redis cluster from Docker containers.
+# This script:
+# 1. Starts Redis containers via docker compose
+# 2. Waits for all nodes to be ready
+# 3. Resets any stale cluster state (fixes hanging issues)
+# 4. Creates the cluster with a 60-second timeout
+#
+# If cluster creation hangs, run: docker compose down -v
 
 docker compose up -d
 
