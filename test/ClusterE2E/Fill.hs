@@ -37,10 +37,11 @@ spec = describe "Cluster Fill Mode" $ do
     -- Verify keys were distributed across cluster
     bracket createTestClusterClient closeClusterClient $ \client -> do
       totalKeys <- countClusterKeys client
-      -- With MB-based calculation and chunking, we fill approximately 1GB
-      -- Expect roughly 1,048,576 keys (1GB / 1024 bytes per key-value pair)
-      -- Allow for some variance due to chunking and rounding (~2% tolerance)
-      totalKeys `shouldSatisfy` (\n -> n >= 1028096 && n <= 1069056)  -- 1048576 ± 2%
+      -- With the fixed calculation using bytesPerCommand and remainder logic,
+      -- we now fill much more accurately. For 1GB with 512+512 byte entries:
+      -- Expected: 1GB / 1024 bytes = 1,048,576 keys
+      -- With remainder logic, we should be within 0.1% (at most chunkKilos commands extra)
+      totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)  -- 1048576 ± 0.1%
 
   it "fill --flush clears all nodes in cluster" $ do
     redisClient <- getRedisClientPath
@@ -116,9 +117,8 @@ spec = describe "Cluster Fill Mode" $ do
     -- Verify data was filled (approximately 1GB)
     bracket createTestClusterClient closeClusterClient $ \client -> do
       totalKeys <- countClusterKeys client
-      -- Allow for variance due to MB-based calculation with chunking and multiple threads
-      -- With more threads, rounding effects can accumulate, so allow up to 10% variance
-      totalKeys `shouldSatisfy` (\n -> n >= 943718 && n <= 1153434)  -- 1048576 ± 10%
+      -- With remainder logic, expect accurate fill within 0.1%
+      totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)  -- 1048576 ± 0.1%
 
   it "fill distributes data across multiple master nodes" $ do
     redisClient <- getRedisClientPath
@@ -153,5 +153,5 @@ spec = describe "Cluster Fill Mode" $ do
       mapM_ (\keys -> keys `shouldSatisfy` (> 0)) keysPerNode
 
       -- Total should be approximately 1048576 keys (1GB of data)
-      -- Allow for variance due to MB-based calculation with chunking
-      sum keysPerNode `shouldSatisfy` (\n -> n >= 1028096 && n <= 1069056)  -- 1048576 ± 2%
+      -- With remainder logic, expect accurate fill within 0.1%
+      sum keysPerNode `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)  -- 1048576 ± 0.1%

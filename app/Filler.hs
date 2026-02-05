@@ -5,6 +5,7 @@
 module Filler where
 
 import Client (Client (..))
+import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.State qualified as State
 import Data.ByteString qualified as BS
@@ -97,15 +98,27 @@ fillCacheWithDataMB baseSeed threadIdx mb keySize = do
   -- affects this specific connection.
   clientReply OFF
   
-  -- Calculate total chunks needed based on actual MB requested
-  let totalKilosNeeded = mb * 1024  -- Convert MB to KB
-      totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
+  -- Calculate total commands needed based on actual data size
+  -- Each command stores: keySize bytes (key) + 512 bytes (value)
+  let bytesPerCommand = keySize + 512
+      totalBytesNeeded = mb * 1024 * 1024  -- Convert MB to bytes
+      totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
+      
+      -- Calculate chunks and remainder for exact distribution
+      fullChunks = totalCommandsNeeded `div` chunkKilos
+      remainderCommands = totalCommandsNeeded `mod` chunkKilos
+      totalChunks = if remainderCommands > 0 then fullChunks + 1 else fullChunks
   
-  -- Send all chunks sequentially (fire-and-forget mode)
+  -- Send all full chunks sequentially (fire-and-forget mode)
   mapM_ (\i -> do 
       let !cmd = genRandomSet chunkKilos keySize (startSeed + fromIntegral i)
       send client cmd
-      ) [0..totalChunks - 1]
+      ) [0..fullChunks - 1]
+  
+  -- Send the remainder chunk if there is one
+  when (remainderCommands > 0) $ do
+      let !cmd = genRandomSet remainderCommands keySize (startSeed + fromIntegral fullChunks)
+      send client cmd
   
   -- Turn replies back on to confirm completion
   val <- clientReply ON

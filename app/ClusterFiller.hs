@@ -203,17 +203,29 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize = do
           -- Turn off client replies for maximum throughput (fire-and-forget)
           _ <- clientReply OFF
 
-          -- Calculate total chunks needed based on actual MB requested
-          -- Uses ceiling division: (a + b - 1) / b to ensure we send enough data
-          let totalKilosNeeded = mbToFill * 1024  -- Convert MB to KB
-              totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- ceiling(totalKilosNeeded / chunkKilos)
+          -- Calculate total commands needed based on actual data size
+          -- Each command stores: keySize bytes (key) + 512 bytes (value)
+          let bytesPerCommand = keySize + 512
+              totalBytesNeeded = mbToFill * 1024 * 1024  -- Convert MB to bytes
+              totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
+              
+              -- Calculate chunks and remainder for exact distribution
+              fullChunks = totalCommandsNeeded `div` chunkKilos
+              remainderCommands = totalCommandsNeeded `mod` chunkKilos
+              totalChunks = if remainderCommands > 0 then fullChunks + 1 else fullChunks
 
-          -- Generate and send all chunks
+          -- Generate and send all full chunks
           mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
               let cmd = generateClusterChunk slotsVec chunkKilos keySize (threadSeed + fromIntegral chunkIdx)
               send client cmd
-            ) [0..totalChunks - 1]
+            ) [0..fullChunks - 1]
+          
+          -- Send the remainder chunk if there is one
+          when (remainderCommands > 0) $ do
+              ClientState client _ <- State.get
+              let cmd = generateClusterChunk slotsVec remainderCommands keySize (threadSeed + fromIntegral fullChunks)
+              send client cmd
 
           -- Turn replies back on
           _ <- clientReply ON
