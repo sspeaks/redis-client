@@ -990,6 +990,11 @@ MGET {user:123}:profile {user:123}:settings  # Works across multi-key!
 - Make minimal changes
 - Run `cabal test` after changes
 - Run `./rune2eTests.sh` and `./runClusterE2ETests.sh` after changes
+- **Check CI output after committing changes before marking work as complete**
+  - CI runs automated E2E tests in Docker environment
+  - Failures may not be visible in local testing
+  - Review test output for errors, missing files, or configuration issues
+  - Iterate on failures by analyzing error messages and making targeted fixes
 - If Redis isn't running locally, start with docker
 - Use `-f` flag in fill mode if Redis is in docker (RAM considerations)
 
