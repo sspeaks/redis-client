@@ -77,8 +77,11 @@ genRandomSet chunkKilos keySize seed = Builder.toLazyByteString $! go numCommand
       | otherwise = 
           -- For larger keys, use seed + noise
           let !scrambled = s * 6364136223846793005 + 1442695040888963407
-              !offset = fromIntegral (scrambled `rem` (fromIntegral (128 * 1024 * 1024 - size)))
               !noiseSize = size - 8
+              -- Ensure we don't exceed the noise buffer size
+              !bufferSize = 128 * 1024 * 1024
+              !safeNoiseSize = min noiseSize bufferSize
+              !offset = fromIntegral (scrambled `rem` (fromIntegral (bufferSize - safeNoiseSize)))
               !chunk = BS.take noiseSize (BS.drop offset randomNoise)
           in Builder.word64LE s <> Builder.byteString chunk
     {-# INLINE generateBytes #-}

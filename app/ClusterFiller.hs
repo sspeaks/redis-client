@@ -306,12 +306,16 @@ generateClusterChunk slots chunkKilos keySize seed =
 
               -- Fill remaining bytes with noise
               !totalPrefix = prefixLen + 8  -- prefix + seed
-              !paddingNeeded = size - totalPrefix
+              !paddingNeeded = max 0 (size - totalPrefix)  -- Ensure non-negative
 
               !scrambled = seed * 6364136223846793005 + 1442695040888963407
-              !offset = fromIntegral (scrambled `rem` (fromIntegral (128 * 1024 * 1024 - max size 512)))
+              !bufferSize = 128 * 1024 * 1024
+              !safePaddingSize = min paddingNeeded bufferSize
+              !offset = fromIntegral (scrambled `rem` (fromIntegral (bufferSize - safePaddingSize)))
               !padding = BS.take paddingNeeded (BS.drop offset randomNoise)
-          in prefix <> seedBytes <> Builder.byteString padding
+          in if totalPrefix > size
+             then generateBytes size seed  -- If prefix too large, fall back to regular generation
+             else prefix <> seedBytes <> Builder.byteString padding
     {-# INLINE generateBytesWithHashTag #-}
 
     -- Generate arbitrary number of bytes (same logic as in Filler.hs)
@@ -324,8 +328,11 @@ generateClusterChunk slots chunkKilos keySize seed =
       | otherwise = 
           -- For larger keys, use seed + noise
           let !scrambled = s * 6364136223846793005 + 1442695040888963407
-              !offset = fromIntegral (scrambled `rem` (fromIntegral (128 * 1024 * 1024 - size)))
               !noiseSize = size - 8
+              -- Ensure we don't exceed the noise buffer size
+              !bufferSize = 128 * 1024 * 1024
+              !safeNoiseSize = min noiseSize bufferSize
+              !offset = fromIntegral (scrambled `rem` (fromIntegral (bufferSize - safeNoiseSize)))
               !chunk = BS.take noiseSize (BS.drop offset randomNoise)
           in Builder.word64LE s <> Builder.byteString chunk
     {-# INLINE generateBytes #-}
