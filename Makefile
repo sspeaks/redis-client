@@ -80,7 +80,7 @@ redis-start:
 
 # Start Redis Cluster with Docker Compose
 redis-cluster-start:
-	@cd docker-cluster && docker-compose up -d
+	@cd docker-cluster && docker compose up -d
 	@sleep 5
 	@cd docker-cluster && ./make_cluster.sh
 
@@ -90,7 +90,7 @@ redis-stop:
 
 # Stop Redis Cluster
 redis-cluster-stop:
-	@cd docker-cluster && docker-compose down
+	@cd docker-cluster && docker compose down
 
 # Build with profiling enabled
 profile:
