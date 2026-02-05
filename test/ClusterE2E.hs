@@ -288,9 +288,11 @@ main = hspec $ do
         
         -- Verify keys exist across all nodes
         bracket createTestClusterClient closeClusterClient $ \client -> do
+          topology <- readTVarIO (clusterTopology client)
+          let masterCount = length [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
           totalKeys <- countClusterKeys client
-          -- We created one key per master node, so should have at least that many
-          totalKeys `shouldSatisfy` (> 0)
+          -- We created one key per master node, so should have exactly that many
+          totalKeys `shouldBe` fromIntegral masterCount
         
         -- Flush the cluster using only the -f flag (no --data)
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
