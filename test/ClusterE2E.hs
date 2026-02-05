@@ -13,7 +13,7 @@ import           ClusterCommandClient
 import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (IOException, bracket, evaluate, try)
+import           Control.Exception          (IOException, SomeException, bracket, evaluate, finally, try)
 import           Control.Monad              (void, when)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
@@ -33,14 +33,15 @@ import           System.Directory           (doesFileExist, findExecutable)
 import           System.Environment         (getEnvironment, getExecutablePath)
 import           System.Exit                (ExitCode (..))
 import           System.FilePath            (takeDirectory, (</>))
-import           System.IO                  (BufferMode (LineBuffering),
-                                             hClose, hFlush, hGetContents,
+import           System.IO                  (BufferMode (LineBuffering), Handle,
+                                             hClose, hFlush, hGetContents, hGetLine,
                                              hPutStrLn, hSetBuffering)
 import           System.Process             (CreateProcess (..), ProcessHandle,
                                              StdStream (CreatePipe), proc,
                                              readCreateProcessWithExitCode,
                                              terminateProcess, waitForProcess,
                                              withCreateProcess)
+import           System.Timeout             (timeout)
 import           Test.Hspec
 
 -- | Create a cluster client for testing
@@ -131,6 +132,31 @@ loadSlotMappings filepath = do
 -- This gives time for command execution and output to be available
 cliCommandDelayMicros :: Int
 cliCommandDelayMicros = 200000
+
+-- | Clean up a process handle
+cleanupProcess :: ProcessHandle -> IO ()
+cleanupProcess ph = do
+  _ <- (try (terminateProcess ph) :: IO (Either IOException ()))
+  _ <- (try (waitForProcess ph) :: IO (Either IOException ExitCode))
+  pure ()
+
+-- | Wait for a specific substring to appear in handle output
+waitForSubstring :: Handle -> String -> IO ()
+waitForSubstring handle needle = do
+  line <- hGetLine handle
+  if needle `isInfixOf` line
+    then pure ()
+    else waitForSubstring handle needle
+
+-- | Drain all remaining content from a handle
+drainHandle :: Handle -> IO String
+drainHandle handle = do
+  result <- try (hGetContents handle) :: IO (Either IOException String)
+  case result of
+    Left _ -> pure ""
+    Right contents -> do
+      void $ evaluate (length contents)
+      pure contents
 
 main :: IO ()
 main = hspec $ do
@@ -698,3 +724,402 @@ main = hspec $ do
               verifyKeyOnNode key2 node2
               verifyKeyOnNode key3 node3
             _ -> expectationFailure "Could not map slots to nodes in topology"
+
+    describe "Cluster Tunnel Mode" $ do
+      describe "Smart Proxy Mode" $ do
+        it "smart mode makes cluster appear as single Redis instance" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      -- Wait for smart proxy to start listening
+                      ready <- timeout (5 * 1000000) (try (waitForSubstring hout "Smart proxy listening on localhost:6379") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          stdoutRest <- drainHandle hout
+                          stderrRest <- drainHandle herr
+                          expectationFailure (unlines ["Smart proxy did not report listening within timeout.", "stdout:", stdoutRest, "stderr:", stderrRest])
+                        Just (Left err) -> do
+                          cleanup
+                          stdoutRest <- drainHandle hout
+                          stderrRest <- drainHandle herr
+                          expectationFailure (unlines ["Smart proxy stdout closed unexpectedly: " <> show err, "stdout:", stdoutRest, "stderr:", stderrRest])
+                        Just (Right ()) -> do
+                          -- Connect to the smart proxy as if it were a single Redis instance
+                          conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+                          
+                          -- Execute commands through proxy
+                          result1 <- runRedisCommand conn (set "smart:key1" "value1")
+                          result1 `shouldBe` RespSimpleString "OK"
+                          
+                          result2 <- runRedisCommand conn (get "smart:key1")
+                          result2 `shouldBe` RespBulkString "value1"
+                          
+                          result3 <- runRedisCommand conn ping
+                          result3 `shouldBe` RespSimpleString "PONG"
+                          
+                          close conn
+                          
+                          -- Verify that commands routed transparently by checking with cluster client
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            verifyResult <- runCmd client (get "smart:key1")
+                            verifyResult `shouldBe` RespBulkString "value1"
+                            
+                            -- Clean up the test key
+                            _ <- runCmd client (del ["smart:key1"])
+                            pure ()
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Smart proxy process did not expose stdout/stderr handles"
+
+        it "smart mode handles commands that route to different nodes" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      ready <- timeout (5 * 1000000) (try (waitForSubstring hout "Smart proxy listening on localhost:6379") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          expectationFailure "Smart proxy did not start within timeout"
+                        Just (Left _) -> do
+                          cleanup
+                          expectationFailure "Smart proxy stdout closed unexpectedly"
+                        Just (Right ()) -> do
+                          conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+                          
+                          -- Set keys that will hash to different slots (and likely different nodes)
+                          _ <- runRedisCommand conn (set "key:a" "value-a")
+                          _ <- runRedisCommand conn (set "key:b" "value-b")
+                          _ <- runRedisCommand conn (set "key:c" "value-c")
+                          
+                          -- Verify all keys are accessible through the proxy
+                          result1 <- runRedisCommand conn (get "key:a")
+                          result1 `shouldBe` RespBulkString "value-a"
+                          
+                          result2 <- runRedisCommand conn (get "key:b")
+                          result2 `shouldBe` RespBulkString "value-b"
+                          
+                          result3 <- runRedisCommand conn (get "key:c")
+                          result3 `shouldBe` RespBulkString "value-c"
+                          
+                          close conn
+                          
+                          -- Clean up
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            _ <- runCmd client (del ["key:a", "key:b", "key:c"])
+                            pure ()
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Smart proxy process did not expose stdout/stderr handles"
+
+        it "smart mode handles MOVED redirections internally" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      ready <- timeout (5 * 1000000) (try (waitForSubstring hout "Smart proxy listening on localhost:6379") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          expectationFailure "Smart proxy did not start within timeout"
+                        Just (Left _) -> do
+                          cleanup
+                          expectationFailure "Smart proxy stdout closed unexpectedly"
+                        Just (Right ()) -> do
+                          conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+                          
+                          -- Set a key - the smart proxy should handle any MOVED errors internally
+                          result1 <- runRedisCommand conn (set "redirect:test" "value")
+                          result1 `shouldBe` RespSimpleString "OK"
+                          
+                          -- Get the key - should work regardless of topology
+                          result2 <- runRedisCommand conn (get "redirect:test")
+                          result2 `shouldBe` RespBulkString "value"
+                          
+                          close conn
+                          
+                          -- Clean up
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            _ <- runCmd client (del ["redirect:test"])
+                            pure ()
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Smart proxy process did not expose stdout/stderr handles"
+
+        it "smart mode handles multiple concurrent clients" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      ready <- timeout (5 * 1000000) (try (waitForSubstring hout "Smart proxy listening on localhost:6379") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          expectationFailure "Smart proxy did not start within timeout"
+                        Just (Left _) -> do
+                          cleanup
+                          expectationFailure "Smart proxy stdout closed unexpectedly"
+                        Just (Right ()) -> do
+                          -- Create two separate connections
+                          conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+                          conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+                          
+                          -- Client 1 sets and gets a key
+                          result1 <- runRedisCommand conn1 (set "concurrent:key1" "client1-value")
+                          result1 `shouldBe` RespSimpleString "OK"
+                          
+                          -- Client 2 sets and gets a different key
+                          result2 <- runRedisCommand conn2 (set "concurrent:key2" "client2-value")
+                          result2 `shouldBe` RespSimpleString "OK"
+                          
+                          -- Both clients can read their keys
+                          result3 <- runRedisCommand conn1 (get "concurrent:key1")
+                          result3 `shouldBe` RespBulkString "client1-value"
+                          
+                          result4 <- runRedisCommand conn2 (get "concurrent:key2")
+                          result4 `shouldBe` RespBulkString "client2-value"
+                          
+                          -- Cross-client reads work
+                          result5 <- runRedisCommand conn1 (get "concurrent:key2")
+                          result5 `shouldBe` RespBulkString "client2-value"
+                          
+                          result6 <- runRedisCommand conn2 (get "concurrent:key1")
+                          result6 `shouldBe` RespBulkString "client1-value"
+                          
+                          close conn1
+                          close conn2
+                          
+                          -- Clean up
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            _ <- runCmd client (del ["concurrent:key1", "concurrent:key2"])
+                            pure ()
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Smart proxy process did not expose stdout/stderr handles"
+
+      describe "Pinned Proxy Mode" $ do
+        it "pinned mode creates one listener per cluster node" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      -- Wait for pinned proxy to start all listeners
+                      ready <- timeout (10 * 1000000) (try (waitForSubstring hout "All pinned listeners started") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          stdoutRest <- drainHandle hout
+                          stderrRest <- drainHandle herr
+                          expectationFailure (unlines ["Pinned proxy did not report all listeners started within timeout.", "stdout:", stdoutRest, "stderr:", stderrRest])
+                        Just (Left err) -> do
+                          cleanup
+                          stdoutRest <- drainHandle hout
+                          stderrRest <- drainHandle herr
+                          expectationFailure (unlines ["Pinned proxy stdout closed unexpectedly: " <> show err, "stdout:", stdoutRest, "stderr:", stderrRest])
+                        Just (Right ()) -> do
+                          -- Get cluster topology to find master nodes
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            topology <- readTVarIO (clusterTopology client)
+                            let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+                            
+                            -- Verify we have multiple masters
+                            length masterNodes `shouldSatisfy` (>= 3)
+                            
+                            -- Connect to one of the pinned listeners (using first master's port)
+                            let firstMaster = head masterNodes
+                                addr = nodeAddress firstMaster
+                                localPort = nodePort addr
+                            
+                            conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
+                            
+                            -- Execute a command through pinned proxy
+                            result1 <- runRedisCommand conn (set "pinned:test" "value")
+                            result1 `shouldBe` RespSimpleString "OK"
+                            
+                            result2 <- runRedisCommand conn (get "pinned:test")
+                            result2 `shouldBe` RespBulkString "value"
+                            
+                            close conn
+                            
+                            -- Clean up
+                            _ <- runCmd client (del ["pinned:test"])
+                            pure ()
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
+
+        it "pinned mode listeners forward to their respective nodes" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      ready <- timeout (10 * 1000000) (try (waitForSubstring hout "All pinned listeners started") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          expectationFailure "Pinned proxy did not start within timeout"
+                        Just (Left _) -> do
+                          cleanup
+                          expectationFailure "Pinned proxy stdout closed unexpectedly"
+                        Just (Right ()) -> do
+                          -- Get cluster topology
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            topology <- readTVarIO (clusterTopology client)
+                            let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+                            
+                            when (length masterNodes < 2) $
+                              expectationFailure "Need at least 2 master nodes for this test"
+                            
+                            -- Connect to two different pinned listeners
+                            let node1 = head masterNodes
+                                node2 = masterNodes !! 1
+                                addr1 = nodeAddress node1
+                                addr2 = nodeAddress node2
+                                port1 = nodePort addr1
+                                port2 = nodePort addr2
+                            
+                            conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
+                            conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
+                            
+                            -- Set a key through each listener
+                            _ <- runRedisCommand conn1 (set "pinned:node1:key" "from-node1")
+                            _ <- runRedisCommand conn2 (set "pinned:node2:key" "from-node2")
+                            
+                            -- Verify keys are set
+                            result1 <- runRedisCommand conn1 (get "pinned:node1:key")
+                            result1 `shouldBe` RespBulkString "from-node1"
+                            
+                            result2 <- runRedisCommand conn2 (get "pinned:node2:key")
+                            result2 `shouldBe` RespBulkString "from-node2"
+                            
+                            close conn1
+                            close conn2
+                            
+                            -- Clean up (using cluster client to reach correct nodes)
+                            _ <- runCmd client (del ["pinned:node1:key", "pinned:node2:key"])
+                            pure ()
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
+
+        it "pinned mode handles CLUSTER SLOTS commands correctly" $ do
+          redisClient <- getRedisClientPath
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      ready <- timeout (10 * 1000000) (try (waitForSubstring hout "All pinned listeners started") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          expectationFailure "Pinned proxy did not start within timeout"
+                        Just (Left _) -> do
+                          cleanup
+                          expectationFailure "Pinned proxy stdout closed unexpectedly"
+                        Just (Right ()) -> do
+                          -- Get first master node port
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            topology <- readTVarIO (clusterTopology client)
+                            let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+                            let firstMaster = head masterNodes
+                                addr = nodeAddress firstMaster
+                                localPort = nodePort addr
+                            
+                            conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
+                            
+                            -- Execute CLUSTER SLOTS through pinned proxy
+                            -- The response should have addresses rewritten to 127.0.0.1
+                            result <- runRedisCommand conn clusterSlots
+                            
+                            -- Verify result is an array (CLUSTER SLOTS returns array of slot ranges)
+                            case result of
+                              RespArray slots -> do
+                                -- Should have multiple slot ranges
+                                length slots `shouldSatisfy` (> 0)
+                                -- Note: Full validation of address rewriting would require parsing
+                                -- the complex nested array structure. Just verify it's valid RESP.
+                                pure ()
+                              other -> expectationFailure $ "Expected RespArray from CLUSTER SLOTS, got: " ++ show other
+                            
+                            close conn
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
