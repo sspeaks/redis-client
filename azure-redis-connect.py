@@ -93,18 +93,67 @@ class AzureRedisConnector:
         """List all Redis caches in the subscription (optionally filtered by resource group)."""
         print("Fetching Redis caches from Azure...")
         
-        if self.resource_group:
-            command = [
-                'az', 'redis', 'list',
-                '--resource-group', self.resource_group,
-                '--output', 'json'
-            ]
-        else:
-            command = ['az', 'redis', 'list', '--output', 'json']
+        caches = []
         
-        output = self.run_az_command(command)
-        caches = json.loads(output)
-        
+        # 1. Fetch Standard Redis Caches
+        try:
+            if self.resource_group:
+                command = [
+                    'az', 'redis', 'list',
+                    '--resource-group', self.resource_group,
+                    '--output', 'json'
+                ]
+            else:
+                command = ['az', 'redis', 'list', '--output', 'json']
+            
+            output = self.run_az_command(command)
+            standard_caches = json.loads(output)
+            
+            # Enrich with type
+            for cache in standard_caches:
+                cache['cache_type'] = 'Standard'
+                # Ensure shard count is correct for standard
+                if 'shardCount' not in cache and cache.get('sku', {}).get('capacity', 0) > 0:
+                     # For standard, it's not always obvious, but usually just 0 if not premium clustered
+                     pass
+            
+            caches.extend(standard_caches)
+            
+        except Exception as e:
+            print(f"Warning: Failed to list Standard Redis caches: {e}", file=sys.stderr)
+
+        # 2. Fetch Azure Managed Redis (Enterprise) Caches
+        try:
+            # Check if redisenterprise extension is available or command works
+            if self.resource_group:
+                command = [
+                    'az', 'redisenterprise', 'list',
+                    '--resource-group', self.resource_group,
+                    '--output', 'json'
+                ]
+            else:
+                command = ['az', 'redisenterprise', 'list', '--output', 'json']
+            
+            output = self.run_az_command(command)
+            enterprise_caches = json.loads(output)
+            
+            # Enrich with type and normalize fields
+            for cache in enterprise_caches:
+                cache['cache_type'] = 'Enterprise'
+                # Enterprise list returns 'hostName', but ports are in databases.
+                # We'll set a placeholder or default.
+                if 'sslPort' not in cache:
+                    cache['sslPort'] = 10000  # distinct default
+                
+                # Normalize shard count if available (Enterprise might not show it in list easily)
+                pass 
+                
+            caches.extend(enterprise_caches)
+
+        except Exception as e:
+             # Just ignore if extension not installed or command fails
+             pass
+
         if not caches:
             print("No Redis caches found.", file=sys.stderr)
             sys.exit(1)
@@ -117,25 +166,31 @@ class AzureRedisConnector:
         print()
         
         # Table header
-        header = f"{'#':<4} {'Name':<30} {'Resource Group':<25} {'Location':<15} {'SKU':<12} {'SSL Port':<10} {'Shards':<6}"
+        header = f"{'#':<4} {'Name':<30} {'Type':<12} {'Resource Group':<25} {'Location':<15} {'SKU':<12} {'SSL Port':<10}"
         print(header)
         print("-" * len(header))
         
         # Table rows
         for idx, cache in enumerate(caches, 1):
             name = cache.get('name', 'Unknown')
+            cache_type = cache.get('cache_type', 'Standard')
             resource_group = cache.get('resourceGroup', 'Unknown')
             location = cache.get('location', 'Unknown')
-            sku = cache.get('sku', {}).get('name', 'Unknown')
-            ssl_port = cache.get('sslPort', 6380)
-            shard_count = cache.get('shardCount')
-            shards_display = str(shard_count) if shard_count else "-"
+            
+            # SKU handling might differ
+            sku_info = cache.get('sku', {})
+            if isinstance(sku_info, dict):
+                sku = sku_info.get('name', 'Unknown')
+            else:
+                sku = str(sku_info)
+                
+            ssl_port = cache.get('sslPort', 'N/A')
             
             # Truncate long names if necessary
             name_display = name[:28] + '..' if len(name) > 30 else name
             rg_display = resource_group[:23] + '..' if len(resource_group) > 25 else resource_group
             
-            row = f"{idx:<4} {name_display:<30} {rg_display:<25} {location:<15} {sku:<12} {ssl_port:<10} {shards_display:<6}"
+            row = f"{idx:<4} {name_display:<30} {cache_type:<12} {rg_display:<25} {location:<15} {sku:<12} {ssl_port:<10}"
             print(row)
         
         print()
@@ -225,6 +280,28 @@ class AzureRedisConnector:
             
         return mode, tunnel_type
 
+    def get_enterprise_database(self, cache: Dict) -> Optional[Dict]:
+        """Fetch the first database for an Enterprise cache."""
+        name = cache.get('name')
+        resource_group = cache.get('resourceGroup')
+        
+        print(f"Fetching database details for Enterprise cache {name}...")
+        try:
+            output = self.run_az_command([
+                'az', 'redisenterprise', 'database', 'list',
+                '--cluster-name', name,
+                '--resource-group', resource_group,
+                '--output', 'json'
+            ])
+            dbs = json.loads(output)
+            if dbs and len(dbs) > 0:
+                # Return the first database
+                return dbs[0]
+            return None
+        except Exception as e:
+            print(f"Error fetching enterprise databases: {e}", file=sys.stderr)
+            return None
+
     def check_entra_auth(self, cache: Dict) -> bool:
         """Check if the cache uses Entra (Azure AD) authentication only.
         
@@ -232,7 +309,16 @@ class AzureRedisConnector:
         """
         name = cache.get('name')
         resource_group = cache.get('resourceGroup')
+        cache_type = cache.get('cache_type', 'Standard')
         
+        if cache_type == 'Enterprise':
+            # For Enterprise, Entra is supported, but checking policy assignments is different/preview.
+            # Simple heuristic: try to get keys. If we can't get keys, assume Entra.
+            # (Fetching keys happens later anyway, but we check here to decide auth flow)
+            if self.get_access_key(cache):
+                return False
+            return True
+
         # Strategy: Check if access policy assignments exist
         # The presence of access policy assignments indicates Entra authentication is configured
         
@@ -378,32 +464,62 @@ class AzureRedisConnector:
         """Get the primary access key for the cache."""
         name = cache.get('name')
         resource_group = cache.get('resourceGroup')
+        cache_type = cache.get('cache_type', 'Standard')
         
         try:
-            keys_output = self.run_az_command([
-                'az', 'redis', 'list-keys',
-                '--name', name,
-                '--resource-group', resource_group,
-                '--output', 'json'
-            ], obfuscate_output=True)
-            keys = json.loads(keys_output)
-            return keys.get('primaryKey')
-        except Exception:
+            if cache_type == 'Enterprise':
+                # For Enterprise, we need to get keys from the database
+                # We assume the database info is already attached or we use 'default'
+                # If cache has 'database_name' set, use it, otherwise assume 'default'
+                db_name = cache.get('database_name', 'default')
+                
+                keys_output = self.run_az_command([
+                    'az', 'redisenterprise', 'database', 'list-keys',
+                    '--cluster-name', name,
+                    '--resource-group', resource_group,
+                    '--database-name', db_name,
+                    '--output', 'json'
+                ], obfuscate_output=True)
+                keys = json.loads(keys_output)
+                return keys.get('primaryKey')
+            else:
+                keys_output = self.run_az_command([
+                    'az', 'redis', 'list-keys',
+                    '--name', name,
+                    '--resource-group', resource_group,
+                    '--output', 'json'
+                ], obfuscate_output=True)
+                keys = json.loads(keys_output)
+                return keys.get('primaryKey')
+        except Exception as e:
+            # print(f"Debug: failed to get key: {e}")
             return None
 
     def launch_redis_client(self, cache: Dict, mode: str, tunnel_type: Optional[str] = None):
         """Launch the redis-client with appropriate parameters."""
+        name = cache.get('name')
+        cache_type = cache.get('cache_type', 'Standard')
+        
+        # Resolve Enterprise details if needed
+        if cache_type == 'Enterprise':
+            db_info = self.get_enterprise_database(cache)
+            if db_info:
+                cache['sslPort'] = db_info.get('port', 10000)
+                cache['database_name'] = db_info.get('name', 'default')
+                print(f"✓ Resolved Enterprise database '{cache['database_name']}' on port {cache['sslPort']}")
+            else:
+                print("Warning: Could not resolve Enterprise database details", file=sys.stderr)
+
         hostname = cache.get('hostName')
         ssl_port = cache.get('sslPort', 6380)
-        name = cache.get('name')
         
-        print(f"\nConnecting to {name} ({hostname})...")
+        print(f"\nConnecting to {name} ({hostname}:{ssl_port})...")
         
         # Check authentication method
         is_entra = self.check_entra_auth(cache)
         
         # Build command
-        command = ['redis-client', mode, '-h', hostname, '-t']
+        command = ['redis-client', mode, '-h', hostname, '-p', str(ssl_port), '-t']
         
         # Add tunnel mode type if specified
         if mode == 'tunn' and tunnel_type:
