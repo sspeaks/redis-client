@@ -155,6 +155,15 @@ test-suite ClusterCommandSpec
                     , bytestring
                     , time
 
+test-suite FillHelpersSpec
+    type:             exitcode-stdio-1.0
+    default-language: GHC2021
+    main-is:          FillHelpersSpec.hs
+    hs-source-dirs:   test
+    build-depends:    base >=4.19 && <5
+                    , hspec
+                    , bytestring
+
 executable EndToEnd
     default-language: GHC2021
     main-is:          E2E.hs

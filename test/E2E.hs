@@ -337,6 +337,35 @@ main = do
         stdoutOut `shouldSatisfy` ("Flushing cache" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 0
 
+      it "fill with --key-size 128 creates keys of correct size" $ do
+        void $ runRedisAction flushAll
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("key size: 128 bytes" `isInfixOf`)
+        -- Verify some keys exist
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> n `shouldSatisfy` (> 0)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --key-size 64 creates smaller keys" $ do
+        void $ runRedisAction flushAll
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("key size: 64 bytes" `isInfixOf`)
+
+      it "fill with --key-size 2048 creates larger keys" $ do
+        void $ runRedisAction flushAll
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "2048"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("key size: 2048 bytes" `isInfixOf`)
+
+      it "fill rejects invalid --key-size values" $ do
+        (code1, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "0"] ""
+        code1 `shouldNotBe` ExitSuccess
+        (code2, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "100000"] ""
+        code2 `shouldNotBe` ExitSuccess
+
       it "cli mode responds to commands" $ do
         let cp =
               (proc redisClient ["cli", "--host", "redis.local"]) {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
