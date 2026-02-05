@@ -180,6 +180,11 @@ executable ClusterEndToEnd
                     , bytestring
                     , client
                     , resp
+                    , directory
+                    , filepath
+                    , process
+                    , stm
+                    , containers
 
 executable redis-client
     import:           warnings
