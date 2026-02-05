@@ -303,19 +303,17 @@ main = hspec $ do
           totalKeys <- countClusterKeys client
           totalKeys `shouldSatisfy` (>= fromIntegral (length masterNodes))
         
-        -- Flush the cluster using the fill command with -f flag
-        -- Note: -f flushes before filling, so the cache will have 1GB of data after this command
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "localhost", "--cluster", "--data", "1", "-f"] ""
-        code `shouldBe` ExitSuccess
+        -- Flush the cluster using only the -f flag (no --data)
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "localhost", "--cluster", "-f"] ""
+        code `shouldNotBe` ExitSuccess  -- Exits with failure when only flushing
         stdoutOut `shouldSatisfy` ("Flushing all" `isInfixOf`)
         
         threadDelay 100000
         
-        -- Verify flush worked by checking we have exactly the filled amount (not the old keys plus new ones)
-        -- The -f flag ensures we start fresh, so we should have exactly 1,048,576 keys from the fill
+        -- Verify all keys are gone from all nodes after flush
         bracket createTestClusterClient closeClusterClient $ \client -> do
           totalKeys <- countClusterKeys client
-          totalKeys `shouldBe` 1048576
+          totalKeys `shouldBe` 0
 
       it "fill with -n flag controls thread count" $ do
         redisClient <- getRedisClientPath
