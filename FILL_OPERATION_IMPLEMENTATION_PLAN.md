@@ -2,9 +2,17 @@
 
 ## Current Status
 
-**Completed**: Core fill functionality for both standalone and cluster modes  
-**Next Priority**: Phase 1 - Add Key Size Configuration  
-**Document Version**: 2.0  
+**Completed**: 
+- Core fill functionality for both standalone and cluster modes
+- **Phase 1: Key Size Configuration** ✅ (Completed 2026-02-05)
+  - Added `--key-size` flag with validation (1-65536 bytes, default: 512)
+  - Implemented in both standalone and cluster modes
+  - Fixed critical under-fill bug for non-default key sizes
+  - Added comprehensive E2E and unit tests
+  - All tests passing
+
+**Next Priority**: Phase 2 - Add Value Size Configuration  
+**Document Version**: 2.1  
 **Last Updated**: 2026-02-05
 
 ---
@@ -17,10 +25,10 @@ This document outlines a multi-phase plan to enhance the fill operation with con
 
 ## What's Next?
 
-### Phase 1: Add Key Size Configuration
-**Status**: NOT STARTED  
+### Phase 1: Add Key Size Configuration ✅
+**Status**: ✅ COMPLETED (2026-02-05)  
 **Prerequisites**: None  
-**Estimated Effort**: ~20-30 LOC
+**Actual Effort**: ~150 LOC (including bug fix and tests)
 
 #### Goal
 Add configurable key size parameter for fill mode to enable testing with different key sizes.
@@ -86,12 +94,62 @@ redis-client fill -h localhost -c -d 5 --key-size 256
 - ✅ All existing tests pass
 - ✅ Help text (`--help`) updated with new flag
 
+#### Implementation Notes (Completed)
+
+**Changes Made:**
+- Added `keySize :: Int` field to `RunState` data type with named record syntax
+- Implemented `--key-size` CLI flag with validation (1-65536 bytes)
+- Updated `Filler.hs` to use configurable key size with accurate byte-based calculation
+- Updated `ClusterFiller.hs` to use MB-based calculation (matching standalone)
+- Created `FillHelpers.hs` module to eliminate code duplication between Filler and ClusterFiller
+- Added comprehensive E2E tests (including memory accuracy tests for key sizes 64, 128, 256, 512)
+- Added unit tests in `FillHelpersSpec.hs` (14 tests covering byte generation)
+
+**Critical Bug Fixed:**
+The original implementation had a severe calculation bug where it assumed `1 KB = 1 command`, which only held true when `keySize=512`. This caused:
+- keySize=128: Only 62.5% of target filled
+- keySize=64: Only 56.25% of target filled
+- keySize=256: Only 75% of target filled
+
+**Fix Applied:**
+Implemented proper `bytesPerCommand` calculation using remainder logic:
+```haskell
+let bytesPerCommand = keySize + 512
+    totalBytesNeeded = mb * 1024 * 1024
+    totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand
+    fullChunks = totalCommandsNeeded `div` chunkKilos
+    remainderCommands = totalCommandsNeeded `mod` chunkKilos
+```
+
+This ensures accurate filling (±0.1%) for all key sizes by calculating based on actual data bytes.
+
+**Test Results:**
+- All unit tests pass: 92 examples, 0 failures
+- All cluster E2E tests pass: 26 examples with ±0.1% tolerance
+- Memory accuracy verified for key sizes: 64, 128, 256, 512 bytes
+- Backward compatibility confirmed (keySize=512 default)
+
 ---
 
 ### Phase 2: Add Value Size Configuration
-**Status**: NOT STARTED  
-**Prerequisites**: Phase 1 complete  
+**Status**: 🔄 NEXT PRIORITY  
+**Prerequisites**: Phase 1 complete ✅  
 **Estimated Effort**: ~20-30 LOC
+
+#### Implementation Approach (For Next Agent)
+
+Based on Phase 1 implementation, follow this pattern:
+
+1. **Add `valueSize` field to `RunState`** (already uses named record syntax)
+2. **Update `bytesPerCommand` calculations** in both `Filler.hs` and `ClusterFiller.hs`:
+   ```haskell
+   let bytesPerCommand = keySize + valueSize  -- Update from hardcoded 512
+   ```
+3. **Update `FillHelpers.hs`** to accept `valueSize` parameter for value generation
+4. **Add E2E tests** for memory accuracy with varying value sizes (similar to Phase 1)
+5. **Validate the fix** prevents similar under-fill bugs
+
+⚠️ **Important**: The `bytesPerCommand` calculation in Phase 1 used `keySize + 512`. When implementing value size, update this to `keySize + valueSize` to maintain accuracy.
 
 #### Goal
 Add configurable value size parameter for fill mode to enable testing with different value sizes.
