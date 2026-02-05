@@ -389,12 +389,12 @@ main = do
         code `shouldBe` ExitSuccess
         -- With keySize=128, bytesPerCommand = 128 + 512 = 640 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
-        -- Expected keys: 1,073,741,824 / 640 = 1,677,721 keys (rounded up)
+        -- Expected keys: ceiling(1,073,741,824 / 640) = 1,677,722 keys
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 1677721
+            let expected = 1677722
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -406,12 +406,12 @@ main = do
         code `shouldBe` ExitSuccess
         -- With keySize=64, bytesPerCommand = 64 + 512 = 576 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
-        -- Expected keys: 1,073,741,824 / 576 = 1,864,127 keys (rounded up)
+        -- Expected keys: ceiling(1,073,741,824 / 576) = 1,864,128 keys
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 1864127
+            let expected = 1864128
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -423,7 +423,7 @@ main = do
         code `shouldBe` ExitSuccess
         -- With keySize=256, bytesPerCommand = 256 + 512 = 768 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
-        -- Expected keys: 1,073,741,824 / 768 = 1,398,102 keys (rounded up)
+        -- Expected keys: ceiling(1,073,741,824 / 768) = 1,398,102 keys
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
           RespInteger n -> do
