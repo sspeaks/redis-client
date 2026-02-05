@@ -32,12 +32,12 @@ import           System.Directory           (doesFileExist, findExecutable)
 import           System.Environment         (getEnvironment, getExecutablePath)
 import           System.Exit                (ExitCode (..))
 import           System.FilePath            (takeDirectory, (</>))
-import           System.IO                  (BufferMode (LineBuffering), Handle,
+import           System.IO                  (BufferMode (LineBuffering),
                                              hClose, hFlush, hGetContents,
                                              hPutStrLn, hSetBuffering)
-import           System.Process             (ProcessHandle, CreateProcess (..),
-                                             StdStream (CreatePipe),
-                                             readCreateProcessWithExitCode, proc,
+import           System.Process             (CreateProcess (..), ProcessHandle,
+                                             StdStream (CreatePipe), proc,
+                                             readCreateProcessWithExitCode,
                                              terminateProcess, waitForProcess,
                                              withCreateProcess)
 import           Test.Hspec
