@@ -74,3 +74,24 @@ main = hspec $ do
     describe "randomNoise buffer" $ do
       it "has expected size of 128 MB" $ do
         BS.length randomNoise `shouldBe` (128 * 1024 * 1024)
+
+    describe "Value size support" $ do
+      it "generates correct size for small values (128 bytes)" $ do
+        let result = Builder.toLazyByteString $ generateBytes 128 12345
+        LB.length result `shouldBe` 128
+
+      it "generates correct size for default values (512 bytes)" $ do
+        let result = Builder.toLazyByteString $ generateBytes 512 12345
+        LB.length result `shouldBe` 512
+
+      it "generates correct size for large values (8192 bytes)" $ do
+        let result = Builder.toLazyByteString $ generateBytes 8192 12345
+        LB.length result `shouldBe` 8192
+
+      it "generates correct size for very large values (65536 bytes)" $ do
+        let result = Builder.toLazyByteString $ generateBytes 65536 12345
+        LB.length result `shouldBe` 65536
+
+      it "supports maximum value size of 524288 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 524288 12345
+        LB.length result `shouldBe` 524288
