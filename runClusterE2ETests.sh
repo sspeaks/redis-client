@@ -10,7 +10,7 @@ cd docker-cluster
 
 # Start the cluster
 echo "Starting Redis cluster nodes..."
-docker-compose up -d
+docker compose up -d
 
 # Wait for nodes to be ready
 echo "Waiting for Redis nodes to be ready..."
@@ -20,7 +20,7 @@ sleep 5
 echo "Creating Redis cluster..."
 ./make_cluster.sh || {
     echo "Cluster creation failed. Cleaning up..."
-    docker-compose down
+    docker compose down
     exit 1
 }
 
@@ -51,7 +51,7 @@ if [ "$CLUSTER_READY" = false ]; then
   echo ""
   echo "Cluster nodes:"
   redis-cli -p 6379 cluster nodes
-  docker-compose down
+  docker compose down
   exit 1
 fi
 
@@ -63,7 +63,7 @@ echo "Building cluster E2E test Docker image..."
 nix-build e2eClusterDockerImg.nix || {
     echo "Failed to build Docker image"
     cd docker-cluster
-    docker-compose down
+    docker compose down
     exit 1
 }
 
@@ -77,7 +77,7 @@ docker run --network=host clustere2etests:latest  || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
     cd docker-cluster
-    docker-compose down
+    docker compose down
     # Clean up docker image
     docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
     rm -f result
@@ -87,7 +87,7 @@ docker run --network=host clustere2etests:latest  || {
 # Cleanup
 echo "Cleaning up..."
 cd docker-cluster
-docker-compose down
+docker compose down
 cd ..
 docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
 rm -f result
