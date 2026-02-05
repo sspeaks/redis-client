@@ -210,8 +210,9 @@ main = hspec $ do
         -- Verify keys were distributed across cluster
         bracket createTestClusterClient closeClusterClient $ \client -> do
           totalKeys <- countClusterKeys client
-          -- For 1GB with 512-byte keys/values, we expect ~1M keys
-          -- Allow some tolerance due to chunking
+          -- ClusterFiller uses 512-byte keys and 512-byte values (hardcoded in ClusterFiller.hs)
+          -- For 1GB: 1GB / (512 + 512 bytes) ≈ 1,048,576 keys
+          -- Allow some tolerance due to chunking and overhead
           totalKeys `shouldSatisfy` (> 900000)
           totalKeys `shouldSatisfy` (< 1100000)
 
@@ -234,8 +235,11 @@ main = hspec $ do
           totalKeys `shouldSatisfy` (> 0)
         
         -- Flush the cluster
+        -- Note: --flush requires --data parameter, so the command exits with error after flushing
+        -- This is expected behavior - the flush operation succeeds but the command exits because
+        -- --data wasn't provided (we don't want to fill after flushing in this test)
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "localhost", "--cluster", "--flush"] ""
-        code `shouldNotBe` ExitSuccess  -- --flush requires --data, so it exits with error after flushing
+        code `shouldNotBe` ExitSuccess  -- Expected: exits with error after flush
         stdoutOut `shouldSatisfy` ("Flushing all" `isInfixOf`)
         
         -- Verify all keys are gone
