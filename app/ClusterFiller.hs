@@ -4,10 +4,9 @@
 
 module ClusterFiller
   ( fillClusterWithData
-  , SlotMapping
-  , loadSlotMappings
   ) where
 
+import           ClusterSlotMapping      (slotMappings)
 import           Client                  (Client (..), ConnectionStatus (..))
 import           Cluster                 (ClusterNode (..),
                                           ClusterTopology (..),
@@ -23,13 +22,11 @@ import qualified Control.Monad.State     as State
 import           Data.Bits               (shiftR)
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Char8   as BSC
 import qualified Data.ByteString.Lazy    as LB
 import           Data.Map.Strict         (Map)
 import qualified Data.Map.Strict         as Map
 import           Data.Text               (Text)
 import qualified Data.Text               as T
-import           Data.Vector             (Vector)
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64, Word8)
@@ -37,13 +34,10 @@ import           Filler                  (lookupChunkKilos)
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
-import           System.IO               (IOMode (..), hGetContents, openFile)
 import           System.Timeout          (timeout)
 import           Text.Printf             (printf)
 
--- | Mapping from slot number (0-16383) to hash tag that routes to that slot
--- Uses Vector for O(1) lookup instead of Map's O(log n)
-type SlotMapping = Vector BS.ByteString
+
 
 -- 128MB of pre-computed random noise for key/value generation
 -- Same pattern as Filler.hs
@@ -54,38 +48,18 @@ randomNoise = fst $ BS.unfoldrN (128 * 1024 * 1024) step 0
     step !s = Just (fromIntegral (s `shiftR` 56), s * 6364136223846793005 + 1442695040888963407)
 {-# NOINLINE randomNoise #-}
 
--- | Load slot-to-hashtag mappings from file
--- File format: "slotNumber hashTag" per line
--- Returns a Vector of 16384 elements for O(1) slot lookup
-loadSlotMappings :: FilePath -> IO SlotMapping
-loadSlotMappings filepath = do
-  content <- openFile filepath ReadMode >>= hGetContents
-  let entries = map parseLine $ lines content
-      validEntries = [(slot, tag) | Just (slot, tag) <- entries]
-      -- Build a Map first, then convert to Vector for O(1) access
-      entryMap = Map.fromList validEntries
-  -- Create a vector of 16384 slots, empty ByteString for missing entries
-  return $ V.generate 16384 (\i -> Map.findWithDefault BS.empty (fromIntegral i) entryMap)
-  where
-    parseLine :: String -> Maybe (Word16, BS.ByteString)
-    parseLine line =
-      case words line of
-        [slotStr, tag] -> case reads slotStr of
-          [(slot, "")] -> Just (slot, BSC.pack tag)
-          _            -> Nothing
-        _ -> Nothing
+
 
 -- | Fill cluster with data, distributing work across master nodes
 fillClusterWithData ::
   (Client client) =>
   ClusterClient client ->
   (NodeAddress -> IO (client 'Connected)) ->
-  SlotMapping ->
   Int ->              -- Total GB to fill
   Int ->              -- Threads per node
   Word64 ->           -- Base seed for randomness
   IO ()
-fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode baseSeed = do
+fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed = do
   -- Get cluster topology to find master nodes
   topology <- readTVarIO (clusterTopology clusterClient)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
@@ -115,7 +89,7 @@ fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode 
          (length jobs) numMasters threadsPerNode
 
   -- Execute jobs in parallel
-  mvars <- mapM (executeJob clusterClient connector slotMappings slotRanges baseSeed) jobs
+  mvars <- mapM (executeJob clusterClient connector slotRanges baseSeed) jobs
   mapM_ takeMVar mvars
 
   putStrLn "Cluster fill complete!"
@@ -148,12 +122,11 @@ executeJob ::
   (Client client) =>
   ClusterClient client ->
   (NodeAddress -> IO (client 'Connected)) ->
-  SlotMapping ->
   Map Text [Word16] ->
   Word64 ->
   (NodeAddress, Int, Int) ->  -- (address, threadIdx, keysToFill)
   IO (MVar ())
-executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threadIdx, keysToFill) = do
+executeJob clusterClient connector slotRanges baseSeed (addr, threadIdx, keysToFill) = do
   -- If this thread has no work, return immediately
   if keysToFill <= 0
     then do
@@ -189,7 +162,7 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
                 printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
 
               -- Fill data for this node using its slots
-              fillNodeWithData conn slotMappings slots keysToFill baseSeed threadIdx
+              fillNodeWithData conn slots keysToFill baseSeed threadIdx
           ) (\e -> do
             -- If any exception occurs, log it and continue
             printf "Error in thread %d for node %s:%d: %s\n"
@@ -214,13 +187,12 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
 fillNodeWithData ::
   (Client client) =>
   client 'Connected ->
-  SlotMapping ->
   [Word16] ->
   Int ->       -- keysToFill (exact count)
   Word64 ->
   Int ->
   IO ()
-fillNodeWithData conn slotMappings slots keysToFill baseSeed threadIdx = do
+fillNodeWithData conn slots keysToFill baseSeed threadIdx = do
   when (null slots) $ return ()
 
   -- Convert slots list to Vector for O(1) access in the hot loop
@@ -246,14 +218,14 @@ fillNodeWithData conn slotMappings slots keysToFill baseSeed threadIdx = do
           -- Generate and send full chunks
           mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotMappings slotsVec chunkKilos (threadSeed + fromIntegral chunkIdx)
+              let cmd = generateClusterChunk slotsVec chunkKilos (threadSeed + fromIntegral chunkIdx)
               send client cmd
             ) [0..fullChunks - 1]
 
           -- Send partial chunk for remaining keys (if any)
           when (remainingKeys > 0) $ do
             ClientState client _ <- State.get
-            let cmd = generateClusterChunk slotMappings slotsVec remainingKeys (threadSeed + fromIntegral fullChunks)
+            let cmd = generateClusterChunk slotsVec remainingKeys (threadSeed + fromIntegral fullChunks)
             send client cmd
 
           -- Turn replies back on
@@ -275,12 +247,11 @@ fillNodeWithData conn slotMappings slots keysToFill baseSeed threadIdx = do
 -- | Generate a chunk of SET commands using hash tags for proper slot routing
 -- Uses Vector for O(1) slot lookup instead of list indexing
 generateClusterChunk ::
-  SlotMapping ->
   VU.Vector Word16 ->
   Int ->
   Word64 ->
   LB.ByteString
-generateClusterChunk slotMappings slots chunkKilos seed =
+generateClusterChunk slots chunkKilos seed =
   Builder.toLazyByteString $! go chunkKilos seed
   where
     !numSlots = VU.length slots

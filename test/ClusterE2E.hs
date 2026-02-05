@@ -10,6 +10,7 @@ import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              SlotRange (..),
                                              calculateSlot, findNodeForSlot)
 import           ClusterCommandClient
+import           ClusterSlotMapping (getKeyForNode)
 import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -111,22 +112,6 @@ countClusterKeys client = do
   return $ sum sizes
 
 -- | Load slot mappings from file for creating keys that route to specific slots
-loadSlotMappings :: FilePath -> IO (Vector BS.ByteString)
-loadSlotMappings filepath = do
-  content <- readFile filepath
-  let entries = map parseLine $ lines content
-      validEntries = [(slot, tag) | Just (slot, tag) <- entries]
-      entryMap = Map.fromList validEntries
-  -- Create a vector of 16384 slots, empty ByteString for missing entries
-  return $ V.generate 16384 (\i -> Map.findWithDefault BS.empty (fromIntegral i) entryMap)
-  where
-    parseLine :: String -> Maybe (Word16, BS.ByteString)
-    parseLine line =
-      case words line of
-        [slotStr, tag] -> case reads slotStr of
-          [(slot, "")] -> Just (slot, BSC.pack tag)
-          _            -> Nothing
-        _ -> Nothing
 
 -- | Delay between CLI commands in microseconds (200ms)
 -- This gives time for command execution and output to be available
@@ -289,9 +274,6 @@ main = hspec $ do
         _ <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
         threadDelay 100000
 
-        -- Load slot mappings to create keys that route to specific nodes
-        slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
-
         -- Get cluster topology to identify master nodes
         bracket createTestClusterClient closeClusterClient $ \client -> do
           topology <- readTVarIO (clusterTopology client)
@@ -303,11 +285,9 @@ main = hspec $ do
             case nodeSlotsServed node of
               (range:_) -> do
                 let slot = slotStart range
-                    hashTag = slotMappings V.! fromIntegral slot
-                -- Validate hash tag is non-empty
-                when (BS.null hashTag) $
-                  expectationFailure $ "Empty hash tag for slot " ++ show slot
-                let key = "{" ++ BSC.unpack hashTag ++ "}:testkey:" ++ show slot
+                    keyBS = getKeyForNode node ("testkey:" ++ show slot)
+                    key = BSC.unpack keyBS
+
                 result <- runCmd client $ set key ("value" ++ show slot)
                 case result of
                   RespSimpleString "OK" -> return ()
@@ -502,9 +482,6 @@ main = hspec $ do
       it "cli mode handles hash tags correctly" $ do
         redisClient <- getRedisClientPath
         
-        -- Load slot mappings to create keys that route to specific nodes
-        slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
-        
         -- Get cluster topology to identify all master nodes
         bracket createTestClusterClient closeClusterClient $ \client -> do
           topology <- readTVarIO (clusterTopology client)
@@ -523,13 +500,13 @@ main = hspec $ do
               case nodeSlotsServed node of
                 (range:_) -> do
                   let slot = slotStart range
-                      hashTag = slotMappings V.! fromIntegral slot
-                  when (not (BS.null hashTag)) $ do
-                    let key = "{" ++ BSC.unpack hashTag ++ "}:clitest:" ++ show slot
-                        value = "node" ++ show slot
-                    hPutStrLn hin $ "SET " ++ key ++ " " ++ value
-                    hFlush hin
-                    threadDelay cliCommandDelayMicros
+                      keyBS = getKeyForNode node ("clitest:" ++ show slot)
+                      key = BSC.unpack keyBS
+                      value = "node" ++ show slot
+
+                  hPutStrLn hin $ "SET " ++ key ++ " " ++ value
+                  hFlush hin
+                  threadDelay cliCommandDelayMicros
                 _ -> return ()
               ) masterNodes
             
@@ -551,18 +528,17 @@ main = hspec $ do
             case nodeSlotsServed node of
               (range:_) -> do
                 let slot = slotStart range
-                    hashTag = slotMappings V.! fromIntegral slot
-                when (not (BS.null hashTag)) $ do
-                  let key = "{" ++ BSC.unpack hashTag ++ "}:clitest:" ++ show slot
-                      expectedValue = "node" ++ show slot
-                      addr = nodeAddress node
-                  -- Connect directly to this specific node
-                  conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-                  result <- runRedisCommand conn (get key)
-                  close conn
-                  case result of
-                    RespBulkString val -> val `shouldBe` BSL.pack expectedValue
-                    other -> expectationFailure $ "Expected value on node " ++ show (nodeHost addr) ++ ", got: " ++ show other
+                    keyBS = getKeyForNode node ("clitest:" ++ show slot)
+                    key = BSC.unpack keyBS
+                    expectedValue = "node" ++ show slot
+                    addr = nodeAddress node
+                -- Connect directly to this specific node
+                conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+                result <- runRedisCommand conn (get key)
+                close conn
+                case result of
+                  RespBulkString val -> val `shouldBe` BSL.pack expectedValue
+                  other -> expectationFailure $ "Expected value on node " ++ show (nodeHost addr) ++ ", got: " ++ show other
               _ -> return ()
             ) masterNodes
 
@@ -786,7 +762,6 @@ main = hspec $ do
 
         it "smart mode handles commands that route to different nodes" $ do
           redisClient <- getRedisClientPath
-          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -817,16 +792,9 @@ main = hspec $ do
                               expectationFailure "Need at least 2 master nodes for this test"
                             
                             -- Find keys that hash to different nodes
-                            let node1 = head masterNodes
-                                node2 = masterNodes !! 1
-                                slot1 = case nodeSlotsServed node1 of
-                                  (range:_) -> slotStart range
-                                  _ -> 0
-                                slot2 = case nodeSlotsServed node2 of
-                                  (range:_) -> slotStart range
-                                  _ -> 5461
-                                key1 = BSC.unpack $ slotMappings V.! fromIntegral slot1
-                                key2 = BSC.unpack $ slotMappings V.! fromIntegral slot2
+                            let (node1:node2:_) = masterNodes
+                                key1 = BSC.unpack $ getKeyForNode node1 "key1"
+                                key2 = BSC.unpack $ getKeyForNode node2 "key2"
                             
                             conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
                             
@@ -964,7 +932,6 @@ main = hspec $ do
       describe "Pinned Proxy Mode" $ do
         it "pinned mode creates one listener per cluster node and each works correctly" $ do
           redisClient <- getRedisClientPath
-          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -1003,13 +970,8 @@ main = hspec $ do
                             forM_ masterNodes $ \masterNode -> do
                               let addr = nodeAddress masterNode
                                   localPort = nodePort addr
-                                  -- Find a slot owned by this node
-                                  slots = nodeSlotsServed masterNode
-                                  firstSlot = case slots of
-                                    (range:_) -> slotStart range
-                                    _ -> 0
-                                  -- Get a key that hashes to that slot
-                                  testKey = BSC.unpack $ slotMappings V.! fromIntegral firstSlot
+                                  -- Get a key that hashes to a slot owned by this node
+                                  testKey = BSC.unpack $ getKeyForNode masterNode "test"
                               
                               conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
                               
@@ -1033,7 +995,6 @@ main = hspec $ do
 
         it "pinned mode listeners forward to their respective nodes" $ do
           redisClient <- getRedisClientPath
-          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -1071,17 +1032,9 @@ main = hspec $ do
                                     port1 = nodePort addr1
                                     port2 = nodePort addr2
                                     -- Find slots owned by each node
-                                    slots1 = nodeSlotsServed node1
-                                    slots2 = nodeSlotsServed node2
-                                    firstSlot1 = case slots1 of
-                                      (range:_) -> slotStart range
-                                      _ -> 0
-                                    firstSlot2 = case slots2 of
-                                      (range:_) -> slotStart range
-                                      _ -> 5461
-                                    -- Get keys that hash to those slots
-                                    testKey1 = BSC.unpack $ slotMappings V.! fromIntegral firstSlot1
-                                    testKey2 = BSC.unpack $ slotMappings V.! fromIntegral firstSlot2
+                                    -- Get keys that hash to slots owned by those nodes
+                                    testKey1 = BSC.unpack $ getKeyForNode node1 "node1"
+                                    testKey2 = BSC.unpack $ getKeyForNode node2 "node2"
                                 
                                 conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
                                 conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
@@ -1113,7 +1066,6 @@ main = hspec $ do
 
         it "pinned mode returns MOVED errors for keys not owned by the node" $ do
           redisClient <- getRedisClientPath
-          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -1148,12 +1100,8 @@ main = hspec $ do
                                 let addr1 = nodeAddress node1
                                     port1 = nodePort addr1
                                     -- Find a slot owned by node2 (NOT node1)
-                                    slots2 = nodeSlotsServed node2
-                                    slot2 = case slots2 of
-                                      (range:_) -> slotStart range
-                                      _ -> 5461
-                                    -- Get a key that hashes to node2's slot
-                                    wrongKey = BSC.unpack $ slotMappings V.! fromIntegral slot2
+                                    -- Get a key that hashes to a slot owned by node2 (NOT node1)
+                                    wrongKey = BSC.unpack $ getKeyForNode node2 "wrong"
                                 
                                 -- Connect to node1's pinned listener
                                 conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))

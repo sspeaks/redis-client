@@ -116,6 +116,7 @@ library cluster
                     , ConnectionPool
                     , ClusterCommandClient
                     , ClusterCommands
+                    , ClusterSlotMapping
 
 test-suite RespSpec
     type:             exitcode-stdio-1.0

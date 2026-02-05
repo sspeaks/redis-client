@@ -17,8 +17,7 @@ import           ClusterCommandClient       (ClusterClient (..),
                                              closeClusterClient,
                                              createClusterClient,
                                              runClusterCommandClient)
-import           ClusterFiller              (fillClusterWithData,
-                                             loadSlotMappings)
+import           ClusterFiller              (fillClusterWithData)
 import           ClusterTunnel              (servePinnedProxy,
                                              serveSmartProxy)
 import           ConnectionPool             (PoolConfig (PoolConfig))
@@ -35,7 +34,6 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromMaybe)
-import qualified Data.Vector                as V
 import           Data.Word                  (Word64)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
@@ -56,7 +54,7 @@ import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs)
 import           System.Exit                (exitFailure, exitSuccess)
 import           System.IO                  (hIsTerminalDevice, isEOF,
-                                             stdin, stdout)
+                                             stdin)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
 
@@ -335,11 +333,6 @@ fillCluster state = do
         closeClusterClient clusterClient
 
   when (dataGBs state > 0) $ do
-    -- Load slot mappings from file
-    putStrLn "Loading slot-to-hashtag mappings..."
-    slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
-    printf "Loaded %d slot mappings\n" (V.length slotMappings)
-
     -- Get base seed for randomness
     baseSeed <- randomIO :: IO Word64
 
@@ -353,12 +346,12 @@ fillCluster state = do
     if useTLS state
       then do
         clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        fillClusterWithData clusterClient (createTLSConnector state) slotMappings
+        fillClusterWithData clusterClient (createTLSConnector state)
                            (dataGBs state) threadsPerNode baseSeed
         closeClusterClient clusterClient
       else do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        fillClusterWithData clusterClient (createPlaintextConnector state) slotMappings
+        fillClusterWithData clusterClient (createPlaintextConnector state)
                            (dataGBs state) threadsPerNode baseSeed
         closeClusterClient clusterClient
 
