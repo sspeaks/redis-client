@@ -946,6 +946,7 @@ main = hspec $ do
       describe "Pinned Proxy Mode" $ do
         it "pinned mode creates one listener per cluster node" $ do
           redisClient <- getRedisClientPath
+          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -986,20 +987,27 @@ main = hspec $ do
                               (firstMaster:_) -> do
                                 let addr = nodeAddress firstMaster
                                     localPort = nodePort addr
+                                    -- Find a slot owned by this node
+                                    slots = nodeSlotsServed firstMaster
+                                    firstSlot = case slots of
+                                      (range:_) -> slotStart range
+                                      _ -> 0
+                                    -- Get a key that hashes to that slot
+                                    testKey = BSC.unpack $ slotMappings V.! fromIntegral firstSlot
                                 
                                 conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
                                 
-                                -- Execute a command through pinned proxy
-                                result1 <- runRedisCommand conn (set "pinned:test" "value")
+                                -- Execute a command through pinned proxy using a key that belongs to this node
+                                result1 <- runRedisCommand conn (set testKey "value")
                                 result1 `shouldBe` RespSimpleString "OK"
                                 
-                                result2 <- runRedisCommand conn (get "pinned:test")
+                                result2 <- runRedisCommand conn (get testKey)
                                 result2 `shouldBe` RespBulkString "value"
                                 
                                 close conn
                                 
                                 -- Clean up
-                                _ <- runCmd client (del ["pinned:test"])
+                                _ <- runCmd client (del [testKey])
                                 pure ()
                   )
                   cleanup
@@ -1009,6 +1017,7 @@ main = hspec $ do
 
         it "pinned mode listeners forward to their respective nodes" $ do
           redisClient <- getRedisClientPath
+          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -1045,26 +1054,38 @@ main = hspec $ do
                                     addr2 = nodeAddress node2
                                     port1 = nodePort addr1
                                     port2 = nodePort addr2
+                                    -- Find slots owned by each node
+                                    slots1 = nodeSlotsServed node1
+                                    slots2 = nodeSlotsServed node2
+                                    firstSlot1 = case slots1 of
+                                      (range:_) -> slotStart range
+                                      _ -> 0
+                                    firstSlot2 = case slots2 of
+                                      (range:_) -> slotStart range
+                                      _ -> 5461
+                                    -- Get keys that hash to those slots
+                                    testKey1 = BSC.unpack $ slotMappings V.! fromIntegral firstSlot1
+                                    testKey2 = BSC.unpack $ slotMappings V.! fromIntegral firstSlot2
                                 
                                 conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
                                 conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
                                 
-                                -- Set a key through each listener
-                                _ <- runRedisCommand conn1 (set "pinned:node1:key" "from-node1")
-                                _ <- runRedisCommand conn2 (set "pinned:node2:key" "from-node2")
+                                -- Set a key through each listener using keys that belong to those nodes
+                                _ <- runRedisCommand conn1 (set testKey1 "from-node1")
+                                _ <- runRedisCommand conn2 (set testKey2 "from-node2")
                                 
                                 -- Verify keys are set
-                                result1 <- runRedisCommand conn1 (get "pinned:node1:key")
+                                result1 <- runRedisCommand conn1 (get testKey1)
                                 result1 `shouldBe` RespBulkString "from-node1"
                                 
-                                result2 <- runRedisCommand conn2 (get "pinned:node2:key")
+                                result2 <- runRedisCommand conn2 (get testKey2)
                                 result2 `shouldBe` RespBulkString "from-node2"
                                 
                                 close conn1
                                 close conn2
                                 
                                 -- Clean up (using cluster client to reach correct nodes)
-                                _ <- runCmd client (del ["pinned:node1:key", "pinned:node2:key"])
+                                _ <- runCmd client (del [testKey1, testKey2])
                                 pure ()
                               _ -> expectationFailure "Expected at least 2 master nodes"
                   )
