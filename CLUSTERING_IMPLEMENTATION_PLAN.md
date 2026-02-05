@@ -28,29 +28,27 @@ Audit codebase to identify places where code creates connections directly using 
 - Found 67 occurrences across application and library code
 - Categorized all usages into three categories:
   - Already using pool correctly (4 modules)
-  - Should use pool (1 file - ClusterFiller.hs)
-  - Legitimately direct (1 usage - ClusterTunnel.hs pinned mode)
+  - Legitimately direct (2 usages - ClusterFiller.hs and ClusterTunnel.hs pinned mode)
 
-**2. Code Refactored**
-- **ClusterFiller.hs** (app/ClusterFiller.hs, line 172)
-  - Changed from direct `connector addr` to `CP.getOrCreateConnection`
-  - Added import: `import qualified ConnectionPool as CP`
-  - Updated comments to reflect pool usage
-  - All threads for same node now share single connection from pool
-  - Reduces connection proliferation (was creating N connections per node where N=threadsPerNode)
-
-**3. Documentation Added**
+**2. Documentation Added**
+- **ClusterFiller.hs** (app/ClusterFiller.hs, line 169-171)
+  - Verified that direct connections per thread are necessary
+  - Each thread needs its own connection to avoid race conditions
+  - Redis protocol is request-response based; concurrent usage of single connection causes response interleaving
+  - Original implementation is correct: N connections per node where N=threadsPerNode
+  
 - **ClusterTunnel.hs** (app/ClusterTunnel.hs, lines 235-239)
   - Added detailed comment explaining why pinned mode needs direct connections
   - Clarified that these are long-lived, persistent connections tied to listener lifecycle
   - Justification: Each pinned listener maintains its own forwarding connection
 
-**4. Verification Completed**
+**3. Verification Completed**
 - All modules using pool correctly verified:
   - `lib/cluster/ClusterCommandClient.hs` - Uses `getOrCreateConnection` (lines 166, 189, 241)
   - `app/Main.hs` - Uses pool in `flushAllClusterNodes` (line 314)
   - `app/ClusterTunnel.hs` (smart mode) - Indirectly uses pool via ClusterCommandClient
   - `app/ClusterCli.hs` - Indirectly uses pool via ClusterCommandClient
+- Verified that ClusterFiller.hs and ClusterTunnel.hs pinned mode correctly use direct connections
 
 #### Testing Results
 - All unit tests pass: ClusterSpec, RespSpec, ClusterCommandSpec
@@ -60,8 +58,9 @@ Audit codebase to identify places where code creates connections directly using 
 #### Findings
 - ConnectionPool is well-designed and sufficient for current needs
 - No enhancements needed to ConnectionPool (Phase 16 may not be necessary)
-- Only one case (ClusterFiller.hs) was bypassing pool unnecessarily
-- One legitimate case (pinned tunnel) correctly bypasses pool with good reason
+- All connector usage is appropriate:
+  - ClusterFiller.hs: Each thread needs dedicated connection to avoid race conditions in Redis protocol
+  - ClusterTunnel.hs pinned mode: Each listener needs dedicated long-lived connection
 
 #### Success Criteria Met
 - ✅ Complete audit of connector usage documented
@@ -709,6 +708,9 @@ All Phase 8 objectives have been successfully completed:
   - Added import: `import qualified ConnectionPool as CP`
 
 ✅ **Documentation Added**  
+- `app/ClusterFiller.hs` - Verified direct connections are necessary
+  - Each thread needs dedicated connection to avoid race conditions
+  - Redis protocol interleaving issues with concurrent access to single connection
 - `app/ClusterTunnel.hs` - Added detailed comments for pinned mode
   - Explains why pinned listeners need dedicated connections
   - Clarifies connection lifecycle tied to listener lifecycle
@@ -720,6 +722,7 @@ All Phase 8 objectives have been successfully completed:
   - `app/Main.hs` - Uses pool in flushAllClusterNodes (line 314)
   - `app/ClusterTunnel.hs` (smart mode) - Indirect pool usage via ClusterCommandClient
   - `app/ClusterCli.hs` - Indirect pool usage via ClusterCommandClient
+- Verified that ClusterFiller.hs and ClusterTunnel.hs pinned mode correctly use direct connections
 
 #### Testing Results
 - ✅ All unit tests pass: ClusterSpec, RespSpec, ClusterCommandSpec
@@ -729,11 +732,11 @@ All Phase 8 objectives have been successfully completed:
 #### Key Findings
 - ConnectionPool implementation is well-designed and sufficient
 - No enhancements needed to ConnectionPool (Phase 16 may not be necessary)
-- Only one case (ClusterFiller.hs) was bypassing pool unnecessarily
-- One legitimate case (pinned tunnel) correctly bypasses pool
+- All connector usage is appropriate:
+  - ClusterFiller.hs: Each thread needs dedicated connection to avoid race conditions
+  - ClusterTunnel.hs pinned mode: Each listener needs dedicated long-lived connection
 
 #### Files Modified
-- `app/ClusterFiller.hs` - Refactored to use pool (~5 LOC changed)
 - `app/ClusterTunnel.hs` - Added documentation comments (~5 LOC added)
 
 #### Success Criteria Met
