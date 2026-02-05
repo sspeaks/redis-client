@@ -32,9 +32,14 @@ import           System.Directory           (doesFileExist, findExecutable)
 import           System.Environment         (getEnvironment, getExecutablePath)
 import           System.Exit                (ExitCode (..))
 import           System.FilePath            (takeDirectory, (</>))
+import           System.IO                  (BufferMode (LineBuffering), Handle,
+                                             hClose, hFlush, hGetContents,
+                                             hPutStrLn, hSetBuffering)
 import           System.Process             (ProcessHandle, CreateProcess (..),
+                                             StdStream (CreatePipe),
                                              readCreateProcessWithExitCode, proc,
-                                             terminateProcess, waitForProcess)
+                                             terminateProcess, waitForProcess,
+                                             withCreateProcess)
 import           Test.Hspec
 
 -- | Create a cluster client for testing
@@ -359,3 +364,280 @@ main = hspec $ do
 
           -- Total should be exactly 1048576 keys
           sum keysPerNode `shouldBe` 1048576
+
+    describe "Cluster CLI Mode" $ do
+      it "cli mode can execute GET/SET commands" $ do
+        redisClient <- getRedisClientPath
+
+        -- Create process for CLI mode with cluster enabled
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Execute SET command
+          hPutStrLn hin "SET cli:test:key value123"
+          hFlush hin
+          threadDelay 200000
+          
+          -- Execute GET command
+          hPutStrLn hin "GET cli:test:key"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify
+          exitCode `shouldBe` ExitSuccess
+          stdoutOut `shouldSatisfy` ("value123" `isInfixOf`)
+
+      it "cli mode can execute keyless commands (PING)" $ do
+        redisClient <- getRedisClientPath
+
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Execute PING command
+          hPutStrLn hin "PING"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify
+          exitCode `shouldBe` ExitSuccess
+          stdoutOut `shouldSatisfy` ("PONG" `isInfixOf`)
+
+      it "cli mode can execute CLUSTER SLOTS command" $ do
+        redisClient <- getRedisClientPath
+
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Execute CLUSTER SLOTS command
+          hPutStrLn hin "CLUSTER SLOTS"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify
+          exitCode `shouldBe` ExitSuccess
+          -- CLUSTER SLOTS returns array of slot ranges
+          stdoutOut `shouldSatisfy` ("RespArray" `isInfixOf`)
+
+      it "cli mode handles hash tags correctly" $ do
+        redisClient <- getRedisClientPath
+
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Set two keys with same hash tag (should go to same slot)
+          hPutStrLn hin "SET {user:100}:name alice"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "SET {user:100}:email alice@example.com"
+          hFlush hin
+          threadDelay 200000
+
+          -- Get both keys
+          hPutStrLn hin "GET {user:100}:name"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "GET {user:100}:email"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify
+          exitCode `shouldBe` ExitSuccess
+          stdoutOut `shouldSatisfy` ("alice" `isInfixOf`)
+          stdoutOut `shouldSatisfy` ("alice@example.com" `isInfixOf`)
+
+      it "cli mode handles CROSSSLOT errors for multi-key commands" $ do
+        redisClient <- getRedisClientPath
+
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Try MGET with keys that hash to different slots (should trigger CROSSSLOT error)
+          hPutStrLn hin "MGET key1 key2 key3"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify - should contain CROSSSLOT error message
+          exitCode `shouldBe` ExitSuccess
+          stdoutOut `shouldSatisfy` (\s -> "CROSSSLOT" `isInfixOf` s || "crossslot" `isInfixOf` s)
+
+      it "cli mode can execute multi-key commands on same slot using hash tags" $ do
+        redisClient <- getRedisClientPath
+
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Set keys with same hash tag
+          hPutStrLn hin "SET {slot:1}:key1 value1"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "SET {slot:1}:key2 value2"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "SET {slot:1}:key3 value3"
+          hFlush hin
+          threadDelay 200000
+
+          -- Try MGET with keys that have the same hash tag (should work)
+          hPutStrLn hin "MGET {slot:1}:key1 {slot:1}:key2 {slot:1}:key3"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify
+          exitCode `shouldBe` ExitSuccess
+          stdoutOut `shouldSatisfy` ("value1" `isInfixOf`)
+          stdoutOut `shouldSatisfy` ("value2" `isInfixOf`)
+          stdoutOut `shouldSatisfy` ("value3" `isInfixOf`)
+
+      it "cli mode routes commands to correct nodes" $ do
+        redisClient <- getRedisClientPath
+
+        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+
+        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+          hSetBuffering hin LineBuffering
+          hSetBuffering hout LineBuffering
+
+          -- Set multiple keys that should hash to different slots
+          hPutStrLn hin "SET route:key1 value1"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "SET route:key2 value2"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "SET route:key3 value3"
+          hFlush hin
+          threadDelay 200000
+
+          -- Get the keys back
+          hPutStrLn hin "GET route:key1"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "GET route:key2"
+          hFlush hin
+          threadDelay 200000
+
+          hPutStrLn hin "GET route:key3"
+          hFlush hin
+          threadDelay 200000
+
+          -- Exit CLI
+          hPutStrLn hin "exit"
+          hFlush hin
+          hClose hin
+
+          -- Read output
+          stdoutOut <- hGetContents hout
+          void $ evaluate (length stdoutOut)
+
+          -- Wait for process to finish
+          exitCode <- waitForProcess ph
+
+          -- Verify all values are present
+          exitCode `shouldBe` ExitSuccess
+          stdoutOut `shouldSatisfy` ("value1" `isInfixOf`)
+          stdoutOut `shouldSatisfy` ("value2" `isInfixOf`)
+          stdoutOut `shouldSatisfy` ("value3" `isInfixOf`)
