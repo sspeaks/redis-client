@@ -67,10 +67,18 @@ done
 # Give nodes a moment to reset (allows cluster state to fully clear)
 sleep 2
 
+# Get the actual network name created by docker compose
+NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Name}}" | head -n 1)
+
+if [ -z "$NETWORK_NAME" ]; then
+  echo "Error: Could not find redis-cluster-net network. Is docker compose running?"
+  exit 1
+fi
+
 # Create the cluster with a timeout using a container in the same network
 # This allows the cluster nodes to communicate using their container hostnames
 echo "Creating Redis cluster using container hostnames..."
-if timeout 120 docker run --rm --network docker-cluster_redis-cluster-net redis redis-cli \
+if timeout 120 docker run --rm --network "$NETWORK_NAME" redis redis-cli \
   --cluster create "${CLUSTER_NODES[@]}" --cluster-yes; then
   echo "Redis cluster created successfully!"
 else
