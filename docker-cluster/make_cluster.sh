@@ -55,15 +55,6 @@ for node in "${EXTERNAL_NODES[@]}"; do
   check_node_ready "$node" || exit 1
 done
 
-# Reset cluster state on all nodes to avoid stale configuration issues
-echo "Resetting cluster state on all nodes..."
-for node in "${EXTERNAL_NODES[@]}"; do
-  host="${node%:*}"
-  port="${node#*:}"
-  echo "Resetting cluster on $node..."
-  redis-cli -h "$host" -p "$port" CLUSTER RESET SOFT 2>/dev/null || true
-done
-
 # Give nodes a moment to reset (allows cluster state to fully clear)
 sleep 2
 

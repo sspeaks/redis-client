@@ -17,7 +17,7 @@ import           Test.Hspec
 createTestClusterClient :: IO (ClusterClient PlainTextClient)
 createTestClusterClient = do
   let config = ClusterConfig
-        { clusterSeedNode = NodeAddress "redis1" 6379,
+        { clusterSeedNode = NodeAddress "redis1.local" 6379,
           clusterPoolConfig = PoolConfig
             { maxConnectionsPerNode = 1,
               connectionTimeout = 5000,

@@ -1,7 +1,7 @@
 services:
   redis1:
     image: redis
-    hostname: redis1
+    hostname: redis1.local
     container_name: redis-cluster-node1
     ports:
       - "6379:6379"
@@ -14,7 +14,7 @@ services:
 
   redis2:
     image: redis
-    hostname: redis2
+    hostname: redis2.local
     container_name: redis-cluster-node2
     ports:
       - "6380:6380"
@@ -27,7 +27,7 @@ services:
 
   redis3:
     image: redis
-    hostname: redis3
+    hostname: redis3.local
     container_name: redis-cluster-node3
     ports:
       - "6381:6381"
@@ -40,7 +40,7 @@ services:
 
   redis4:
     image: redis
-    hostname: redis4
+    hostname: redis4.local
     container_name: redis-cluster-node4
     ports:
       - "6382:6382"
@@ -53,7 +53,7 @@ services:
 
   redis5:
     image: redis
-    hostname: redis5
+    hostname: redis5.local
     container_name: redis-cluster-node5
     ports:
       - "6383:6383"
