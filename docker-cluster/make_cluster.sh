@@ -1,24 +1,33 @@
 #! /usr/bin/env nix-shell
 #! nix-shell -i bash -p  redis
 #
-# Script to create a Redis cluster from Docker containers.
+# Script to create a Redis cluster from Docker containers using bridge networking.
 # This script:
 # 1. Starts Redis containers via docker compose
-# 2. Waits for all nodes to be ready
-# 3. Resets any stale cluster state (fixes hanging issues)
-# 4. Creates the cluster with a 60-second timeout
+# 2. Waits for all nodes to be ready (checking from host via mapped ports)
+# 3. Resets any stale cluster state
+# 4. Creates the cluster using container hostnames from within the Docker network
 #
 # If cluster creation hangs, run: docker compose down -v
 
 docker compose up -d
 
-# Define the Redis nodes
-NODES=(
+# Define the Redis nodes for external access (via mapped ports)
+EXTERNAL_NODES=(
   "localhost:6379"
   "localhost:6380"
   "localhost:6381"
   "localhost:6382"
   "localhost:6383"
+)
+
+# Define the Redis nodes for cluster creation (internal container hostnames)
+CLUSTER_NODES=(
+  "redis1:6379"
+  "redis2:6380"
+  "redis3:6381"
+  "redis4:6382"
+  "redis5:6383"
 )
 
 # Function to check if a Redis node is ready
@@ -41,14 +50,14 @@ check_node_ready() {
   return 1
 }
 
-# Wait for all nodes to be ready
-for node in "${NODES[@]}"; do
+# Wait for all nodes to be ready (check from host)
+for node in "${EXTERNAL_NODES[@]}"; do
   check_node_ready "$node" || exit 1
 done
 
 # Reset cluster state on all nodes to avoid stale configuration issues
 echo "Resetting cluster state on all nodes..."
-for node in "${NODES[@]}"; do
+for node in "${EXTERNAL_NODES[@]}"; do
   host="${node%:*}"
   port="${node#*:}"
   echo "Resetting cluster on $node..."
@@ -58,14 +67,16 @@ done
 # Give nodes a moment to reset (allows cluster state to fully clear)
 sleep 2
 
-# Create the cluster with a timeout
-echo "Creating Redis cluster..."
-if timeout 60 redis-cli --cluster create "${NODES[@]}" --cluster-yes; then
+# Create the cluster with a timeout using a container in the same network
+# This allows the cluster nodes to communicate using their container hostnames
+echo "Creating Redis cluster using container hostnames..."
+if timeout 120 docker run --rm --network docker-cluster_redis-cluster-net redis redis-cli \
+  --cluster create "${CLUSTER_NODES[@]}" --cluster-yes; then
   echo "Redis cluster created successfully!"
 else
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 124 ]; then
-    echo "Error: Cluster creation timed out after 60 seconds."
+    echo "Error: Cluster creation timed out after 120 seconds."
     echo "This usually indicates a networking or configuration issue."
     echo "Try running 'docker compose down -v' to clean up volumes and retry."
   else
