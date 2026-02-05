@@ -8,7 +8,7 @@ import           Client                     (Client (..), ConnectionStatus (..),
 import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              ClusterNode (..), ClusterTopology (..),
                                              SlotRange (..),
-                                             calculateSlot)
+                                             calculateSlot, findNodeForSlot)
 import           ClusterCommandClient
 import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
@@ -20,7 +20,7 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy.Char8 as BSL
 import           Data.Char                  (toLower)
-import           Data.List                  (isInfixOf)
+import           Data.List                  (isInfixOf, nub)
 import qualified Data.Map.Strict            as Map
 import           Data.Vector                (Vector)
 import qualified Data.Vector                as V
@@ -475,48 +475,70 @@ main = hspec $ do
 
       it "cli mode handles hash tags correctly" $ do
         redisClient <- getRedisClientPath
-
-        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
-                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
-
-        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
-          hSetBuffering hin LineBuffering
-          hSetBuffering hout LineBuffering
-
-          -- Set two keys with same hash tag (should go to same slot)
-          hPutStrLn hin "SET {user:100}:name alice"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          hPutStrLn hin "SET {user:100}:email alice@example.com"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          -- Get both keys
-          hPutStrLn hin "GET {user:100}:name"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          hPutStrLn hin "GET {user:100}:email"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          -- Exit CLI
-          hPutStrLn hin "exit"
-          hFlush hin
-          hClose hin
-
-          -- Read output
-          stdoutOut <- hGetContents hout
-          void $ evaluate (length stdoutOut)
-
-          -- Wait for process to finish
-          exitCode <- waitForProcess ph
-
-          -- Verify
-          exitCode `shouldBe` ExitSuccess
-          stdoutOut `shouldSatisfy` ("alice" `isInfixOf`)
-          stdoutOut `shouldSatisfy` ("alice@example.com" `isInfixOf`)
+        
+        -- Load slot mappings to create keys that route to specific nodes
+        slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
+        
+        -- Get cluster topology to identify all master nodes
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          topology <- readTVarIO (clusterTopology client)
+          let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+          
+          -- Use CLI to set a key on each master node using hash tags
+          let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                     { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+          
+          withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+            hSetBuffering hin LineBuffering
+            hSetBuffering hout LineBuffering
+            
+            -- For each master node, use a hash tag to force a key onto that node
+            mapM_ (\node -> do
+              case nodeSlotsServed node of
+                (range:_) -> do
+                  let slot = slotStart range
+                      hashTag = slotMappings V.! fromIntegral slot
+                  when (not (BS.null hashTag)) $ do
+                    let key = "{" ++ BSC.unpack hashTag ++ "}:clitest:" ++ show slot
+                        value = "node" ++ show slot
+                    hPutStrLn hin $ "SET " ++ key ++ " " ++ value
+                    hFlush hin
+                    threadDelay cliCommandDelayMicros
+                _ -> return ()
+              ) masterNodes
+            
+            -- Exit CLI
+            hPutStrLn hin "exit"
+            hFlush hin
+            hClose hin
+            
+            -- Drain output
+            stdoutOut <- hGetContents hout
+            void $ evaluate (length stdoutOut)
+            
+            -- Wait for process to finish
+            exitCode <- waitForProcess ph
+            exitCode `shouldBe` ExitSuccess
+          
+          -- Now verify each node has exactly the key we set on it
+          mapM_ (\node -> do
+            case nodeSlotsServed node of
+              (range:_) -> do
+                let slot = slotStart range
+                    hashTag = slotMappings V.! fromIntegral slot
+                when (not (BS.null hashTag)) $ do
+                  let key = "{" ++ BSC.unpack hashTag ++ "}:clitest:" ++ show slot
+                      expectedValue = "node" ++ show slot
+                      addr = nodeAddress node
+                  -- Connect directly to this specific node
+                  conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+                  result <- runRedisCommand conn (get key)
+                  close conn
+                  case result of
+                    RespBulkString val -> val `shouldBe` BSL.pack expectedValue
+                    other -> expectationFailure $ "Expected value on node " ++ show (nodeHost addr) ++ ", got: " ++ show other
+              _ -> return ()
+            ) masterNodes
 
       it "cli mode handles CROSSSLOT errors for multi-key commands" $ do
         redisClient <- getRedisClientPath
@@ -599,54 +621,80 @@ main = hspec $ do
 
       it "cli mode routes commands to correct nodes" $ do
         redisClient <- getRedisClientPath
-
-        let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
-                   { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
-
-        withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
-          hSetBuffering hin LineBuffering
-          hSetBuffering hout LineBuffering
-
-          -- Set multiple keys that should hash to different slots
-          hPutStrLn hin "SET route:key1 value1"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          hPutStrLn hin "SET route:key2 value2"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          hPutStrLn hin "SET route:key3 value3"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          -- Get the keys back
-          hPutStrLn hin "GET route:key1"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          hPutStrLn hin "GET route:key2"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          hPutStrLn hin "GET route:key3"
-          hFlush hin
-          threadDelay cliCommandDelayMicros
-
-          -- Exit CLI
-          hPutStrLn hin "exit"
-          hFlush hin
-          hClose hin
-
-          -- Read output
-          stdoutOut <- hGetContents hout
-          void $ evaluate (length stdoutOut)
-
-          -- Wait for process to finish
-          exitCode <- waitForProcess ph
-
-          -- Verify all values are present
-          exitCode `shouldBe` ExitSuccess
-          stdoutOut `shouldSatisfy` ("value1" `isInfixOf`)
-          stdoutOut `shouldSatisfy` ("value2" `isInfixOf`)
-          stdoutOut `shouldSatisfy` ("value3" `isInfixOf`)
+        
+        -- First, calculate slots for test keys to ensure they route to different nodes
+        let key1 = "route:key1"
+            key2 = "route:key2"
+            key3 = "route:key3"
+        
+        slot1 <- calculateSlot (BSC.pack key1)
+        slot2 <- calculateSlot (BSC.pack key2)
+        slot3 <- calculateSlot (BSC.pack key3)
+        
+        -- Get cluster topology to map slots to nodes
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          topology <- readTVarIO (clusterTopology client)
+          
+          -- Find which nodes serve these slots
+          let findNodeBySlot s = do
+                nId <- findNodeForSlot topology s
+                Map.lookup nId (topologyNodes topology)
+              maybeNode1 = findNodeBySlot slot1
+              maybeNode2 = findNodeBySlot slot2
+              maybeNode3 = findNodeBySlot slot3
+          
+          -- Verify we have valid nodes for all slots
+          case (maybeNode1, maybeNode2, maybeNode3) of
+            (Just node1, Just node2, Just node3) -> do
+              -- Verify at least two keys route to different nodes
+              let differentNodes = length (nub [nodeId node1, nodeId node2, nodeId node3]) > 1
+              differentNodes `shouldBe` True
+              
+              -- Use CLI to set the keys
+              let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+                         { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+              
+              withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+                hSetBuffering hin LineBuffering
+                hSetBuffering hout LineBuffering
+                
+                -- Set the keys
+                hPutStrLn hin $ "SET " ++ key1 ++ " value1"
+                hFlush hin
+                threadDelay cliCommandDelayMicros
+                
+                hPutStrLn hin $ "SET " ++ key2 ++ " value2"
+                hFlush hin
+                threadDelay cliCommandDelayMicros
+                
+                hPutStrLn hin $ "SET " ++ key3 ++ " value3"
+                hFlush hin
+                threadDelay cliCommandDelayMicros
+                
+                -- Exit CLI
+                hPutStrLn hin "exit"
+                hFlush hin
+                hClose hin
+                
+                -- Drain output
+                stdoutOut <- hGetContents hout
+                void $ evaluate (length stdoutOut)
+                
+                -- Wait for process to finish
+                exitCode <- waitForProcess ph
+                exitCode `shouldBe` ExitSuccess
+              
+              -- Verify each key is on its expected node by connecting directly
+              let verifyKeyOnNode key expectedNode = do
+                    let addr = nodeAddress expectedNode
+                    conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+                    result <- runRedisCommand conn (get key)
+                    close conn
+                    case result of
+                      RespBulkString val -> val `shouldSatisfy` (not . BSL.null)
+                      other -> expectationFailure $ "Key " ++ key ++ " not found on expected node " ++ show (nodeHost addr) ++ ": " ++ show other
+              
+              verifyKeyOnNode key1 node1
+              verifyKeyOnNode key2 node2
+              verifyKeyOnNode key3 node3
+            _ -> expectationFailure "Could not map slots to nodes in topology"
