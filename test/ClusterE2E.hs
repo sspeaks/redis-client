@@ -5,7 +5,7 @@ module Main where
 
 import           Client                     (Client (..), ConnectionStatus (..),
                                              PlainTextClient (NotConnectedPlainTextClient))
-import           Cluster                    (NodeAddress (..), NodeRole (..), 
+import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              ClusterNode (..), ClusterTopology (..),
                                              SlotRange (..),
                                              calculateSlot)
@@ -24,7 +24,7 @@ import qualified Data.Map.Strict            as Map
 import           Data.Vector                (Vector)
 import qualified Data.Vector                as V
 import           Data.Word                  (Word16)
-import           RedisCommandClient         (ClientState (..), 
+import           RedisCommandClient         (ClientState (..),
                                              ClientReplyValues (..),
                                              RedisCommands (..))
 import           Resp                       (RespData (..))
@@ -80,7 +80,7 @@ getRedisClientPath = do
 
 -- | Helper to run a RedisCommand against a plain connection
 runRedisCommand :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient a -> IO a
-runRedisCommand conn cmd = 
+runRedisCommand conn cmd =
   State.evalStateT (case cmd of RedisCommandClient m -> m) (ClientState conn BS.empty)
 
 -- | Count total keys across all master nodes in cluster by querying each master directly
@@ -89,7 +89,7 @@ countClusterKeys client = do
   -- Get topology and find all master nodes
   topology <- readTVarIO (clusterTopology client)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-  
+
   -- Query DBSIZE from each master directly and sum the results
   sizes <- mapM (\node -> do
     let addr = nodeAddress node
@@ -100,7 +100,7 @@ countClusterKeys client = do
       RespInteger n -> return n
       _ -> return 0
     ) masterNodes
-  
+
   return $ sum sizes
 
 -- | Load slot mappings from file for creating keys that route to specific slots
@@ -228,15 +228,15 @@ main = hspec $ do
     describe "Cluster Fill Mode" $ do
       it "fill --data 1 with --cluster writes keys across cluster" $ do
         redisClient <- getRedisClientPath
-        
+
         -- Run fill with -f to flush before filling
-        (code, stdoutOut, _) <- readCreateProcessWithExitCode 
-          (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"]) 
+        (code, stdoutOut, _) <- readCreateProcessWithExitCode
+          (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"])
           ""
-        
+
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
-        
+
         -- Verify keys were distributed across cluster
         bracket createTestClusterClient closeClusterClient $ \client -> do
           totalKeys <- countClusterKeys client
@@ -246,17 +246,20 @@ main = hspec $ do
 
       it "fill --flush clears all nodes in cluster" $ do
         redisClient <- getRedisClientPath
-        let runRedisClient args input =
-              readCreateProcessWithExitCode (proc redisClient args) input
-        
+        let runRedisClient args = readCreateProcessWithExitCode (proc redisClient args)
+
+        -- First flush the cluster to start with a clean state (previous tests may have left data)
+        _ <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
+        threadDelay 100000
+
         -- Load slot mappings to create keys that route to specific nodes
         slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
-        
+
         -- Get cluster topology to identify master nodes
         bracket createTestClusterClient closeClusterClient $ \client -> do
           topology <- readTVarIO (clusterTopology client)
           let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-          
+
           -- Create keys that route to different masters using hash tags from slot mapping
           -- For each master, create a key using its first slot's hash tag
           mapM_ (\node -> do
@@ -272,7 +275,7 @@ main = hspec $ do
                 case result of
                   RespSimpleString "OK" -> return ()
                   other -> expectationFailure $ "Failed to set key " ++ key ++ ": " ++ show other
-                
+
                 -- Verify the key was set on the correct node by connecting directly
                 let addr = nodeAddress node
                 conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
@@ -283,9 +286,9 @@ main = hspec $ do
                   other -> expectationFailure $ "Key not found on expected node: " ++ show other
               [] -> return ()  -- Skip nodes with no slots
             ) masterNodes
-        
+
         threadDelay 100000
-        
+
         -- Verify keys exist across all nodes
         bracket createTestClusterClient closeClusterClient $ \client -> do
           topology <- readTVarIO (clusterTopology client)
@@ -293,14 +296,14 @@ main = hspec $ do
           totalKeys <- countClusterKeys client
           -- We created one key per master node, so should have exactly that many
           totalKeys `shouldBe` fromIntegral masterCount
-        
+
         -- Flush the cluster using only the -f flag (no --data)
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
         code `shouldNotBe` ExitSuccess  -- Exits with failure when only flushing
         stdoutOut `shouldSatisfy` ("Flushing" `isInfixOf`)
-        
+
         threadDelay 100000
-        
+
         -- Verify all keys are gone from all nodes after flush
         bracket createTestClusterClient closeClusterClient $ \client -> do
           totalKeys <- countClusterKeys client
@@ -308,15 +311,15 @@ main = hspec $ do
 
       it "fill with -n flag controls thread count" $ do
         redisClient <- getRedisClientPath
-        
+
         -- Run fill with 4 threads per node
-        (code, stdoutOut, _) <- readCreateProcessWithExitCode 
-          (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-n", "4", "-f"]) 
+        (code, stdoutOut, _) <- readCreateProcessWithExitCode
+          (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-n", "4", "-f"])
           ""
-        
+
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("with 4 threads per node" `isInfixOf`)
-        
+
         -- Verify data was filled with exact count
         bracket createTestClusterClient closeClusterClient $ \client -> do
           totalKeys <- countClusterKeys client
@@ -324,22 +327,22 @@ main = hspec $ do
 
       it "fill distributes data across multiple master nodes" $ do
         redisClient <- getRedisClientPath
-        
+
         -- Fill the cluster
-        (code, _, _) <- readCreateProcessWithExitCode 
-          (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"]) 
+        (code, _, _) <- readCreateProcessWithExitCode
+          (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"])
           ""
-        
+
         code `shouldBe` ExitSuccess
-        
+
         -- Verify data is distributed across multiple masters
         bracket createTestClusterClient closeClusterClient $ \client -> do
           topology <- readTVarIO (clusterTopology client)
           let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-          
+
           -- Should have multiple masters in the cluster
           length masterNodes `shouldSatisfy` (> 1)
-          
+
           -- Query DBSIZE from each master directly to verify distribution
           keysPerNode <- mapM (\node -> do
             let addr = nodeAddress node
@@ -350,9 +353,9 @@ main = hspec $ do
               RespInteger n -> return n
               _ -> return 0
             ) masterNodes
-          
+
           -- Each master should have some keys (verifying distribution)
           mapM_ (\keys -> keys `shouldSatisfy` (> 0)) keysPerNode
-          
+
           -- Total should be exactly 1048576 keys
           sum keysPerNode `shouldBe` 1048576
