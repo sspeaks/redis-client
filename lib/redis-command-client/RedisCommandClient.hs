@@ -527,7 +527,8 @@ data RunState = RunState
     serial :: Bool,
     numConnections :: Maybe Int,
     useCluster :: Bool,
-    tunnelMode :: String
+    tunnelMode :: String,
+    keySize :: Int
   }
   deriving (Show)
 

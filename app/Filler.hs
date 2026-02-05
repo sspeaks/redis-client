@@ -38,14 +38,14 @@ initRandomNoise = do
     let !len = BS.length randomNoise
     printf "Initialized shared random noise buffer: %d MB\n" (len `div` (1024 * 1024))
     
-genRandomSet :: Int -> Word64 -> LB.ByteString
-genRandomSet chunkKilos seed = Builder.toLazyByteString $! go numCommands seed
+genRandomSet :: Int -> Int -> Word64 -> LB.ByteString
+genRandomSet chunkKilos keySize seed = Builder.toLazyByteString $! go numCommands seed
   where
     numCommands = chunkKilos
     
-    -- Pre-computed RESP protocol prefix for SET commands
+    -- Pre-computed RESP protocol prefix for SET commands with dynamic key size
     setPrefix :: Builder.Builder
-    setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$512\r\n"
+    setPrefix = Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n$" <> Builder.intDec keySize <> Builder.stringUtf8 "\r\n"
     {-# INLINE setPrefix #-}
     
     valuePrefix :: Builder.Builder  
@@ -62,10 +62,26 @@ genRandomSet chunkKilos seed = Builder.toLazyByteString $! go numCommands seed
       let !keySeed = s
           !valSeed = s * 6364136223846793005 + 1442695040888963407
           !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
-          !keyData = generate512Bytes keySeed
+          !keyData = generateBytes keySize keySeed
           !valData = generate512Bytes valSeed
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
     {-# INLINE go #-}
+    
+    -- Generate exactly keySize bytes efficiently (8 bytes unique seed + remaining bytes noise)
+    generateBytes :: Int -> Word64 -> Builder.Builder
+    generateBytes size !s
+      | size <= 8 = 
+          -- For very small keys, just use the seed bytes
+          let seedBS = LB.toStrict $ Builder.toLazyByteString (Builder.word64LE s)
+          in Builder.byteString (BS.take size seedBS)
+      | otherwise = 
+          -- For larger keys, use seed + noise
+          let !scrambled = s * 6364136223846793005 + 1442695040888963407
+              !offset = fromIntegral (scrambled `rem` (fromIntegral (128 * 1024 * 1024 - size)))
+              !noiseSize = size - 8
+              !chunk = BS.take noiseSize (BS.drop offset randomNoise)
+          in Builder.word64LE s <> Builder.byteString chunk
+    {-# INLINE generateBytes #-}
     
     -- Generate exactly 512 bytes efficiently (8 bytes unique seed + 504 bytes noise)
     generate512Bytes :: Word64 -> Builder.Builder
@@ -93,13 +109,13 @@ lookupChunkKilos = do
 
 
 -- | Fills the cache with roughly the requested GB of data.
-fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> RedisCommandClient client ()
-fillCacheWithData baseSeed threadIdx gb = fillCacheWithDataMB baseSeed threadIdx (gb * 1024)
+fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> Int -> RedisCommandClient client ()
+fillCacheWithData baseSeed threadIdx gb keySize = fillCacheWithDataMB baseSeed threadIdx (gb * 1024) keySize
 
 -- | Fills the cache with roughly the requested MB of data.
 -- This allows finer-grained parallelization.
-fillCacheWithDataMB :: (Client client) => Word64 -> Int -> Int -> RedisCommandClient client ()
-fillCacheWithDataMB baseSeed threadIdx mb = do
+fillCacheWithDataMB :: (Client client) => Word64 -> Int -> Int -> Int -> RedisCommandClient client ()
+fillCacheWithDataMB baseSeed threadIdx mb keySize = do
   ClientState client _ <- State.get
   -- deterministic start seed for this thread based on the global baseSeed
   let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
@@ -118,7 +134,7 @@ fillCacheWithDataMB baseSeed threadIdx mb = do
   
   -- Send all chunks sequentially (fire-and-forget mode)
   mapM_ (\i -> do 
-      let !cmd = genRandomSet chunkKilos (startSeed + fromIntegral i)
+      let !cmd = genRandomSet chunkKilos keySize (startSeed + fromIntegral i)
       send client cmd
       ) [0..totalChunks - 1]
   
