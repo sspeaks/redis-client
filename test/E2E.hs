@@ -383,6 +383,74 @@ main = do
         (code2, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "100000"] ""
         code2 `shouldNotBe` ExitSuccess
 
+      it "fill with --key-size 128 fills accurate memory (1GB)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "128"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=128, bytesPerCommand = 128 + 512 = 640 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: 1,073,741,824 / 640 = 1,677,721 keys (rounded up)
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 1677721
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --key-size 64 fills accurate memory (1GB)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "64"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=64, bytesPerCommand = 64 + 512 = 576 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: 1,073,741,824 / 576 = 1,864,127 keys (rounded up)
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 1864127
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --key-size 256 fills accurate memory (1GB)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "256"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=256, bytesPerCommand = 256 + 512 = 768 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: 1,073,741,824 / 768 = 1,398,102 keys (rounded up)
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 1398102
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --key-size 512 fills accurate memory (1GB, backward compatible)" $ do
+        void $ runRedisAction flushAll
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "512"] ""
+        code `shouldBe` ExitSuccess
+        -- With keySize=512, bytesPerCommand = 512 + 512 = 1024 bytes
+        -- 1GB = 1024 MB = 1,073,741,824 bytes
+        -- Expected keys: 1,073,741,824 / 1024 = 1,048,576 keys (exact)
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> do
+            -- Allow ±0.1% tolerance due to remainder chunks
+            let expected = 1048576
+            let lowerBound = round (fromIntegral expected * 0.999 :: Double)
+            let upperBound = round (fromIntegral expected * 1.001 :: Double)
+            n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+
       it "cli mode responds to commands" $ do
         let cp =
               (proc redisClient ["cli", "--host", "redis.local"]) {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}

@@ -107,7 +107,6 @@ fillCacheWithDataMB baseSeed threadIdx mb keySize = do
       -- Calculate chunks and remainder for exact distribution
       fullChunks = totalCommandsNeeded `div` chunkKilos
       remainderCommands = totalCommandsNeeded `mod` chunkKilos
-      totalChunks = if remainderCommands > 0 then fullChunks + 1 else fullChunks
   
   -- Send all full chunks sequentially (fire-and-forget mode)
   mapM_ (\i -> do 

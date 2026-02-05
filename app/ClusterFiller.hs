@@ -212,7 +212,6 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize = do
               -- Calculate chunks and remainder for exact distribution
               fullChunks = totalCommandsNeeded `div` chunkKilos
               remainderCommands = totalCommandsNeeded `mod` chunkKilos
-              totalChunks = if remainderCommands > 0 then fullChunks + 1 else fullChunks
 
           -- Generate and send all full chunks
           mapM_ (\chunkIdx -> do
