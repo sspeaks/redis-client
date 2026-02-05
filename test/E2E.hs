@@ -385,7 +385,7 @@ main = do
 
       it "fill with --key-size 128 fills accurate memory (1GB)" $ do
         void $ runRedisAction flushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "128"] ""
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=128, bytesPerCommand = 128 + 512 = 640 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -402,7 +402,7 @@ main = do
 
       it "fill with --key-size 64 fills accurate memory (1GB)" $ do
         void $ runRedisAction flushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "64"] ""
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=64, bytesPerCommand = 64 + 512 = 576 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -419,7 +419,7 @@ main = do
 
       it "fill with --key-size 256 fills accurate memory (1GB)" $ do
         void $ runRedisAction flushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "256"] ""
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=256, bytesPerCommand = 256 + 512 = 768 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -436,7 +436,7 @@ main = do
 
       it "fill with --key-size 512 fills accurate memory (1GB, backward compatible)" $ do
         void $ runRedisAction flushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1024", "--key-size", "512"] ""
+        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, bytesPerCommand = 512 + 512 = 1024 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
