@@ -24,8 +24,8 @@ initRandomNoise = do
     let !len = BS.length randomNoise
     printf "Initialized shared random noise buffer: %d MB\n" (len `div` (1024 * 1024))
     
-genRandomSet :: Int -> Int -> Word64 -> LB.ByteString
-genRandomSet chunkKilos keySize seed = Builder.toLazyByteString $! go numCommands seed
+genRandomSet :: Int -> Int -> Int -> Word64 -> LB.ByteString
+genRandomSet chunkKilos keySize valueSize seed = Builder.toLazyByteString $! go numCommands seed
   where
     numCommands = chunkKilos
     
@@ -35,7 +35,7 @@ genRandomSet chunkKilos keySize seed = Builder.toLazyByteString $! go numCommand
     {-# INLINE setPrefix #-}
     
     valuePrefix :: Builder.Builder  
-    valuePrefix = Builder.stringUtf8 "\r\n$512\r\n"
+    valuePrefix = Builder.stringUtf8 "\r\n$" <> Builder.intDec valueSize <> Builder.stringUtf8 "\r\n"
     {-# INLINE valuePrefix #-}
     
     commandSuffix :: Builder.Builder
@@ -49,18 +49,9 @@ genRandomSet chunkKilos keySize seed = Builder.toLazyByteString $! go numCommand
           !valSeed = s * 6364136223846793005 + 1442695040888963407
           !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
           !keyData = generateBytes keySize keySeed
-          !valData = generate512Bytes valSeed
+          !valData = generateBytes valueSize valSeed
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
     {-# INLINE go #-}
-    
-    -- Generate exactly 512 bytes efficiently (8 bytes unique seed + 504 bytes noise)
-    generate512Bytes :: Word64 -> Builder.Builder
-    generate512Bytes !s = 
-        let !scrambled = s * 6364136223846793005 + 1442695040888963407
-            !offset = fromIntegral (scrambled `rem` (128 * 1024 * 1024 - 512))
-            !chunk = BS.take 504 (BS.drop offset randomNoise)
-        in Builder.word64LE s <> Builder.byteString chunk
-    {-# INLINE generate512Bytes #-}
 
 defaultChunkKilos :: Int
 defaultChunkKilos = 8192  -- 8MB chunks for optimal throughput
@@ -79,13 +70,13 @@ lookupChunkKilos = do
 
 
 -- | Fills the cache with roughly the requested GB of data.
-fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> Int -> RedisCommandClient client ()
-fillCacheWithData baseSeed threadIdx gb keySize = fillCacheWithDataMB baseSeed threadIdx (gb * 1024) keySize
+fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> Int -> Int -> RedisCommandClient client ()
+fillCacheWithData baseSeed threadIdx gb keySize valueSize = fillCacheWithDataMB baseSeed threadIdx (gb * 1024) keySize valueSize
 
 -- | Fills the cache with roughly the requested MB of data.
 -- This allows finer-grained parallelization.
-fillCacheWithDataMB :: (Client client) => Word64 -> Int -> Int -> Int -> RedisCommandClient client ()
-fillCacheWithDataMB baseSeed threadIdx mb keySize = do
+fillCacheWithDataMB :: (Client client) => Word64 -> Int -> Int -> Int -> Int -> RedisCommandClient client ()
+fillCacheWithDataMB baseSeed threadIdx mb keySize valueSize = do
   ClientState client _ <- State.get
   -- deterministic start seed for this thread based on the global baseSeed
   let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
@@ -99,8 +90,8 @@ fillCacheWithDataMB baseSeed threadIdx mb keySize = do
   clientReply OFF
   
   -- Calculate total commands needed based on actual data size
-  -- Each command stores: keySize bytes (key) + 512 bytes (value)
-  let bytesPerCommand = keySize + 512
+  -- Each command stores: keySize bytes (key) + valueSize bytes (value)
+  let bytesPerCommand = keySize + valueSize
       totalBytesNeeded = mb * 1024 * 1024  -- Convert MB to bytes
       totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
       
@@ -110,13 +101,13 @@ fillCacheWithDataMB baseSeed threadIdx mb keySize = do
   
   -- Send all full chunks sequentially (fire-and-forget mode)
   mapM_ (\i -> do 
-      let !cmd = genRandomSet chunkKilos keySize (startSeed + fromIntegral i)
+      let !cmd = genRandomSet chunkKilos keySize valueSize (startSeed + fromIntegral i)
       send client cmd
       ) [0..fullChunks - 1]
   
   -- Send the remainder chunk if there is one
   when (remainderCommands > 0) $ do
-      let !cmd = genRandomSet remainderCommands keySize (startSeed + fromIntegral fullChunks)
+      let !cmd = genRandomSet remainderCommands keySize valueSize (startSeed + fromIntegral fullChunks)
       send client cmd
   
   -- Turn replies back on to confirm completion
