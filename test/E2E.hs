@@ -462,12 +462,73 @@ main = do
         case dbSizeResp of
           RespInteger n -> n `shouldSatisfy` (> 0)
           _ -> expectationFailure "Expected integer response from DBSIZE"
+        -- Verify a random value has the expected size (128 bytes) by retrieving it
+        keyResp <- runRedisAction (do
+            ClientState client _ <- State.get
+            send client $ Builder.toLazyByteString $ encode $ RespArray [RespBulkString "RANDOMKEY"]
+            receive client >>= \bs -> do
+              ClientState _ buffer <- State.get
+              case parseOnly parseRespData (buffer <> bs) of
+                Right resp -> do
+                  State.put (ClientState client BS.empty)
+                  return resp
+                Left err -> error $ "Parse error: " ++ err)
+        case keyResp of
+          RespBulkString key -> do
+            -- Now GET the value for this key
+            valueResp <- runRedisAction (do
+                ClientState client _ <- State.get
+                send client $ Builder.toLazyByteString $ encode $ RespArray [RespBulkString "GET", RespBulkString key]
+                receive client >>= \bs -> do
+                  ClientState _ buffer <- State.get
+                  case parseOnly parseRespData (buffer <> bs) of
+                    Right resp -> do
+                      State.put (ClientState client BS.empty)
+                      return resp
+                    Left err -> error $ "Parse error: " ++ err)
+            case valueResp of
+              RespBulkString value -> fromIntegral (BSC.length value) `shouldBe` (128 :: Int)
+              _ -> expectationFailure "Expected bulk string response from GET"
+          _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
       it "fill with --value-size 2048 creates larger values" $ do
         void $ runRedisAction flushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "2048"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("value size: 2048 bytes" `isInfixOf`)
+        -- Verify some keys exist
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+          RespInteger n -> n `shouldSatisfy` (> 0)
+          _ -> expectationFailure "Expected integer response from DBSIZE"
+        -- Verify a random value has the expected size (2048 bytes) by retrieving it
+        keyResp <- runRedisAction (do
+            ClientState client _ <- State.get
+            send client $ Builder.toLazyByteString $ encode $ RespArray [RespBulkString "RANDOMKEY"]
+            receive client >>= \bs -> do
+              ClientState _ buffer <- State.get
+              case parseOnly parseRespData (buffer <> bs) of
+                Right resp -> do
+                  State.put (ClientState client BS.empty)
+                  return resp
+                Left err -> error $ "Parse error: " ++ err)
+        case keyResp of
+          RespBulkString key -> do
+            -- Now GET the value for this key
+            valueResp <- runRedisAction (do
+                ClientState client _ <- State.get
+                send client $ Builder.toLazyByteString $ encode $ RespArray [RespBulkString "GET", RespBulkString key]
+                receive client >>= \bs -> do
+                  ClientState _ buffer <- State.get
+                  case parseOnly parseRespData (buffer <> bs) of
+                    Right resp -> do
+                      State.put (ClientState client BS.empty)
+                      return resp
+                    Left err -> error $ "Parse error: " ++ err)
+            case valueResp of
+              RespBulkString value -> fromIntegral (BSC.length value) `shouldBe` (2048 :: Int)
+              _ -> expectationFailure "Expected bulk string response from GET"
+          _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
       it "fill rejects invalid --value-size values" $ do
         (code1, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--value-size", "0"] ""
