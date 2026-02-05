@@ -204,8 +204,9 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize = do
           _ <- clientReply OFF
 
           -- Calculate total chunks needed based on actual MB requested
+          -- Uses ceiling division: (a + b - 1) / b to ensure we send enough data
           let totalKilosNeeded = mbToFill * 1024  -- Convert MB to KB
-              totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
+              totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- ceiling(totalKilosNeeded / chunkKilos)
 
           -- Generate and send all chunks
           mapM_ (\chunkIdx -> do

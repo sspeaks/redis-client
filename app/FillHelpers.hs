@@ -51,12 +51,12 @@ generateBytesWithHashTag size hashTag !seed
       let !tagLen = BS.length hashTag
           -- Format: {hashtag}:seed:padding
           !prefix = Builder.char8 '{' <> Builder.byteString hashTag <> Builder.stringUtf8 "}:"
-          !prefixLen = 2 + tagLen + 1  -- { + tag + }:
-          !totalPrefix = prefixLen + 8  -- prefix + 8-byte seed
-      in if totalPrefix > size
+          !prefixOverhead = 3  -- { + } + :
+          !totalPrefixLen = prefixOverhead + tagLen + 8  -- prefix chars + tag + 8-byte seed
+      in if totalPrefixLen > size
          then generateBytes size seed  -- Fall back if prefix too large
          else 
-           let !paddingNeeded = size - totalPrefix
+           let !paddingNeeded = size - totalPrefixLen
                !scrambled = seed * 6364136223846793005 + 1442695040888963407
                !bufferSize = 128 * 1024 * 1024
                !safePaddingSize = min paddingNeeded bufferSize
