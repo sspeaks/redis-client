@@ -3,8 +3,9 @@
 ## Current Status
 
 **Completed**: Phases 1-11 (Core infrastructure, CLI mode, Fill mode, Tunnel mode, Code refactoring, Connection Pool Audit, E2E Testing - Fill Mode, E2E Testing - CLI Mode, E2E Testing - Tunnel Mode)  
-**Next Priority**: Phase 12 - E2E Testing - Advanced Scenarios  
-**Document Version**: 4.7  
+**Skipped**: Phase 12 - E2E Testing - Advanced Scenarios (deemed unnecessary)  
+**Next Priority**: Phase 13 - Performance Benchmarking & Profiling  
+**Document Version**: 4.9  
 **Last Updated**: 2026-02-05
 
 ---
@@ -255,10 +256,11 @@ See details in completed phases section above.
 
 ---
 
-### Phase 12: E2E Testing - Advanced Scenarios
-**Status**: NOT STARTED  
+### ❌ Phase 12: E2E Testing - Advanced Scenarios (SKIPPED)
+**Status**: SKIPPED  
 **Prerequisites**: Phases 9-11 complete  
-**Estimated Effort**: ~100-150 LOC
+**Estimated Effort**: ~100-150 LOC  
+**Skipped**: 2026-02-05
 
 #### Goal
 Test edge cases, failure scenarios, and cluster-specific behaviors.
@@ -271,18 +273,18 @@ Test edge cases, failure scenarios, and cluster-specific behaviors.
 - Current connection pool behavior under load (single connection per node)
 - Concurrent multi-threaded access with existing infrastructure
 
-#### Implementation Notes
-- May require docker-compose modifications to simulate failures
-- Use docker pause/unpause for node failures
-- Test topology refresh on MOVED errors
-- Verify retry logic and exponential backoff
-- Note: Tests existing connection pool (one connection per node); enhanced pool (Phase 16) is optional future work
+#### Why Skipped
+Phase 12 was deemed unnecessary as:
+- MOVED errors are already tested in Phase 11 (pinned mode tests)
+- Basic cluster functionality is well-covered by Phases 9-11
+- Advanced failure scenarios would require significant infrastructure changes
+- Current test coverage (26 E2E tests) provides sufficient confidence in cluster behavior
 
 ---
 
 ### Phase 13: Performance Benchmarking & Profiling
 **Status**: NOT STARTED  
-**Prerequisites**: Phases 9-12 complete  
+**Prerequisites**: Phases 9-11 complete  
 **Estimated Effort**: ~50-100 LOC + profiling time
 
 #### Goal
