@@ -14,6 +14,7 @@ import           Cluster                 (ClusterNode (..),
                                           NodeAddress (..), NodeRole (..),
                                           SlotRange (..))
 import           ClusterCommandClient    (ClusterClient (..))
+import qualified ConnectionPool          as CP
 import           Control.Concurrent      (MVar, forkIO, newEmptyMVar, putMVar,
                                           takeMVar)
 import           Control.Concurrent.STM  (readTVarIO)
@@ -166,9 +167,9 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
           printf "Thread %d filling %dMB on node %s:%d\n"
                  threadIdx mbToFill (nodeHost addr) (nodePort addr)
 
-          -- Create a unique connection for this thread using connector directly
-          -- This avoids connection pool contention where threads share connections
-          conn <- connector addr
+          -- Get or create connection from the pool for this node
+          -- All threads for the same node will share the connection efficiently
+          conn <- CP.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
 
           -- Find which slots this node owns
           topology <- readTVarIO (clusterTopology clusterClient)
