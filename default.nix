@@ -16,6 +16,12 @@ rec {
     pkgs.haskell.lib.dontCheck
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "ClusterEndToEnd" "redis-client" ])
   ];
+
+  justClient = pkgs.lib.pipe fullPackage [
+    pkgs.haskell.lib.justStaticExecutables
+    pkgs.haskell.lib.dontCheck
+    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "redis-client" ])
+  ];
   
   # Wrapper package that includes both redis-client and azure-redis-connect
   fullPackageWithScripts = pkgs.stdenv.mkDerivation {
@@ -29,8 +35,8 @@ rec {
       mkdir -p $out/bin
       
       # Copy all binaries from the Haskell package
-      if [ -d "${fullPackage}/bin" ]; then
-        cp -rL ${fullPackage}/bin/. $out/bin/
+      if [ -d "${justClient}/bin" ]; then
+        cp -rL ${justClient}/bin/. $out/bin/
       fi
       
       # Install the azure-redis-connect script
