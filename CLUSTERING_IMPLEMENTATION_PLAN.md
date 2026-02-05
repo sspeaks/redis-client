@@ -227,7 +227,7 @@ Create comprehensive E2E tests for both tunnel modes (smart and pinned).
 - Cleanup ensures processes are properly terminated
 
 #### Testing Results
-- All unit tests pass: 66 total examples (RespSpec: 38, ClusterSpec: 12, ClusterCommandSpec: 28)
+- All unit tests pass: 78 total examples (RespSpec: 38, ClusterSpec: 12, ClusterCommandSpec: 28)
 - Code compiles successfully with only minor partial function warnings (acceptable for test code)
 - ClusterEndToEnd executable builds successfully
 - Tests ready for execution with Redis cluster (requires Docker and Nix)
