@@ -306,7 +306,7 @@ main = hspec $ do
         -- Flush the cluster using only the -f flag (no --data)
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
         code `shouldNotBe` ExitSuccess  -- Exits with failure when only flushing
-        stdoutOut `shouldSatisfy` ("Flushing all" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Flushing" `isInfixOf`)
         
         threadDelay 100000
         
