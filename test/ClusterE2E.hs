@@ -241,7 +241,7 @@ main = hspec $ do
         -- Run fill with small chunk size for faster test
         (code, stdoutOut, _) <- runRedisClientWithEnv 
           [("REDIS_CLIENT_FILL_CHUNK_KB", chunkKilosForTest)] 
-          ["fill", "--host", "localhost", "--cluster", "--data", "1", "-f"] 
+          ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"] 
           ""
         
         code `shouldBe` ExitSuccess
@@ -304,7 +304,7 @@ main = hspec $ do
           totalKeys `shouldSatisfy` (>= fromIntegral (length masterNodes))
         
         -- Flush the cluster using only the -f flag (no --data)
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "localhost", "--cluster", "-f"] ""
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
         code `shouldNotBe` ExitSuccess  -- Exits with failure when only flushing
         stdoutOut `shouldSatisfy` ("Flushing all" `isInfixOf`)
         
@@ -330,7 +330,7 @@ main = hspec $ do
         -- Run fill with 4 threads per node
         (code, stdoutOut, _) <- runRedisClientWithEnv 
           [("REDIS_CLIENT_FILL_CHUNK_KB", chunkKilosForTest)] 
-          ["fill", "--host", "localhost", "--cluster", "--data", "1", "-n", "4", "-f"] 
+          ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-n", "4", "-f"] 
           ""
         
         code `shouldBe` ExitSuccess
@@ -352,7 +352,7 @@ main = hspec $ do
         -- Fill the cluster
         (code, _, _) <- runRedisClientWithEnv 
           [("REDIS_CLIENT_FILL_CHUNK_KB", chunkKilosForTest)] 
-          ["fill", "--host", "localhost", "--cluster", "--data", "1", "-f"] 
+          ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"] 
           ""
         
         code `shouldBe` ExitSuccess
