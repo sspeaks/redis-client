@@ -14,7 +14,7 @@ rec {
   justStaticClusterEndToEnd = pkgs.lib.pipe fullPackage [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
-    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "ClusterEndToEnd" ])
+    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "ClusterEndToEnd" "redis-client" ])
   ];
   
   # Wrapper package that includes both redis-client and azure-redis-connect
