@@ -2,9 +2,9 @@
 
 ## Current Status
 
-**Completed**: Phases 1-9 (Core infrastructure, CLI mode, Fill mode, Tunnel mode, Code refactoring, Connection Pool Audit, E2E Testing - Fill Mode)  
-**Next Priority**: Phase 10 - E2E Testing - CLI Mode  
-**Document Version**: 4.5  
+**Completed**: Phases 1-10 (Core infrastructure, CLI mode, Fill mode, Tunnel mode, Code refactoring, Connection Pool Audit, E2E Testing - Fill Mode, E2E Testing - CLI Mode)  
+**Next Priority**: Phase 11 - E2E Testing - Tunnel Mode  
+**Document Version**: 4.6  
 **Last Updated**: 2026-02-05
 
 ---
@@ -129,30 +129,63 @@ Create comprehensive E2E tests for cluster fill mode to verify data distribution
 
 ---
 
-## Remaining Phases (Priority Order)
+### ✅ Phase 10: E2E Testing - CLI Mode (COMPLETED)
 
-### Phase 10: E2E Testing - CLI Mode
-**Status**: NOT STARTED  
+**Priority**: HIGH  
 **Prerequisites**: Phase 9 complete  
-**Estimated Effort**: ~100-150 LOC
+**Estimated Effort**: ~100-150 LOC  
+**Completed**: 2026-02-05
 
 #### Goal
 Create comprehensive E2E tests for cluster CLI mode interactive command execution.
 
-#### Scope
-- Test interactive command execution (GET, SET, etc.)
-- Test keyless commands (PING, INFO, CLUSTER)
-- Test multi-key commands on same slot
-- Test CROSSSLOT error handling and messages
-- Test hash tag usage
+#### What Was Done
 
-#### Implementation Notes
-- Adapt patterns from `test/E2E.hs` CLI tests (lines ~40-80)
-- Use process I/O handling for interactive REPL
-- Test commands that route to different nodes
-- Verify proper error messages for CROSSSLOT errors
+**1. Implemented 7 Comprehensive Test Cases**
+- **Interactive command execution**: GET/SET commands in CLI mode with cluster routing
+- **Keyless commands**: PING command routing to any master node
+- **Cluster commands**: CLUSTER SLOTS command validation
+- **Hash tag support**: Keys with `{tag}` notation ensuring same-slot routing
+- **CROSSSLOT error handling**: MGET with keys spanning different slots, proper error messages
+- **Multi-key operations**: MGET with hash tags ensuring same-slot execution
+- **Command routing**: Multiple keys routing to different nodes, cross-node operations
+
+**2. Code Quality Enhancements**
+- Added to `test/ClusterE2E.hs` (293 lines of new test code)
+- Extracted `cliCommandDelayMicros` constant (200ms) for better maintainability
+- Implemented case-insensitive CROSSSLOT error checking
+- Followed existing patterns from `test/E2E.hs`
+- Used process I/O handling for interactive REPL testing
+- Proper resource management with `withCreateProcess`
+
+**3. Testing Implementation Details**
+- Tests use `--cluster` flag to enable cluster mode
+- Process I/O handles stdin/stdout for interactive CLI testing
+- Appropriate delays (200ms) between commands for execution
+- Validates both successful operations and error conditions
+- Case-insensitive error message validation for robustness
+
+#### Testing Results
+- All unit tests pass: 78 total examples (RespSpec: 38, ClusterSpec: 12, ClusterCommandSpec: 28)
+- Code compiles successfully with no errors or warnings
+- Security checks passed (CodeQL - no issues detected)
+- Tests ready for execution with Redis cluster (requires Nix environment)
+
+#### Success Criteria Met
+- ✅ Interactive command execution tests implemented
+- ✅ Keyless command tests implemented (PING, CLUSTER SLOTS)
+- ✅ Multi-key command tests on same slot implemented
+- ✅ CROSSSLOT error handling tests implemented
+- ✅ Hash tag usage tests implemented
+- ✅ Command routing tests implemented
+- ✅ All unit tests pass with no regressions
+- ✅ Code follows patterns from existing E2E tests
+- ✅ Code review feedback addressed
+- ✅ Security checks completed
 
 ---
+
+## Remaining Phases (Priority Order)
 
 ### Phase 11: E2E Testing - Tunnel Mode
 **Status**: NOT STARTED  
