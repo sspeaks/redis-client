@@ -68,7 +68,8 @@ done
 sleep 2
 
 # Get the actual network name created by docker compose
-NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Name}}" | head -n 1)
+# Docker compose prefixes the network name with the project name (usually the directory name)
+NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Name}}" | grep -E 'redis-cluster-net$' | head -n 1)
 
 if [ -z "$NETWORK_NAME" ]; then
   echo "Error: Could not find redis-cluster-net network. Is docker compose running?"

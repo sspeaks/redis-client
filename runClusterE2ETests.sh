@@ -71,9 +71,20 @@ nix-build e2eClusterDockerImg.nix || {
 echo "Loading cluster E2E test Docker image..."
 docker load < result
 
-# Run the cluster E2E tests in Docker
-echo "Running cluster E2E tests in Docker container..."
-docker run --network=host clustere2etests:latest  || {
+# Get the actual network name created by docker compose
+# Docker compose prefixes the network name with the project name (usually the directory name)
+NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Name}}" | grep -E 'redis-cluster-net$' | head -n 1)
+
+if [ -z "$NETWORK_NAME" ]; then
+  echo "Error: Could not find redis-cluster-net network"
+  cd docker-cluster
+  docker compose down
+  exit 1
+fi
+
+# Run the cluster E2E tests in Docker on the same network as the cluster
+echo "Running cluster E2E tests in Docker container on network $NETWORK_NAME..."
+docker run --network="$NETWORK_NAME" clustere2etests:latest  || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
     cd docker-cluster
