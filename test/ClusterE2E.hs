@@ -14,7 +14,7 @@ import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (IOException, bracket, evaluate, finally, try)
-import           Control.Monad              (void, when)
+import           Control.Monad              (forM_, void, when)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Char8      as BSC
@@ -786,6 +786,7 @@ main = hspec $ do
 
         it "smart mode handles commands that route to different nodes" $ do
           redisClient <- getRedisClientPath
+          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
                      { std_out = CreatePipe,
                        std_err = CreatePipe
@@ -807,28 +808,44 @@ main = hspec $ do
                           cleanup
                           expectationFailure "Smart proxy stdout closed unexpectedly"
                         Just (Right ()) -> do
-                          conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
-                          
-                          -- Set keys that will hash to different slots (and likely different nodes)
-                          _ <- runRedisCommand conn (set "key:a" "value-a")
-                          _ <- runRedisCommand conn (set "key:b" "value-b")
-                          _ <- runRedisCommand conn (set "key:c" "value-c")
-                          
-                          -- Verify all keys are accessible through the proxy
-                          result1 <- runRedisCommand conn (get "key:a")
-                          result1 `shouldBe` RespBulkString "value-a"
-                          
-                          result2 <- runRedisCommand conn (get "key:b")
-                          result2 `shouldBe` RespBulkString "value-b"
-                          
-                          result3 <- runRedisCommand conn (get "key:c")
-                          result3 `shouldBe` RespBulkString "value-c"
-                          
-                          close conn
-                          
-                          -- Clean up
+                          -- Get cluster topology to determine which nodes exist
                           bracket createTestClusterClient closeClusterClient $ \client -> do
-                            _ <- runCmd client (del ["key:a", "key:b", "key:c"])
+                            topology <- readTVarIO (clusterTopology client)
+                            let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+                            
+                            when (length masterNodes < 2) $
+                              expectationFailure "Need at least 2 master nodes for this test"
+                            
+                            -- Find keys that hash to different nodes
+                            let node1 = head masterNodes
+                                node2 = masterNodes !! 1
+                                slot1 = case nodeSlotsServed node1 of
+                                  (range:_) -> slotStart range
+                                  _ -> 0
+                                slot2 = case nodeSlotsServed node2 of
+                                  (range:_) -> slotStart range
+                                  _ -> 5461
+                                key1 = BSC.unpack $ slotMappings V.! fromIntegral slot1
+                                key2 = BSC.unpack $ slotMappings V.! fromIntegral slot2
+                            
+                            conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+                            
+                            -- Set keys that will route to different nodes
+                            _ <- runRedisCommand conn (set key1 "value-node1")
+                            _ <- runRedisCommand conn (set key2 "value-node2")
+                            
+                            -- Verify all keys are accessible through the proxy (proving cross-node routing)
+                            result1 <- runRedisCommand conn (get key1)
+                            result1 `shouldBe` RespBulkString "value-node1"
+                            
+                            result2 <- runRedisCommand conn (get key2)
+                            result2 `shouldBe` RespBulkString "value-node2"
+                            
+                            close conn
+                            
+                            -- Clean up - use cluster client to handle routing per key
+                            _ <- runCmd client (del [key1])
+                            _ <- runCmd client (del [key2])
                             pure ()
                   )
                   cleanup
@@ -836,7 +853,7 @@ main = hspec $ do
                 cleanupProcess ph
                 expectationFailure "Smart proxy process did not expose stdout/stderr handles"
 
-        it "smart mode handles MOVED redirections internally" $ do
+        it "smart mode works with various keys" $ do
           redisClient <- getRedisClientPath
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
                      { std_out = CreatePipe,
@@ -861,19 +878,19 @@ main = hspec $ do
                         Just (Right ()) -> do
                           conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
                           
-                          -- Set a key - the smart proxy should handle any MOVED errors internally
-                          result1 <- runRedisCommand conn (set "redirect:test" "value")
+                          -- Set a key - smart proxy should route correctly regardless of which node owns the slot
+                          result1 <- runRedisCommand conn (set "various:test" "value")
                           result1 `shouldBe` RespSimpleString "OK"
                           
                           -- Get the key - should work regardless of topology
-                          result2 <- runRedisCommand conn (get "redirect:test")
+                          result2 <- runRedisCommand conn (get "various:test")
                           result2 `shouldBe` RespBulkString "value"
                           
                           close conn
                           
                           -- Clean up
                           bracket createTestClusterClient closeClusterClient $ \client -> do
-                            _ <- runCmd client (del ["redirect:test"])
+                            _ <- runCmd client (del ["various:test"])
                             pure ()
                   )
                   cleanup
@@ -881,7 +898,7 @@ main = hspec $ do
                 cleanupProcess ph
                 expectationFailure "Smart proxy process did not expose stdout/stderr handles"
 
-        it "smart mode handles multiple concurrent clients" $ do
+        it "smart mode handles multiple separate connections" $ do
           redisClient <- getRedisClientPath
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
                      { std_out = CreatePipe,
@@ -909,25 +926,25 @@ main = hspec $ do
                           conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
                           
                           -- Client 1 sets and gets a key
-                          result1 <- runRedisCommand conn1 (set "concurrent:key1" "client1-value")
+                          result1 <- runRedisCommand conn1 (set "multi:key1" "client1-value")
                           result1 `shouldBe` RespSimpleString "OK"
                           
                           -- Client 2 sets and gets a different key
-                          result2 <- runRedisCommand conn2 (set "concurrent:key2" "client2-value")
+                          result2 <- runRedisCommand conn2 (set "multi:key2" "client2-value")
                           result2 `shouldBe` RespSimpleString "OK"
                           
                           -- Both clients can read their keys
-                          result3 <- runRedisCommand conn1 (get "concurrent:key1")
+                          result3 <- runRedisCommand conn1 (get "multi:key1")
                           result3 `shouldBe` RespBulkString "client1-value"
                           
-                          result4 <- runRedisCommand conn2 (get "concurrent:key2")
+                          result4 <- runRedisCommand conn2 (get "multi:key2")
                           result4 `shouldBe` RespBulkString "client2-value"
                           
                           -- Cross-client reads work
-                          result5 <- runRedisCommand conn1 (get "concurrent:key2")
+                          result5 <- runRedisCommand conn1 (get "multi:key2")
                           result5 `shouldBe` RespBulkString "client2-value"
                           
-                          result6 <- runRedisCommand conn2 (get "concurrent:key1")
+                          result6 <- runRedisCommand conn2 (get "multi:key1")
                           result6 `shouldBe` RespBulkString "client1-value"
                           
                           close conn1
@@ -935,7 +952,8 @@ main = hspec $ do
                           
                           -- Clean up
                           bracket createTestClusterClient closeClusterClient $ \client -> do
-                            _ <- runCmd client (del ["concurrent:key1", "concurrent:key2"])
+                            _ <- runCmd client (del ["multi:key1"])
+                            _ <- runCmd client (del ["multi:key2"])
                             pure ()
                   )
                   cleanup
@@ -944,7 +962,7 @@ main = hspec $ do
                 expectationFailure "Smart proxy process did not expose stdout/stderr handles"
 
       describe "Pinned Proxy Mode" $ do
-        it "pinned mode creates one listener per cluster node" $ do
+        it "pinned mode creates one listener per cluster node and each works correctly" $ do
           redisClient <- getRedisClientPath
           slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
@@ -981,34 +999,32 @@ main = hspec $ do
                             -- Verify we have multiple masters
                             length masterNodes `shouldSatisfy` (>= 3)
                             
-                            -- Connect to one of the pinned listeners (using first master's port)
-                            case masterNodes of
-                              [] -> expectationFailure "No master nodes found in cluster topology"
-                              (firstMaster:_) -> do
-                                let addr = nodeAddress firstMaster
-                                    localPort = nodePort addr
-                                    -- Find a slot owned by this node
-                                    slots = nodeSlotsServed firstMaster
-                                    firstSlot = case slots of
-                                      (range:_) -> slotStart range
-                                      _ -> 0
-                                    -- Get a key that hashes to that slot
-                                    testKey = BSC.unpack $ slotMappings V.! fromIntegral firstSlot
-                                
-                                conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
-                                
-                                -- Execute a command through pinned proxy using a key that belongs to this node
-                                result1 <- runRedisCommand conn (set testKey "value")
-                                result1 `shouldBe` RespSimpleString "OK"
-                                
-                                result2 <- runRedisCommand conn (get testKey)
-                                result2 `shouldBe` RespBulkString "value"
-                                
-                                close conn
-                                
-                                -- Clean up
-                                _ <- runCmd client (del [testKey])
-                                pure ()
+                            -- Test each pinned listener
+                            forM_ masterNodes $ \masterNode -> do
+                              let addr = nodeAddress masterNode
+                                  localPort = nodePort addr
+                                  -- Find a slot owned by this node
+                                  slots = nodeSlotsServed masterNode
+                                  firstSlot = case slots of
+                                    (range:_) -> slotStart range
+                                    _ -> 0
+                                  -- Get a key that hashes to that slot
+                                  testKey = BSC.unpack $ slotMappings V.! fromIntegral firstSlot
+                              
+                              conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
+                              
+                              -- Execute a command through pinned proxy using a key that belongs to this node
+                              result1 <- runRedisCommand conn (set testKey "value")
+                              result1 `shouldBe` RespSimpleString "OK"
+                              
+                              result2 <- runRedisCommand conn (get testKey)
+                              result2 `shouldBe` RespBulkString "value"
+                              
+                              close conn
+                              
+                              -- Clean up
+                              _ <- runCmd client (del [testKey])
+                              pure ()
                   )
                   cleanup
               _ -> do
@@ -1084,8 +1100,9 @@ main = hspec $ do
                                 close conn1
                                 close conn2
                                 
-                                -- Clean up (using cluster client to reach correct nodes)
-                                _ <- runCmd client (del [testKey1, testKey2])
+                                -- Clean up (delete keys separately to avoid CROSSSLOTS error)
+                                _ <- runCmd client (del [testKey1])
+                                _ <- runCmd client (del [testKey2])
                                 pure ()
                               _ -> expectationFailure "Expected at least 2 master nodes"
                   )
@@ -1094,7 +1111,70 @@ main = hspec $ do
                 cleanupProcess ph
                 expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
 
-        it "pinned mode handles CLUSTER SLOTS commands correctly" $ do
+        it "pinned mode returns MOVED errors for keys not owned by the node" $ do
+          redisClient <- getRedisClientPath
+          slotMappings <- loadSlotMappings "cluster_slot_mapping.txt"
+          let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
+                     { std_out = CreatePipe,
+                       std_err = CreatePipe
+                     }
+          withCreateProcess cp $ \_ mOut mErr ph ->
+            case (mOut, mErr) of
+              (Just hout, Just herr) -> do
+                hSetBuffering hout LineBuffering
+                hSetBuffering herr LineBuffering
+                let cleanup = cleanupProcess ph
+                finally
+                  (do
+                      ready <- timeout (10 * 1000000) (try (waitForSubstring hout "All pinned listeners started") :: IO (Either IOException ()))
+                      case ready of
+                        Nothing -> do
+                          cleanup
+                          expectationFailure "Pinned proxy did not start within timeout"
+                        Just (Left _) -> do
+                          cleanup
+                          expectationFailure "Pinned proxy stdout closed unexpectedly"
+                        Just (Right ()) -> do
+                          bracket createTestClusterClient closeClusterClient $ \client -> do
+                            topology <- readTVarIO (clusterTopology client)
+                            let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+                            
+                            when (length masterNodes < 2) $
+                              expectationFailure "Need at least 2 master nodes for this test"
+                            
+                            -- Get two different nodes
+                            case masterNodes of
+                              (node1:node2:_) -> do
+                                let addr1 = nodeAddress node1
+                                    port1 = nodePort addr1
+                                    -- Find a slot owned by node2 (NOT node1)
+                                    slots2 = nodeSlotsServed node2
+                                    slot2 = case slots2 of
+                                      (range:_) -> slotStart range
+                                      _ -> 5461
+                                    -- Get a key that hashes to node2's slot
+                                    wrongKey = BSC.unpack $ slotMappings V.! fromIntegral slot2
+                                
+                                -- Connect to node1's pinned listener
+                                conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
+                                
+                                -- Try to access a key that belongs to node2 - should get MOVED error
+                                result <- runRedisCommand conn1 (get wrongKey)
+                                case result of
+                                  RespError err -> do
+                                    -- Verify it's a MOVED error
+                                    err `shouldSatisfy` \e -> "MOVED" `isInfixOf` e
+                                  _ -> expectationFailure $ "Expected MOVED error, got: " ++ show result
+                                
+                                close conn1
+                              _ -> expectationFailure "Expected at least 2 master nodes"
+                  )
+                  cleanup
+              _ -> do
+                cleanupProcess ph
+                expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
+
+        it "pinned mode rewrites CLUSTER SLOTS addresses to 127.0.0.1" $ do
           redisClient <- getRedisClientPath
           let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
                      { std_out = CreatePipe,
@@ -1134,14 +1214,16 @@ main = hspec $ do
                                 -- The response should have addresses rewritten to 127.0.0.1
                                 result <- runRedisCommand conn clusterSlots
                                 
-                                -- Verify result is an array (CLUSTER SLOTS returns array of slot ranges)
+                                -- Verify result is an array and contains 127.0.0.1
                                 case result of
                                   RespArray slots -> do
                                     -- Should have multiple slot ranges
                                     length slots `shouldSatisfy` (> 0)
-                                    -- Note: Full validation of address rewriting would require parsing
-                                    -- the complex nested array structure. Just verify it's valid RESP.
-                                    pure ()
+                                    -- Verify addresses are rewritten to 127.0.0.1
+                                    let resultStr = show result
+                                    resultStr `shouldSatisfy` \s -> "127.0.0.1" `isInfixOf` s
+                                    -- Should NOT contain original hostnames
+                                    resultStr `shouldSatisfy` \s -> not ("redis1.local" `isInfixOf` s)
                                   other -> expectationFailure $ "Expected RespArray from CLUSTER SLOTS, got: " ++ show other
                                 
                                 close conn
