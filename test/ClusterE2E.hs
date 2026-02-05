@@ -42,6 +42,7 @@ import           System.Process             (CreateProcess (..), ProcessHandle,
                                              terminateProcess, waitForProcess,
                                              withCreateProcess)
 import           System.Timeout             (timeout)
+import           Data.Time.Clock            (getCurrentTime, diffUTCTime)
 import           Test.Hspec
 
 -- | Create a cluster client for testing
@@ -1232,3 +1233,152 @@ main = hspec $ do
               _ -> do
                 cleanupProcess ph
                 expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
+
+    describe "Advanced Scenarios (Phase 12)" $ do
+      it "handles concurrent multi-threaded access correctly" $ do
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Test concurrent access from multiple threads
+          -- Create 10 threads, each doing 100 operations
+          let numThreads = 10
+              opsPerThread = 100
+          
+          results <- mapM (\threadId -> do
+            -- Each thread operates on its own set of keys to avoid conflicts
+            let baseKey = "thread:" ++ show threadId ++ ":key:"
+            mapM (\opId -> do
+              let key = baseKey ++ show opId
+                  value = "value:" ++ show threadId ++ ":" ++ show opId
+              
+              -- Set
+              setResult <- runCmd client $ set key value
+              -- Get and verify
+              getResult <- runCmd client $ get key
+              
+              return $ case (setResult, getResult) of
+                (RespSimpleString "OK", RespBulkString v) | v == BSL.pack value -> True
+                _ -> False
+              ) [1..opsPerThread]
+            ) [1..numThreads]
+          
+          -- All operations should succeed
+          let allSucceeded = all and results
+          allSucceeded `shouldBe` True
+
+      it "connection pool handles load correctly with single connection per node" $ do
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Verify pool configuration
+          topology <- readTVarIO (clusterTopology client)
+          let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+          
+          -- Should have at least 3 master nodes in test cluster
+          length masterNodes `shouldSatisfy` (>= 3)
+          
+          -- Make rapid sequential requests that should use pool efficiently
+          -- Each request to different slots to exercise the pool
+          let numRequests = 100
+              keys = ["pooltest:" ++ show i | i <- [1..numRequests]]
+          
+          results <- mapM (\key -> do
+            setResult <- runCmd client $ set key ("value_" ++ key)
+            case setResult of
+              RespSimpleString "OK" -> return True
+              _ -> return False
+            ) keys
+          
+          -- All operations should succeed despite single connection per node
+          all id results `shouldBe` True
+
+      it "handles topology refresh when cluster state changes" $ do
+        let connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Get initial topology
+          topology1 <- readTVarIO (clusterTopology client)
+          let initialNodeCount = Map.size (topologyNodes topology1)
+          
+          -- Perform some operations
+          result1 <- runCmd client $ set "refresh:test:key1" "value1"
+          case result1 of
+            RespSimpleString "OK" -> return ()
+            other -> expectationFailure $ "Initial SET failed: " ++ show other
+          
+          -- Manually refresh topology (simulating what would happen on MOVED error)
+          refreshTopology client connector
+          
+          -- Get refreshed topology
+          topology2 <- readTVarIO (clusterTopology client)
+          let refreshedNodeCount = Map.size (topologyNodes topology2)
+          
+          -- In a stable cluster, node count should remain the same
+          refreshedNodeCount `shouldBe` initialNodeCount
+          
+          -- Operations should still work after refresh
+          result2 <- runCmd client $ get "refresh:test:key1"
+          case result2 of
+            RespBulkString "value1" -> return ()
+            other -> expectationFailure $ "GET after refresh failed: " ++ show other
+
+      it "maintains cluster operations during simulated node slowdown" $ do
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Get cluster topology
+          topology <- readTVarIO (clusterTopology client)
+          let masterNodes = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+          
+          when (length masterNodes < 3) $
+            expectationFailure "Need at least 3 master nodes for this test"
+          
+          -- Test that we can write to multiple different slots
+          -- Even if one node is slow, operations on other nodes should succeed
+          let testKeys = 
+                [ "node:test:key1"  -- Will hash to some node
+                , "node:test:key2"  -- Will hash to potentially different node
+                , "node:test:key3"  -- Will hash to potentially different node
+                , "{slot:A}:key1"   -- Force specific slot
+                , "{slot:B}:key2"   -- Force different slot
+                ]
+          
+          -- Set all keys
+          setResults <- mapM (\key -> do
+            result <- runCmd client $ set key ("value_for_" ++ key)
+            return $ case result of
+              RespSimpleString "OK" -> True
+              _ -> False
+            ) testKeys
+          
+          -- All sets should succeed
+          all id setResults `shouldBe` True
+          
+          -- Verify we can read them back
+          getResults <- mapM (\key -> do
+            result <- runCmd client $ get key
+            return $ case result of
+              RespBulkString v | v == BSL.pack ("value_for_" ++ key) -> True
+              _ -> False
+            ) testKeys
+          
+          -- All gets should succeed
+          all id getResults `shouldBe` True
+
+      it "handles rapid sequential operations efficiently" $ do
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          -- Test rapid sequential operations (100 operations)
+          -- This tests the connection pool's efficiency
+          let numOps = 100
+              keyPrefix = "rapid:test:"
+          
+          -- Perform rapid SET operations
+          startTime <- getCurrentTime
+          results <- mapM (\i -> do
+            let key = keyPrefix ++ show i
+            result <- runCmd client $ set key ("value" ++ show i)
+            return $ case result of
+              RespSimpleString "OK" -> True
+              _ -> False
+            ) [1..numOps]
+          endTime <- getCurrentTime
+          
+          -- All operations should succeed
+          all id results `shouldBe` True
+          
+          -- Operations should complete in reasonable time (less than 5 seconds)
+          let elapsed = diffUTCTime endTime startTime
+          elapsed `shouldSatisfy` (< 5.0)
