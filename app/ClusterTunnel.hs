@@ -28,7 +28,7 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LBSC
-import           Data.Char                  (toUpper)
+import           Data.Char                  (isAlphaNum, toUpper)
 import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word8)
@@ -367,8 +367,11 @@ rewriteRespData (RespBulkString bs) =
        -- Plain IPv4 address from CLUSTER SLOTS: replace with 127.0.0.1
        else if isIPv4Address text
               then RespBulkString (LBSC.pack "127.0.0.1")
-              -- Other bulk strings (node IDs, etc.): leave unchanged
-              else RespBulkString bs
+              -- Hostname from CLUSTER SLOTS: replace with 127.0.0.1
+              else if isHostname text
+                     then RespBulkString (LBSC.pack "127.0.0.1")
+                     -- Other bulk strings (node IDs, etc.): leave unchanged
+                     else RespBulkString bs
 rewriteRespData (RespArray items) =
   -- Recursively rewrite array items (handles nested structures in CLUSTER SLOTS)
   RespArray (map rewriteRespData items)
@@ -404,6 +407,18 @@ isIPv4Address str = case parseIPv4 str of
     readMaybe s = case reads s of
       [(x, "")] -> Just x
       _ -> Nothing
+
+-- | Check if a string is a hostname
+-- A hostname must contain at least one dot and be alphanumeric with dots/hyphens
+-- Examples: "redis1.local", "node1.cluster.local", "192.168.1.1" (but filtered by isIPv4Address)
+isHostname :: String -> Bool
+isHostname str =
+  not (null str) &&
+  not (isIPv4Address str) &&
+  elem '.' str &&  -- Must contain at least one dot to be a hostname
+  all isAlphaNumOrDash str
+  where
+    isAlphaNumOrDash c = isAlphaNum c || c == '-' || c == '.'
 
 -- | Rewrite MOVED/ASK error messages
 rewriteRedirectionError :: String -> String
