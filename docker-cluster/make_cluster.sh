@@ -1,5 +1,14 @@
 #! /usr/bin/env nix-shell
 #! nix-shell -i bash -p  redis
+#
+# Script to create a Redis cluster from Docker containers.
+# This script:
+# 1. Starts Redis containers via docker compose
+# 2. Waits for all nodes to be ready
+# 3. Resets any stale cluster state (fixes hanging issues)
+# 4. Creates the cluster with a 60-second timeout
+#
+# If cluster creation hangs, run: docker compose down -v
 
 docker compose up -d
 
@@ -37,14 +46,30 @@ for node in "${NODES[@]}"; do
   check_node_ready "$node" || exit 1
 done
 
-# Create the cluster
-echo "Creating Redis cluster..."
-redis-cli --cluster create "${NODES[@]}" --cluster-yes
+# Reset cluster state on all nodes to avoid stale configuration issues
+echo "Resetting cluster state on all nodes..."
+for node in "${NODES[@]}"; do
+  host="${node%:*}"
+  port="${node#*:}"
+  echo "Resetting cluster on $node..."
+  redis-cli -h "$host" -p "$port" CLUSTER RESET SOFT 2>/dev/null || true
+done
 
-# Check if the cluster creation was successful
-if [ $? -eq 0 ]; then
+# Give nodes a moment to reset (allows cluster state to fully clear)
+sleep 2
+
+# Create the cluster with a timeout
+echo "Creating Redis cluster..."
+if timeout 60 redis-cli --cluster create "${NODES[@]}" --cluster-yes; then
   echo "Redis cluster created successfully!"
 else
-  echo "Error: Failed to create Redis cluster."
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 124 ]; then
+    echo "Error: Cluster creation timed out after 60 seconds."
+    echo "This usually indicates a networking or configuration issue."
+    echo "Try running 'docker compose down -v' to clean up volumes and retry."
+  else
+    echo "Error: Failed to create Redis cluster (exit code: $EXIT_CODE)."
+  fi
   exit 1
 fi
