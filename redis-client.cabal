@@ -218,4 +218,5 @@ executable redis-client
                     , ClusterCli
                     , ClusterFiller
                     , ClusterTunnel
+                    , FillHelpers
     default-language: GHC2021

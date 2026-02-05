@@ -12,25 +12,10 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LB
 import RedisCommandClient (ClientState (..), RedisCommandClient, RedisCommands (dbsize, clientReply), ClientReplyValues (OFF, ON))
 import System.Environment (lookupEnv)
-import Data.Word (Word64, Word8)
-import Data.Bits (shiftR)
+import Data.Word (Word64)
 import Text.Read (readMaybe)
 import Text.Printf (printf)
-
--- Simple fast PRNG that directly generates Builder output
-gen :: Word64 -> Builder.Builder
-gen s = Builder.word64LE s <> gen (s * 1664525 + 1013904223)
-{-# INLINE gen #-}
-
--- 128MB of pre-computed random noise (larger buffer reduces collision probability)
--- Uses unfoldrN to generate directly into a buffer, avoiding the ~5GB overhead 
--- of constructing an intermediate [Word8] list.
-randomNoise :: BS.ByteString
-randomNoise = fst $ BS.unfoldrN (128 * 1024 * 1024) step 0
-  where
-    step :: Word64 -> Maybe (Word8, Word64)
-    step !s = Just (fromIntegral (s `shiftR` 56), s * 6364136223846793005 + 1442695040888963407)
-{-# NOINLINE randomNoise #-}
+import FillHelpers (generateBytes, randomNoise)
 
 -- | Forces evaluation of the noise buffer to ensure it is shared and ready.
 initRandomNoise :: IO ()
@@ -66,25 +51,6 @@ genRandomSet chunkKilos keySize seed = Builder.toLazyByteString $! go numCommand
           !valData = generate512Bytes valSeed
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
     {-# INLINE go #-}
-    
-    -- Generate exactly keySize bytes efficiently (8 bytes unique seed + remaining bytes noise)
-    generateBytes :: Int -> Word64 -> Builder.Builder
-    generateBytes size !s
-      | size <= 8 = 
-          -- For very small keys, just use the seed bytes
-          let seedBS = LB.toStrict $ Builder.toLazyByteString (Builder.word64LE s)
-          in Builder.byteString (BS.take size seedBS)
-      | otherwise = 
-          -- For larger keys, use seed + noise
-          let !scrambled = s * 6364136223846793005 + 1442695040888963407
-              !noiseSize = size - 8
-              -- Ensure we don't exceed the noise buffer size
-              !bufferSize = 128 * 1024 * 1024
-              !safeNoiseSize = min noiseSize bufferSize
-              !offset = fromIntegral (scrambled `rem` (fromIntegral (bufferSize - safeNoiseSize)))
-              !chunk = BS.take noiseSize (BS.drop offset randomNoise)
-          in Builder.word64LE s <> Builder.byteString chunk
-    {-# INLINE generateBytes #-}
     
     -- Generate exactly 512 bytes efficiently (8 bytes unique seed + 504 bytes noise)
     generate512Bytes :: Word64 -> Builder.Builder

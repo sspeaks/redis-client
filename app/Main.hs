@@ -59,7 +59,20 @@ import           System.Random              (randomIO)
 import           Text.Printf                (printf)
 
 defaultRunState :: RunState
-defaultRunState = RunState "" Nothing "default" "" False 0 False False (Just 2) False "smart" 512
+defaultRunState = RunState 
+  { host = ""
+  , port = Nothing
+  , username = "default"
+  , password = ""
+  , useTLS = False
+  , dataGBs = 0
+  , flush = False
+  , serial = False
+  , numConnections = Just 2
+  , useCluster = False
+  , tunnelMode = "smart"
+  , keySize = 512
+  }
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =

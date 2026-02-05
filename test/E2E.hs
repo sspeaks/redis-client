@@ -44,7 +44,20 @@ import           Test.Hspec                 (beforeAll_, before_, describe,
                                              shouldReturn, shouldSatisfy)
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
-runRedisAction = runCommandsAgainstPlaintextHost (RunState "redis.local" Nothing "default" "" False 0 False False Nothing False "smart" 512)
+runRedisAction = runCommandsAgainstPlaintextHost (RunState 
+  { host = "redis.local"
+  , port = Nothing
+  , username = "default"
+  , password = ""
+  , useTLS = False
+  , dataGBs = 0
+  , flush = False
+  , serial = False
+  , numConnections = Nothing
+  , useCluster = False
+  , tunnelMode = "smart"
+  , keySize = 512
+  })
 
 getRedisClientPath :: IO FilePath
 getRedisClientPath = do
@@ -350,7 +363,20 @@ main = do
                 }
             viaTunnel :: RedisCommandClient PlainTextClient a -> IO a
             viaTunnel action =
-              runCommandsAgainstPlaintextHost (RunState "localhost" (Just 6379) "default" "" False 0 False False Nothing False "smart" 512) action
+              runCommandsAgainstPlaintextHost (RunState
+                { host = "localhost"
+                , port = Just 6379
+                , username = "default"
+                , password = ""
+                , useTLS = False
+                , dataGBs = 0
+                , flush = False
+                , serial = False
+                , numConnections = Nothing
+                , useCluster = False
+                , tunnelMode = "smart"
+                , keySize = 512
+                }) action
         withCreateProcess cp $ \_ mOut mErr ph ->
           case (mOut, mErr) of
             (Just hout, Just herr) -> do

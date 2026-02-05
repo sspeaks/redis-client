@@ -19,7 +19,6 @@ import           Control.Concurrent.STM  (readTVarIO)
 import           Control.Exception       (SomeException, catch)
 import           Control.Monad           (when)
 import qualified Control.Monad.State     as State
-import           Data.Bits               (shiftR)
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy    as LB
@@ -29,24 +28,14 @@ import           Data.Text               (Text)
 import qualified Data.Text               as T
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
-import           Data.Word               (Word16, Word64, Word8)
+import           Data.Word               (Word16, Word64)
 import           Filler                  (lookupChunkKilos)
+import           FillHelpers             (generateBytes, generateBytesWithHashTag, randomNoise)
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
 import           System.Timeout          (timeout)
 import           Text.Printf             (printf)
-
-
-
--- 128MB of pre-computed random noise for key/value generation
--- Same pattern as Filler.hs
-randomNoise :: BS.ByteString
-randomNoise = fst $ BS.unfoldrN (128 * 1024 * 1024) step 0
-  where
-    step :: Word64 -> Maybe (Word8, Word64)
-    step !s = Just (fromIntegral (s `shiftR` 56), s * 6364136223846793005 + 1442695040888963407)
-{-# NOINLINE randomNoise #-}
 
 
 
@@ -73,17 +62,17 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
   -- Calculate slot distribution for each master
   let slotRanges = calculateSlotRangesPerMaster topology masterNodes
 
-  -- Calculate exact keys needed: 1GB = 1024*1024 keys (each key+value = 1024 bytes)
-  -- Use key counts instead of MB to avoid rounding errors
-  let totalKeys = totalGB * 1024 * 1024
-      baseKeysPerNode = totalKeys `div` numMasters
-      keyRemainder = totalKeys `mod` numMasters
+  -- Work in MB for finer granularity, just like standalone Filler does
+  -- This ensures -d flag represents actual data size regardless of key size
+  let totalMB = totalGB * 1024
+      baseMBPerNode = totalMB `div` numMasters
+      mbRemainder = totalMB `mod` numMasters
 
-  printf "Distributing %dGB (%d keys) across %d master nodes using %d threads per node\n"
-         totalGB totalKeys numMasters threadsPerNode
+  printf "Distributing %dGB (%dMB) across %d master nodes using %d threads per node (key size: %d bytes)\n"
+         totalGB totalMB numMasters threadsPerNode keySize
 
-  -- Create jobs: (nodeAddress, threadIdx, keysToFill)
-  let jobs = concatMap (createJobsForNode baseKeysPerNode keyRemainder threadsPerNode)
+  -- Create jobs: (nodeAddress, threadIdx, mbToFill)
+  let jobs = concatMap (createJobsForNode baseMBPerNode mbRemainder threadsPerNode)
                        (zip [0..] masterNodes)
 
   printf "Total jobs: %d (%d nodes * %d threads)\n"
@@ -97,15 +86,15 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
   where
     -- | Create fill jobs for a single master node
     -- Distributes the node's workload across multiple threads
-    -- Uses exact key counts instead of MB to avoid rounding errors
+    -- Uses MB instead of key counts to match standalone behavior
     createJobsForNode :: Int -> Int -> Int -> (Int, ClusterNode) -> [(NodeAddress, Int, Int)]
-    createJobsForNode baseKeys remainder threadsPerNode (nodeIdx, node) =
-      let keysForThisNode = baseKeys + (if nodeIdx < remainder then 1 else 0)
-          keysPerThread = keysForThisNode `div` threadsPerNode
-          threadRemainder = keysForThisNode `mod` threadsPerNode
+    createJobsForNode baseMB remainder threadsPerNode (nodeIdx, node) =
+      let mbForThisNode = baseMB + (if nodeIdx < remainder then 1 else 0)
+          mbPerThread = mbForThisNode `div` threadsPerNode
+          threadRemainder = mbForThisNode `mod` threadsPerNode
       in [(nodeAddress node,
            threadIdx,
-           keysPerThread + (if threadIdx < threadRemainder then 1 else 0))
+           mbPerThread + (if threadIdx < threadRemainder then 1 else 0))
          | threadIdx <- [0..threadsPerNode - 1]]
 
     -- | Calculate which hash slots each master node is responsible for
@@ -126,11 +115,11 @@ executeJob ::
   Map Text [Word16] ->
   Word64 ->
   Int ->                              -- Key size in bytes
-  (NodeAddress, Int, Int) ->  -- (address, threadIdx, keysToFill)
+  (NodeAddress, Int, Int) ->  -- (address, threadIdx, mbToFill)
   IO (MVar ())
-executeJob clusterClient connector slotRanges baseSeed keySize (addr, threadIdx, keysToFill) = do
+executeJob clusterClient connector slotRanges baseSeed keySize (addr, threadIdx, mbToFill) = do
   -- If this thread has no work, return immediately
-  if keysToFill <= 0
+  if mbToFill <= 0
     then do
       mvar <- newEmptyMVar
       putMVar mvar ()
@@ -140,8 +129,8 @@ executeJob clusterClient connector slotRanges baseSeed keySize (addr, threadIdx,
       _ <- forkIO $ do
         -- Wrap the entire thread work in exception handler to ensure mvar is always filled
         catch (do
-          printf "Thread %d filling %d keys on node %s:%d\n"
-                 threadIdx keysToFill (nodeHost addr) (nodePort addr)
+          printf "Thread %d filling %dMB on node %s:%d\n"
+                 threadIdx mbToFill (nodeHost addr) (nodePort addr)
 
           -- Create a unique connection for this thread using connector directly
           -- This avoids connection pool contention where threads share connections
@@ -164,7 +153,7 @@ executeJob clusterClient connector slotRanges baseSeed keySize (addr, threadIdx,
                 printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
 
               -- Fill data for this node using its slots
-              fillNodeWithData conn slots keysToFill baseSeed threadIdx keySize
+              fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize
           ) (\e -> do
             -- If any exception occurs, log it and continue
             printf "Error in thread %d for node %s:%d: %s\n"
@@ -185,17 +174,17 @@ executeJob clusterClient connector slotRanges baseSeed keySize (addr, threadIdx,
         []    -> Nothing
 
 -- | Fill a specific node with data using its assigned slots
--- Uses exact key counts instead of MB to avoid rounding errors
+-- Uses MB for finer-grained allocation, matching standalone mode behavior
 fillNodeWithData ::
   (Client client) =>
   client 'Connected ->
   [Word16] ->
-  Int ->       -- keysToFill (exact count)
+  Int ->       -- mbToFill (megabytes to fill)
   Word64 ->
   Int ->
   Int ->       -- Key size in bytes
   IO ()
-fillNodeWithData conn slots keysToFill baseSeed threadIdx keySize = do
+fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize = do
   when (null slots) $ return ()
 
   -- Convert slots list to Vector for O(1) access in the hot loop
@@ -214,22 +203,16 @@ fillNodeWithData conn slots keysToFill baseSeed threadIdx keySize = do
           -- Turn off client replies for maximum throughput (fire-and-forget)
           _ <- clientReply OFF
 
-          -- Calculate full chunks and remaining keys for exact count
-          let fullChunks = keysToFill `div` chunkKilos
-              remainingKeys = keysToFill `mod` chunkKilos
+          -- Calculate total chunks needed based on actual MB requested
+          let totalKilosNeeded = mbToFill * 1024  -- Convert MB to KB
+              totalChunks = (totalKilosNeeded + chunkKilos - 1) `div` chunkKilos  -- Ceiling division
 
-          -- Generate and send full chunks
+          -- Generate and send all chunks
           mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
               let cmd = generateClusterChunk slotsVec chunkKilos keySize (threadSeed + fromIntegral chunkIdx)
               send client cmd
-            ) [0..fullChunks - 1]
-
-          -- Send partial chunk for remaining keys (if any)
-          when (remainingKeys > 0) $ do
-            ClientState client _ <- State.get
-            let cmd = generateClusterChunk slotsVec remainingKeys keySize (threadSeed + fromIntegral fullChunks)
-            send client cmd
+            ) [0..totalChunks - 1]
 
           -- Turn replies back on
           _ <- clientReply ON
@@ -291,53 +274,7 @@ generateClusterChunk slots chunkKilos keySize seed =
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
     {-# INLINE go #-}
 
-    -- Generate key with hash tag prefix to ensure proper routing
-    -- Empty hash tag means no routing needed, fall back to regular generation
-    generateBytesWithHashTag :: Int -> BS.ByteString -> Word64 -> Builder.Builder
-    generateBytesWithHashTag size hashTag !seed
-      | BS.null hashTag = generateBytes size seed
-      | otherwise =
-          let !tagLen = BS.length hashTag
-              -- Format: {hashtag}:seed:padding
-              -- We need exactly keySize bytes total
-              !seedBytes = Builder.word64LE seed  -- 8 bytes
-              !prefix = Builder.char8 '{' <> Builder.byteString hashTag <> Builder.stringUtf8 "}:"
-              !prefixLen = 2 + tagLen + 1  -- { + tag + }:
-
-              -- Fill remaining bytes with noise
-              !totalPrefix = prefixLen + 8  -- prefix + seed
-              !paddingNeeded = max 0 (size - totalPrefix)  -- Ensure non-negative
-
-              !scrambled = seed * 6364136223846793005 + 1442695040888963407
-              !bufferSize = 128 * 1024 * 1024
-              !safePaddingSize = min paddingNeeded bufferSize
-              !offset = fromIntegral (scrambled `rem` (fromIntegral (bufferSize - safePaddingSize)))
-              !padding = BS.take paddingNeeded (BS.drop offset randomNoise)
-          in if totalPrefix > size
-             then generateBytes size seed  -- If prefix too large, fall back to regular generation
-             else prefix <> seedBytes <> Builder.byteString padding
-    {-# INLINE generateBytesWithHashTag #-}
-
-    -- Generate arbitrary number of bytes (same logic as in Filler.hs)
-    generateBytes :: Int -> Word64 -> Builder.Builder
-    generateBytes size !s
-      | size <= 8 = 
-          -- For very small keys, just use the seed bytes
-          let seedBS = LB.toStrict $ Builder.toLazyByteString (Builder.word64LE s)
-          in Builder.byteString (BS.take size seedBS)
-      | otherwise = 
-          -- For larger keys, use seed + noise
-          let !scrambled = s * 6364136223846793005 + 1442695040888963407
-              !noiseSize = size - 8
-              -- Ensure we don't exceed the noise buffer size
-              !bufferSize = 128 * 1024 * 1024
-              !safeNoiseSize = min noiseSize bufferSize
-              !offset = fromIntegral (scrambled `rem` (fromIntegral (bufferSize - safeNoiseSize)))
-              !chunk = BS.take noiseSize (BS.drop offset randomNoise)
-          in Builder.word64LE s <> Builder.byteString chunk
-    {-# INLINE generateBytes #-}
-
-    -- | Generate 512 bytes of data (same as in Filler.hs)
+    -- | Generate 512 bytes of data for values
     generate512Bytes :: Word64 -> Builder.Builder
     generate512Bytes !s =
       let !scrambled = s * 6364136223846793005 + 1442695040888963407
