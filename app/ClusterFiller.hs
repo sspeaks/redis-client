@@ -98,16 +98,17 @@ fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode 
   -- Calculate slot distribution for each master
   let slotRanges = calculateSlotRangesPerMaster topology masterNodes
 
-  -- Calculate MB per node for even distribution
-  let totalMB = totalGB * 1024
-      baseMBPerNode = totalMB `div` numMasters
-      remainder = totalMB `mod` numMasters
+  -- Calculate exact keys needed: 1GB = 1024*1024 keys (each key+value = 1024 bytes)
+  -- Use key counts instead of MB to avoid rounding errors
+  let totalKeys = totalGB * 1024 * 1024
+      baseKeysPerNode = totalKeys `div` numMasters
+      keyRemainder = totalKeys `mod` numMasters
 
-  printf "Distributing %dGB across %d master nodes using %d threads per node\n"
-         totalGB numMasters threadsPerNode
+  printf "Distributing %dGB (%d keys) across %d master nodes using %d threads per node\n"
+         totalGB totalKeys numMasters threadsPerNode
 
-  -- Create jobs: (nodeAddress, slots, mbToFill, threadIdx)
-  let jobs = concatMap (createJobsForNode baseMBPerNode remainder threadsPerNode)
+  -- Create jobs: (nodeAddress, threadIdx, keysToFill)
+  let jobs = concatMap (createJobsForNode baseKeysPerNode keyRemainder threadsPerNode)
                        (zip [0..] masterNodes)
 
   printf "Total jobs: %d (%d nodes * %d threads)\n"
@@ -121,14 +122,15 @@ fillClusterWithData clusterClient connector slotMappings totalGB threadsPerNode 
   where
     -- | Create fill jobs for a single master node
     -- Distributes the node's workload across multiple threads
+    -- Uses exact key counts instead of MB to avoid rounding errors
     createJobsForNode :: Int -> Int -> Int -> (Int, ClusterNode) -> [(NodeAddress, Int, Int)]
-    createJobsForNode baseMB remainder threadsPerNode (nodeIdx, node) =
-      let mbForThisNode = baseMB + (if nodeIdx < remainder then 1 else 0)
-          mbPerThread = mbForThisNode `div` threadsPerNode
-          threadRemainder = mbForThisNode `mod` threadsPerNode
+    createJobsForNode baseKeys remainder threadsPerNode (nodeIdx, node) =
+      let keysForThisNode = baseKeys + (if nodeIdx < remainder then 1 else 0)
+          keysPerThread = keysForThisNode `div` threadsPerNode
+          threadRemainder = keysForThisNode `mod` threadsPerNode
       in [(nodeAddress node,
            threadIdx,
-           mbPerThread + (if threadIdx < threadRemainder then 1 else 0))
+           keysPerThread + (if threadIdx < threadRemainder then 1 else 0))
          | threadIdx <- [0..threadsPerNode - 1]]
 
     -- | Calculate which hash slots each master node is responsible for
@@ -149,11 +151,11 @@ executeJob ::
   SlotMapping ->
   Map Text [Word16] ->
   Word64 ->
-  (NodeAddress, Int, Int) ->
+  (NodeAddress, Int, Int) ->  -- (address, threadIdx, keysToFill)
   IO (MVar ())
-executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threadIdx, mbToFill) = do
+executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threadIdx, keysToFill) = do
   -- If this thread has no work, return immediately
-  if mbToFill <= 0
+  if keysToFill <= 0
     then do
       mvar <- newEmptyMVar
       putMVar mvar ()
@@ -163,8 +165,8 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
       _ <- forkIO $ do
         -- Wrap the entire thread work in exception handler to ensure mvar is always filled
         catch (do
-          printf "Thread %d filling %dMB on node %s:%d\n"
-                 threadIdx mbToFill (nodeHost addr) (nodePort addr)
+          printf "Thread %d filling %d keys on node %s:%d\n"
+                 threadIdx keysToFill (nodeHost addr) (nodePort addr)
 
           -- Create a unique connection for this thread using connector directly
           -- This avoids connection pool contention where threads share connections
@@ -187,7 +189,7 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
                 printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
 
               -- Fill data for this node using its slots
-              fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx
+              fillNodeWithData conn slotMappings slots keysToFill baseSeed threadIdx
           ) (\e -> do
             -- If any exception occurs, log it and continue
             printf "Error in thread %d for node %s:%d: %s\n"
@@ -202,22 +204,23 @@ executeJob clusterClient connector slotMappings slotRanges baseSeed (addr, threa
     -- | Find a cluster node by its address
     -- Returns the first node matching the address, or Nothing if not found
     findNodeByAddress :: [ClusterNode] -> NodeAddress -> Maybe ClusterNode
-    findNodeByAddress nodes addr =
-      case [n | n <- nodes, nodeAddress n == addr] of
+    findNodeByAddress nodes nodeAddr =
+      case [n | n <- nodes, nodeAddress n == nodeAddr] of
         (n:_) -> Just n
         []    -> Nothing
 
 -- | Fill a specific node with data using its assigned slots
+-- Uses exact key counts instead of MB to avoid rounding errors
 fillNodeWithData ::
   (Client client) =>
   client 'Connected ->
   SlotMapping ->
   [Word16] ->
-  Int ->
+  Int ->       -- keysToFill (exact count)
   Word64 ->
   Int ->
   IO ()
-fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
+fillNodeWithData conn slotMappings slots keysToFill baseSeed threadIdx = do
   when (null slots) $ return ()
 
   -- Convert slots list to Vector for O(1) access in the hot loop
@@ -236,16 +239,22 @@ fillNodeWithData conn slotMappings slots mbToFill baseSeed threadIdx = do
           -- Turn off client replies for maximum throughput (fire-and-forget)
           _ <- clientReply OFF
 
-          -- Calculate chunks needed
-          let totalKilos = mbToFill * 1024
-              totalChunks = (totalKilos + chunkKilos - 1) `div` chunkKilos
+          -- Calculate full chunks and remaining keys for exact count
+          let fullChunks = keysToFill `div` chunkKilos
+              remainingKeys = keysToFill `mod` chunkKilos
 
-          -- Generate and send data chunks (no replies expected)
+          -- Generate and send full chunks
           mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
               let cmd = generateClusterChunk slotMappings slotsVec chunkKilos (threadSeed + fromIntegral chunkIdx)
               send client cmd
-            ) [0..totalChunks - 1]
+            ) [0..fullChunks - 1]
+
+          -- Send partial chunk for remaining keys (if any)
+          when (remainingKeys > 0) $ do
+            ClientState client _ <- State.get
+            let cmd = generateClusterChunk slotMappings slotsVec remainingKeys (threadSeed + fromIntegral fullChunks)
+            send client cmd
 
           -- Turn replies back on
           _ <- clientReply ON

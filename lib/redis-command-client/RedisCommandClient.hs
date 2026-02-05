@@ -551,7 +551,11 @@ runCommandsAgainstPlaintextHost st action =
     $ \client -> evalStateT (runRedisCommandClient (authenticate (username st) (password st) >> action)) (ClientState client SB8.empty)
 
 parseWith :: (Client client, Monad m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
-parseWith recv = head <$> parseManyWith 1 recv
+parseWith recv = do
+  result <- parseManyWith 1 recv
+  case result of
+    [x] -> return x
+    _ -> error "parseWith: expected exactly one result"
 
 parseManyWith :: (Client client, Monad m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
