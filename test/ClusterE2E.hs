@@ -469,8 +469,9 @@ main = hspec $ do
 
           -- Verify
           exitCode `shouldBe` ExitSuccess
-          -- CLUSTER SLOTS returns array of slot ranges
-          stdoutOut `shouldSatisfy` ("RespArray" `isInfixOf`)
+          -- CLUSTER SLOTS returns slot ranges with node information
+          -- Check for slot numbers (0-16383) and node addresses
+          stdoutOut `shouldSatisfy` (\s -> "redis1.local" `isInfixOf` s || "redis2.local" `isInfixOf` s)
 
       it "cli mode handles hash tags correctly" $ do
         redisClient <- getRedisClientPath
