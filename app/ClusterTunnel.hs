@@ -232,7 +232,11 @@ createPinnedListener connector node = do
         printf "[Port %d] Accepted connection from %s\n" localPort (show clientAddr)
         hFlush stdout
         
-        -- Connect to the actual cluster node
+        -- Create dedicated connection for this pinned listener
+        -- This is intentionally NOT using the connection pool because:
+        -- 1. Pinned listeners maintain long-lived, persistent connections
+        -- 2. Each listener needs its own connection tied to its lifecycle
+        -- 3. Connection lifetime matches listener lifetime (closed when listener stops)
         redisConn <- connector addr
         
         -- Handle forwarding in a separate thread
