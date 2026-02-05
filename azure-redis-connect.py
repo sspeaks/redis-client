@@ -117,7 +117,7 @@ class AzureRedisConnector:
         print()
         
         # Table header
-        header = f"{'#':<4} {'Name':<30} {'Resource Group':<25} {'Location':<15} {'SKU':<12} {'SSL Port':<10}"
+        header = f"{'#':<4} {'Name':<30} {'Resource Group':<25} {'Location':<15} {'SKU':<12} {'SSL Port':<10} {'Shards':<6}"
         print(header)
         print("-" * len(header))
         
@@ -128,12 +128,14 @@ class AzureRedisConnector:
             location = cache.get('location', 'Unknown')
             sku = cache.get('sku', {}).get('name', 'Unknown')
             ssl_port = cache.get('sslPort', 6380)
+            shard_count = cache.get('shardCount')
+            shards_display = str(shard_count) if shard_count else "-"
             
             # Truncate long names if necessary
             name_display = name[:28] + '..' if len(name) > 30 else name
             rg_display = resource_group[:23] + '..' if len(resource_group) > 25 else resource_group
             
-            row = f"{idx:<4} {name_display:<30} {rg_display:<25} {location:<15} {sku:<12} {ssl_port:<10}"
+            row = f"{idx:<4} {name_display:<30} {rg_display:<25} {location:<15} {sku:<12} {ssl_port:<10} {shards_display:<6}"
             print(row)
         
         print()
@@ -155,13 +157,22 @@ class AzureRedisConnector:
                 print("\nExiting.")
                 sys.exit(0)
 
-    def select_mode(self) -> str:
-        """Prompt user to select connection mode."""
+    def select_mode(self) -> tuple:
+        """Prompt user to select connection mode.
+        
+        Returns:
+            tuple: (mode, tunnel_type)
+            mode is one of: 'fill', 'cli', 'tunn'
+            tunnel_type is one of: 'smart', 'pinned', None
+        """
         print("\nSelect mode:")
         print("1. Fill mode - Fill cache with random data")
         print("2. CLI mode - Interactive Redis command-line interface")
         print("3. Tunnel mode - Start TLS tunnel proxy")
         
+        mode = None
+        tunnel_type = None
+
         while True:
             try:
                 sys.stdout.flush()  # Ensure prompt is displayed
@@ -171,11 +182,14 @@ class AzureRedisConnector:
                 if not selection:
                     continue
                 if selection == '1':
-                    return 'fill'
+                    mode = 'fill'
+                    break
                 elif selection == '2':
-                    return 'cli'
+                    mode = 'cli'
+                    break
                 elif selection == '3':
-                    return 'tunn'
+                    mode = 'tunn'
+                    break
                 else:
                     print("Please enter 1, 2, or 3")
             except KeyboardInterrupt:
@@ -183,6 +197,33 @@ class AzureRedisConnector:
                 sys.exit(0)
             except ValueError:
                 print("Invalid input. Please enter 1, 2, or 3")
+        
+        # If tunnel mode, ask for tunnel type (smart vs pinned)
+        if mode == 'tunn':
+            print("\nSelect tunnel type:")
+            print("1. Smart Proxy - Intelligent routing for Cluster (handles MOVED/ASK)")
+            print("2. Pinned Proxy - Direct connection to specific node/shard")
+            
+            while True:
+                try:
+                    sys.stdout.flush()
+                    tsel = input("\nSelect tunnel type (1-2): ").replace('\r', '').replace('\n', '').strip()
+                    if not tsel:
+                        continue
+                    
+                    if tsel == '1':
+                        tunnel_type = 'smart'
+                        break
+                    elif tsel == '2':
+                        tunnel_type = 'pinned'
+                        break
+                    else:
+                        print("Please enter 1 or 2")
+                except KeyboardInterrupt:
+                    print("\n\nInterrupted by user. Exiting.")
+                    sys.exit(0)
+            
+        return mode, tunnel_type
 
     def check_entra_auth(self, cache: Dict) -> bool:
         """Check if the cache uses Entra (Azure AD) authentication only.
@@ -350,7 +391,7 @@ class AzureRedisConnector:
         except Exception:
             return None
 
-    def launch_redis_client(self, cache: Dict, mode: str):
+    def launch_redis_client(self, cache: Dict, mode: str, tunnel_type: Optional[str] = None):
         """Launch the redis-client with appropriate parameters."""
         hostname = cache.get('hostName')
         ssl_port = cache.get('sslPort', 6380)
@@ -363,6 +404,17 @@ class AzureRedisConnector:
         
         # Build command
         command = ['redis-client', mode, '-h', hostname, '-t']
+        
+        # Add tunnel mode type if specified
+        if mode == 'tunn' and tunnel_type:
+            command.extend(['--tunnel-mode', tunnel_type])
+            print(f"✓ Using {tunnel_type} tunnel mode")
+
+        # Check for cluster mode
+        shard_count = cache.get('shardCount')
+        if shard_count and int(shard_count) > 0:
+            command.append('-c')
+            print(f"✓ Detected cluster with {shard_count} shards - enabling cluster mode")
         
         if is_entra:
             # Get Entra token and user Object ID
@@ -463,10 +515,10 @@ class AzureRedisConnector:
         selected_cache = caches[selected_idx]
         
         # Select mode
-        mode = self.select_mode()
+        mode, tunnel_type = self.select_mode()
         
         # Launch redis-client
-        self.launch_redis_client(selected_cache, mode)
+        self.launch_redis_client(selected_cache, mode, tunnel_type)
 
 
 def main():
