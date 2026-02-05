@@ -55,7 +55,7 @@ for node in "${NODES[@]}"; do
   redis-cli -h "$host" -p "$port" CLUSTER RESET SOFT 2>/dev/null || true
 done
 
-# Give nodes a moment to reset
+# Give nodes a moment to reset (allows cluster state to fully clear)
 sleep 2
 
 # Create the cluster with a timeout
