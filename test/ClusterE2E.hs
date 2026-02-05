@@ -544,7 +544,9 @@ main = hspec $ do
           -- Wait for process to finish
           exitCode <- waitForProcess ph
 
-          -- Verify - should contain CROSSSLOT error message (case-insensitive)
+          -- Verify - should contain CROSSSLOT error message
+          -- Using case-insensitive check by converting entire output to lowercase
+          -- ClusterCli.hs outputs "CROSSSLOT error:" consistently in uppercase
           exitCode `shouldBe` ExitSuccess
           stdoutOut `shouldSatisfy` (isInfixOf "crossslot" . map toLower)
 
