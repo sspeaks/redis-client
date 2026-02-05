@@ -43,6 +43,51 @@ spec = describe "Cluster Fill Mode" $ do
       -- With remainder logic, we should be within 0.1% (at most chunkKilos commands extra)
       totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)  -- 1048576 ± 0.1%
 
+  it "fill with --pipeline batch size writes keys across cluster" $ do
+    redisClient <- getRedisClientPath
+    -- Run fill with -f to flush before filling, custom pipeline size of 4096
+    (code, stdoutOut, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "4096", "-f"])
+      ""
+
+    code `shouldBe` ExitSuccess
+    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+
+    -- Verify keys were distributed across cluster
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      -- Check key count is reasonable for 1GB
+      totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)
+
+  it "fill with tiny --pipeline batch size (10) works in cluster" $ do
+    redisClient <- getRedisClientPath
+    (code, stdoutOut, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "10", "-f"])
+      ""
+    code `shouldBe` ExitSuccess
+    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)
+
+  it "fill with huge --pipeline batch size (20000) works in cluster" $ do
+    redisClient <- getRedisClientPath
+    (code, stdoutOut, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "20000", "-f"])
+      ""
+    code `shouldBe` ExitSuccess
+    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)
+
+  it "fill rejects invalid --pipeline batch size (0) in cluster" $ do
+    redisClient <- getRedisClientPath
+    (code, _, _) <- readCreateProcessWithExitCode
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "0", "-f"])
+      ""
+    code `shouldNotBe` ExitSuccess
+
   it "fill --flush clears all nodes in cluster" $ do
     redisClient <- getRedisClientPath
     let runRedisClient args = readCreateProcessWithExitCode (proc redisClient args)

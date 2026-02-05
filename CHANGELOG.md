@@ -12,6 +12,11 @@
     *   Added comprehensive End-to-End (E2E) tests for Cluster scenarios (Basic, Fill, Tunnel, CLI).
     *   Updated build system to prefer `nix-build` and `make test`.
     *   Added GitHub Actions workflows for automated testing and bootstrapping.
+*   **Fill Operation Enhancements**
+    *   Added configurable `--key-size` and `--value-size` support for realistic workload simulation.
+    *   Added `--pipeline` configuration for explicit batch size control.
+    *   Removed `REDIS_CLIENT_FILL_CHUNK_KB` environment variable in favor of explicit flags.
+    *   Fixed fill calculation logic to ensure exact data generation matching requested sizes.
 *   **Improvements**
     *   Fixed various race conditions and unsafe head usage.
     *   Improved error handling for `CROSSSLOT` operations.

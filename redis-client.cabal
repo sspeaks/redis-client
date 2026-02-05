@@ -159,11 +159,14 @@ test-suite FillHelpersSpec
     type:             exitcode-stdio-1.0
     default-language: GHC2021
     main-is:          FillHelpersSpec.hs
-    other-modules:    FillHelpers
+    other-modules:    FillHelpers, Filler
     hs-source-dirs:   test app
     build-depends:    base >=4.19 && <5
                     , hspec
                     , bytestring
+                    , redis-command-client
+                    , client
+                    , mtl
 
 executable EndToEnd
     default-language: GHC2021

@@ -8,9 +8,60 @@ import Data.ByteString qualified as BS
 import Test.Hspec
 import Data.Word (Word64)
 import FillHelpers (generateBytes, generateBytesWithHashTag, randomNoise)
+import Filler (genRandomSet)
 
 main :: IO ()
 main = hspec $ do
+  describe "Filler" $ do
+    describe "genRandomSet" $ do
+      it "generates correct number of commands based on batch size" $ do
+        -- Batch size 10, key size 10, value size 10
+        let batchSize = 10
+            result = genRandomSet batchSize 10 10 12345
+            -- Convert to strict for searching (safe for small test data)
+            strictResult = LB.toStrict result
+        
+        -- Count occurrences of "*3\r\n$3\r\nSET\r\n" which marks the start of each SET command
+        let count :: BS.ByteString -> Int
+            count bs 
+              | BS.null bs = 0
+              | otherwise = 
+                  let marker = "*3\r\n$3\r\nSET\r\n"
+                      (_, after) = BS.breakSubstring marker bs
+                  in if BS.null after 
+                     then 0 
+                     else 1 + count (BS.drop (BS.length marker) after)
+                     
+        count strictResult `shouldBe` batchSize
+
+      it "output size scales with batch size" $ do
+        let result1 = genRandomSet 10 10 10 12345
+        let result2 = genRandomSet 20 10 10 12345
+        -- Should be exactly double
+        LB.length result2 `shouldBe` (2 * LB.length result1)
+
+      it "generates valid RESP structure for batch size 1" $ do
+        let keySize = 5
+            valSize = 5
+            -- Structure: *3\r\n$3\r\nSET\r\n$<keySize>\r\n<key>\r\n$<valSize>\r\n<val>\r\n
+            -- Length = (4 + 4 + 5 + 1 + 1 + 2) + 5 + (2 + 1 + 1 + 2) + 5 + 2
+            -- *3\r\n$3\r\nSET\r\n$5\r\n (17)
+            -- key (5)
+            -- \r\n$5\r\n (6)
+            -- val (5)
+            -- \r\n (2)
+            -- Total: 35
+            expectedLen = 35
+            result = genRandomSet 1 5 5 12345
+        LB.length result `shouldBe` expectedLen
+        let bs = LB.toStrict result
+        let expectedPrefix = Builder.toLazyByteString $ Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n"
+        LB.isPrefixOf expectedPrefix result `shouldBe` True
+
+      it "handles large batch sizes correctly" $ do
+        let result = genRandomSet 10000 10 10 12345
+        LB.length result `shouldSatisfy` (> 0)
+
   describe "FillHelpers byte generation" $ do
     describe "generateBytes" $ do
       it "generates correct size for small keys (1 byte)" $ do

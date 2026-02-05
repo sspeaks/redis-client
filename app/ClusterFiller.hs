@@ -6,13 +6,13 @@ module ClusterFiller
   ( fillClusterWithData
   ) where
 
-import           ClusterSlotMapping      (slotMappings)
 import           Client                  (Client (..), ConnectionStatus (..))
 import           Cluster                 (ClusterNode (..),
                                           ClusterTopology (..),
                                           NodeAddress (..), NodeRole (..),
                                           SlotRange (..))
 import           ClusterCommandClient    (ClusterClient (..))
+import           ClusterSlotMapping      (slotMappings)
 import           Control.Concurrent      (MVar, forkIO, newEmptyMVar, putMVar,
                                           takeMVar)
 import           Control.Concurrent.STM  (readTVarIO)
@@ -29,8 +29,8 @@ import qualified Data.Text               as T
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
-import           Filler                  (lookupChunkKilos)
-import           FillHelpers             (generateBytes, generateBytesWithHashTag, randomNoise)
+import           FillHelpers             (generateBytes,
+                                          generateBytesWithHashTag)
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
@@ -49,8 +49,9 @@ fillClusterWithData ::
   Word64 ->           -- Base seed for randomness
   Int ->              -- Key size in bytes
   Int ->              -- Value size in bytes
+  Int ->              -- Pipeline batch size
   IO ()
-fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keySize valueSize = do
+fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keySize valueSize pipelineBatchSize = do
   -- Get cluster topology to find master nodes
   topology <- readTVarIO (clusterTopology clusterClient)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
@@ -80,7 +81,7 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
          (length jobs) numMasters threadsPerNode
 
   -- Execute jobs in parallel
-  mvars <- mapM (executeJob clusterClient connector slotRanges baseSeed keySize valueSize) jobs
+  mvars <- mapM (executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize) jobs
   mapM_ takeMVar mvars
 
   putStrLn "Cluster fill complete!"
@@ -117,9 +118,10 @@ executeJob ::
   Word64 ->
   Int ->                              -- Key size in bytes
   Int ->                              -- Value size in bytes
+  Int ->                              -- Pipeline batch size
   (NodeAddress, Int, Int) ->  -- (address, threadIdx, mbToFill)
   IO (MVar ())
-executeJob clusterClient connector slotRanges baseSeed keySize valueSize (addr, threadIdx, mbToFill) = do
+executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize (addr, threadIdx, mbToFill) = do
   -- If this thread has no work, return immediately
   if mbToFill <= 0
     then do
@@ -155,7 +157,7 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize (addr, 
                 printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
 
               -- Fill data for this node using its slots
-              fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize
+              fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
           ) (\e -> do
             -- If any exception occurs, log it and continue
             printf "Error in thread %d for node %s:%d: %s\n"
@@ -186,8 +188,9 @@ fillNodeWithData ::
   Int ->
   Int ->       -- Key size in bytes
   Int ->       -- Value size in bytes
+  Int ->       -- Pipeline batch size
   IO ()
-fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize = do
+fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize = do
   when (null slots) $ return ()
 
   -- Convert slots list to Vector for O(1) access in the hot loop
@@ -195,8 +198,6 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize = do
 
   -- Deterministic seed for this thread
   let threadSeed = baseSeed + (fromIntegral threadIdx * 1000000000)
-
-  chunkKilos <- lookupChunkKilos
 
   -- Wrap in exception handler and timeout
   catch (do
@@ -213,13 +214,13 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize = do
               totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
               
               -- Calculate chunks and remainder for exact distribution
-              fullChunks = totalCommandsNeeded `div` chunkKilos
-              remainderCommands = totalCommandsNeeded `mod` chunkKilos
+              fullChunks = totalCommandsNeeded `div` pipelineBatchSize
+              remainderCommands = totalCommandsNeeded `mod` pipelineBatchSize
 
           -- Generate and send all full chunks
           mapM_ (\chunkIdx -> do
               ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotsVec chunkKilos keySize valueSize (threadSeed + fromIntegral chunkIdx)
+              let cmd = generateClusterChunk slotsVec pipelineBatchSize keySize valueSize (threadSeed + fromIntegral chunkIdx)
               send client cmd
             ) [0..fullChunks - 1]
           
@@ -254,8 +255,8 @@ generateClusterChunk ::
   Int ->      -- Value size in bytes
   Word64 ->
   LB.ByteString
-generateClusterChunk slots chunkKilos keySize valueSize seed =
-  Builder.toLazyByteString $! go chunkKilos seed
+generateClusterChunk slots batchSize keySize valueSize seed =
+  Builder.toLazyByteString $! go batchSize seed
   where
     !numSlots = VU.length slots
 

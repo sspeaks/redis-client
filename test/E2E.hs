@@ -47,7 +47,7 @@ import           Test.Hspec                 (beforeAll_, before_, describe,
                                              shouldReturn, shouldSatisfy)
 
 runRedisAction :: RedisCommandClient PlainTextClient a -> IO a
-runRedisAction = runCommandsAgainstPlaintextHost (RunState 
+runRedisAction = runCommandsAgainstPlaintextHost (RunState
   { host = "redis.local"
   , port = Nothing
   , username = "default"
@@ -61,6 +61,7 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , tunnelMode = "smart"
   , keySize = 512
   , valueSize = 512
+  , pipelineBatchSize = 8192
   })
 
 getRedisClientPath :: IO FilePath
@@ -243,8 +244,24 @@ main = do
 
         it "geohash returns geohash strings for members" $ do
           runRedisAction (geoadd "geo:hash" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
-          runRedisAction (geohash "geo:hash" ["Palermo", "Catania"]) `shouldReturn`
-            RespArray [RespBulkString "sqc8b49rny0", RespBulkString "sqdtr74hyu0"]
+          runRedisAction (geohash "geo:hash" ["Palermo", "Catania"]) `shouldReturn` RespArray
+                            [ RespBulkString "sqc8b49rny0"
+                            , RespBulkString "sqdtr74hyu0"
+                            ]
+
+        it "fill with pipeline batch size flag works correctly" $ do
+          -- Just test that the flag doesn't crash the program and data is written.
+          redisClient <- getRedisClientPath
+          (code, _, _) <- readCreateProcessWithExitCode
+            (proc redisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f"])
+            ""
+          code `shouldBe` ExitSuccess
+          -- Simple check that some data was written.
+          -- We know data=1 is 1GB, so many keys.
+          d <- runRedisAction dbsize
+          d `shouldSatisfy` (\res -> case res of
+            RespInteger n -> n > 1000
+            _ -> False)
 
         it "geopos returns longitudes and latitudes" $ do
           runRedisAction (geoadd "geo:pos" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
@@ -587,6 +604,28 @@ main = do
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
+      it "fill with --pipeline 10 works correctly" $ do
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "10", "-f"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+             RespInteger n -> n `shouldSatisfy` (> 1000)
+             _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill with --pipeline 20000 works correctly" $ do
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "20000", "-f"] ""
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
+        dbSizeResp <- runRedisAction dbsize
+        case dbSizeResp of
+             RespInteger n -> n `shouldSatisfy` (> 1000)
+             _ -> expectationFailure "Expected integer response from DBSIZE"
+
+      it "fill rejects invalid --pipeline" $ do
+        (code1, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "0"] ""
+        code1 `shouldNotBe` ExitSuccess
+
       it "cli mode responds to commands" $ do
         let cp =
               (proc redisClient ["cli", "--host", "redis.local"]) {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
@@ -612,8 +651,7 @@ main = do
                   env = Just (mergeEnv [])
                 }
             viaTunnel :: RedisCommandClient PlainTextClient a -> IO a
-            viaTunnel action =
-              runCommandsAgainstPlaintextHost (RunState
+            viaTunnel = runCommandsAgainstPlaintextHost (RunState
                 { host = "localhost"
                 , port = Just 6379
                 , username = "default"
@@ -626,7 +664,9 @@ main = do
                 , useCluster = False
                 , tunnelMode = "smart"
                 , keySize = 512
-                }) action
+                , valueSize = 512
+                , pipelineBatchSize = 8192
+                })
         withCreateProcess cp $ \_ mOut mErr ph ->
           case (mOut, mErr) of
             (Just hout, Just herr) -> do

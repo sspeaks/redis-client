@@ -529,7 +529,8 @@ data RunState = RunState
     useCluster :: Bool,
     tunnelMode :: String,
     keySize :: Int,
-    valueSize :: Int
+    valueSize :: Int,
+    pipelineBatchSize :: Int
   }
   deriving (Show)
 

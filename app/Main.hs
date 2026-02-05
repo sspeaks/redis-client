@@ -73,6 +73,7 @@ defaultRunState = RunState
   , tunnelMode = "smart"
   , keySize = 512
   , valueSize = 512
+  , pipelineBatchSize = 8192
   }
 
 options :: [OptDescr (RunState -> IO RunState)]
@@ -101,7 +102,12 @@ options =
           then ioError (userError "Value size must be at least 1 byte")
           else if size > 524288
             then ioError (userError "Value size must not exceed 524288 bytes")
-            else return $ opt {valueSize = size}) "BYTES") "Size of each value in bytes (default: 512, range: 1-524288)"
+            else return $ opt {valueSize = size}) "BYTES") "Size of each value in bytes (default: 512, range: 1-524288)",
+    Option [] ["pipeline"] (ReqArg (\arg opt -> do
+        let size = read arg :: Int
+        if size < 1
+          then ioError (userError "Pipeline batch size must be at least 1")
+          else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -125,15 +131,12 @@ main = do
       putStrLn "Cluster Mode:"
       putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
       putStrLn ""
-      putStrLn "Environment Variables for Performance Tuning:"
-      putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB    Chunk size in KB (default: 8192)"
-      putStrLn ""
       putStrLn "Examples:"
       putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
       putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
       putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
       putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
-      putStrLn "  REDIS_CLIENT_FILL_CHUNK_KB=4096 redis-client fill ...   # Use 4MB chunks"
+      putStrLn "  redis-client fill ... --pipeline 4096                   # Use 4096 commands per pipeline"
       exitFailure
     (mode : args) -> do
       (state, _) <- handleArgs args
@@ -298,8 +301,8 @@ fillStandalone state = do
       then do
         printf "Filling cache '%s' with %dGB of data using serial mode (key size: %d bytes, value size: %d bytes)\n" (host state) (dataGBs state) (keySize state) (valueSize state)
         if useTLS state
-          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (keySize state) (valueSize state)
-          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (keySize state) (valueSize state)
+          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
+          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
       else do
         -- Use numConnections (defaults to 8)
         let nConns = fromMaybe 8 (numConnections state)
@@ -314,8 +317,8 @@ fillStandalone state = do
             mv <- newEmptyMVar
             _ <- forkIO $ do
                  if useTLS state
-                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (keySize state) (valueSize state)
-                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (keySize state) (valueSize state)
+                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
                  putMVar mv ()
             return mv) jobs
         mapM_ takeMVar mvars
@@ -375,12 +378,12 @@ fillCluster state = do
       then do
         clusterClient <- createClusterClientFromState state (createTLSConnector state)
         fillClusterWithData clusterClient (createTLSConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state)
+                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
         closeClusterClient clusterClient
       else do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
         fillClusterWithData clusterClient (createPlaintextConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state)
+                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
         closeClusterClient clusterClient
 
 cli :: RunState -> IO ()
