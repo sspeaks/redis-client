@@ -8,6 +8,8 @@ import           Control.Exception          (IOException, evaluate, finally,
                                              try)
 import           Control.Monad              (void)
 import qualified Control.Monad.State        as State
+import           Data.Attoparsec.ByteString (parseOnly)
+import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import           Data.List                  (foldl', isInfixOf)
@@ -20,7 +22,8 @@ import           RedisCommandClient         (ClientState (..),
                                              RedisCommands (..), RunState (..),
                                              parseManyWith,
                                              runCommandsAgainstPlaintextHost)
-import           Resp                       (Encodable (encode), RespData (..))
+import           Resp                       (Encodable (encode), RespData (..),
+                                             parseRespData)
 import           System.Directory           (doesFileExist, findExecutable)
 import           System.Environment         (getEnvironment, getExecutablePath)
 import           System.Exit                (ExitCode (..))
@@ -347,6 +350,20 @@ main = do
         case dbSizeResp of
           RespInteger n -> n `shouldSatisfy` (> 0)
           _ -> expectationFailure "Expected integer response from DBSIZE"
+        -- Verify a random key has the expected size (128 bytes) by retrieving it
+        keyResp <- runRedisAction (do
+            ClientState client _ <- State.get
+            send client $ Builder.toLazyByteString $ encode $ RespArray [RespBulkString "RANDOMKEY"]
+            receive client >>= \bs -> do
+              ClientState _ buffer <- State.get
+              case parseOnly parseRespData (buffer <> bs) of
+                Right resp -> do
+                  State.put (ClientState client BS.empty)
+                  return resp
+                Left err -> error $ "Parse error: " ++ err)
+        case keyResp of
+          RespBulkString key -> fromIntegral (BSC.length key) `shouldBe` (128 :: Int)
+          _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
       it "fill with --key-size 64 creates smaller keys" $ do
         void $ runRedisAction flushAll

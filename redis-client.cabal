@@ -159,7 +159,8 @@ test-suite FillHelpersSpec
     type:             exitcode-stdio-1.0
     default-language: GHC2021
     main-is:          FillHelpersSpec.hs
-    hs-source-dirs:   test
+    other-modules:    FillHelpers
+    hs-source-dirs:   test app
     build-depends:    base >=4.19 && <5
                     , hspec
                     , bytestring
@@ -178,6 +179,7 @@ executable EndToEnd
                     , process
                     , filepath
                     , directory
+                    , attoparsec
 
 executable ClusterEndToEnd
     default-language: GHC2021
