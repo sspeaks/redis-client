@@ -279,10 +279,33 @@ tunnClusterPinned state = do
 
 fill :: RunState -> IO ()
 fill state = do
+  -- If no data specified and no flush flag, show error
   when (dataGBs state <= 0 && not (flush state)) $ do
     putStrLn "No data specified or data is 0GB or fewer\n"
     putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
     exitFailure
+
+  -- If only flush requested (no data), just flush and exit
+  when (dataGBs state <= 0 && flush state) $ do
+    if useCluster state
+      then do
+        printf "Flushing cluster cache (seed node: '%s')\n" (host state)
+        if useTLS state
+          then do
+            clusterClient <- createClusterClientFromState state (createTLSConnector state)
+            flushAllClusterNodes clusterClient (createTLSConnector state)
+            closeClusterClient clusterClient
+          else do
+            clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+            flushAllClusterNodes clusterClient (createPlaintextConnector state)
+            closeClusterClient clusterClient
+      else do
+        printf "Flushing cache '%s'\n" (host state)
+        if useTLS state
+          then runCommandsAgainstTLSHost state (void flushAll)
+          else runCommandsAgainstPlaintextHost state (void flushAll)
+    putStrLn "Flush complete"
+    exitSuccess
 
   -- Check if we should spawn multiple processes
   case (numProcesses state, processIndex state) of
@@ -296,10 +319,8 @@ fill state = do
         then fillCluster state
         else fillStandalone state
 
-      -- Exit with success only if we filled data, otherwise failure
-      -- This maintains the original behavior where flush-only exits with failure
-      when (dataGBs state > 0) exitSuccess
-      exitFailure
+      -- Exit with success
+      exitSuccess
 
 -- | Spawn multiple fill processes in parallel
 spawnFillProcesses :: RunState -> Int -> IO ()
@@ -307,7 +328,19 @@ spawnFillProcesses state nprocs = do
   exePath <- getExecutablePath
   
   -- Flush once before spawning processes (if requested)
-  when (flush state) $ do
+  when (flush state && useCluster state) $ do
+    printf "Flushing cluster cache before spawning %d processes\n" nprocs
+    if useTLS state
+      then do
+        clusterClient <- createClusterClientFromState state (createTLSConnector state)
+        flushAllClusterNodes clusterClient (createTLSConnector state)
+        closeClusterClient clusterClient
+      else do
+        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+        flushAllClusterNodes clusterClient (createPlaintextConnector state)
+        closeClusterClient clusterClient
+  
+  when (flush state && not (useCluster state)) $ do
     printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
     if useTLS state
       then runCommandsAgainstTLSHost state (void flushAll)

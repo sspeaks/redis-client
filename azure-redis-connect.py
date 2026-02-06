@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 import os
+import time
 import atexit
 from typing import List, Dict, Optional
 
@@ -591,7 +592,7 @@ class AzureRedisConnector:
                             print("  - Pipeline: 8,192 commands/batch")
                             command.extend([
                                 '-P', '8',              # 8 parallel processes
-                                '-n', '6',              # 6 threads per process
+                                '-n', '2',              # 6 threads per process
                                 '--key-size', '512',
                                 '--value-size', '262144',
                                 '--pipeline', '8192'
@@ -631,11 +632,59 @@ class AzureRedisConnector:
             else:
                 safe_command.append(arg)
         print(f"  {' '.join(safe_command)}")
+        
+        # Ask if user wants to save the full command to a file
+        try:
+            sys.stdout.flush()
+            save_cmd = input("\nSave full command to file for manual execution? (y/n): ")
+            save_cmd = save_cmd.replace('\r', '').replace('\n', '').strip().lower()
+            if save_cmd == 'y':
+                # Generate filename based on cache name and timestamp
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                filename = f"redis-command_{name.replace(' ', '_')}_{timestamp}.sh"
+                
+                # Build the full command as a shell script
+                shell_cmd = ' '.join([f"'{arg}'" if ' ' in arg else arg for arg in command])
+                
+                with open(filename, 'w') as f:
+                    f.write("#!/bin/bash\n")
+                    f.write(f"# Redis client command for {name}\n")
+                    f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"# Host: {hostname}:{ssl_port}\n")
+                    f.write("\n")
+                    f.write(shell_cmd + "\n")
+                
+                # Make it executable
+                os.chmod(filename, 0o755)
+                
+                print(f"\n✓ Command saved to: {filename}")
+                print(f"  Run with: ./{filename}")
+        except KeyboardInterrupt:
+            print("\n\nInterrupted by user. Exiting.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Warning: Could not save command to file: {e}", file=sys.stderr)
+        
         print("\n" + "=" * 80)
         
-        # Execute the redis-client
+        # Execute the redis-client with timing
+        start_time = time.time()
         try:
             subprocess.run(command, check=True)
+            
+            # Display timing information for fill operations
+            if mode == 'fill':
+                duration = time.time() - start_time
+                minutes = int(duration // 60)
+                seconds = duration % 60
+                
+                print("\n" + "=" * 80)
+                if minutes > 0:
+                    print(f"✓ Fill operation completed in {minutes}m {seconds:.1f}s")
+                else:
+                    print(f"✓ Fill operation completed in {seconds:.1f}s")
+                print("=" * 80)
+                
         except subprocess.CalledProcessError as e:
             safe_error = self.obfuscate_sensitive_data(str(e))
             print(f"\nError running redis-client: {safe_error}", file=sys.stderr)

@@ -14,7 +14,7 @@ import           Cluster                 (ClusterNode (..),
 import           ClusterCommandClient    (ClusterClient (..))
 import           ClusterSlotMapping      (slotMappings)
 import           Control.Concurrent      (MVar, forkIO, newEmptyMVar, putMVar,
-                                          takeMVar)
+                                          takeMVar, threadDelay)
 import           Control.Concurrent.STM  (readTVarIO)
 import           Control.Exception       (SomeException, catch)
 import           Control.Monad           (when)
@@ -133,6 +133,11 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
         catch (do
           -- Suppress per-thread logging to reduce spam with many processes/threads
           -- Only log if something goes wrong
+
+          -- Stagger connection creation to avoid overwhelming TLS handshakes
+          -- With many processes/threads hitting the same nodes simultaneously,
+          -- we can get "bad record mac" errors if TLS handshakes collide
+          threadDelay (threadIdx * 50000)  -- 50ms per thread index
 
           -- Create a unique connection for this thread using connector directly
           -- This avoids connection pool contention where threads share connections
