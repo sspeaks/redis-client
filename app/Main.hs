@@ -215,7 +215,7 @@ createClusterClientFromState state connector = do
         , clusterPoolConfig = poolConfig
         , clusterMaxRetries = 3
         , clusterRetryDelay = 100000  -- 100ms
-        , clusterTopologyRefreshInterval = 60
+        , clusterTopologyRefreshInterval = 600  -- 10 minutes
         }
   createClusterClient clusterCfg connector
 

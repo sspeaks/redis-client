@@ -62,8 +62,14 @@ class AzureRedisConnector:
         text = re.sub(r'\b[A-Za-z0-9+/]{40,}={0,2}\b', '***REDACTED***', text)
         return text
     
-    def run_az_command(self, command: List[str], obfuscate_output: bool = False) -> str:
-        """Execute an Azure CLI command and return output."""
+    def run_az_command(self, command: List[str], obfuscate_output: bool = False, raise_on_error: bool = False) -> str:
+        """Execute an Azure CLI command and return output.
+        
+        Args:
+            command: The Azure CLI command to execute
+            obfuscate_output: Whether to obfuscate sensitive data in output
+            raise_on_error: If True, raise exception instead of exiting on error
+        """
         try:
             result = subprocess.run(
                 command,
@@ -75,6 +81,8 @@ class AzureRedisConnector:
                 return result.stdout  # Return raw output for parsing
             return result.stdout
         except subprocess.CalledProcessError as e:
+            if raise_on_error:
+                raise  # Re-raise the exception for caller to handle
             # Obfuscate sensitive data in error messages
             safe_stderr = self.obfuscate_sensitive_data(e.stderr) if e.stderr else ""
             print(f"Error executing Azure CLI command (code {e.returncode})", file=sys.stderr)
@@ -469,18 +477,13 @@ class AzureRedisConnector:
         
         try:
             if cache_type == 'Enterprise':
-                # For Enterprise, we need to get keys from the database
-                # We assume the database info is already attached or we use 'default'
-                # If cache has 'database_name' set, use it, otherwise assume 'default'
-                db_name = cache.get('database_name', 'default')
                 
                 keys_output = self.run_az_command([
                     'az', 'redisenterprise', 'database', 'list-keys',
                     '--cluster-name', name,
                     '--resource-group', resource_group,
-                    '--database-name', db_name,
                     '--output', 'json'
-                ], obfuscate_output=True)
+                ], obfuscate_output=True, raise_on_error=True)
                 keys = json.loads(keys_output)
                 return keys.get('primaryKey')
             else:
@@ -489,11 +492,12 @@ class AzureRedisConnector:
                     '--name', name,
                     '--resource-group', resource_group,
                     '--output', 'json'
-                ], obfuscate_output=True)
+                ], obfuscate_output=True, raise_on_error=True)
                 keys = json.loads(keys_output)
                 return keys.get('primaryKey')
         except Exception as e:
-            # print(f"Debug: failed to get key: {e}")
+            # Access keys may be disabled (Enterprise caches with Entra auth)
+            # This is normal and not an error - we'll use Entra auth instead
             return None
 
     def launch_redis_client(self, cache: Dict, mode: str, tunnel_type: Optional[str] = None):
@@ -528,10 +532,15 @@ class AzureRedisConnector:
             print(f"✓ Using {tunnel_type} tunnel mode")
 
         # Check for cluster mode
+        # Enterprise caches are always clustered
+        # Standard caches use shardCount to determine clustering
         shard_count = cache.get('shardCount')
-        if shard_count and int(shard_count) > 0:
+        if cache_type == 'Enterprise' or (shard_count and int(shard_count) > 0):
             command.append('-c')
-            print(f"✓ Detected cluster with {shard_count} shards - enabling cluster mode")
+            if cache_type == 'Enterprise':
+                print(f"✓ Enterprise cache detected - enabling cluster mode")
+            else:
+                print(f"✓ Detected cluster with {shard_count} shards - enabling cluster mode")
         
         if is_entra:
             # Get Entra token and user Object ID
@@ -582,7 +591,7 @@ class AzureRedisConnector:
                         # Add optimized parameters for cluster fills
                         # These values were determined through extensive performance testing
                         # and provide ~9.4 Gbps throughput with optimal GC settings
-                        if shard_count and int(shard_count) > 0:
+                        if cache_type == 'Enterprise' or (shard_count and int(shard_count) > 0):
                             # Cluster mode: use optimized settings
                             print("\n✓ Using optimized cluster fill parameters:")
                             print("  - 8 parallel processes (-P 8)")

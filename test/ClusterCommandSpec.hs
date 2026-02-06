@@ -133,11 +133,11 @@ spec = do
               clusterPoolConfig = poolConfig,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 60
+              clusterTopologyRefreshInterval = 600
             }
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000
-      clusterTopologyRefreshInterval config `shouldBe` 60
+      clusterTopologyRefreshInterval config `shouldBe` 600
 
   describe "RedirectionInfo" $ do
     it "creates valid redirection info" $ do
