@@ -51,10 +51,12 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
                                              OptDescr (Option), getOpt,
                                              usageInfo)
 import           System.Console.Readline    (addHistory, readline)
-import           System.Environment         (getArgs)
+import           System.Environment         (getArgs, getExecutablePath)
 import           System.Exit                (exitFailure, exitSuccess)
 import           System.IO                  (hIsTerminalDevice, isEOF,
                                              stdin)
+import           System.Process             (ProcessHandle, createProcess,
+                                             proc, waitForProcess)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
 
@@ -74,6 +76,8 @@ defaultRunState = RunState
   , keySize = 512
   , valueSize = 512
   , pipelineBatchSize = 8192
+  , numProcesses = Nothing
+  , processIndex = Nothing
   }
 
 options :: [OptDescr (RunState -> IO RunState)]
@@ -107,7 +111,9 @@ options =
         let size = read arg :: Int
         if size < 1
           then ioError (userError "Pipeline batch size must be at least 1")
-          else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)"
+          else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)",
+    Option ['P'] ["processes"] (ReqArg (\arg opt -> return $ opt {numProcesses = Just . read $ arg}) "NUM") "Number of parallel processes to spawn (default: 1)",
+    Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -278,18 +284,88 @@ fill state = do
     putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
     exitFailure
 
-  if useCluster state
-    then fillCluster state
-    else fillStandalone state
+  -- Check if we should spawn multiple processes
+  case (numProcesses state, processIndex state) of
+    (Just nprocs, Nothing) | nprocs > 1 -> do
+      -- Parent process: spawn children
+      spawnFillProcesses state nprocs
+      exitSuccess
+    _ -> do
+      -- Single process or child process: do the work
+      if useCluster state
+        then fillCluster state
+        else fillStandalone state
 
-  -- Exit with success only if we filled data, otherwise failure
-  -- This maintains the original behavior where flush-only exits with failure
-  when (dataGBs state > 0) exitSuccess
-  exitFailure
+      -- Exit with success only if we filled data, otherwise failure
+      -- This maintains the original behavior where flush-only exits with failure
+      when (dataGBs state > 0) exitSuccess
+      exitFailure
+
+-- | Spawn multiple fill processes in parallel
+spawnFillProcesses :: RunState -> Int -> IO ()
+spawnFillProcesses state nprocs = do
+  exePath <- getExecutablePath
+  
+  -- Flush once before spawning processes (if requested)
+  when (flush state) $ do
+    printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
+    if useTLS state
+      then runCommandsAgainstTLSHost state (void flushAll)
+      else runCommandsAgainstPlaintextHost state (void flushAll)
+
+  -- Calculate data per process
+  let totalGB = dataGBs state
+      baseGB = totalGB `div` nprocs
+      remainder = totalGB `mod` nprocs
+
+  printf "Spawning %d processes to fill %dGB total (key size: %d bytes, value size: %d bytes)\n" 
+         nprocs totalGB (keySize state) (valueSize state)
+
+  -- Spawn child processes
+  handles <- mapM (spawnChildProcess exePath state baseGB remainder) [0..nprocs-1]
+
+  -- Wait for all processes to complete
+  mapM_ waitForProcess handles
+  printf "All %d processes completed\n" nprocs
+
+-- | Spawn a single child process with its portion of data
+spawnChildProcess :: FilePath -> RunState -> Int -> Int -> Int -> IO ProcessHandle
+spawnChildProcess exePath state baseGB remainder idx = do
+  let gbForThisProcess = if idx < remainder then baseGB + 1 else baseGB
+      args = buildChildArgs state idx gbForThisProcess
+  
+  printf "  Process %d: %dGB\n" (idx + 1) gbForThisProcess
+  
+  (_, _, _, ph) <- createProcess (proc exePath args)
+  return ph
+
+-- | Build command-line arguments for a child process
+buildChildArgs :: RunState -> Int -> Int -> [String]
+buildChildArgs state idx dataGB = 
+  [ "fill"
+  , "-h", host state
+  , "-d", show dataGB
+  , "--process-index", show idx
+  , "--key-size", show (keySize state)
+  , "--value-size", show (valueSize state)
+  , "--pipeline", show (pipelineBatchSize state)
+  ] 
+  ++ (if useTLS state then ["-t"] else [])
+  ++ (if useCluster state then ["-c"] else [])
+  ++ (if serial state then ["-s"] else [])
+  ++ (case port state of
+        Just p -> ["-p", show p]
+        Nothing -> [])
+  ++ (if null (password state) then [] else ["-a", password state])
+  ++ (if username state /= "default" then ["-u", username state] else [])
+  ++ (case numConnections state of
+        Just n -> ["-n", show n]
+        Nothing -> [])
 
 fillStandalone :: RunState -> IO ()
 fillStandalone state = do
-  when (flush state) $ do
+  -- Only flush if we're not in multi-process mode (parent handles flush)
+  when (flush state && numProcesses state == Nothing) $ do
     printf "Flushing cache '%s'\n" (host state)
     if useTLS state
       then runCommandsAgainstTLSHost state (void flushAll)
@@ -299,10 +375,11 @@ fillStandalone state = do
     baseSeed <- randomIO :: IO Word64
     if serial state
       then do
-        printf "Filling cache '%s' with %dGB of data using serial mode (key size: %d bytes, value size: %d bytes)\n" (host state) (dataGBs state) (keySize state) (valueSize state)
+        let seedOffset = fromMaybe 0 (processIndex state)
+        printf "Filling %dGB (serial mode)\n" (dataGBs state)
         if useTLS state
-          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
-          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed 0 (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
+          then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed seedOffset (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
+          else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed seedOffset (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
       else do
         -- Use numConnections (defaults to 8)
         let nConns = fromMaybe 8 (numConnections state)
@@ -312,7 +389,7 @@ fillStandalone state = do
             -- Each connection gets (baseMB + 1) or baseMB MB
             -- Jobs: (connectionIdx, mbForThisConnection)
             jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
-        printf "Filling cache '%s' with %dGB of data using %d parallel connections (key size: %d bytes, value size: %d bytes)\n" (host state) (dataGBs state) (length jobs) (keySize state) (valueSize state)
+        printf "Filling %dGB with %d parallel connections\n" (dataGBs state) (length jobs)
         mvars <- mapM (\(idx, mb) -> do
             mv <- newEmptyMVar
             _ <- forkIO $ do
@@ -370,8 +447,8 @@ fillCluster state = do
     -- Determine number of threads per node
     let threadsPerNode = fromMaybe 2 (numConnections state)
 
-    printf "Starting cluster fill: %dGB across cluster with %d threads per node (key size: %d bytes, value size: %d bytes)\n"
-           (dataGBs state) threadsPerNode (keySize state) (valueSize state)
+    printf "Filling %dGB across cluster with %d threads/node\n"
+           (dataGBs state) threadsPerNode
 
     -- Create cluster client and fill data
     if useTLS state

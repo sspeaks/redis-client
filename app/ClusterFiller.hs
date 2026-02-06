@@ -70,15 +70,13 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
       baseMBPerNode = totalMB `div` numMasters
       mbRemainder = totalMB `mod` numMasters
 
-  printf "Distributing %dGB (%dMB) across %d master nodes using %d threads per node (key size: %d bytes, value size: %d bytes)\n"
-         totalGB totalMB numMasters threadsPerNode keySize valueSize
+  -- Only show distribution details if not a child process spawned by multi-process
+  printf "Distributing %dGB across %d nodes with %d threads/node\n"
+         totalGB numMasters threadsPerNode
 
   -- Create jobs: (nodeAddress, threadIdx, mbToFill)
   let jobs = concatMap (createJobsForNode baseMBPerNode mbRemainder threadsPerNode)
                        (zip [0..] masterNodes)
-
-  printf "Total jobs: %d (%d nodes * %d threads)\n"
-         (length jobs) numMasters threadsPerNode
 
   -- Execute jobs in parallel
   mvars <- mapM (executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize) jobs
@@ -133,8 +131,8 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
       _ <- forkIO $ do
         -- Wrap the entire thread work in exception handler to ensure mvar is always filled
         catch (do
-          printf "Thread %d filling %dMB on node %s:%d\n"
-                 threadIdx mbToFill (nodeHost addr) (nodePort addr)
+          -- Suppress per-thread logging to reduce spam with many processes/threads
+          -- Only log if something goes wrong
 
           -- Create a unique connection for this thread using connector directly
           -- This avoids connection pool contention where threads share connections

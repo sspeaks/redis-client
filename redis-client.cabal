@@ -210,7 +210,7 @@ executable ClusterEndToEnd
 
 executable redis-client
     import:           warnings
-    ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M"
+    ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M -A128m -n8m -qb"
     main-is:          Main.hs
     build-depends:    base >=4.19 && <5
                     , bytestring
@@ -227,6 +227,7 @@ executable redis-client
                     , text
                     , vector
                     , network
+                    , process
     hs-source-dirs:   app
     other-modules:    Filler
                     , ClusterCli

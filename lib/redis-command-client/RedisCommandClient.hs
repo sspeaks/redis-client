@@ -530,7 +530,9 @@ data RunState = RunState
     tunnelMode :: String,
     keySize :: Int,
     valueSize :: Int,
-    pipelineBatchSize :: Int
+    pipelineBatchSize :: Int,
+    numProcesses :: Maybe Int,
+    processIndex :: Maybe Int
   }
   deriving (Show)
 
