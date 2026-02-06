@@ -191,6 +191,7 @@ executable ClusterEndToEnd
                     , ClusterE2E.Fill
                     , ClusterE2E.Cli
                     , ClusterE2E.Tunnel
+                    , ClusterE2E.TopologyRefresh
                     , ClusterE2E.Utils
     hs-source-dirs:   test
     build-depends:    base >=4.19 && <5
@@ -207,6 +208,8 @@ executable ClusterEndToEnd
                     , containers
                     , vector
                     , mtl
+                    , async
+                    , time
 
 executable redis-client
     import:           warnings

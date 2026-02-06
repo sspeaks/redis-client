@@ -137,10 +137,11 @@ spec = describe "Topology refresh" $ do
           ) [1..10 :: Int]
 
         -- All commands should succeed despite topology refresh happening concurrently
-        all (\r -> case r of
-          RespSimpleString "OK" -> True
-          _ -> False
-        ) results `shouldBe` True
+        let allOk = all (\r -> case r of
+                          RespSimpleString "OK" -> True
+                          _ -> False
+                        ) results
+        allOk `shouldBe` True
 
     it "refreshTopology can be called multiple times safely" $ do
       let connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
