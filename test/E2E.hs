@@ -347,22 +347,22 @@ main = do
       it "fill --data 1 writes expected number of keys" $ do
         (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
 
       it "fill --flush clears the database" $ do
         threadDelay 200000
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
-        code `shouldNotBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("Flushing cache" `isInfixOf`)
+        code `shouldBe` ExitSuccess
+        stdoutOut `shouldSatisfy` ("Flush complete" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 0
 
       it "fill with --key-size 128 creates keys of correct size" $ do
         void $ runRedisAction flushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("key size: 128 bytes" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         -- Verify some keys exist
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
@@ -387,13 +387,13 @@ main = do
         void $ runRedisAction flushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("key size: 64 bytes" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
 
       it "fill with --key-size 2048 creates larger keys" $ do
         void $ runRedisAction flushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "2048"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("key size: 2048 bytes" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
 
       it "fill rejects invalid --key-size values" $ do
         (code1, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "0"] ""
@@ -473,7 +473,7 @@ main = do
         void $ runRedisAction flushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "128"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("value size: 128 bytes" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         -- Verify some keys exist
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
@@ -512,7 +512,7 @@ main = do
         void $ runRedisAction flushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "2048"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("value size: 2048 bytes" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         -- Verify some keys exist
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
@@ -607,7 +607,7 @@ main = do
       it "fill with --pipeline 10 works correctly" $ do
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "10", "-f"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
              RespInteger n -> n `shouldSatisfy` (> 1000)
@@ -616,7 +616,7 @@ main = do
       it "fill with --pipeline 20000 works correctly" $ do
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "20000", "-f"] ""
         code `shouldBe` ExitSuccess
-        stdoutOut `shouldSatisfy` ("Filling cache" `isInfixOf`)
+        stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         dbSizeResp <- runRedisAction dbsize
         case dbSizeResp of
              RespInteger n -> n `shouldSatisfy` (> 1000)

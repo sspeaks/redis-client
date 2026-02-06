@@ -32,7 +32,7 @@ spec = describe "Cluster Fill Mode" $ do
       ""
 
     code `shouldBe` ExitSuccess
-    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+    stdoutOut `shouldSatisfy` ("Filling 1GB across cluster" `isInfixOf`)
 
     -- Verify keys were distributed across cluster
     bracket createTestClusterClient closeClusterClient $ \client -> do
@@ -51,7 +51,7 @@ spec = describe "Cluster Fill Mode" $ do
       ""
 
     code `shouldBe` ExitSuccess
-    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+    stdoutOut `shouldSatisfy` ("Filling 1GB across cluster" `isInfixOf`)
 
     -- Verify keys were distributed across cluster
     bracket createTestClusterClient closeClusterClient $ \client -> do
@@ -65,7 +65,7 @@ spec = describe "Cluster Fill Mode" $ do
       (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "10", "-f"])
       ""
     code `shouldBe` ExitSuccess
-    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+    stdoutOut `shouldSatisfy` ("Filling 1GB across cluster" `isInfixOf`)
     bracket createTestClusterClient closeClusterClient $ \client -> do
       totalKeys <- countClusterKeys client
       totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)
@@ -76,7 +76,7 @@ spec = describe "Cluster Fill Mode" $ do
       (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "20000", "-f"])
       ""
     code `shouldBe` ExitSuccess
-    stdoutOut `shouldSatisfy` ("Starting cluster fill" `isInfixOf`)
+    stdoutOut `shouldSatisfy` ("Filling 1GB across cluster" `isInfixOf`)
     bracket createTestClusterClient closeClusterClient $ \client -> do
       totalKeys <- countClusterKeys client
       totalKeys `shouldSatisfy` (\n -> n >= 1047528 && n <= 1049624)
@@ -138,8 +138,8 @@ spec = describe "Cluster Fill Mode" $ do
 
     -- Flush the cluster using only the -f flag (no --data)
     (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
-    code `shouldNotBe` ExitSuccess  -- Exits with failure when only flushing
-    stdoutOut `shouldSatisfy` ("Flushing" `isInfixOf`)
+    code `shouldBe` ExitSuccess  -- Now exits with success for flush-only
+    stdoutOut `shouldSatisfy` ("Flush complete" `isInfixOf`)
 
     threadDelay 100000
 
@@ -157,7 +157,7 @@ spec = describe "Cluster Fill Mode" $ do
       ""
 
     code `shouldBe` ExitSuccess
-    stdoutOut `shouldSatisfy` ("with 4 threads per node" `isInfixOf`)
+    stdoutOut `shouldSatisfy` ("with 4 threads/node" `isInfixOf`)
 
     -- Verify data was filled (approximately 1GB)
     bracket createTestClusterClient closeClusterClient $ \client -> do
