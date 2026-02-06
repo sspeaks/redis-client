@@ -35,7 +35,7 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BSSC
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
-import           Data.Maybe                 (fromMaybe)
+import           Data.Maybe                 (fromMaybe, isNothing)
 import           Data.Word                  (Word64, Word8)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,

@@ -30,13 +30,12 @@ import           System.Exit                (ExitCode (..))
 import           System.FilePath            (takeDirectory, (</>))
 import           System.IO                  (BufferMode (LineBuffering), Handle,
                                              hClose, hFlush, hGetContents,
-                                             hGetLine, hPutStrLn,
-                                             hIsTerminalDevice, hSetBuffering,
-                                             isEOF, stdin, stdout)
-import           System.Process             (CreateProcess (..),
-                                             ProcessHandle,
-                                             StdStream (CreatePipe), proc,
-                                             getProcessExitCode,
+                                             hGetLine, hIsTerminalDevice,
+                                             hPutStrLn, hSetBuffering, isEOF,
+                                             stdin, stdout)
+import           System.Process             (CreateProcess (..), ProcessHandle,
+                                             StdStream (CreatePipe),
+                                             getProcessExitCode, proc,
                                              readCreateProcessWithExitCode,
                                              terminateProcess, waitForProcess,
                                              withCreateProcess)
@@ -62,6 +61,8 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , keySize = 512
   , valueSize = 512
   , pipelineBatchSize = 8192
+  , numProcesses = Nothing
+  , processIndex = Nothing
   })
 
 getRedisClientPath :: IO FilePath
@@ -261,7 +262,7 @@ main = do
           d <- runRedisAction dbsize
           d `shouldSatisfy` (\res -> case res of
             RespInteger n -> n > 1000
-            _ -> False)
+            _             -> False)
 
         it "geopos returns longitudes and latitudes" $ do
           runRedisAction (geoadd "geo:pos" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
@@ -666,6 +667,8 @@ main = do
                 , keySize = 512
                 , valueSize = 512
                 , pipelineBatchSize = 8192
+                , numProcesses = Nothing
+                , processIndex = Nothing
                 })
         withCreateProcess cp $ \_ mOut mErr ph ->
           case (mOut, mErr) of
