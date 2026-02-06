@@ -1,19 +1,23 @@
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Resp where
 
-import Control.Applicative ((<|>))
-import Data.Attoparsec.ByteString qualified as StrictParse
-import Data.Attoparsec.ByteString.Char8 qualified as Char8
-import Data.Attoparsec.ByteString.Lazy qualified as Lazy
-import Data.ByteString.Builder as Builder (Builder, byteString, lazyByteString)
-import Data.ByteString.Char8 qualified as SB8
-import Data.ByteString.Lazy.Char8 qualified as B8
-import Data.List (intercalate)
-import Data.Map qualified as M
-import Data.Set qualified as S
+import           Control.Applicative              ((<|>))
+import qualified Data.Attoparsec.ByteString       as StrictParse
+import qualified Data.Attoparsec.ByteString.Char8 as Char8
+import qualified Data.Attoparsec.ByteString.Lazy  as Lazy
+import           Data.ByteString.Builder          as Builder (Builder,
+                                                              byteString,
+                                                              lazyByteString)
+import qualified Data.ByteString.Char8            as SB8
+import qualified Data.ByteString.Lazy             as BS
+import qualified Data.ByteString.Lazy.Char8       as B8
+import           Data.List                        (intercalate)
+import qualified Data.Map                         as M
+import qualified Data.Set                         as S
+import qualified Data.String                      as BS
 
 data RespData where
   RespSimpleString :: !String -> RespData
@@ -39,6 +43,18 @@ instance Show RespData where
     where
       showPair (k, v) = show k <> ": " <> show v
 
+byteShow :: RespData -> BS.ByteString
+byteShow (RespSimpleString !s) = BS.fromString s
+byteShow (RespError !s) = "ERROR: " <> BS.fromString s
+byteShow (RespInteger !i) = BS.fromString . show $ i
+byteShow (RespBulkString !s) = s
+byteShow RespNullBilkString = "NULL"
+byteShow (RespArray !xs) = BS.intercalate "\n" (map byteShow xs)
+byteShow (RespSet !s) = BS.intercalate "\n" (map byteShow (S.toList s))
+byteShow (RespMap !m) = BS.intercalate "\n" (map showPair (M.toList m))
+  where
+    showPair (k, v) = byteShow k <> ": " <> byteShow v
+
 class Encodable a where
   encode :: a -> Builder.Builder
 
@@ -48,7 +64,7 @@ instance Encodable RespData where
   encode (RespError !s) = Builder.lazyByteString $ B8.concat ["-", B8.pack s, "\r\n"]
   encode (RespInteger !i) = Builder.lazyByteString $ B8.concat [":", B8.pack . show $ i, "\r\n"]
   encode (RespBulkString !s) = Builder.lazyByteString $ B8.concat ["$", B8.pack . show . B8.length $ s, "\r\n", s, "\r\n"]
-  encode RespNullBilkString = Builder.lazyByteString $ "$-1\r\n"
+  encode RespNullBilkString = Builder.lazyByteString "$-1\r\n"
   encode (RespArray !xs) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ length xs, "\r\n"]) <> foldMap encode xs
   encode (RespSet !s) = Builder.lazyByteString (B8.concat ["~", B8.pack . show $ S.size s, "\r\n"]) <> foldMap encode (S.toList s)
   encode (RespMap !m) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ M.size m, "\r\n"]) <> foldMap encodePair (M.toList m)

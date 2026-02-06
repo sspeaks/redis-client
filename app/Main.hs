@@ -10,7 +10,6 @@ import           Client                     (Client (connect, receive, send),
 import           Cluster                    (ClusterNode (..),
                                              ClusterTopology (..),
                                              NodeAddress (..), NodeRole (..))
-import           ClusterCli                 (executeCommandInCluster)
 import           ClusterCommandClient       (ClusterClient (..),
                                              ClusterCommandClient,
                                              ClusterConfig (..),
@@ -18,26 +17,30 @@ import           ClusterCommandClient       (ClusterClient (..),
                                              createClusterClient,
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData)
-import           ClusterTunnel              (servePinnedProxy,
-                                             serveSmartProxy)
+import qualified Data.ByteString.Lazy       as BL
+
+import           ClusterTunnel              (servePinnedProxy, serveSmartProxy)
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import qualified ConnectionPool             as CP
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
 
+import           ClusterCli                 (routeAndExecuteCommand)
 import           Control.Monad              (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
+import qualified Data.ByteString.Char8      as BSSC
 import qualified Data.ByteString.Lazy.Char8 as BSC
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromMaybe)
-import           Data.Word                  (Word64)
+import           Data.Word                  (Word64, Word8)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
                                              initRandomNoise)
+import           Numeric                    (showHex)
 import qualified RedisCommandClient
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
@@ -53,15 +56,14 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs, getExecutablePath)
 import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hIsTerminalDevice, isEOF,
-                                             stdin)
-import           System.Process             (ProcessHandle, createProcess,
-                                             proc, waitForProcess)
+import           System.IO                  (hIsTerminalDevice, isEOF, stdin)
+import           System.Process             (ProcessHandle, createProcess, proc,
+                                             waitForProcess)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
 
 defaultRunState :: RunState
-defaultRunState = RunState 
+defaultRunState = RunState
   { host = ""
   , port = Nothing
   , username = "default"
@@ -168,7 +170,7 @@ createPlaintextConnector state addr = do
   if null (password state)
     then return client
     else do
-      _ <- State.evalStateT 
+      _ <- State.evalStateT
              (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
              (ClientState client BS.empty)
       return client
@@ -189,7 +191,7 @@ createTLSConnector state addr = do
   if null (password state)
     then return client
     else do
-      _ <- State.evalStateT 
+      _ <- State.evalStateT
              (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
              (ClientState client BS.empty)
       return client
@@ -239,7 +241,7 @@ tunnCluster :: RunState -> IO ()
 tunnCluster state = do
   putStrLn "Starting tunnel mode (cluster)"
   putStrLn $ "Tunnel mode: " ++ tunnelMode state
-  
+
   -- Create cluster client
   if useTLS state
     then do
@@ -326,7 +328,7 @@ fill state = do
 spawnFillProcesses :: RunState -> Int -> IO ()
 spawnFillProcesses state nprocs = do
   exePath <- getExecutablePath
-  
+
   -- Flush once before spawning processes (if requested)
   when (flush state && useCluster state) $ do
     printf "Flushing cluster cache before spawning %d processes\n" nprocs
@@ -339,7 +341,7 @@ spawnFillProcesses state nprocs = do
         clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
         flushAllClusterNodes clusterClient (createPlaintextConnector state)
         closeClusterClient clusterClient
-  
+
   when (flush state && not (useCluster state)) $ do
     printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
     if useTLS state
@@ -351,7 +353,7 @@ spawnFillProcesses state nprocs = do
       baseGB = totalGB `div` nprocs
       remainder = totalGB `mod` nprocs
 
-  printf "Spawning %d processes to fill %dGB total (key size: %d bytes, value size: %d bytes)\n" 
+  printf "Spawning %d processes to fill %dGB total (key size: %d bytes, value size: %d bytes)\n"
          nprocs totalGB (keySize state) (valueSize state)
 
   -- Spawn child processes
@@ -366,15 +368,15 @@ spawnChildProcess :: FilePath -> RunState -> Int -> Int -> Int -> IO ProcessHand
 spawnChildProcess exePath state baseGB remainder idx = do
   let gbForThisProcess = if idx < remainder then baseGB + 1 else baseGB
       args = buildChildArgs state idx gbForThisProcess
-  
+
   printf "  Process %d: %dGB\n" (idx + 1) gbForThisProcess
-  
+
   (_, _, _, ph) <- createProcess (proc exePath args)
   return ph
 
 -- | Build command-line arguments for a child process
 buildChildArgs :: RunState -> Int -> Int -> [String]
-buildChildArgs state idx dataGB = 
+buildChildArgs state idx dataGB =
   [ "fill"
   , "-h", host state
   , "-d", show dataGB
@@ -382,23 +384,23 @@ buildChildArgs state idx dataGB =
   , "--key-size", show (keySize state)
   , "--value-size", show (valueSize state)
   , "--pipeline", show (pipelineBatchSize state)
-  ] 
-  ++ (if useTLS state then ["-t"] else [])
-  ++ (if useCluster state then ["-c"] else [])
-  ++ (if serial state then ["-s"] else [])
+  ]
+  ++ (["-t" | useTLS state])
+  ++ (["-c" | useCluster state])
+  ++ (["-s" | serial state])
   ++ (case port state of
-        Just p -> ["-p", show p]
+        Just p  -> ["-p", show p]
         Nothing -> [])
   ++ (if null (password state) then [] else ["-a", password state])
   ++ (if username state /= "default" then ["-u", username state] else [])
   ++ (case numConnections state of
-        Just n -> ["-n", show n]
+        Just n  -> ["-n", show n]
         Nothing -> [])
 
 fillStandalone :: RunState -> IO ()
 fillStandalone state = do
   -- Only flush if we're not in multi-process mode (parent handles flush)
-  when (flush state && numProcesses state == Nothing) $ do
+  when (flush state && isNothing (numProcesses state)) $ do
     printf "Flushing cache '%s'\n" (host state)
     if useTLS state
       then runCommandsAgainstTLSHost state (void flushAll)
@@ -541,7 +543,7 @@ repl isTTY = do
           unless (cmd == "exit") $ do
             (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BSC.pack)) . words $ cmd
             response <- parseWith (receive client)
-            liftIO $ print response
+            liftIO $ print $ encodeBytesForCLI $ BL.toStrict (BSC.pack (show response))
             loop client
     readCommand
       | isTTY = readline "> "
@@ -562,7 +564,14 @@ replCluster isTTY = loop
         Just cmd -> do
           when isTTY $ liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
-            executeCommandInCluster cmd
+            let parts = words cmd
+            case parts of
+              [] -> return ()
+              (cm:args) -> do
+                result <- routeAndExecuteCommand (map BSSC.pack (cm:args))
+                case result of
+                  Left err       -> liftIO $ putStrLn $ "Error: " ++ err
+                  Right response -> liftIO $ print $ encodeBytesForCLI $ BL.toStrict (BSC.pack (show response))
             loop
     readCommand
       | isTTY = readline "> "
@@ -571,3 +580,16 @@ replCluster isTTY = loop
           if eof
             then return Nothing
             else liftIO $ Just <$> getLine
+
+isPrintableAscii :: Word8 -> Bool
+isPrintableAscii b =
+  (b >= 32 && b <= 126) || b == 10 -- space (32) to '~' (126), or newline (10)
+
+encodeBytesForCLI :: BS.ByteString -> String
+encodeBytesForCLI bs = concatMap encodeByte (BS.unpack bs)
+  where
+    encodeByte b
+      | isPrintableAscii b = [toEnum (fromEnum b)]
+      | otherwise          = "\\x" ++ padHex b
+    padHex b = let h = showHex b "" in if length h == 1 then '0':h else h
+

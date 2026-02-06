@@ -1,9 +1,10 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module ClusterCli
-  ( executeCommandInCluster
-  ) where
+module ClusterCli (
+  routeAndExecuteCommand
+)
+where
 
 import           Client                     (Client (receive, send))
 import           ClusterCommandClient       (ClusterClientState (..),
@@ -15,25 +16,12 @@ import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS
+import qualified Data.ByteString.Lazy.Char8 as BSC
 import           Data.Char                  (toUpper)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
-import qualified Data.ByteString.Lazy.Char8 as BSC
-
--- | Execute a command in cluster mode with proper routing and error handling
--- This is the main entry point for executing user commands in cluster CLI mode
-executeCommandInCluster :: (Client client) => String -> ClusterCommandClient.ClusterCommandClient client ()
-executeCommandInCluster cmd = do
-  let parts = words cmd
-  case parts of
-    [] -> return ()
-    (command:args) -> do
-      result <- routeAndExecuteCommand (map BS.pack (command:args))
-      case result of
-        Left err -> liftIO $ putStrLn $ "Error: " ++ err
-        Right response -> liftIO $ print response
 
 -- | Route and execute command parts via ClusterCommandClient
 -- Uses explicit command lists to determine routing strategy
@@ -42,7 +30,6 @@ routeAndExecuteCommand [] = return $ Left "Empty command"
 routeAndExecuteCommand (cmd:args) = do
   let cmdUpper = BS.map toUpper cmd  -- Commands are ASCII, so toUpper is safe
       cmdStr = BS.unpack cmd
-  
   -- Route based on command type using explicit lists
   -- Keyless commands (no key argument) - route to any master
   if cmdUpper `elem` keylessCommands
@@ -60,7 +47,7 @@ executeKeylessCommand parts = do
   ClusterClientState clusterClient connector <- State.get
   result <- liftIO $ ClusterCommandClient.executeKeylessClusterCommand clusterClient (sendRespCommand parts) connector
   return $ case result of
-    Left err -> Left (show err)
+    Left err   -> Left (show err)
     Right resp -> Right resp
 
 -- | Execute a keyed command (routing by key's slot)
