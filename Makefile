@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-e2e test-cluster-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
@@ -41,7 +41,7 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e test-cluster-e2e
+test: test-unit test-e2e test-cluster-e2e test-library-e2e
 
 # Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec, and FillHelpersSpec)
 test-unit:
@@ -72,6 +72,15 @@ test-cluster-e2e:
 	fi
 	@echo "Running cluster E2E tests..."
 	./scripts/run-cluster-e2e-tests.sh
+
+# Run library end-to-end tests with Docker
+test-library-e2e:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@echo "Running library E2E tests..."
+	./scripts/run-library-e2e-tests.sh
 
 # Start Redis with Docker Compose
 redis-start:

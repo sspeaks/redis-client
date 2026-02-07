@@ -183,6 +183,31 @@ executable ClusterEndToEnd
                     , time
                     , vector
 
+executable LibraryE2E
+    import:           defaults
+    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N"
+    main-is:          LibraryE2E.hs
+    hs-source-dirs:   test
+    other-modules:    LibraryE2E.Utils
+                    , LibraryE2E.ConnectionPoolTests
+                    , LibraryE2E.TopologyTests
+                    , LibraryE2E.ResilienceTests
+                    , LibraryE2E.ConcurrencyTests
+                    , LibraryE2E.ApiTests
+    build-depends:    async
+                    , bytestring
+                    , client
+                    , cluster
+                    , containers
+                    , hspec
+                    , mtl
+                    , process
+                    , redis-command-client
+                    , resp
+                    , stm
+                    , time
+                    , vector
+
 executable redis-client
     import:           defaults
     ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M -A128m -n8m -qb"

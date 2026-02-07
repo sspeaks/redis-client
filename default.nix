@@ -17,6 +17,12 @@ rec {
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "ClusterEndToEnd" "redis-client" ])
   ];
 
+  justStaticLibraryEndToEnd = pkgs.lib.pipe fullPackage [
+    pkgs.haskell.lib.justStaticExecutables
+    pkgs.haskell.lib.dontCheck
+    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "LibraryE2E" ])
+  ];
+
   justClient = pkgs.lib.pipe fullPackage [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
