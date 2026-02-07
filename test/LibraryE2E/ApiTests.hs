@@ -43,7 +43,7 @@ spec = describe "API Surface" $ do
       closeClusterClient client
 
   describe "Full lifecycle" $ do
-    it "create → commands → refresh → commands → close" $ do
+    it "create, commands, refresh, more commands, close" $ do
       client <- createTestClient
 
       -- Initial commands

@@ -28,7 +28,7 @@ spec :: Spec
 spec = describe "Concurrent Cluster Operations" $ do
 
   describe "Concurrent SET/GET storm" $ do
-    it "50 threads × 100 ops with no cross-thread data corruption" $ do
+    it "50 threads x 100 ops with no cross-thread data corruption" $ do
       client <- createTestClient
 
       let threadCount = 50 :: Int
