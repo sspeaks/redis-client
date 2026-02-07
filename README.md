@@ -80,7 +80,7 @@ azure-redis-connect --resource-group <rg-name>
 
 **Prerequisites:** Azure CLI (`az login`), Python 3.6+, and Azure permissions for Redis access.
 
-See [AZURE_EXAMPLES.md](AZURE_EXAMPLES.md) for detailed examples.
+See [docs/AZURE_EXAMPLES.md](docs/AZURE_EXAMPLES.md) for detailed examples.
 
 ## Development
 

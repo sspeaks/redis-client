@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> { }, ... }:
 let 
   src = builtins.path { path = ./.; name = "source"; };
-  scriptSrc = ./azure-redis-connect.py;
+  scriptSrc = ./scripts/azure-redis-connect.py;
 in 
 rec {
   fullPackage = pkgs.haskellPackages.callCabal2nix "redis-client" src { };

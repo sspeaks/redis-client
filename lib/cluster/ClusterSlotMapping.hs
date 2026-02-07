@@ -15,7 +15,7 @@ type SlotMapping = Vector BS.ByteString
 slotMappings :: SlotMapping
 slotMappings = unsafePerformIO $ do
   -- Hardcoded path as used in all previous call sites
-  content <- readFile "cluster_slot_mapping.txt"
+  content <- readFile "data/cluster_slot_mapping.txt"
   let entries = map parseLine $ lines content
       validEntries = [(slot, tag) | Just (slot, tag) <- entries]
       entryMap = Map.fromList validEntries

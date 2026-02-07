@@ -62,7 +62,7 @@ test-e2e:
 		echo "E2E tests require Nix to build the test container image"; \
 		exit 1; \
 	fi
-	./rune2eTests.sh
+	./scripts/run-e2e-tests.sh
 
 # Run cluster end-to-end tests with Docker
 test-cluster-e2e:
@@ -71,11 +71,11 @@ test-cluster-e2e:
 		exit 1; \
 	fi
 	@echo "Running cluster E2E tests..."
-	./runClusterE2ETests.sh
+	./scripts/run-cluster-e2e-tests.sh
 
 # Start Redis with Docker Compose
 redis-start:
-	@docker compose up -d redis
+	@docker compose -f docker/docker-compose.yml up -d redis
 	@sleep 2
 
 # Start Redis Cluster with Docker Compose
@@ -86,7 +86,7 @@ redis-cluster-start:
 
 # Stop Redis
 redis-stop:
-	@docker compose stop redis
+	@docker compose -f docker/docker-compose.yml stop redis
 
 # Stop Redis Cluster
 redis-cluster-stop:

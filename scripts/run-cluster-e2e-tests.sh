@@ -60,7 +60,7 @@ cd ..
 
 # Build the Docker image
 echo "Building cluster E2E test Docker image..."
-nix-build e2eClusterDockerImg.nix || {
+nix-build nix/cluster-e2e-docker.nix || {
     echo "Failed to build Docker image"
     cd docker-cluster
     docker compose down
