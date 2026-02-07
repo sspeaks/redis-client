@@ -2,7 +2,14 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Resp where
+-- | Serialization and parsing for the Redis Serialization Protocol (RESP).
+-- Supports RESP2 and RESP3 wire types including bulk strings, arrays, maps, and sets.
+module Resp
+  ( RespData (..)
+  , Encodable (..)
+  , parseRespData
+  , parseStrict
+  ) where
 
 import           Control.Applicative              ((<|>))
 import qualified Data.Attoparsec.ByteString       as StrictParse
@@ -18,6 +25,7 @@ import qualified Data.Map                         as M
 import qualified Data.Set                         as S
 import qualified Data.String                      as BS
 
+-- | A value in the RESP wire protocol. Each constructor corresponds to a RESP type prefix.
 data RespData where
   RespSimpleString :: !String -> RespData
   RespError :: !String -> RespData
@@ -45,6 +53,7 @@ byteShow (RespMap !m) = BS.intercalate "\n" (map showPair (M.toList m))
   where
     showPair (k, v) = byteShow k <> ": " <> byteShow v
 
+-- | Types that can be serialized to the RESP wire format.
 class Encodable a where
   encode :: a -> Builder.Builder
 
@@ -61,7 +70,8 @@ instance Encodable RespData where
     where
       encodePair (k, v) = encode k <> encode v
 
--- Parser for RespData
+-- | Attoparsec parser for a single RESP value. Can be composed with other parsers
+-- or used with 'parseStrict' for one-shot parsing.
 parseRespData :: Char8.Parser RespData
 parseRespData =
   Char8.anyChar >>= \case

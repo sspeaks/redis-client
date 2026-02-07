@@ -73,10 +73,13 @@ library cluster
                     , ClusterCommands
                     , ClusterSlotMapping
                     , ConnectionPool
+                    , Connector
+                    , Redis
     build-depends:    bytestring
                     , client
                     , containers
                     , crc16
+                    , file-embed
                     , mtl
                     , redis-command-client
                     , resp
@@ -155,6 +158,7 @@ executable ClusterEndToEnd
     import:           defaults
     main-is:          ClusterE2E.hs
     hs-source-dirs:   test
+                    , app
     other-modules:    ClusterE2E.Basic
                     , ClusterE2E.Cli
                     , ClusterE2E.Fill
@@ -162,6 +166,7 @@ executable ClusterEndToEnd
                     , ClusterE2E.TopologyRefresh
                     , ClusterE2E.Utils
                     , E2EHelpers
+                    , SlotMappingHelpers
     build-depends:    async
                     , bytestring
                     , client
@@ -190,6 +195,7 @@ executable redis-client
                     , ClusterTunnel
                     , FillHelpers
                     , Filler
+                    , SlotMappingHelpers
     build-depends:    attoparsec
                     , bytestring
                     , client

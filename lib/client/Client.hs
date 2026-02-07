@@ -2,6 +2,12 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | TCP and TLS transport layer for Redis connections.
+--
+-- The 'Client' typeclass uses a type-level 'ConnectionStatus' parameter to enforce
+-- connection state at compile time: you can only 'send' and 'receive' on a
+-- @client \'Connected@, and only 'connect' a @client \'NotConnected@. This prevents
+-- use-after-close and send-before-connect bugs statically.
 module Client
   ( Client (..)
   , serve
@@ -53,14 +59,21 @@ import System.X509.Unix (getSystemCertificateStore)
 import Text.Printf (printf)
 import Prelude hiding (getContents)
 
+-- | Connection lifecycle phase, used as a DataKinds-promoted type parameter
+-- to statically track whether a client is connected.
 data ConnectionStatus = Connected | NotConnected | Server
 
+-- | Transport abstraction indexed by 'ConnectionStatus'. The type parameter
+-- ensures that 'send' and 'receive' can only be called on a connected client,
+-- and 'connect' can only be called on a not-yet-connected client.
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
   close :: (MonadIO m) => client 'Connected -> m ()
   send :: (MonadIO m) => client 'Connected -> Lazy.ByteString -> m ()
   receive :: (MonadIO m, MonadFail m) => client 'Connected -> m B.ByteString
 
+-- | Plain TCP client. Construct with 'NotConnectedPlainTextClient' providing
+-- a hostname and optional port (defaults to 6379).
 data PlainTextClient (a :: ConnectionStatus) where
   NotConnectedPlainTextClient :: String -> Maybe Int -> PlainTextClient 'NotConnected
   ConnectedPlainTextClient :: String -> Word32 -> Socket -> PlainTextClient 'Connected
@@ -89,6 +102,10 @@ instance Client PlainTextClient where
       Nothing -> fail "recv socket timeout (plaintext)"
       Just v -> return v
 
+-- | TLS-encrypted client. Construct with 'NotConnectedTLSClient' (hostname + optional port,
+-- defaults to 6380) or 'NotConnectedTLSClientWithHostname' when the TLS certificate
+-- hostname differs from the connection address (common in cluster mode).
+-- Set @REDIS_CLIENT_TLS_INSECURE@ to skip certificate validation.
 data TLSClient (a :: ConnectionStatus) where
   NotConnectedTLSClient :: String -> Maybe Int -> TLSClient 'NotConnected
   -- | TLS client with separate hostname for certificate validation
@@ -149,6 +166,8 @@ connectTLS certHostname targetAddress port = liftIO $ do
   handshake context
   return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
 
+-- | Start a local TCP proxy on @localhost:6379@ that forwards traffic through an
+-- existing TLS connection. Useful for tunneling plain-text Redis tools over TLS.
 serve :: (MonadIO m) => TLSClient 'Server -> m ()
 serve (TLSTunnel redisClient) = liftIO $ do
   hSetBuffering stdout LineBuffering
@@ -182,6 +201,8 @@ createSocket hostname port = do
   setSocketOption sock KeepAlive 1
   return (sock, ipAddr)
 
+-- | Resolve a hostname or IP address string to a 'HostAddress'.
+-- Handles @\"localhost\"@, dotted-quad IPv4 literals, and DNS A-record lookups.
 resolve :: String -> IO HostAddress
 resolve "localhost" = return (tupleToHostAddress (127, 0, 0, 1))
 resolve address =

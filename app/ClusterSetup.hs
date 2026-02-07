@@ -19,6 +19,7 @@ import           Cluster                    (ClusterNode (..),
 import           ClusterCommandClient       (ClusterClient (..),
                                              ClusterConfig (..),
                                              createClusterClient)
+import           Connector                  (Connector)
 import           ConnectionPool             (PoolConfig (PoolConfig))
 import qualified ConnectionPool             as CP
 import           Control.Concurrent.STM     (readTVarIO)
@@ -44,7 +45,7 @@ authenticateClient state client
       return client
 
 -- | Create cluster connector for plaintext connections
-createPlaintextConnector :: RunState -> (NodeAddress -> IO (PlainTextClient 'Connected))
+createPlaintextConnector :: RunState -> Connector PlainTextClient
 createPlaintextConnector state addr = do
   client <- connect $ NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
   authenticateClient state client
@@ -52,7 +53,7 @@ createPlaintextConnector state addr = do
 -- | Create cluster connector for TLS connections
 -- Uses the original seed hostname for TLS certificate validation to avoid
 -- hostname mismatch errors when CLUSTER SLOTS returns IP addresses
-createTLSConnector :: RunState -> (NodeAddress -> IO (TLSClient 'Connected))
+createTLSConnector :: RunState -> Connector TLSClient
 createTLSConnector state addr = do
   client <- connect $ NotConnectedTLSClientWithHostname (host state) (nodeHost addr) (Just $ nodePort addr)
   authenticateClient state client
@@ -60,7 +61,7 @@ createTLSConnector state addr = do
 -- | Create a cluster client from RunState
 createClusterClientFromState :: (Client client) =>
   RunState ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (ClusterClient client)
 createClusterClientFromState state connector = do
   let defaultPort = if useTLS state then 6380 else 6379
@@ -83,7 +84,7 @@ createClusterClientFromState state connector = do
 -- | Flush all master nodes in a cluster
 flushAllClusterNodes :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO ()
 flushAllClusterNodes clusterClient connector = do
   topology <- readTVarIO (clusterTopology clusterClient)

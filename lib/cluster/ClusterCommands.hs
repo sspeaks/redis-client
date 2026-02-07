@@ -20,7 +20,10 @@ data CommandRouting
   | KeyedRoute ByteString  -- ^ Route by this key's hash slot
   | CommandError String    -- ^ Invalid command (e.g., missing required key)
 
--- | Classify a command for cluster routing based on the command name and arguments
+-- | Classify a Redis command for cluster routing.
+-- Returns 'KeylessRoute' for commands like PING or AUTH that can go to any master,
+-- 'KeyedRoute' with the routing key for commands that target a specific slot,
+-- or 'CommandError' if a key-requiring command is missing its key argument.
 classifyCommand :: ByteString -> [ByteString] -> CommandRouting
 classifyCommand cmd args =
   let cmdUpper = BS.map toUpper cmd

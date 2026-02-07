@@ -8,8 +8,4 @@ in pkgs.dockerTools.buildImage {
   config = {
     Cmd = [ "${pkgs.bash}/bin/bash" ];
   };
-  extraCommands = ''
-    mkdir -p data
-    cp ${../data/cluster_slot_mapping.txt} data/cluster_slot_mapping.txt
-  '';
  }

@@ -7,7 +7,7 @@ import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              ClusterNode (..), ClusterTopology (..), )
 import           ClusterCommandClient       (closeClusterClient, clusterTopology)
 import           ClusterE2E.Utils
-import           ClusterSlotMapping         (getKeyForNode)
+import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 import           Control.Monad              (when, forM_)

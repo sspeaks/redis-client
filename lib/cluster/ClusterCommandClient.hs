@@ -3,6 +3,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes        #-}
 
+-- | Cluster-aware Redis command client with automatic slot routing, MOVED\/ASK
+-- redirection handling, and connection pooling.
+--
+-- Use 'createClusterClient' to discover the initial topology from a seed node,
+-- then execute commands with 'executeClusterCommand' (keyed) or
+-- 'executeKeylessClusterCommand' (global commands like PING).
+-- The 'ClusterCommandClient' monad also implements 'RedisCommands', providing
+-- the same API as single-node usage with transparent cluster routing.
 module ClusterCommandClient
   ( -- * Client Types
     ClusterClient (..),
@@ -35,13 +43,17 @@ import           Cluster                     (ClusterNode (..),
                                               NodeAddress (..), NodeRole (..),
                                               calculateSlot, findNodeForSlot,
                                               parseClusterSlots)
+import           Connector                   (Connector)
 import           ConnectionPool              (ConnectionPool, PoolConfig (..),
                                               closePool, createPool,
-                                              getOrCreateConnection)
+                                              getOrCreateConnection,
+                                              withConnection)
 import           Control.Concurrent          (threadDelay)
+import           Control.Concurrent.MVar     (MVar, newMVar, tryTakeMVar,
+                                              putMVar)
 import           Control.Concurrent.STM      (TVar, atomically,
                                               newTVarIO, readTVar, readTVarIO, writeTVar)
-import           Control.Exception           (SomeException, catch, throwIO,
+import           Control.Exception           (SomeException, catch, finally, throwIO,
                                               try)
 import           Control.Monad               (when)
 import           Control.Monad.IO.Class      (MonadIO (..))
@@ -64,16 +76,16 @@ import           RedisCommandClient          (ClientState (..),
                                               runRedisCommandClient)
 import           Resp                        (Encodable (..), RespData (..))
 
--- | Error types specific to cluster operations
+-- | Error types specific to cluster operations.
 data ClusterError
-  = MovedError Word16 NodeAddress -- Slot and new address
-  | AskError Word16 NodeAddress -- Slot and temporary address
-  | ClusterDownError String
-  | TryAgainError String
-  | CrossSlotError String
-  | MaxRetriesExceeded String
-  | TopologyError String
-  | ConnectionError String
+  = MovedError Word16 NodeAddress -- ^ Permanent redirect: the slot has migrated to a different node.
+  | AskError Word16 NodeAddress -- ^ Temporary redirect during slot migration; retry at the given node.
+  | ClusterDownError String -- ^ The cluster is in a down or error state.
+  | TryAgainError String -- ^ Transient failure; the operation should be retried.
+  | CrossSlotError String -- ^ Multi-key command spans multiple hash slots.
+  | MaxRetriesExceeded String -- ^ All retry attempts exhausted.
+  | TopologyError String -- ^ Slot or node lookup failed (e.g., empty topology).
+  | ConnectionError String -- ^ Network-level failure connecting to a node.
   deriving (Show, Eq)
 
 -- | Redirection information parsed from errors
@@ -84,27 +96,29 @@ data RedirectionInfo = RedirectionInfo
   }
   deriving (Show, Eq)
 
--- | Configuration for cluster client
+-- | Configuration for a cluster client.
 data ClusterConfig = ClusterConfig
-  { clusterSeedNode                :: NodeAddress, -- Initial node to connect to
-    clusterPoolConfig              :: PoolConfig,
-    clusterMaxRetries              :: Int, -- Maximum retry attempts (default: 3)
-    clusterRetryDelay              :: Int, -- Initial retry delay in microseconds (default: 100000 = 100ms)
-    clusterTopologyRefreshInterval :: Int -- Seconds between topology refreshes (default: 600 = 10 minutes)
+  { clusterSeedNode                :: NodeAddress -- ^ Initial node used to discover the cluster topology.
+  , clusterPoolConfig              :: PoolConfig  -- ^ Connection pool settings applied to every node.
+  , clusterMaxRetries              :: Int -- ^ Maximum retry attempts on MOVED\/ASK\/transient errors (default: 3).
+  , clusterRetryDelay              :: Int -- ^ Initial retry delay in microseconds; doubled on each retry (default: 100000 = 100ms).
+  , clusterTopologyRefreshInterval :: Int -- ^ Seconds between automatic background topology refreshes (default: 600 = 10 min).
   }
   deriving (Show)
 
--- | Cluster client that manages connections to multiple nodes
+-- | A cluster client that manages topology discovery and a per-node connection pool.
+-- Created via 'createClusterClient' and closed with 'closeClusterClient'.
 data ClusterClient client = ClusterClient
   { clusterTopology       :: TVar ClusterTopology,
     clusterConnectionPool :: ConnectionPool client,
-    clusterConfig         :: ClusterConfig
+    clusterConfig         :: ClusterConfig,
+    clusterRefreshLock    :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
   }
 
 -- | State for ClusterCommandClient monad
 data ClusterClientState client = ClusterClientState
   { getClusterClient :: ClusterClient client,
-    getConnector     :: NodeAddress -> IO (client 'Connected)
+    getConnector     :: Connector client
   }
 
 -- | Monad for executing Redis commands on a cluster
@@ -114,11 +128,11 @@ data ClusterCommandClient client a where
     { runClusterCommandClientM :: State.StateT (ClusterClientState client) IO a }
     -> ClusterCommandClient client a
 
--- | Run a ClusterCommandClient action with the given cluster client and connector
+-- | Run a 'ClusterCommandClient' action with the given cluster client and connector function.
 runClusterCommandClient ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   ClusterCommandClient client a ->
   IO a
 runClusterCommandClient client connector (ClusterCommandClient action) = do
@@ -153,11 +167,12 @@ instance (Client client) => MonadFail (ClusterCommandClient client) where
   fail :: String -> ClusterCommandClient client a
   fail = ClusterCommandClient . liftIO . Prelude.fail
 
--- | Create a new cluster client by connecting to seed node and discovering topology
+-- | Connect to the seed node, issue @CLUSTER SLOTS@, and build the initial topology.
+-- Throws on failure to connect or parse the topology response.
 createClusterClient ::
   (Client client) =>
   ClusterConfig ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (ClusterClient client)
 createClusterClient config connector = do
   pool <- createPool (clusterPoolConfig config)
@@ -173,37 +188,39 @@ createClusterClient config connector = do
     Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
     Right initialTopology -> do
       topology <- newTVarIO initialTopology
-      return $ ClusterClient topology pool config
+      refreshLock <- newMVar ()
+      return $ ClusterClient topology pool config refreshLock
 
--- | Close all connections in the cluster client
+-- | Close all pooled connections across every node.
 closeClusterClient :: (Client client) => ClusterClient client -> IO ()
 closeClusterClient client = closePool (clusterConnectionPool client)
 
--- | Refresh cluster topology by querying CLUSTER SLOTS
--- This is called automatically when:
--- 1. Topology is stale (older than clusterTopologyRefreshInterval)
--- 2. A MOVED error is encountered (indicates topology changed)
---
--- Performance: ~1-5ms per refresh (network + parsing cost)
--- Note: Multiple concurrent refreshes may occur during cluster reconfiguration.
--- Consider implementing refresh rate limiting in high-concurrency scenarios.
+-- | Refresh cluster topology by querying CLUSTER SLOTS.
+-- Uses a lock to prevent thundering herd: if another thread is already
+-- refreshing, this call returns immediately (the other thread's refresh
+-- will update the shared topology).
 refreshTopology ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO ()
 refreshTopology client connector = do
-  let seedNode = clusterSeedNode (clusterConfig client)
-  conn <- getOrCreateConnection (clusterConnectionPool client) seedNode connector
+  acquired <- tryTakeMVar (clusterRefreshLock client)
+  case acquired of
+    Nothing -> return ()  -- Another thread is already refreshing
+    Just _  -> finally doRefresh (putMVar (clusterRefreshLock client) ())
+  where
+    doRefresh = do
+      let seedNode = clusterSeedNode (clusterConfig client)
+      conn <- getOrCreateConnection (clusterConnectionPool client) seedNode connector
 
-  -- Use clusterSlots command from RedisCommands
-  let clientState = ClientState conn BS.empty
-  response <- State.evalStateT (runRedisCommandClient clusterSlots) clientState
+      let clientState = ClientState conn BS.empty
+      response <- State.evalStateT (runRedisCommandClient clusterSlots) clientState
 
-  currentTime <- getCurrentTime
-  case parseClusterSlots response currentTime of
-    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
-    Right topology -> atomically $ writeTVar (clusterTopology client) topology
+      currentTime <- getCurrentTime
+      case parseClusterSlots response currentTime of
+        Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
+        Right topology -> atomically $ writeTVar (clusterTopology client) topology
 
 -- | Check if topology is stale and refresh if needed
 -- Called before every keyed command execution.
@@ -212,7 +229,7 @@ refreshTopology client connector = do
 refreshTopologyIfStale ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO ()
 refreshTopologyIfStale client connector = do
   topology <- readTVarIO (clusterTopology client)
@@ -232,13 +249,17 @@ detectRedirection (RespError msg) =
          Nothing -> Nothing
 detectRedirection _ = Nothing
 
--- | Execute a Redis command with cluster awareness and automatic redirection handling
+-- | Execute a keyed Redis command with cluster-aware routing.
+-- Computes the hash slot from @key@, routes to the owning node, and automatically
+-- handles MOVED (triggers topology refresh + retry), ASK (retry at redirected node),
+-- and transient errors (exponential backoff up to 'clusterMaxRetries').
+-- Returns 'Left' 'ClusterError' only when all retries are exhausted.
 executeClusterCommand ::
   (Client client) =>
   ClusterClient client ->
   ByteString -> -- The key to determine routing
   RedisCommandClient client RespData ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (Either ClusterError RespData)
 executeClusterCommand client key action connector = do
   -- Refresh topology if it's stale
@@ -254,7 +275,7 @@ executeOnSlot ::
   ClusterClient client ->
   Word16 ->
   RedisCommandClient client RespData ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (Either ClusterError RespData)
 executeOnSlot client slot action connector = do
   topology <- readTVarIO (clusterTopology client)
@@ -272,11 +293,10 @@ executeOnNode ::
   ClusterClient client ->
   NodeAddress ->
   RedisCommandClient client a ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (Either ClusterError a)
 executeOnNode client nodeAddr action connector = do
-  result <- try $ do
-    conn <- getOrCreateConnection (clusterConnectionPool client) nodeAddr connector
+  result <- try $ withConnection (clusterConnectionPool client) nodeAddr connector $ \conn -> do
     let clientState = ClientState conn BS.empty
     State.evalStateT (runRedisCommandClient action) clientState
 
@@ -291,7 +311,7 @@ executeOnNodeWithRedirectionDetection ::
   ClusterClient client ->
   NodeAddress ->
   RedisCommandClient client RespData ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (Either ClusterError RespData)
 executeOnNodeWithRedirectionDetection client nodeAddr action connector = do
   result <- executeOnNode client nodeAddr action connector
@@ -304,12 +324,13 @@ executeOnNodeWithRedirectionDetection client nodeAddr action connector = do
       Nothing -> return $ Right respData
     Left err -> return $ Left err
 
--- | Execute a keyless command on any available node (e.g., PING, AUTH, FLUSHALL)
+-- | Execute a command that does not target a specific key (e.g., PING, AUTH, FLUSHALL).
+-- Routed to an arbitrary master node.
 executeKeylessClusterCommand ::
   (Client client) =>
   ClusterClient client ->
   RedisCommandClient client a ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO (Either ClusterError a)
 executeKeylessClusterCommand client action connector = do
   topology <- readTVarIO (clusterTopology client)
@@ -357,7 +378,7 @@ withRetry maxRetries initialDelay action = go 0 initialDelay
 withRetryAndRefresh ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   Int -> -- Max retries
   Int -> -- Initial delay (microseconds)
   IO (Either ClusterError a) ->
@@ -381,6 +402,10 @@ withRetryAndRefresh client connector maxRetries initialDelay action = go 0 initi
               -- ASK is temporary, just retry without refresh
               -- TODO: Implement ASKING command handling
               threadDelay delay
+              go (attempt + 1) delay
+            Left (ConnectionError msg) -> do
+              -- Node may be down, refresh topology to discover new layout
+              refreshTopology client connector
               go (attempt + 1) delay
             Left err -> return $ Left err
             Right value -> return $ Right value

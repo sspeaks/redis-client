@@ -1,12 +1,20 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | High-level Redis command interface built on top of 'Client'.
+--
+-- Provides the 'RedisCommands' typeclass with methods for standard Redis commands
+-- (strings, hashes, lists, sets, sorted sets, geo), a 'RedisCommandClient' monad
+-- that manages connection state and incremental RESP parsing, and typed error handling
+-- via 'RedisError'.
 module RedisCommandClient
   ( -- * Core types
     ClientState (..)
   , RedisCommandClient (..)
   , RedisCommands (..)
   , ClientReplyValues (..)
+    -- * Errors
+  , RedisError (..)
     -- * Geo types
   , GeoUnit (..)
   , GeoRadiusFlag (..)
@@ -26,6 +34,7 @@ module RedisCommandClient
   ) where
 
 import Client (Client (..), ConnectionStatus (..))
+import Control.Exception (Exception, throwIO)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.State as State
   ( MonadState (get, put),
@@ -36,13 +45,27 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as SB8
 import Data.ByteString.Lazy.Char8 qualified as BSC
 import Data.Kind (Type)
+import Data.Typeable (Typeable)
 import Resp (Encodable (encode), RespData (..), parseRespData)
 
+-- | Typed exceptions for Redis protocol errors.
+data RedisError
+  = ParseError String        -- ^ RESP parse failure
+  | ConnectionClosed         -- ^ Remote end closed the connection
+  deriving (Show, Typeable)
+
+instance Exception RedisError
+
+-- | Mutable state carried through a 'RedisCommandClient' session: the live connection
+-- and an unparsed RESP byte buffer from previous receives.
 data ClientState client = ClientState
   { getClient :: client 'Connected,
     getParseBuffer :: SB8.ByteString
   }
 
+-- | A monad for sequencing Redis commands over a single connection.
+-- Wraps 'StateT' over 'ClientState' to manage the connection handle and
+-- an incremental parse buffer, so callers never deal with raw bytes.
 data RedisCommandClient client (a :: Type) where
   RedisCommandClient :: (Client client) => {runRedisCommandClient :: State.StateT (ClientState client) IO a} -> RedisCommandClient client a
 
@@ -74,6 +97,8 @@ instance (Client client) => MonadFail (RedisCommandClient client) where
   fail :: String -> RedisCommandClient client a
   fail = RedisCommandClient . liftIO . fail
 
+-- | The standard set of Redis commands. Implemented for both single-node
+-- ('RedisCommandClient') and cluster ('ClusterCommandClient') monads.
 class (MonadIO m) => RedisCommands m where
   auth :: String -> String -> m RespData
   ping :: m RespData
@@ -125,6 +150,7 @@ class (MonadIO m) => RedisCommands m where
   geosearchstore :: String -> String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m RespData
   clusterSlots :: m RespData
 
+-- | Wrap a list of strings into a RESP array of bulk strings, ready for sending.
 wrapInRay :: [String] -> RespData
 wrapInRay inp =
   let !res = RespArray . map (RespBulkString . BSC.pack) $ inp
@@ -138,6 +164,7 @@ executeCommand args = do
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
   parseWith (receive client)
 
+-- | Distance unit for Redis GEO commands.
 data GeoUnit
   = Meters
   | Kilometers
@@ -153,6 +180,7 @@ geoUnitKeyword unit =
     Miles -> "MI"
     Feet -> "FT"
 
+-- | Optional flags for GEORADIUS and GEORADIUSBYMEMBER commands.
 data GeoRadiusFlag
   = GeoWithCoord
   | GeoWithDist
@@ -176,6 +204,7 @@ geoRadiusFlagToList flag =
     GeoRadiusStore key -> ["STORE", key]
     GeoRadiusStoreDist key -> ["STOREDIST", key]
 
+-- | Origin for a GEOSEARCH query: either a longitude\/latitude pair or an existing member.
 data GeoSearchFrom
   = GeoFromLonLat Double Double
   | GeoFromMember String
@@ -187,6 +216,7 @@ geoSearchFromToList fromSpec =
     GeoFromLonLat lon lat -> ["FROMLONLAT", show lon, show lat]
     GeoFromMember member -> ["FROMMEMBER", member]
 
+-- | Shape for a GEOSEARCH query: circular radius or rectangular box.
 data GeoSearchBy
   = GeoByRadius Double GeoUnit
   | GeoByBox Double Double GeoUnit
@@ -198,6 +228,8 @@ geoSearchByToList bySpec =
     GeoByRadius radius unit -> ["BYRADIUS", show radius, geoUnitKeyword unit]
     GeoByBox width height unit -> ["BYBOX", show width, show height, geoUnitKeyword unit]
 
+-- | Optional modifiers for GEOSEARCH: include coordinates, distances, hashes,
+-- limit count, or sort order.
 data GeoSearchOption
   = GeoSearchWithCoord
   | GeoSearchWithDist
@@ -217,6 +249,7 @@ geoSearchOptionToList opt =
     GeoSearchAsc -> ["ASC"]
     GeoSearchDesc -> ["DESC"]
 
+-- | Values for the CLIENT REPLY command.
 data ClientReplyValues = OFF | ON | SKIP
   deriving (Eq, Show)
 
@@ -315,26 +348,34 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
         command = if storeDist then base ++ ["STOREDIST"] else base
     in executeCommand command
 
-parseWith :: (Client client, Monad m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
+-- | Receive exactly one RESP value, fetching more bytes from the connection as needed.
+-- Throws 'ParseError' on malformed data and 'ConnectionClosed' if the remote end hangs up.
+parseWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
 parseWith recv = do
   result <- parseManyWith 1 recv
   case result of
     [x] -> return x
-    _ -> error "parseWith: expected exactly one result"
+    _ -> liftIO $ throwIO $ ParseError "parseWith: expected exactly one result"
 
-parseManyWith :: (Client client, Monad m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m [RespData]
+-- | Receive exactly @cnt@ RESP values from the connection, performing incremental
+-- parsing against the internal buffer and fetching more bytes as needed.
+parseManyWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
   (ClientState !client !input) <- State.get
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
-    StrictParse.Fail _ _ err -> error err
+    StrictParse.Fail _ _ err -> liftIO $ throwIO $ ParseError err
     part@(StrictParse.Partial f) -> runUntilDone client part recv
     StrictParse.Done remainder !r -> do
       State.put (ClientState client remainder)
       return r
   where
-    runUntilDone :: (Client client, Monad m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
-    runUntilDone client (StrictParse.Fail _ _ err) _ = error err
-    runUntilDone client (StrictParse.Partial f) getMore = getMore >>= (flip (runUntilDone client) getMore . f)
+    runUntilDone :: (Client client, MonadIO m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
+    runUntilDone client (StrictParse.Fail _ _ err) _ = liftIO $ throwIO $ ParseError err
+    runUntilDone client (StrictParse.Partial f) getMore = do
+      moreData <- getMore
+      if SB8.null moreData
+        then liftIO $ throwIO ConnectionClosed
+        else runUntilDone client (f moreData) getMore
     runUntilDone client (StrictParse.Done remainder !r) _ = do
       State.put (ClientState client remainder)
       return r

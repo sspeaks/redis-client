@@ -8,7 +8,7 @@ import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              calculateSlot, findNodeForSlot)
 import           ClusterCommandClient       (closeClusterClient, clusterTopology)
 import           ClusterE2E.Utils
-import           ClusterSlotMapping         (getKeyForNode)
+import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 import qualified Data.ByteString.Char8      as BSC

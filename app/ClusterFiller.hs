@@ -12,6 +12,7 @@ import           Cluster                 (ClusterNode (..),
                                           SlotRange (..))
 import           ClusterCommandClient    (ClusterClient (..))
 import           ClusterSlotMapping      (slotMappings)
+import           Connector               (Connector)
 import           Control.Concurrent      (MVar, forkIO, newEmptyMVar, putMVar,
                                           takeMVar, threadDelay)
 import           Control.Concurrent.STM  (readTVarIO)
@@ -45,7 +46,7 @@ import           Text.Printf             (printf)
 fillClusterWithData ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   Int ->              -- Total GB to fill
   Int ->              -- Threads per node
   Word64 ->           -- Base seed for randomness
@@ -113,7 +114,7 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
 executeJob ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   Map Text [Word16] ->
   Word64 ->
   Int ->                              -- Key size in bytes
