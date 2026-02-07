@@ -35,6 +35,11 @@ spec = do
       -- Braces at end
       extractHashTag "key{tag}" `shouldBe` "key{tag}"
 
+    it "handles special characters in hash tags" $ do
+      extractHashTag "{user:1}" `shouldBe` "user:1"
+      extractHashTag "{a-b}" `shouldBe` "a-b"
+      extractHashTag "{tag.with.dots}" `shouldBe` "tag.with.dots"
+
   describe "Slot calculation" $ do
     it "calculates slot within valid range" $ do
       slot <- calculateSlot "test-key"
@@ -149,3 +154,23 @@ spec = do
           findNodeForSlot topology 150 `shouldSatisfy` (/= Nothing)
           -- Out of range
           findNodeForSlot topology 16384 `shouldBe` Nothing
+
+    it "returns empty string for slots not covered by any node" $ do
+      currentTime <- getCurrentTime
+      let response =
+            RespArray
+              [ RespArray
+                  [ RespInteger 0,
+                    RespInteger 100,
+                    RespArray
+                      [ RespBulkString "127.0.0.1",
+                        RespInteger 7000,
+                        RespBulkString "node1"
+                      ]
+                  ]
+              ]
+      case parseClusterSlots response currentTime of
+        Left err -> expectationFailure $ "Parsing failed: " ++ err
+        Right topology -> do
+          findNodeForSlot topology 50 `shouldSatisfy` (/= Nothing)
+          findNodeForSlot topology 200 `shouldBe` Just ""

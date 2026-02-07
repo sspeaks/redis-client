@@ -3,28 +3,21 @@
 
 module Main where
 
-import           Client                     (Client (connect, receive, send),
-                                             ConnectionStatus (..),
-                                             PlainTextClient (..),
+import           Client                     (Client (receive, send),
                                              TLSClient (..), serve)
-import           Cluster                    (ClusterNode (..),
-                                             ClusterTopology (..),
-                                             NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..),
-                                             ClusterCommandClient,
-                                             ClusterConfig (..),
+import           ClusterCommandClient       (ClusterCommandClient,
                                              closeClusterClient,
-                                             createClusterClient,
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData)
 import qualified Data.ByteString.Lazy       as BL
 
+import           ClusterSetup               (createClusterClientFromState,
+                                             createPlaintextConnector,
+                                             createTLSConnector,
+                                             flushAllClusterNodes)
 import           ClusterTunnel              (servePinnedProxy, serveSmartProxy)
-import           ConnectionPool             (PoolConfig (PoolConfig))
-import qualified ConnectionPool             as CP
 import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
                                              takeMVar)
-import           Control.Concurrent.STM     (readTVarIO)
 
 import           ClusterCli                 (routeAndExecuteCommand)
 import           Control.Monad              (unless, void, when)
@@ -34,20 +27,20 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BSSC
 import qualified Data.ByteString.Lazy.Char8 as BSC
-import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromMaybe, isNothing)
 import           Data.Word                  (Word64, Word8)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
                                              initRandomNoise)
 import           Numeric                    (showHex)
-import qualified RedisCommandClient
+import           AppConfig                  (RunState (..),
+                                             defaultRunState,
+                                             runCommandsAgainstPlaintextHost,
+                                             runCommandsAgainstTLSHost)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
                                              RedisCommands (flushAll),
-                                             RunState (..), parseWith,
-                                             runCommandsAgainstPlaintextHost,
-                                             runCommandsAgainstTLSHost)
+                                             parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
 import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
@@ -61,26 +54,6 @@ import           System.Process             (ProcessHandle, createProcess, proc,
                                              waitForProcess)
 import           System.Random              (randomIO)
 import           Text.Printf                (printf)
-
-defaultRunState :: RunState
-defaultRunState = RunState
-  { host = ""
-  , port = Nothing
-  , username = "default"
-  , password = ""
-  , useTLS = False
-  , dataGBs = 0
-  , flush = False
-  , serial = False
-  , numConnections = Just 2
-  , useCluster = False
-  , tunnelMode = "smart"
-  , keySize = 512
-  , valueSize = 512
-  , pipelineBatchSize = 8192
-  , numProcesses = Nothing
-  , processIndex = Nothing
-  }
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
@@ -160,64 +133,6 @@ main = do
       when (mode == "cli") $ cli state
       when (mode == "fill") $ fill state
 
--- | Create cluster connector for plaintext connections
--- Connects and authenticates to each node
-createPlaintextConnector :: RunState -> (NodeAddress -> IO (PlainTextClient 'Connected))
-createPlaintextConnector state addr = do
-  let notConnected = NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
-  client <- connect notConnected
-  -- Authenticate if password is provided
-  if null (password state)
-    then return client
-    else do
-      _ <- State.evalStateT
-             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
-             (ClientState client BS.empty)
-      return client
-
--- | Create cluster connector for TLS connections
--- Connects and authenticates to each node
--- Uses the original seed hostname for TLS certificate validation to avoid
--- hostname mismatch errors when CLUSTER SLOTS returns IP addresses
-createTLSConnector :: RunState -> (NodeAddress -> IO (TLSClient 'Connected))
-createTLSConnector state addr = do
-  -- For TLS, use the original seed hostname for certificate validation
-  -- but connect to the actual node address (which may be an IP from CLUSTER SLOTS)
-  let hostnameForCert = host state  -- Use seed hostname for certificate validation
-      targetAddress = nodeHost addr  -- Use actual node address for connection
-      notConnected = NotConnectedTLSClientWithHostname hostnameForCert targetAddress (Just $ nodePort addr)
-  client <- connect notConnected
-  -- Authenticate if password is provided
-  if null (password state)
-    then return client
-    else do
-      _ <- State.evalStateT
-             (RedisCommandClient.runRedisCommandClient (RedisCommandClient.authenticate (username state) (password state)))
-             (ClientState client BS.empty)
-      return client
-
--- | Create a cluster client from RunState
-createClusterClientFromState :: (Client client) =>
-  RunState ->
-  (NodeAddress -> IO (client 'Connected)) ->
-  IO (ClusterClient client)
-createClusterClientFromState state connector = do
-  let defaultPort = if useTLS state then 6380 else 6379
-      seedNode = NodeAddress (host state) (fromMaybe defaultPort (port state))
-      poolConfig = PoolConfig
-        { CP.maxConnectionsPerNode = 10  -- Max connections per node
-        , CP.connectionTimeout = 300     -- 5 minutes timeout
-        , CP.maxRetries = 3
-        , CP.useTLS = useTLS state
-        }
-      clusterCfg = ClusterConfig
-        { clusterSeedNode = seedNode
-        , clusterPoolConfig = poolConfig
-        , clusterMaxRetries = 3
-        , clusterRetryDelay = 100000  -- 100ms
-        , clusterTopologyRefreshInterval = 600  -- 10 minutes
-        }
-  createClusterClient clusterCfg connector
 
 tunn :: RunState -> IO ()
 tunn state = do
@@ -272,12 +187,6 @@ tunnCluster state = do
         _ -> do
           printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
           exitFailure
-
-tunnClusterPinned :: RunState -> IO ()
-tunnClusterPinned state = do
-  putStrLn "Pinned mode: Connection forwarding to seed node"
-  putStrLn "Note: This function is deprecated. Use tunnCluster instead."
-  tunnCluster state
 
 fill :: RunState -> IO ()
 fill state = do
@@ -435,31 +344,6 @@ fillStandalone state = do
             return mv) jobs
         mapM_ takeMVar mvars
 
--- | Flush all master nodes in a cluster
-flushAllClusterNodes :: (Client client) =>
-  ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
-  IO ()
-flushAllClusterNodes clusterClient connector = do
-  -- Get cluster topology to find all master nodes
-  topology <- readTVarIO (clusterTopology clusterClient)
-  let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-
-  printf "Flushing %d master nodes in cluster...\n" (length masterNodes)
-
-  -- Flush each master node
-  mapM_ (\node -> do
-      let addr = nodeAddress node
-      printf "  Flushing node %s:%d\n" (nodeHost addr) (nodePort addr)
-      -- Get connection to this specific node
-      conn <- CP.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
-      -- Run FLUSHALL on this node
-      let clientState = ClientState conn BS.empty
-      _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
-      return ()
-    ) masterNodes
-
-  putStrLn "All master nodes flushed successfully"
 
 fillCluster :: RunState -> IO ()
 fillCluster state = do
@@ -535,7 +419,7 @@ repl isTTY = do
   loop client
   where
     loop !client = do
-      command <- liftIO readCommand
+      command <- liftIO $ readCommand isTTY
       case command of
         Nothing -> return ()
         Just cmd -> do
@@ -545,20 +429,13 @@ repl isTTY = do
             response <- parseWith (receive client)
             liftIO $ print $ encodeBytesForCLI $ BL.toStrict (BSC.pack (show response))
             loop client
-    readCommand
-      | isTTY = readline "> "
-      | otherwise = do
-          eof <- isEOF
-          if eof
-            then return Nothing
-            else Just <$> getLine
 
 -- | REPL for cluster mode - uses ClusterCommandClient
 replCluster :: (Client client) => Bool -> ClusterCommandClient client ()
 replCluster isTTY = loop
   where
     loop = do
-      command <- liftIO readCommand
+      command <- liftIO $ readCommand isTTY
       case command of
         Nothing -> return ()
         Just cmd -> do
@@ -573,13 +450,16 @@ replCluster isTTY = loop
                   Left err       -> liftIO $ putStrLn $ "Error: " ++ err
                   Right response -> liftIO $ print $ encodeBytesForCLI $ BL.toStrict (BSC.pack (show response))
             loop
-    readCommand
-      | isTTY = readline "> "
-      | otherwise = do
-          eof <- liftIO isEOF
-          if eof
-            then return Nothing
-            else liftIO $ Just <$> getLine
+
+-- | Read a command from the user, handling TTY vs pipe input
+readCommand :: Bool -> IO (Maybe String)
+readCommand isTTY
+  | isTTY = readline "> "
+  | otherwise = do
+      eof <- isEOF
+      if eof
+        then return Nothing
+        else Just <$> getLine
 
 isPrintableAscii :: Word8 -> Bool
 isPrintableAscii b =

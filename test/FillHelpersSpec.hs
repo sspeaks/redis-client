@@ -146,3 +146,24 @@ main = hspec $ do
       it "supports maximum value size of 524288 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 524288 12345
         LB.length result `shouldBe` 524288
+
+    describe "Edge case sizes" $ do
+      it "generates correct size for 0 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 0 12345
+        LB.length result `shouldBe` 0
+
+      it "generates correct size for 7 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 7 12345
+        LB.length result `shouldBe` 7
+
+      it "generates correct size for 9 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 9 12345
+        LB.length result `shouldBe` 9
+
+    describe "Seed collision detection" $ do
+      it "different seeds produce different bytes for same size" $ do
+        let seeds = [0, 1, 2, 100, 999, 65535] :: [Word64]
+            results = map (\s -> Builder.toLazyByteString $ generateBytes 64 s) seeds
+            uniqueResults = length $ filter id [r1 /= r2 | (r1, i) <- zip results [0::Int ..], (r2, j) <- zip results [0..], i < j]
+        -- All pairs should differ
+        uniqueResults `shouldBe` length [(i,j) | i <- [0..length seeds - 1], j <- [0..length seeds - 1], i < j]

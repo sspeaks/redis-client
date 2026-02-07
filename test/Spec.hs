@@ -5,6 +5,7 @@ module Main where
 import Data.Attoparsec.ByteString.Char8 (parseOnly)
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy.Char8 qualified as B
+import Data.Either (isLeft)
 import Data.Map qualified as M
 import Data.Set qualified as S
 import RedisCommandClient (wrapInRay)
@@ -12,46 +13,59 @@ import Resp
 import Test.Hspec
 
 main :: IO ()
-main = hspec $ describe "encode" $ do
-  it "encodes simple strings correctly" $ do
-    Builder.toLazyByteString (encode (RespSimpleString "OK")) `shouldBe` "+OK\r\n"
-    Builder.toLazyByteString (encode (RespSimpleString "Hello")) `shouldBe` "+Hello\r\n"
+main = hspec $ do
+  describe "RESP Encoding" $ do
+    it "encodes simple strings correctly" $ do
+      Builder.toLazyByteString (encode (RespSimpleString "OK")) `shouldBe` "+OK\r\n"
+      Builder.toLazyByteString (encode (RespSimpleString "Hello")) `shouldBe` "+Hello\r\n"
 
-  it "encodes errors correctly" $ do
-    Builder.toLazyByteString (encode (RespError "Error message")) `shouldBe` "-Error message\r\n"
-    Builder.toLazyByteString (encode (RespError "Another error")) `shouldBe` "-Another error\r\n"
+    it "encodes errors correctly" $ do
+      Builder.toLazyByteString (encode (RespError "Error message")) `shouldBe` "-Error message\r\n"
+      Builder.toLazyByteString (encode (RespError "Another error")) `shouldBe` "-Another error\r\n"
 
-  it "encodes integers correctly" $ do
-    Builder.toLazyByteString (encode (RespInteger 123)) `shouldBe` ":123\r\n"
-    Builder.toLazyByteString (encode (RespInteger 0)) `shouldBe` ":0\r\n"
+    it "encodes integers correctly" $ do
+      Builder.toLazyByteString (encode (RespInteger 123)) `shouldBe` ":123\r\n"
+      Builder.toLazyByteString (encode (RespInteger 0)) `shouldBe` ":0\r\n"
 
-  it "encodes bulk strings correctly" $ do
-    Builder.toLazyByteString (encode (RespBulkString "foobar")) `shouldBe` "$6\r\nfoobar\r\n"
-    Builder.toLazyByteString (encode (RespBulkString "")) `shouldBe` "$0\r\n\r\n"
+    it "encodes bulk strings correctly" $ do
+      Builder.toLazyByteString (encode (RespBulkString "foobar")) `shouldBe` "$6\r\nfoobar\r\n"
+      Builder.toLazyByteString (encode (RespBulkString "")) `shouldBe` "$0\r\n\r\n"
 
-  it "encodes arrays correctly" $ do
-    Builder.toLazyByteString (encode (RespArray [RespSimpleString "foo", RespInteger 42])) `shouldBe` "*2\r\n+foo\r\n:42\r\n"
-    Builder.toLazyByteString (encode (RespArray [])) `shouldBe` "*0\r\n"
+    it "encodes arrays correctly" $ do
+      Builder.toLazyByteString (encode (RespArray [RespSimpleString "foo", RespInteger 42])) `shouldBe` "*2\r\n+foo\r\n:42\r\n"
+      Builder.toLazyByteString (encode (RespArray [])) `shouldBe` "*0\r\n"
 
-  it "encodes maps correctly" $ do
-    let mapData = M.fromList [(RespSimpleString "first", RespInteger 1), (RespSimpleString "second", RespBulkString "bulkString")]
-    Builder.toLazyByteString (encode (RespMap mapData)) `shouldBe` "*2\r\n+first\r\n:1\r\n+second\r\n$10\r\nbulkString\r\n"
-    Builder.toLazyByteString (encode (RespMap M.empty)) `shouldBe` "*0\r\n"
+    it "encodes maps correctly" $ do
+      let mapData = M.fromList [(RespSimpleString "first", RespInteger 1), (RespSimpleString "second", RespBulkString "bulkString")]
+      Builder.toLazyByteString (encode (RespMap mapData)) `shouldBe` "*2\r\n+first\r\n:1\r\n+second\r\n$10\r\nbulkString\r\n"
+      Builder.toLazyByteString (encode (RespMap M.empty)) `shouldBe` "*0\r\n"
 
-  it "encodes sets correctly" $ do
-    let setData = S.fromList [RespSimpleString "Hello", RespInteger 5, RespBulkString "im very long"]
-    Builder.toLazyByteString (encode (RespSet setData)) `shouldBe` "~3\r\n+Hello\r\n:5\r\n$12\r\nim very long\r\n"
-    Builder.toLazyByteString (encode (RespSet S.empty)) `shouldBe` "~0\r\n"
+    it "encodes sets correctly" $ do
+      let setData = S.fromList [RespSimpleString "Hello", RespInteger 5, RespBulkString "im very long"]
+      Builder.toLazyByteString (encode (RespSet setData)) `shouldBe` "~3\r\n+Hello\r\n:5\r\n$12\r\nim very long\r\n"
+      Builder.toLazyByteString (encode (RespSet S.empty)) `shouldBe` "~0\r\n"
 
-  it "encodes lists of length greater than 10 correctly" $ do
-    let longList = RespArray (replicate 11 (RespSimpleString "item"))
-    Builder.toLazyByteString (encode longList) `shouldBe` "*11\r\n" <> mconcat (replicate 11 "+item\r\n")
+    it "encodes lists of length greater than 10 correctly" $ do
+      let longList = RespArray (replicate 11 (RespSimpleString "item"))
+      Builder.toLazyByteString (encode longList) `shouldBe` "*11\r\n" <> mconcat (replicate 11 "+item\r\n")
 
-  it "parses lists of length greater than 10 correctly" $ do
-    let longListEncoded = "*11\r\n" <> mconcat (replicate 11 "+item\r\n")
-    parseOnly parseRespData (B.toStrict longListEncoded) `shouldBe` Right (RespArray (replicate 11 (RespSimpleString "item")))
+    it "encodes negative integers correctly" $ do
+      Builder.toLazyByteString (encode (RespInteger (-1))) `shouldBe` ":-1\r\n"
+      Builder.toLazyByteString (encode (RespInteger (-999))) `shouldBe` ":-999\r\n"
 
-  describe "command encoding" $ do
+    it "encodes null bulk strings correctly" $ do
+      Builder.toLazyByteString (encode RespNullBulkString) `shouldBe` "$-1\r\n"
+
+    it "encodes nested arrays correctly" $ do
+      let nested = RespArray [RespArray [RespInteger 1, RespInteger 2], RespArray [RespInteger 3]]
+      Builder.toLazyByteString (encode nested) `shouldBe` "*2\r\n*2\r\n:1\r\n:2\r\n*1\r\n:3\r\n"
+
+    it "encodes large bulk strings correctly" $ do
+      let bigStr = B.pack (replicate 1000 'A')
+      Builder.toLazyByteString (encode (RespBulkString bigStr)) `shouldBe`
+        "$1000\r\n" <> bigStr <> "\r\n"
+
+  describe "Redis Command Encoding" $ do
     it "encodes MGET commands correctly" $ do
       Builder.toLazyByteString (encode (wrapInRay ["MGET", "key1", "key2"]))
         `shouldBe` "*3\r\n$4\r\nMGET\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n"
@@ -132,7 +146,7 @@ main = hspec $ describe "encode" $ do
       Builder.toLazyByteString (encode (wrapInRay ["CLIENT", "SETINFO", "LIB-NAME", "redis-client"]))
         `shouldBe` "*4\r\n$6\r\nCLIENT\r\n$7\r\nSETINFO\r\n$8\r\nLIB-NAME\r\n$12\r\nredis-client\r\n"
 
-  describe "parse" $ do
+  describe "RESP Parsing" $ do
     it "parses simple strings correctly" $ do
       parseOnly parseRespData "+OK\r\n" `shouldBe` Right (RespSimpleString "OK")
       parseOnly parseRespData "+Hello\r\n" `shouldBe` Right (RespSimpleString "Hello")
@@ -150,7 +164,7 @@ main = hspec $ describe "encode" $ do
       parseOnly parseRespData "$0\r\n\r\n" `shouldBe` Right (RespBulkString "")
 
     it "parses null bulk strings correctly" $ do
-      parseOnly parseRespData "$-1\r\n" `shouldBe` Right RespNullBilkString
+      parseOnly parseRespData "$-1\r\n" `shouldBe` Right RespNullBulkString
 
     it "parses arrays correctly" $ do
       parseOnly parseRespData "*2\r\n+foo\r\n:42\r\n" `shouldBe` Right (RespArray [RespSimpleString "foo", RespInteger 42])
@@ -169,3 +183,25 @@ main = hspec $ describe "encode" $ do
     it "parses lists of length greater than 10 correctly" $ do
       let longListEncoded = "*11\r\n" <> mconcat (replicate 11 "+item\r\n")
       parseOnly parseRespData (B.toStrict longListEncoded) `shouldBe` Right (RespArray (replicate 11 (RespSimpleString "item")))
+
+    it "parses negative integers correctly" $ do
+      parseOnly parseRespData ":-1\r\n" `shouldBe` Right (RespInteger (-1))
+      parseOnly parseRespData ":-999\r\n" `shouldBe` Right (RespInteger (-999))
+
+    it "parses null bulk strings and roundtrips correctly" $ do
+      let encoded = Builder.toLazyByteString (encode RespNullBulkString)
+      parseOnly parseRespData (B.toStrict encoded) `shouldBe` Right RespNullBulkString
+
+    it "parses nested arrays correctly" $ do
+      let nested = RespArray [RespArray [RespInteger 1, RespInteger 2], RespArray [RespInteger 3]]
+          encoded = Builder.toLazyByteString (encode nested)
+      parseOnly parseRespData (B.toStrict encoded) `shouldBe` Right nested
+
+    it "parses empty collections correctly" $ do
+      parseOnly parseRespData "*0\r\n" `shouldBe` Right (RespArray [])
+      parseOnly parseRespData "%0\r\n" `shouldBe` Right (RespMap M.empty)
+      parseOnly parseRespData "~0\r\n" `shouldBe` Right (RespSet S.empty)
+
+    it "fails on incomplete RESP data" $ do
+      parseOnly parseRespData "+OK" `shouldSatisfy` isLeft
+      parseOnly parseRespData "$6\r\nfoo" `shouldSatisfy` isLeft

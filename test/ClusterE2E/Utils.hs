@@ -1,7 +1,24 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module ClusterE2E.Utils where
+module ClusterE2E.Utils
+  ( -- * Cluster test helpers
+    createTestClusterClient
+  , runCmd
+  , runRedisCommand
+  , countClusterKeys
+  , cliCommandDelayMicros
+    -- * Tunnel test helpers
+  , withSmartProxy
+  , withPinnedProxy
+    -- * CLI test helpers
+  , withCliSession
+    -- * Re-exported E2E helpers
+  , getRedisClientPath
+  , cleanupProcess
+  , waitForSubstring
+  , drainHandle
+  ) where
 
 import           Client                     (Client (..), ConnectionStatus (..),
                                              PlainTextClient (NotConnectedPlainTextClient))
@@ -10,24 +27,28 @@ import           Cluster                    (NodeAddress (..), NodeRole (..),
 import           ClusterCommandClient       (ClusterClient(..), ClusterConfig(..), createClusterClient, runClusterCommandClient, closeClusterClient, ClusterCommandClient)
 import           ConnectionPool             (PoolConfig (..))
 import qualified ConnectionPool             (PoolConfig(useTLS))
+import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (IOException, evaluate, try)
+import           Control.Exception          (IOException, evaluate, finally, try)
 import           Control.Monad              (void)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
-import           Data.List                  (isInfixOf)
 import qualified Data.Map.Strict            as Map
+import           E2EHelpers                 (getRedisClientPath, cleanupProcess,
+                                             waitForSubstring, drainHandle)
 import           RedisCommandClient         (ClientState (..),
-                                             ClientReplyValues (..),
                                              RedisCommandClient(..),
                                              RedisCommands (..))
 import           Resp                       (RespData (..))
-import           System.Directory           (doesFileExist, findExecutable)
-import           System.Environment         (getExecutablePath)
 import           System.Exit                (ExitCode (..))
-import           System.FilePath            (takeDirectory, (</>))
-import           System.IO                  (Handle, hGetContents, hGetLine)
-import           System.Process             (ProcessHandle, terminateProcess, waitForProcess)
+import           System.IO                  (BufferMode (..), Handle,
+                                             hClose, hFlush, hGetContents,
+                                             hPutStrLn, hSetBuffering)
+import           System.Process             (CreateProcess (..), StdStream (..),
+                                             proc, waitForProcess,
+                                             withCreateProcess)
+import           System.Timeout             (timeout)
+import           Test.Hspec                 (expectationFailure)
 
 -- | Create a cluster client for testing
 createTestClusterClient :: IO (ClusterClient PlainTextClient)
@@ -55,21 +76,6 @@ runCmd client = runClusterCommandClient client connector
   where
     connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
--- | Get path to redis-client executable
-getRedisClientPath :: IO FilePath
-getRedisClientPath = do
-  execPath <- getExecutablePath
-  let binDir = takeDirectory execPath
-      sibling = binDir </> "redis-client"
-  siblingExists <- doesFileExist sibling
-  if siblingExists
-    then return sibling
-    else do
-      found <- findExecutable "redis-client"
-      case found of
-        Just path -> return path
-        Nothing -> error $ "Could not locate redis-client executable starting from " <> binDir
-
 -- | Helper to run a RedisCommand against a plain connection
 runRedisCommand :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient a -> IO a
 runRedisCommand conn cmd =
@@ -96,31 +102,96 @@ countClusterKeys client = do
   return $ sum sizes
 
 -- | Delay between CLI commands in microseconds (200ms)
--- This gives time for command execution and output to be available
 cliCommandDelayMicros :: Int
 cliCommandDelayMicros = 200000
 
--- | Clean up a process handle
-cleanupProcess :: ProcessHandle -> IO ()
-cleanupProcess ph = do
-  _ <- (try (terminateProcess ph) :: IO (Either IOException ()))
-  _ <- (try (waitForProcess ph) :: IO (Either IOException ExitCode))
-  pure ()
+-- | Run a test action with a smart tunnel proxy. Starts the proxy process,
+-- waits for it to be ready, and passes control to the callback.
+withSmartProxy :: (IO ()) -> IO ()
+withSmartProxy action = do
+  redisClient <- getRedisClientPath
+  let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "smart"])
+             { std_out = CreatePipe, std_err = CreatePipe }
+  withCreateProcess cp $ \_ mOut mErr ph ->
+    case (mOut, mErr) of
+      (Just hout, Just herr) -> do
+        hSetBuffering hout LineBuffering
+        hSetBuffering herr LineBuffering
+        let cleanup = cleanupProcess ph
+        finally
+          (do
+            ready <- timeout (5 * 1000000) (try (waitForSubstring hout "Smart proxy listening on localhost:6379") :: IO (Either IOException ()))
+            case ready of
+              Nothing -> do
+                cleanup
+                stdoutRest <- drainHandle hout
+                stderrRest <- drainHandle herr
+                expectationFailure (unlines ["Smart proxy did not report listening within timeout.", "stdout:", stdoutRest, "stderr:", stderrRest])
+              Just (Left err) -> do
+                cleanup
+                stdoutRest <- drainHandle hout
+                stderrRest <- drainHandle herr
+                expectationFailure (unlines ["Smart proxy stdout closed unexpectedly: " <> show err, "stdout:", stdoutRest, "stderr:", stderrRest])
+              Just (Right ()) -> action
+          )
+          cleanup
+      _ -> do
+        cleanupProcess ph
+        expectationFailure "Smart proxy process did not expose stdout/stderr handles"
 
--- | Wait for a specific substring to appear in handle output
-waitForSubstring :: Handle -> String -> IO ()
-waitForSubstring handle needle = do
-  line <- hGetLine handle
-  if needle `isInfixOf` line
-    then pure ()
-    else waitForSubstring handle needle
+-- | Run a test action with a pinned tunnel proxy. Starts the proxy process,
+-- waits for all listeners to be ready, and passes control to the callback.
+withPinnedProxy :: (IO ()) -> IO ()
+withPinnedProxy action = do
+  redisClient <- getRedisClientPath
+  let cp = (proc redisClient ["tunn", "--host", "redis1.local", "--cluster", "--tunnel-mode", "pinned"])
+             { std_out = CreatePipe, std_err = CreatePipe }
+  withCreateProcess cp $ \_ mOut mErr ph ->
+    case (mOut, mErr) of
+      (Just hout, Just herr) -> do
+        hSetBuffering hout LineBuffering
+        hSetBuffering herr LineBuffering
+        let cleanup = cleanupProcess ph
+        finally
+          (do
+            ready <- timeout (10 * 1000000) (try (waitForSubstring hout "All pinned listeners started") :: IO (Either IOException ()))
+            case ready of
+              Nothing -> do
+                cleanup
+                stdoutRest <- drainHandle hout
+                stderrRest <- drainHandle herr
+                expectationFailure (unlines ["Pinned proxy did not report all listeners started within timeout.", "stdout:", stdoutRest, "stderr:", stderrRest])
+              Just (Left err) -> do
+                cleanup
+                stdoutRest <- drainHandle hout
+                stderrRest <- drainHandle herr
+                expectationFailure (unlines ["Pinned proxy stdout closed unexpectedly: " <> show err, "stdout:", stdoutRest, "stderr:", stderrRest])
+              Just (Right ()) -> action
+          )
+          cleanup
+      _ -> do
+        cleanupProcess ph
+        expectationFailure "Pinned proxy process did not expose stdout/stderr handles"
 
--- | Drain all remaining content from a handle
-drainHandle :: Handle -> IO String
-drainHandle handle = do
-  result <- try (hGetContents handle) :: IO (Either IOException String)
-  case result of
-    Left _ -> pure ""
-    Right contents -> do
-      void $ evaluate (length contents)
-      pure contents
+-- | Run a test with a cluster CLI session. Sends the given commands,
+-- then exits and returns (exitCode, stdout).
+withCliSession :: [String] -> IO (ExitCode, String)
+withCliSession commands = do
+  redisClient <- getRedisClientPath
+  let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
+             { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+  withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
+    hSetBuffering hin LineBuffering
+    hSetBuffering hout LineBuffering
+    mapM_ (\cmd -> do
+      hPutStrLn hin cmd
+      hFlush hin
+      threadDelay cliCommandDelayMicros
+      ) commands
+    hPutStrLn hin "exit"
+    hFlush hin
+    hClose hin
+    stdoutOut <- hGetContents hout
+    void $ evaluate (length stdoutOut)
+    exitCode <- waitForProcess ph
+    return (exitCode, stdoutOut)

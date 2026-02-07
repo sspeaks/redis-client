@@ -2,22 +2,26 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Client (Client (..), serve, PlainTextClient (NotConnectedPlainTextClient), TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname, TLSTunnel), ConnectionStatus (..), resolve) where
+module Client
+  ( Client (..)
+  , serve
+  , PlainTextClient (NotConnectedPlainTextClient)
+  , TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname, TLSTunnel)
+  , ConnectionStatus (..)
+  , resolve
+  ) where
 
-import Control.Concurrent (forkIO)
 import Control.Exception (IOException, bracket, catch, finally, throwIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class
-import Data.Bits (Bits (..))
 import Data.ByteString qualified as B
 import Data.ByteString.Char8 qualified as BSC
 import Data.ByteString.Lazy (fromStrict)
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Default.Class (def)
-import Data.IP (IPv4, fromIPv4w, toHostAddress)
+import Data.IP (IPv4, toHostAddress)
 import Data.Kind (Type)
-import Data.Maybe (fromMaybe)
-import Data.Word (Word32, Word8)
+import Data.Word (Word32)
 import Network.DNS
   ( DNSError,
     defaultResolvConf,
@@ -26,24 +30,13 @@ import Network.DNS
     withResolver,
   )
 import Network.Socket
-  ( AddrInfo
-      ( AddrInfo,
-        addrAddress,
-        addrCanonName,
-        addrFamily,
-        addrFlags,
-        addrProtocol,
-        addrSocketType
-      ),
-    Family (AF_INET),
+  ( Family (AF_INET),
     HostAddress,
     SockAddr (SockAddrInet),
     Socket,
     SocketOption (..),
-    SocketTimeout (SocketTimeout),
     SocketType (Stream),
     defaultProtocol,
-    setSockOpt,
     setSocketOption,
     socket,
     tupleToHostAddress,
@@ -75,12 +68,8 @@ data PlainTextClient (a :: ConnectionStatus) where
 instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
   connect (NotConnectedPlainTextClient hostname port) = liftIO $ do
-    ipCorrectEndian <- resolve hostname
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
-    sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
-    setSocketOption sock NoDelay 1     -- Disable Nagle's algorithm
-    setSocketOption sock KeepAlive 1   -- Enable keep-alive
-    S.connect sock (addrAddress addrInfo) `catch` \(e :: IOException) -> do
+    (sock, ipCorrectEndian) <- createSocket hostname (maybe 6379 fromIntegral port)
+    S.connect sock (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian) `catch` \(e :: IOException) -> do
       printf "Wasn't able to connect to the server: %s...\n" (show e)
       putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
       throwIO e
@@ -111,69 +100,11 @@ data TLSClient (a :: ConnectionStatus) where
 
 instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
-  connect (NotConnectedTLSClient hostname port) = liftIO $ do
-    ipCorrectEndian <- resolve hostname
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian, addrCanonName = Just hostname}
-    sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
-    setSocketOption sock NoDelay 1     -- Disable Nagle's algorithm
-    setSocketOption sock KeepAlive 1   -- Enable keep-alive
-    S.connect sock (addrAddress addrInfo)
-    store <- getSystemCertificateStore
-    insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
-    let allowInsecure = maybe False (not . null) insecureFlag
-        baseParams =
-          (defaultParamsClient hostname "redis-server")
-            { clientSupported =
-                def
-                  { supportedVersions = [TLS13, TLS12],
-                    supportedCiphers = ciphersuite_strong
-                  },
-              clientShared =
-                def
-                  { sharedCAStore = store
-                  }
-            }
-        clientParams =
-          if allowInsecure
-            then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
-            else baseParams
-    context <- contextNew sock clientParams
-    handshake context
-    return $ ConnectedTLSClient hostname ipCorrectEndian sock context
+  connect (NotConnectedTLSClient hostname port) =
+    connectTLS hostname hostname port
   
-  -- | Connect using a specific address but with a different hostname for certificate validation
-  -- This is useful when connecting to cluster nodes by IP address but needing to validate
-  -- against the cluster's hostname certificate
-  connect (NotConnectedTLSClientWithHostname certHostname targetAddress port) = liftIO $ do
-    ipCorrectEndian <- resolve targetAddress
-    let addrInfo = AddrInfo {addrFlags = [], addrFamily = AF_INET, addrSocketType = Stream, addrProtocol = defaultProtocol, addrAddress = SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian, addrCanonName = Just certHostname}
-    sock <- socket (addrFamily addrInfo) (addrSocketType addrInfo) (addrProtocol addrInfo)
-    setSocketOption sock NoDelay 1     -- Disable Nagle's algorithm
-    setSocketOption sock KeepAlive 1   -- Enable keep-alive
-    S.connect sock (addrAddress addrInfo)
-    store <- getSystemCertificateStore
-    insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
-    let allowInsecure = maybe False (not . null) insecureFlag
-        baseParams =
-          -- Use certHostname for certificate validation, not the target IP address
-          (defaultParamsClient certHostname "redis-server")
-            { clientSupported =
-                def
-                  { supportedVersions = [TLS13, TLS12],
-                    supportedCiphers = ciphersuite_strong
-                  },
-              clientShared =
-                def
-                  { sharedCAStore = store
-                  }
-            }
-        clientParams =
-          if allowInsecure
-            then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
-            else baseParams
-    context <- contextNew sock clientParams
-    handshake context
-    return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
+  connect (NotConnectedTLSClientWithHostname certHostname targetAddress port) =
+    connectTLS certHostname targetAddress port
 
   close :: (MonadIO m) => TLSClient 'Connected -> m ()
   close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx `finally` S.close sock
@@ -188,6 +119,35 @@ instance Client TLSClient where
     case val of
       Nothing -> fail "recv socket timeout (TLS)"
       Just v -> return v
+
+-- | Connect to a TLS server, using certHostname for certificate validation
+-- and targetAddress for the actual network connection.
+connectTLS :: (MonadIO m) => String -> String -> Maybe Int -> m (TLSClient 'Connected)
+connectTLS certHostname targetAddress port = liftIO $ do
+  (sock, ipCorrectEndian) <- createSocket targetAddress (maybe 6380 fromIntegral port)
+  S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
+  store <- getSystemCertificateStore
+  insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
+  let allowInsecure = maybe False (not . null) insecureFlag
+      baseParams =
+        (defaultParamsClient certHostname "redis-server")
+          { clientSupported =
+              def
+                { supportedVersions = [TLS13, TLS12],
+                  supportedCiphers = ciphersuite_strong
+                },
+            clientShared =
+              def
+                { sharedCAStore = store
+                }
+          }
+      clientParams =
+        if allowInsecure
+          then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
+          else baseParams
+  context <- contextNew sock clientParams
+  handshake context
+  return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
 
 serve :: (MonadIO m) => TLSClient 'Server -> m ()
 serve (TLSTunnel redisClient) = liftIO $ do
@@ -209,56 +169,27 @@ serve (TLSTunnel redisClient) = liftIO $ do
     loop client redis = do
       dat <- recv client 4096
       send redisClient (fromStrict dat)
-      recieveData <- receive redis
-      sendAll client (fromStrict recieveData)
+      receivedData <- receive redis
+      sendAll client (fromStrict receivedData)
       loop client redis
 
-toNetworkByteOrder :: Word32 -> Word32
-toNetworkByteOrder hostOrder =
-  (hostOrder `shiftR` 24)
-    .&. 0xFF
-    .|. (hostOrder `shiftR` 8)
-    .&. 0xFF00
-    .|. (hostOrder `shiftL` 8)
-    .&. 0xFF0000
-    .|. (hostOrder `shiftL` 24)
-    .&. 0xFF000000
+-- | Create a TCP socket with standard options (NoDelay, KeepAlive) and resolve the hostname.
+createSocket :: String -> S.PortNumber -> IO (Socket, HostAddress)
+createSocket hostname port = do
+  ipAddr <- resolve hostname
+  sock <- socket AF_INET Stream defaultProtocol
+  setSocketOption sock NoDelay 1
+  setSocketOption sock KeepAlive 1
+  return (sock, ipAddr)
 
 resolve :: String -> IO HostAddress
 resolve "localhost" = return (tupleToHostAddress (127, 0, 0, 1))
-resolve address = 
-  -- Check if it's an IP address (simple check for IPv4 format)
-  case parseIPv4 address of
-    Just ipAddr -> return ipAddr
-    Nothing -> do
-      -- It's a hostname, do DNS lookup
+resolve address =
+  case reads address :: [(IPv4, String)] of
+    [(ip, "")] -> return (toHostAddress ip)
+    _ -> do
       rs <- makeResolvSeed defaultResolvConf
-      addrInfo <- withResolver rs $ \resolver -> do
-        lookupA resolver (BSC.pack address)
-      return $ f addrInfo
-  where
-    f :: Either DNSError [IPv4] -> HostAddress
-    f (Right (a : _)) = toHostAddress a
-    f _ = error "no address found"
-    
-    -- Parse IPv4 address string (e.g., "127.0.0.1")
-    parseIPv4 :: String -> Maybe HostAddress
-    parseIPv4 str = 
-      case reads str :: [(IPv4, String)] of
-        [(ip, "")] -> Just (toHostAddress ip)
-        _ -> case words $ map (\c -> if c == '.' then ' ' else c) str of
-          [a, b, c, d] -> do
-            w1 <- readMaybe a :: Maybe Word8
-            w2 <- readMaybe b :: Maybe Word8
-            w3 <- readMaybe c :: Maybe Word8
-            w4 <- readMaybe d :: Maybe Word8
-            return $ tupleToHostAddress (w1, w2, w3, w4)
-          _ -> Nothing
-    
-    readMaybe :: Read a => String -> Maybe a
-    readMaybe s = case reads s of
-      [(x, "")] -> Just x
-      _ -> Nothing
-
-byteStringToString :: B.ByteString -> String
-byteStringToString = map (toEnum . fromEnum) . B.unpack
+      result <- withResolver rs $ \resolver -> lookupA resolver (BSC.pack address)
+      case result of
+        Right (a : _) -> return (toHostAddress a)
+        _             -> error $ "no address found for: " ++ address

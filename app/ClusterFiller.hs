@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module ClusterFiller
   ( fillClusterWithData
@@ -29,8 +28,11 @@ import qualified Data.Text               as T
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
+import           Filler                  (sendChunkedFill)
+import           Data.List               (find)
 import           FillHelpers             (generateBytes,
-                                          generateBytesWithHashTag)
+                                          generateBytesWithHashTag, nextLCG,
+                                          threadSeedSpacing)
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
@@ -175,10 +177,7 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
     -- | Find a cluster node by its address
     -- Returns the first node matching the address, or Nothing if not found
     findNodeByAddress :: [ClusterNode] -> NodeAddress -> Maybe ClusterNode
-    findNodeByAddress nodes nodeAddr =
-      case [n | n <- nodes, nodeAddress n == nodeAddr] of
-        (n:_) -> Just n
-        []    -> Nothing
+    findNodeByAddress nodes nodeAddr = find (\n -> nodeAddress n == nodeAddr) nodes
 
 -- | Fill a specific node with data using its assigned slots
 -- Uses MB for finer-grained allocation, matching standalone mode behavior
@@ -200,46 +199,19 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipeli
   let !slotsVec = VU.fromList slots
 
   -- Deterministic seed for this thread
-  let threadSeed = baseSeed + (fromIntegral threadIdx * 1000000000)
+  let threadSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
+      genChunk batchSize seed = generateClusterChunk slotsVec batchSize keySize valueSize seed
 
   -- Wrap in exception handler and timeout
   catch (do
-    -- Client state for running commands
     let clientState = ClientState conn BS.empty
         fillAction = do
-          -- Turn off client replies for maximum throughput (fire-and-forget)
           _ <- clientReply OFF
-
-          -- Calculate total commands needed based on actual data size
-          -- Each command stores: keySize bytes (key) + valueSize bytes (value)
-          let bytesPerCommand = keySize + valueSize
-              totalBytesNeeded = mbToFill * 1024 * 1024  -- Convert MB to bytes
-              totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
-              
-              -- Calculate chunks and remainder for exact distribution
-              fullChunks = totalCommandsNeeded `div` pipelineBatchSize
-              remainderCommands = totalCommandsNeeded `mod` pipelineBatchSize
-
-          -- Generate and send all full chunks
-          mapM_ (\chunkIdx -> do
-              ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotsVec pipelineBatchSize keySize valueSize (threadSeed + fromIntegral chunkIdx)
-              send client cmd
-            ) [0..fullChunks - 1]
-          
-          -- Send the remainder chunk if there is one
-          when (remainderCommands > 0) $ do
-              ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotsVec remainderCommands keySize valueSize (threadSeed + fromIntegral fullChunks)
-              send client cmd
-
-          -- Turn replies back on
+          sendChunkedFill genChunk mbToFill pipelineBatchSize (keySize + valueSize) threadSeed
           _ <- clientReply ON
           _ <- dbsize
           return ()
 
-    -- Run the fill action with a 10 minute timeout (600 seconds)
-    -- This is generous but prevents indefinite hangs
     result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState
     case result of
       Just _ -> return ()
@@ -286,8 +258,8 @@ generateClusterChunk slots batchSize keySize valueSize seed =
           !hashTag = slotMappings `V.unsafeIndex` fromIntegral slot
 
           !keySeed = s
-          !valSeed = s * 6364136223846793005 + 1442695040888963407
-          !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
+          !valSeed = nextLCG s
+          !nextSeed = nextLCG valSeed
 
           !keyData = generateBytesWithHashTag keySize hashTag keySeed
           !valData = generateBytes valueSize valSeed

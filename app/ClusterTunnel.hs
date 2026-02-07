@@ -14,8 +14,8 @@ import           Cluster                    (ClusterNode (..),
 import           ClusterCommandClient       (ClusterClient (..),
                                              ClusterError (..))
 import qualified ClusterCommandClient
-import           ClusterCommands            (keylessCommands,
-                                             requiresKeyCommands)
+import           ClusterCommands            (CommandRouting (..),
+                                             classifyCommand)
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
                                              putMVar, takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -28,7 +28,7 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LBSC
-import           Data.Char                  (isAlphaNum, toUpper)
+import           Data.Char                  (isAlphaNum)
 import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word8)
@@ -120,20 +120,12 @@ routeSmartProxyCommand :: (Client client) =>
 routeSmartProxyCommand clusterClient connector respData = do
   case respData of
     RespArray (RespBulkString cmd : args) -> do
-      let cmdUpper = BSC.map toUpper (LBSC.toStrict cmd)
-          cmdStr = BSC.unpack cmdUpper
-
-      -- Check if it's a keyless command
-      if cmdUpper `elem` keylessCommands
-        then executeKeylessCommand clusterClient connector respData
-        else case args of
-          [] -> if cmdUpper `elem` requiresKeyCommands
-                  then return $ Left $ "Command " ++ cmdStr ++ " requires a key argument"
-                  else executeKeylessCommand clusterClient connector respData
-          (RespBulkString key : _) -> do
-            -- Execute keyed command
-            executeKeyedCommand clusterClient connector (LBSC.toStrict key) respData
-          _ -> return $ Left "Invalid command format"
+      let cmdStrict = LBSC.toStrict cmd
+          argKeys = [LBSC.toStrict k | RespBulkString k <- args]
+      case classifyCommand cmdStrict argKeys of
+        KeylessRoute   -> executeKeylessCommand clusterClient connector respData
+        KeyedRoute key -> executeKeyedCommand clusterClient connector key respData
+        CommandError e -> return $ Left e
     _ -> return $ Left "Expected array command"
 
 -- | Execute a keyless command (route to any master)

@@ -1,8 +1,13 @@
-{-# LANGUAGE ApplicativeDo     #-}
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Filler where
+module Filler
+  ( initRandomNoise
+  , genRandomSet
+  , fillCacheWithData
+  , fillCacheWithDataMB
+  , sendChunkedFill
+  ) where
 
 import           Client                  (Client (..))
 import           Control.Monad           (when)
@@ -11,7 +16,8 @@ import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy    as LB
 import           Data.Word               (Word64)
-import           FillHelpers             (generateBytes, randomNoise)
+import           FillHelpers             (generateBytes, nextLCG, randomNoise,
+                                         threadSeedSpacing)
 import           RedisCommandClient      (ClientReplyValues (OFF, ON),
                                           ClientState (..), RedisCommandClient,
                                           RedisCommands (clientReply, dbsize))
@@ -45,17 +51,12 @@ genRandomSet batchSize keySize valueSize seed = Builder.toLazyByteString $! go n
     go 0 _ = mempty
     go n !s =
       let !keySeed = s
-          !valSeed = s * 6364136223846793005 + 1442695040888963407
-          !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
+          !valSeed = nextLCG s
+          !nextSeed = nextLCG valSeed
           !keyData = generateBytes keySize keySeed
           !valData = generateBytes valueSize valSeed
       in setPrefix <> keyData <> valuePrefix <> valData <> commandSuffix <> go (n - 1) nextSeed
     {-# INLINE go #-}
-
--- Spacing between seeds for different threads to prevent overlap (1 billion keys ~ 1TB data)
--- This ensures that threads in the same run never collide.
-threadSeedSpacing :: Word64
-threadSeedSpacing = 1000000000
 
 -- | Fills the cache with roughly the requested GB of data.
 fillCacheWithData :: (Client client) => Word64 -> Int -> Int -> Int -> Int -> Int -> RedisCommandClient client ()
@@ -65,36 +66,15 @@ fillCacheWithData baseSeed threadIdx gb = fillCacheWithDataMB baseSeed threadIdx
 -- This allows finer-grained parallelization.
 fillCacheWithDataMB :: (Client client) => Word64 -> Int -> Int -> Int -> Int -> Int -> RedisCommandClient client ()
 fillCacheWithDataMB baseSeed threadIdx mb pipelineBatchSize keySize valueSize = do
-  ClientState client _ <- State.get
-  -- deterministic start seed for this thread based on the global baseSeed
   let startSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
+      genChunk batchSize seed = genRandomSet batchSize keySize valueSize seed
 
   -- We turn off client replies to maximize write throughput (Fire and Forget)
   -- This is safe in this threaded context because each thread has its own
   -- isolated connection to Redis, so the "CLIENT REPLY OFF" state only
   -- affects this specific connection.
   clientReply OFF
-
-  -- Calculate total commands needed based on actual data size
-  -- Each command stores: keySize bytes (key) + valueSize bytes (value)
-  let bytesPerCommand = keySize + valueSize
-      totalBytesNeeded = mb * 1024 * 1024  -- Convert MB to bytes
-      totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
-
-      -- Calculate chunks and remainder for exact distribution
-      fullChunks = totalCommandsNeeded `div` pipelineBatchSize
-      remainderCommands = totalCommandsNeeded `mod` pipelineBatchSize
-
-  -- Send all full chunks sequentially (fire-and-forget mode)
-  mapM_ (\i -> do
-      let !cmd = genRandomSet pipelineBatchSize keySize valueSize (startSeed + fromIntegral i)
-      send client cmd
-      ) [0..fullChunks - 1]
-
-  -- Send the remainder chunk if there is one
-  when (remainderCommands > 0) $ do
-      let !cmd = genRandomSet remainderCommands keySize valueSize (startSeed + fromIntegral fullChunks)
-      send client cmd
+  sendChunkedFill genChunk mb pipelineBatchSize (keySize + valueSize) startSeed
 
   -- Turn replies back on to confirm completion
   val <- clientReply ON
@@ -103,3 +83,29 @@ fillCacheWithDataMB baseSeed threadIdx mb pipelineBatchSize keySize valueSize = 
       _ <- dbsize -- Consume the response
       return ()
     Nothing -> error "clientReply returned an unexpected value"
+
+-- | Send chunked data to Redis in pipeline batches. Calculates the number of
+-- full chunks and remainder, then sends each via fire-and-forget.
+sendChunkedFill ::
+  (Client client) =>
+  (Int -> Word64 -> LB.ByteString) -> -- chunk generator (batchSize -> seed -> data)
+  Int ->    -- total MB to fill
+  Int ->    -- pipeline batch size
+  Int ->    -- bytes per command (keySize + valueSize)
+  Word64 -> -- start seed
+  RedisCommandClient client ()
+sendChunkedFill genChunk mb pipelineBatchSize bytesPerCommand startSeed = do
+  ClientState client _ <- State.get
+  let totalBytesNeeded = mb * 1024 * 1024
+      totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand
+      fullChunks = totalCommandsNeeded `div` pipelineBatchSize
+      remainderCommands = totalCommandsNeeded `mod` pipelineBatchSize
+
+  mapM_ (\i -> do
+      let !cmd = genChunk pipelineBatchSize (startSeed + fromIntegral i)
+      send client cmd
+      ) [0..fullChunks - 1]
+
+  when (remainderCommands > 0) $ do
+      let !cmd = genChunk remainderCommands (startSeed + fromIntegral fullChunks)
+      send client cmd

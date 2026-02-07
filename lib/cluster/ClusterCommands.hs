@@ -5,10 +5,32 @@
 module ClusterCommands
   ( keylessCommands,
     requiresKeyCommands,
+    CommandRouting (..),
+    classifyCommand,
   )
 where
 
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as BS
+import Data.Char (toUpper)
+
+-- | Result of classifying a command for cluster routing
+data CommandRouting
+  = KeylessRoute        -- ^ Route to any master node
+  | KeyedRoute ByteString  -- ^ Route by this key's hash slot
+  | CommandError String    -- ^ Invalid command (e.g., missing required key)
+
+-- | Classify a command for cluster routing based on the command name and arguments
+classifyCommand :: ByteString -> [ByteString] -> CommandRouting
+classifyCommand cmd args =
+  let cmdUpper = BS.map toUpper cmd
+  in if cmdUpper `elem` keylessCommands
+     then KeylessRoute
+     else case args of
+       [] -> if cmdUpper `elem` requiresKeyCommands
+               then CommandError $ "Command " ++ BS.unpack cmd ++ " requires a key argument"
+               else KeylessRoute  -- Unknown command without args, try keyless
+       (key:_) -> KeyedRoute key
 
 -- | Commands that don't require a key argument (route to any master node)
 -- These commands can be executed on any master node in the cluster
