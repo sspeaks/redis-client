@@ -3,7 +3,6 @@
 module Main (main) where
 
 import Cluster
-import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS
 import Data.Time.Clock (getCurrentTime)
 import Resp (RespData (..))

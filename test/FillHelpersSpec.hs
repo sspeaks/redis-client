@@ -41,9 +41,7 @@ main = hspec $ do
         LB.length result2 `shouldBe` (2 * LB.length result1)
 
       it "generates valid RESP structure for batch size 1" $ do
-        let keySize = 5
-            valSize = 5
-            -- Structure: *3\r\n$3\r\nSET\r\n$<keySize>\r\n<key>\r\n$<valSize>\r\n<val>\r\n
+        let -- Structure: *3\r\n$3\r\nSET\r\n$<keySize>\r\n<key>\r\n$<valSize>\r\n<val>\r\n
             -- Length = (4 + 4 + 5 + 1 + 1 + 2) + 5 + (2 + 1 + 1 + 2) + 5 + 2
             -- *3\r\n$3\r\nSET\r\n$5\r\n (17)
             -- key (5)
