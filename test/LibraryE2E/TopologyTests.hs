@@ -3,15 +3,12 @@
 
 module LibraryE2E.TopologyTests (spec) where
 
-import           Client                     (PlainTextClient)
 import           Cluster                    (ClusterTopology (..), ClusterNode (..),
-                                             NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
-                                             ClusterError (..),
+                                             NodeRole (..))
+import           ClusterCommandClient       (ClusterClient (..),
                                              closeClusterClient,
                                              executeClusterCommand,
                                              refreshTopology)
-import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.Async   (mapConcurrently)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -93,7 +90,7 @@ spec = describe "Topology Refresh" $ do
       _ <- try (refreshTopology client testConnector) :: IO (Either SomeException ())
 
       -- Operations to other nodes should still work
-      r2 <- executeClusterCommand client "topo-other-node" (set "topo-other-node" "works") testConnector
+      _ <- executeClusterCommand client "topo-other-node" (set "topo-other-node" "works") testConnector
       -- This might succeed or fail depending on which node owns the key slot
       -- The important thing is it doesn't hang
 

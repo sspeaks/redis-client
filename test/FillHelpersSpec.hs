@@ -27,10 +27,10 @@ main = hspec $ do
               | BS.null bs = 0
               | otherwise = 
                   let marker = "*3\r\n$3\r\nSET\r\n"
-                      (_, after) = BS.breakSubstring marker bs
-                  in if BS.null after 
+                      (_, afterData) = BS.breakSubstring marker bs
+                  in if BS.null afterData 
                      then 0 
-                     else 1 + count (BS.drop (BS.length marker) after)
+                     else 1 + count (BS.drop (BS.length marker) afterData)
                      
         count strictResult `shouldBe` batchSize
 
@@ -54,7 +54,7 @@ main = hspec $ do
             expectedLen = 35
             result = genRandomSet 1 5 5 12345
         LB.length result `shouldBe` expectedLen
-        let bs = LB.toStrict result
+        let _ = LB.toStrict result
         let expectedPrefix = Builder.toLazyByteString $ Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n"
         LB.isPrefixOf expectedPrefix result `shouldBe` True
 

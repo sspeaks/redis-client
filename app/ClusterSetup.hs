@@ -24,7 +24,6 @@ import           ConnectionPool             (PoolConfig (PoolConfig))
 import qualified ConnectionPool             as CP
 import           Control.Concurrent.STM     (readTVarIO)
 import qualified Control.Monad.State        as State
-import qualified AppConfig
 import           AppConfig                  (RunState (..), authenticate)
 import qualified Data.ByteString            as BS
 import qualified Data.Map.Strict            as Map
@@ -40,7 +39,7 @@ authenticateClient state client
   | null (password state) = return client
   | otherwise = do
       _ <- State.evalStateT
-             (RedisCommandClient.runRedisCommandClient (AppConfig.authenticate (username state) (password state)))
+             (RedisCommandClient.runRedisCommandClient (authenticate (username state) (password state)))
              (ClientState client BS.empty)
       return client
 

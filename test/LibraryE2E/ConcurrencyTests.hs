@@ -3,13 +3,10 @@
 
 module LibraryE2E.ConcurrencyTests (spec) where
 
-import           Client                     (PlainTextClient)
-import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
-                                             ClusterError (..),
+import           ClusterCommandClient       (ClusterError (..),
                                              closeClusterClient,
                                              executeClusterCommand,
                                              refreshTopology)
-import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.Async   (mapConcurrently, concurrently)
 import           Control.Exception          (SomeException, try)
@@ -34,7 +31,7 @@ spec = describe "Concurrent Cluster Operations" $ do
       let threadCount = 50 :: Int
           opsPerThread = 100 :: Int
 
-      errorCount <- newIORef (0 :: Int)
+      _ <- newIORef (0 :: Int)
 
       results <- mapConcurrently (\tid -> do
         let prefix = "storm-t" ++ show tid ++ "-"
@@ -138,7 +135,7 @@ spec = describe "Concurrent Cluster Operations" $ do
 
       -- Some successes (ops to healthy nodes) and some failures (ops to dead node)
       successes <- readIORef successCount
-      failures <- readIORef failCount
+      _ <- readIORef failCount
 
       -- We should have both successes and failures
       successes `shouldSatisfy` (> 0)

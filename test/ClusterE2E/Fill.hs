@@ -2,7 +2,7 @@
 
 module ClusterE2E.Fill (spec) where
 
-import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close, Client)
+import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close)
 import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              ClusterNode (..), ClusterTopology (..), SlotRange(..))
 import           ClusterCommandClient       (closeClusterClient, clusterTopology)

@@ -73,7 +73,7 @@ fillCacheWithDataMB baseSeed threadIdx mb pipelineBatchSize keySize valueSize = 
   -- This is safe in this threaded context because each thread has its own
   -- isolated connection to Redis, so the "CLIENT REPLY OFF" state only
   -- affects this specific connection.
-  clientReply OFF
+  _ <- clientReply OFF
   sendChunkedFill genChunk mb pipelineBatchSize (keySize + valueSize) startSeed
 
   -- Turn replies back on to confirm completion

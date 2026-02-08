@@ -19,21 +19,20 @@ module LibraryE2E.Utils
   , seedNode
   ) where
 
-import           Client                     (Client (..), ConnectionStatus (..),
+import           Client                     (Client (..),
                                              PlainTextClient (NotConnectedPlainTextClient))
 import           Cluster                    (ClusterTopology (..), ClusterNode (..),
                                              NodeAddress (..), NodeRole (..))
 import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
                                              ClusterCommandClient,
-                                             createClusterClient, closeClusterClient,
+                                             createClusterClient,
                                              runClusterCommandClient)
 import           ConnectionPool             (PoolConfig (..))
-import qualified ConnectionPool             (PoolConfig (useTLS))
 import           Connector                  (Connector, clusterPlaintextConnector)
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (SomeException, try, catch)
-import           Control.Monad              (void, forM_)
+import           Control.Exception          (SomeException, try)
+import           Control.Monad              (forM_)
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.Map.Strict            as Map
@@ -41,7 +40,6 @@ import           RedisCommandClient         (ClientState (..),
                                              RedisCommandClient (..),
                                              RedisCommands (..))
 import           Resp                       (RespData (..))
-import           System.Exit                (ExitCode (..))
 import           System.Process             (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
@@ -54,7 +52,7 @@ defaultPoolConfig = PoolConfig
   { maxConnectionsPerNode = 4
   , connectionTimeout     = 5000
   , maxRetries            = 3
-  , ConnectionPool.useTLS = False
+  , useTLS = False
   }
 
 -- | Default cluster config for tests

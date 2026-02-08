@@ -21,7 +21,7 @@ where
 import           Crc16                      (crc16)
 import           Data.ByteString            (ByteString)
 import qualified Data.ByteString            as BS
-import qualified Data.ByteString.Char8      as BSC
+
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import           Data.Map.Strict            (Map)
 import qualified Data.Map.Strict            as Map

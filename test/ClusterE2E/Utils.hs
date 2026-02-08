@@ -24,9 +24,9 @@ import           Client                     (Client (..), ConnectionStatus (..),
                                              PlainTextClient (NotConnectedPlainTextClient))
 import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              ClusterNode (..), ClusterTopology (..))
-import           ClusterCommandClient       (ClusterClient(..), ClusterConfig(..), createClusterClient, runClusterCommandClient, closeClusterClient, ClusterCommandClient)
+import           ClusterCommandClient       (ClusterClient(..), ClusterConfig(..), createClusterClient, runClusterCommandClient, ClusterCommandClient)
 import           ConnectionPool             (PoolConfig (..))
-import qualified ConnectionPool             (PoolConfig(useTLS))
+
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (IOException, evaluate, finally, try)
@@ -41,7 +41,7 @@ import           RedisCommandClient         (ClientState (..),
                                              RedisCommands (..))
 import           Resp                       (RespData (..))
 import           System.Exit                (ExitCode (..))
-import           System.IO                  (BufferMode (..), Handle,
+import           System.IO                  (BufferMode (..),
                                              hClose, hFlush, hGetContents,
                                              hPutStrLn, hSetBuffering)
 import           System.Process             (CreateProcess (..), StdStream (..),
@@ -59,7 +59,7 @@ createTestClusterClient = do
             { maxConnectionsPerNode = 1,
               connectionTimeout = 5000,
               maxRetries = 3,
-              ConnectionPool.useTLS = False
+              useTLS = False
             },
           clusterMaxRetries = 3,
           clusterRetryDelay = 100000,
@@ -180,18 +180,23 @@ withCliSession commands = do
   redisClient <- getRedisClientPath
   let cp = (proc redisClient ["cli", "--host", "redis1.local", "--cluster"])
              { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
-  withCreateProcess cp $ \(Just hin) (Just hout) (Just _herr) ph -> do
-    hSetBuffering hin LineBuffering
-    hSetBuffering hout LineBuffering
-    mapM_ (\cmd -> do
-      hPutStrLn hin cmd
-      hFlush hin
-      threadDelay cliCommandDelayMicros
-      ) commands
-    hPutStrLn hin "exit"
-    hFlush hin
-    hClose hin
-    stdoutOut <- hGetContents hout
-    void $ evaluate (length stdoutOut)
-    exitCode <- waitForProcess ph
-    return (exitCode, stdoutOut)
+  withCreateProcess cp $ \mIn mOut _mErr ph ->
+    case (mIn, mOut) of
+      (Just hin, Just hout) -> do
+        hSetBuffering hin LineBuffering
+        hSetBuffering hout LineBuffering
+        mapM_ (\cmd -> do
+          hPutStrLn hin cmd
+          hFlush hin
+          threadDelay cliCommandDelayMicros
+          ) commands
+        hPutStrLn hin "exit"
+        hFlush hin
+        hClose hin
+        stdoutOut <- hGetContents hout
+        void $ evaluate (length stdoutOut)
+        exitCode <- waitForProcess ph
+        return (exitCode, stdoutOut)
+      _ -> do
+        cleanupProcess ph
+        error "CLI process did not expose stdin/stdout handles"

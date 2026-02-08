@@ -26,7 +26,6 @@ import           Control.Monad              (forever, void, when)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import           Data.Char                  (isAlphaNum)

@@ -15,7 +15,7 @@ import           Test.Hspec
 spec :: Spec
 spec = describe "Basic cluster operations" $ do
     it "can connect to cluster and query topology" $ do
-      bracket createTestClusterClient closeClusterClient $ \client -> do
+      bracket createTestClusterClient closeClusterClient $ \_client -> do
         -- Just creating the client queries topology, so if we get here, it worked
         return ()
 

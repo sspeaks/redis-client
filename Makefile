@@ -46,9 +46,9 @@ test: test-unit test-e2e test-cluster-e2e test-library-e2e
 # Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec, and FillHelpersSpec)
 test-unit:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec"
+	nix-shell --run "cabal build RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec && cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec"
 else
-	cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec
+	cabal build RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec && cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec
 endif
 
 # Run end-to-end tests with Docker

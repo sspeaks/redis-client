@@ -29,8 +29,7 @@ import Data.IP (IPv4, toHostAddress)
 import Data.Kind (Type)
 import Data.Word (Word32)
 import Network.DNS
-  ( DNSError,
-    defaultResolvConf,
+  ( defaultResolvConf,
     lookupA,
     makeResolvSeed,
     withResolver,
@@ -194,7 +193,7 @@ serve (TLSTunnel redisClient) = liftIO $ do
 
 -- | Create a TCP socket with standard options (NoDelay, KeepAlive) and resolve the hostname.
 createSocket :: String -> S.PortNumber -> IO (Socket, HostAddress)
-createSocket hostname port = do
+createSocket hostname _port = do
   ipAddr <- resolve hostname
   sock <- socket AF_INET Stream defaultProtocol
   setSocketOption sock NoDelay 1

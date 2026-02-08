@@ -34,10 +34,7 @@ module ClusterCommandClient
   )
 where
 
-import           Client                      (Client (..),
-                                              ConnectionStatus (..),
-                                              PlainTextClient (NotConnectedPlainTextClient),
-                                              TLSClient (NotConnectedTLSClient))
+import           Client                      (Client (..))
 import           Cluster                     (ClusterNode (..),
                                               ClusterTopology (..),
                                               NodeAddress (..), NodeRole (..),
@@ -52,29 +49,23 @@ import           Control.Concurrent          (threadDelay)
 import           Control.Concurrent.MVar     (MVar, newMVar, tryTakeMVar,
                                               putMVar)
 import           Control.Concurrent.STM      (TVar, atomically,
-                                              newTVarIO, readTVar, readTVarIO, writeTVar)
-import           Control.Exception           (SomeException, catch, finally, throwIO,
+                                              newTVarIO, readTVarIO, writeTVar)
+import           Control.Exception           (SomeException, finally, throwIO,
                                               try)
 import           Control.Monad               (when)
 import           Control.Monad.IO.Class      (MonadIO (..))
 import qualified Control.Monad.State         as State
 import           Data.ByteString             (ByteString)
-import qualified Data.ByteString.Builder     as Builder
 import qualified Data.ByteString.Char8       as BS
-import qualified Data.ByteString.Lazy.Char8  as BSC
-import           Data.Map.Strict             (Map)
 import qualified Data.Map.Strict             as Map
-import           Data.Text                   (Text)
+import           Data.Time.Clock             (NominalDiffTime, diffUTCTime, getCurrentTime)
 import qualified Data.Text                   as T
-import           Data.Time.Clock             (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
-import qualified Data.Vector                 as V
 import           Data.Word                   (Word16)
-import qualified RedisCommandClient
 import           RedisCommandClient          (ClientState (..),
                                               RedisCommandClient (..),
                                               RedisCommands (..), parseWith,
                                               runRedisCommandClient)
-import           Resp                        (Encodable (..), RespData (..))
+import           Resp                        (RespData (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError
@@ -125,7 +116,7 @@ data ClusterClientState client = ClusterClientState
 -- Wraps StateT to abstract away the client state and connector
 data ClusterCommandClient client a where
   ClusterCommandClient :: (Client client) =>
-    { runClusterCommandClientM :: State.StateT (ClusterClientState client) IO a }
+    State.StateT (ClusterClientState client) IO a
     -> ClusterCommandClient client a
 
 -- | Run a 'ClusterCommandClient' action with the given cluster client and connector function.
@@ -340,28 +331,6 @@ executeKeylessClusterCommand client action connector = do
     []       -> return $ Left $ TopologyError "No master nodes available"
     (node:_) -> executeOnNode client (nodeAddress node) action connector
 
--- | Retry logic with exponential backoff
-withRetry ::
-  Int -> -- Max retries
-  Int -> -- Initial delay (microseconds)
-  IO (Either ClusterError a) ->
-  IO (Either ClusterError a)
-withRetry maxRetries initialDelay action = go 0 initialDelay
-  where
-    go attempt delay
-      | attempt >= maxRetries = return $ Left $ MaxRetriesExceeded $ "Max retries (" ++ show maxRetries ++ ") exceeded"
-      | otherwise = do
-          result <- action
-          case result of
-            Left (TryAgainError msg) -> do
-              -- Exponential backoff
-              threadDelay delay
-              go (attempt + 1) (delay * 2)
-            Left err@(MovedError _ _) -> return $ Left err -- These should be handled at a higher level
-            Left err@(AskError _ _) -> return $ Left err
-            Left err -> return $ Left err
-            Right value -> return $ Right value
-
 -- | Retry logic with exponential backoff and topology refresh on MOVED errors
 -- 
 -- MOVED errors trigger immediate topology refresh and retry. This ensures the client
@@ -390,20 +359,20 @@ withRetryAndRefresh client connector maxRetries initialDelay action = go 0 initi
       | otherwise = do
           result <- action
           case result of
-            Left (TryAgainError msg) -> do
+            Left (TryAgainError _) -> do
               -- Exponential backoff
               threadDelay delay
               go (attempt + 1) (delay * 2)
-            Left (MovedError slot addr) -> do
+            Left (MovedError _ _) -> do
               -- MOVED error indicates topology changed, refresh and retry
               refreshTopology client connector
               go (attempt + 1) delay
-            Left (AskError slot addr) -> do
+            Left (AskError _ _) -> do
               -- ASK is temporary, just retry without refresh
               -- TODO: Implement ASKING command handling
               threadDelay delay
               go (attempt + 1) delay
-            Left (ConnectionError msg) -> do
+            Left (ConnectionError _) -> do
               -- Node may be down, refresh topology to discover new layout
               refreshTopology client connector
               go (attempt + 1) delay
@@ -417,7 +386,7 @@ parseRedirectionError errorType msg =
   case words msg of
     (prefix : slotStr : hostPort : _)
       | prefix == errorType ->
-          case reads slotStr of
+          case (reads slotStr :: [(Integer, String)]) of
             [(slot, "")] ->
               case break (== ':') hostPort of
                 (host, ':' : portStr) ->

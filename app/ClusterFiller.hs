@@ -91,14 +91,14 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
     -- Distributes the node's workload across multiple threads
     -- Uses MB instead of key counts to match standalone behavior
     createJobsForNode :: Int -> Int -> Int -> (Int, ClusterNode) -> [(NodeAddress, Int, Int)]
-    createJobsForNode baseMB remainder threadsPerNode (nodeIdx, node) =
+    createJobsForNode baseMB remainder tpn (nodeIdx, node) =
       let mbForThisNode = baseMB + (if nodeIdx < remainder then 1 else 0)
-          mbPerThread = mbForThisNode `div` threadsPerNode
-          threadRemainder = mbForThisNode `mod` threadsPerNode
+          mbPerThread = mbForThisNode `div` tpn
+          threadRemainder = mbForThisNode `mod` tpn
       in [(nodeAddress node,
            threadIdx,
            mbPerThread + (if threadIdx < threadRemainder then 1 else 0))
-         | threadIdx <- [0..threadsPerNode - 1]]
+         | threadIdx <- [0..tpn - 1]]
 
     -- | Calculate which hash slots each master node is responsible for
     -- Returns a map from node ID to list of slot numbers

@@ -9,7 +9,7 @@ module AppConfig
   , runCommandsAgainstPlaintextHost
   ) where
 
-import Client (Client (..), ConnectionStatus (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
+import Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
 import Control.Exception (bracket)
 import qualified Control.Monad.State as State
 import qualified Data.ByteString as BS
@@ -59,8 +59,8 @@ defaultRunState = RunState
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
 authenticate _ [] = return $ RespSimpleString "OK"
 authenticate uname pwd = do
-  auth uname pwd
-  clientSetInfo ["LIB-NAME", "seth-spaghetti"]
+  _ <- auth uname pwd
+  _ <- clientSetInfo ["LIB-NAME", "seth-spaghetti"]
   clientSetInfo ["LIB-VER", "0.0.0"]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a

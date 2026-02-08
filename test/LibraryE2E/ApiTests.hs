@@ -3,21 +3,17 @@
 
 module LibraryE2E.ApiTests (spec) where
 
-import           Client                     (PlainTextClient)
 import           Cluster                    (ClusterTopology (..), ClusterNode (..),
-                                             NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
-                                             ClusterError (..), ClusterCommandClient,
+                                             NodeRole (..))
+import           ClusterCommandClient       (ClusterClient (clusterTopology),
                                              createClusterClient, closeClusterClient,
-                                             executeClusterCommand, executeKeylessClusterCommand,
-                                             refreshTopology, runClusterCommandClient)
-import           ConnectionPool             (PoolConfig (..), ConnectionPool (..),
-                                             withConnection, createPool, closePool)
-import           Connector                  (Connector, clusterPlaintextConnector)
+                                             executeKeylessClusterCommand,
+                                             refreshTopology)
+import           Connector                  (clusterPlaintextConnector)
 import           Control.Concurrent.STM     (readTVarIO)
 import qualified Data.Map.Strict            as Map
-import           RedisCommandClient         (RedisCommands (..), RedisError (..))
-import           Resp                       (RespData (..), Encodable (..))
+import           RedisCommandClient         (RedisCommands (..))
+import           Resp                       (RespData (..))
 
 import           LibraryE2E.Utils
 
@@ -73,6 +69,5 @@ spec = describe "API Surface" $ do
       length masters `shouldSatisfy` (>= 3)
 
       -- Slot vector should be fully populated (no empty entries)
-      let emptySlots = length $ filter (== "") $ map (\i -> topologySlots topology `seq` topologySlots topology `seq` "") [0..16383 :: Int]
       -- Actually check via the topology's slot vector
       closeClusterClient client

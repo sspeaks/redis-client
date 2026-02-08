@@ -14,9 +14,7 @@ module Resp
 import           Control.Applicative              ((<|>))
 import qualified Data.Attoparsec.ByteString       as StrictParse
 import qualified Data.Attoparsec.ByteString.Char8 as Char8
-import qualified Data.Attoparsec.ByteString.Lazy  as Lazy
 import           Data.ByteString.Builder          as Builder (Builder,
-                                                              byteString,
                                                               lazyByteString)
 import qualified Data.ByteString.Char8            as SB8
 import qualified Data.ByteString.Lazy             as BS

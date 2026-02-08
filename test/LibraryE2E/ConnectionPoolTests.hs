@@ -3,31 +3,17 @@
 
 module LibraryE2E.ConnectionPoolTests (spec) where
 
-import           Client                     (Client (..), PlainTextClient,
-                                             ConnectionStatus (..))
-import           Cluster                    (NodeAddress (..))
 import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
-                                             ClusterError (..),
                                              closeClusterClient,
                                              executeClusterCommand)
-import           ConnectionPool             (PoolConfig (..), ConnectionPool (..),
-                                             withConnection, createPool, closePool)
-import qualified ConnectionPool             (PoolConfig (useTLS))
-import           Connector                  (Connector, clusterPlaintextConnector)
-import           Control.Concurrent         (threadDelay)
+import           ConnectionPool             (PoolConfig (..), withConnection, closePool)
 import           Control.Concurrent.Async   (mapConcurrently)
-import           Control.Exception          (SomeException, try, throwIO, evaluate)
-import           Control.Monad              (forM_, void)
-import qualified Control.Monad.State        as State
-import qualified Data.ByteString            as BS
+import           Control.Exception          (SomeException, try, throwIO)
+import           Control.Monad              (forM_)
 import qualified Data.ByteString.Char8      as BS8
 import qualified Data.ByteString.Lazy.Char8 as LBS8
-import           Data.IORef                 (newIORef, atomicModifyIORef', readIORef)
-import           RedisCommandClient         (ClientState (..),
-                                             RedisCommandClient (..),
-                                             RedisCommands (..),
-                                             runRedisCommandClient)
-import           Resp                       (RespData (..), Encodable (..))
+import           RedisCommandClient         (RedisCommands (..))
+import           Resp                       (RespData (..))
 
 import           LibraryE2E.Utils
 
@@ -101,7 +87,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
 
       -- Force an error inside withConnection by throwing in user action
       let pool = clusterConnectionPool client
-      _ <- try (withConnection pool seedNode testConnector $ \conn -> do
+      _ <- try (withConnection pool seedNode testConnector $ \_ -> do
         throwIO (userError "intentional test error")
         ) :: IO (Either SomeException ())
 

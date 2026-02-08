@@ -3,14 +3,11 @@
 
 module LibraryE2E.ResilienceTests (spec) where
 
-import           Client                     (PlainTextClient)
-import           Cluster                    (NodeAddress (..))
-import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
+import           ClusterCommandClient       (ClusterConfig (..),
                                              ClusterError (..),
                                              closeClusterClient,
                                              executeClusterCommand,
                                              refreshTopology)
-import           ConnectionPool             (PoolConfig (..))
 import           Control.Concurrent         (threadDelay)
 import           Control.Exception          (SomeException, try)
 import qualified Data.ByteString.Char8      as BS8
