@@ -21,7 +21,7 @@ import           Control.Monad           (when)
 import qualified Control.Monad.State     as State
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy    as LB
+import qualified Data.ByteString.Lazy    as LBS
 import           Data.Map.Strict         (Map)
 import qualified Data.Map.Strict         as Map
 import           Data.Text               (Text)
@@ -230,7 +230,7 @@ generateClusterChunk ::
   Int ->      -- Key size in bytes
   Int ->      -- Value size in bytes
   Word64 ->
-  LB.ByteString
+  LBS.ByteString
 generateClusterChunk slots batchSize keySize valueSize seed =
   Builder.toLazyByteString $! go batchSize seed
   where

@@ -10,7 +10,6 @@ import           ClusterCommandClient       (ClusterConfig (..),
                                              refreshTopology)
 import           Control.Concurrent         (threadDelay)
 import           Control.Exception          (SomeException, try)
-import qualified Data.ByteString.Lazy       as LBS
 import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 
@@ -45,7 +44,7 @@ spec = describe "Error Handling & Resilience" $ do
         executeClusterCommand client k (get k)
         ) keys
 
-      mapM_ (\((_, v), r) -> r `shouldBe` Right (RespBulkString (LBS.fromStrict v))) (zip keys readResults)
+      mapM_ (\((_, v), r) -> r `shouldBe` Right (RespBulkString v)) (zip keys readResults)
 
       flushAllNodes client
       closeClusterClient client

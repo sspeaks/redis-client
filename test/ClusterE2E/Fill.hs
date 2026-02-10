@@ -11,8 +11,7 @@ import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
-import qualified Data.ByteString.Char8      as BSC
-import qualified Data.ByteString.Lazy       as BSL
+import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
 import qualified Data.Map.Strict            as Map
 import           RedisCommandClient         (RedisCommands (..), showBS)
@@ -112,7 +111,7 @@ spec = describe "Cluster Fill Mode" $ do
             result <- runCmd client $ set key ("value" <> showBS slot)
             case result of
               RespSimpleString "OK" -> return ()
-              other -> expectationFailure $ "Failed to set key " ++ BSC.unpack key ++ ": " ++ show other
+              other -> expectationFailure $ "Failed to set key " ++ BS8.unpack key ++ ": " ++ show other
 
             -- Verify the key was set on the correct node by connecting directly
             let addr = nodeAddress node
@@ -120,7 +119,7 @@ spec = describe "Cluster Fill Mode" $ do
             getResult <- runRedisCommand conn (get key)
             close conn
             case getResult of
-              RespBulkString val -> val `shouldBe` BSL.fromStrict ("value" <> showBS slot)
+              RespBulkString val -> val `shouldBe` ("value" <> showBS slot)
               other -> expectationFailure $ "Key not found on expected node: " ++ show other
           [] -> return ()  -- Skip nodes with no slots
         ) masterNodes

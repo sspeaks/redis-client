@@ -3,7 +3,7 @@
 module Main where
 
 import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Lazy qualified as LB
+import Data.ByteString.Lazy qualified as LBS
 import Data.ByteString qualified as BS
 import Test.Hspec
 import Data.Word (Word64)
@@ -19,7 +19,7 @@ main = hspec $ do
         let batchSize = 10
             result = genRandomSet batchSize 10 10 12345
             -- Convert to strict for searching (safe for small test data)
-            strictResult = LB.toStrict result
+            strictResult = LBS.toStrict result
         
         -- Count occurrences of "*3\r\n$3\r\nSET\r\n" which marks the start of each SET command
         let count :: BS.ByteString -> Int
@@ -38,7 +38,7 @@ main = hspec $ do
         let result1 = genRandomSet 10 10 10 12345
         let result2 = genRandomSet 20 10 10 12345
         -- Should be exactly double
-        LB.length result2 `shouldBe` (2 * LB.length result1)
+        LBS.length result2 `shouldBe` (2 * LBS.length result1)
 
       it "generates valid RESP structure for batch size 1" $ do
         let -- Structure: *3\r\n$3\r\nSET\r\n$<keySize>\r\n<key>\r\n$<valSize>\r\n<val>\r\n
@@ -51,40 +51,40 @@ main = hspec $ do
             -- Total: 35
             expectedLen = 35
             result = genRandomSet 1 5 5 12345
-        LB.length result `shouldBe` expectedLen
-        let _ = LB.toStrict result
+        LBS.length result `shouldBe` expectedLen
+        let _ = LBS.toStrict result
         let expectedPrefix = Builder.toLazyByteString $ Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n"
-        LB.isPrefixOf expectedPrefix result `shouldBe` True
+        LBS.isPrefixOf expectedPrefix result `shouldBe` True
 
       it "handles large batch sizes correctly" $ do
         let result = genRandomSet 10000 10 10 12345
-        LB.length result `shouldSatisfy` (> 0)
+        LBS.length result `shouldSatisfy` (> 0)
 
   describe "FillHelpers byte generation" $ do
     describe "generateBytes" $ do
       it "generates correct size for small keys (1 byte)" $ do
         let result = Builder.toLazyByteString $ generateBytes 1 12345
-        LB.length result `shouldBe` 1
+        LBS.length result `shouldBe` 1
 
       it "generates correct size for small keys (8 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 8 12345
-        LB.length result `shouldBe` 8
+        LBS.length result `shouldBe` 8
 
       it "generates correct size for medium keys (128 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 128 12345
-        LB.length result `shouldBe` 128
+        LBS.length result `shouldBe` 128
 
       it "generates correct size for default keys (512 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 512 12345
-        LB.length result `shouldBe` 512
+        LBS.length result `shouldBe` 512
 
       it "generates correct size for large keys (2048 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 2048 12345
-        LB.length result `shouldBe` 2048
+        LBS.length result `shouldBe` 2048
 
       it "generates correct size for very large keys (8192 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 8192 12345
-        LB.length result `shouldBe` 8192
+        LBS.length result `shouldBe` 8192
 
       it "generates different content for different seeds" $ do
         let result1 = Builder.toLazyByteString $ generateBytes 512 12345
@@ -99,10 +99,10 @@ main = hspec $ do
     describe "generateBytesWithHashTag" $ do
       it "generates correct size with hash tag" $ do
         let result = Builder.toLazyByteString $ generateBytesWithHashTag 512 "slot0" 12345
-        LB.length result `shouldBe` 512
+        LBS.length result `shouldBe` 512
 
       it "includes hash tag in output" $ do
-        let result = LB.toStrict $ Builder.toLazyByteString $ generateBytesWithHashTag 512 "slot0" 12345
+        let result = LBS.toStrict $ Builder.toLazyByteString $ generateBytesWithHashTag 512 "slot0" 12345
         -- Check that the hash tag format {slot0}: appears in the key
         BS.take 8 result `shouldBe` "{slot0}:"
 
@@ -114,11 +114,11 @@ main = hspec $ do
     describe "Key size validation" $ do
       it "minimum key size is 1 byte" $ do
         let result = Builder.toLazyByteString $ generateBytes 1 0
-        LB.length result `shouldBe` 1
+        LBS.length result `shouldBe` 1
 
       it "supports maximum key size of 65536 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 65536 0
-        LB.length result `shouldBe` 65536
+        LBS.length result `shouldBe` 65536
 
     describe "randomNoise buffer" $ do
       it "has expected size of 128 MB" $ do
@@ -127,36 +127,36 @@ main = hspec $ do
     describe "Value size support" $ do
       it "generates correct size for small values (128 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 128 12345
-        LB.length result `shouldBe` 128
+        LBS.length result `shouldBe` 128
 
       it "generates correct size for default values (512 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 512 12345
-        LB.length result `shouldBe` 512
+        LBS.length result `shouldBe` 512
 
       it "generates correct size for large values (8192 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 8192 12345
-        LB.length result `shouldBe` 8192
+        LBS.length result `shouldBe` 8192
 
       it "generates correct size for very large values (65536 bytes)" $ do
         let result = Builder.toLazyByteString $ generateBytes 65536 12345
-        LB.length result `shouldBe` 65536
+        LBS.length result `shouldBe` 65536
 
       it "supports maximum value size of 524288 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 524288 12345
-        LB.length result `shouldBe` 524288
+        LBS.length result `shouldBe` 524288
 
     describe "Edge case sizes" $ do
       it "generates correct size for 0 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 0 12345
-        LB.length result `shouldBe` 0
+        LBS.length result `shouldBe` 0
 
       it "generates correct size for 7 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 7 12345
-        LB.length result `shouldBe` 7
+        LBS.length result `shouldBe` 7
 
       it "generates correct size for 9 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 9 12345
-        LB.length result `shouldBe` 9
+        LBS.length result `shouldBe` 9
 
     describe "Seed collision detection" $ do
       it "different seeds produce different bytes for same size" $ do

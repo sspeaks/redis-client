@@ -4,7 +4,8 @@ module Main where
 
 import Data.Attoparsec.ByteString.Char8 (parseOnly)
 import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Lazy.Char8 qualified as B
+import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy qualified as LBS
 import Data.Either (isLeft)
 import Data.Map qualified as M
 import Data.Set qualified as S
@@ -61,9 +62,9 @@ main = hspec $ do
       Builder.toLazyByteString (encode nested) `shouldBe` "*2\r\n*2\r\n:1\r\n:2\r\n*1\r\n:3\r\n"
 
     it "encodes large bulk strings correctly" $ do
-      let bigStr = B.pack (replicate 1000 'A')
+      let bigStr = BS8.pack (replicate 1000 'A')
       Builder.toLazyByteString (encode (RespBulkString bigStr)) `shouldBe`
-        "$1000\r\n" <> bigStr <> "\r\n"
+        "$1000\r\n" <> LBS.fromStrict bigStr <> "\r\n"
 
   describe "Redis Command Encoding" $ do
     it "encodes MGET commands correctly" $ do
@@ -182,7 +183,7 @@ main = hspec $ do
 
     it "parses lists of length greater than 10 correctly" $ do
       let longListEncoded = "*11\r\n" <> mconcat (replicate 11 "+item\r\n")
-      parseOnly parseRespData (B.toStrict longListEncoded) `shouldBe` Right (RespArray (replicate 11 (RespSimpleString "item")))
+      parseOnly parseRespData (LBS.toStrict longListEncoded) `shouldBe` Right (RespArray (replicate 11 (RespSimpleString "item")))
 
     it "parses negative integers correctly" $ do
       parseOnly parseRespData ":-1\r\n" `shouldBe` Right (RespInteger (-1))
@@ -190,12 +191,12 @@ main = hspec $ do
 
     it "parses null bulk strings and roundtrips correctly" $ do
       let encoded = Builder.toLazyByteString (encode RespNullBulkString)
-      parseOnly parseRespData (B.toStrict encoded) `shouldBe` Right RespNullBulkString
+      parseOnly parseRespData (LBS.toStrict encoded) `shouldBe` Right RespNullBulkString
 
     it "parses nested arrays correctly" $ do
       let nested = RespArray [RespArray [RespInteger 1, RespInteger 2], RespArray [RespInteger 3]]
           encoded = Builder.toLazyByteString (encode nested)
-      parseOnly parseRespData (B.toStrict encoded) `shouldBe` Right nested
+      parseOnly parseRespData (LBS.toStrict encoded) `shouldBe` Right nested
 
     it "parses empty collections correctly" $ do
       parseOnly parseRespData "*0\r\n" `shouldBe` Right (RespArray [])

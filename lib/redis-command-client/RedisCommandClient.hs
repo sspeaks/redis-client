@@ -44,9 +44,7 @@ import Control.Monad.State as State
 import Data.Attoparsec.ByteString.Char8 qualified as StrictParse
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Char8 qualified as SB8
-import Data.ByteString.Lazy qualified as LBS
-import Data.ByteString.Lazy.Char8 qualified as BSC
+import Data.ByteString.Char8 qualified as BS8
 import Data.Kind (Type)
 import Data.Typeable (Typeable)
 import Resp (Encodable (encode), RespData (..), parseRespData)
@@ -63,7 +61,7 @@ instance Exception RedisError
 -- and an unparsed RESP byte buffer from previous receives.
 data ClientState client = ClientState
   { getClient :: client 'Connected,
-    getParseBuffer :: SB8.ByteString
+    getParseBuffer :: BS8.ByteString
   }
 
 -- | A monad for sequencing Redis commands over a single connection.
@@ -156,13 +154,12 @@ class (MonadIO m) => RedisCommands m where
 
 -- | Helper to convert a showable value to ByteString for use in commands.
 showBS :: (Show a) => a -> ByteString
-showBS = SB8.pack . show
+showBS = BS8.pack . show
 
 -- | Wrap a list of strict ByteStrings into a RESP array of bulk strings.
--- Uses O(1) fromStrict instead of O(n) BSC.pack.
 wrapInRay :: [ByteString] -> RespData
 wrapInRay inp =
-  let !res = RespArray . map (RespBulkString . LBS.fromStrict) $ inp
+  let !res = RespArray . map RespBulkString $ inp
    in res
 
 -- | Send a command and parse the response.
@@ -358,7 +355,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
 
 -- | Receive exactly one RESP value, fetching more bytes from the connection as needed.
 -- Throws 'ParseError' on malformed data and 'ConnectionClosed' if the remote end hangs up.
-parseWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
+parseWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => m BS8.ByteString -> m RespData
 parseWith recv = do
   result <- parseManyWith 1 recv
   case result of
@@ -367,7 +364,7 @@ parseWith recv = do
 
 -- | Receive exactly @cnt@ RESP values from the connection, performing incremental
 -- parsing against the internal buffer and fetching more bytes as needed.
-parseManyWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m [RespData]
+parseManyWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => Int -> m BS8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
   (ClientState !client !input) <- State.get
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
@@ -377,11 +374,11 @@ parseManyWith cnt recv = do
       State.put (ClientState client remainder)
       return r
   where
-    runUntilDone :: (Client client, MonadIO m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
+    runUntilDone :: (Client client, MonadIO m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult BS8.ByteString r -> m BS8.ByteString -> m r
     runUntilDone _client (StrictParse.Fail _ _ err) _ = liftIO $ throwIO $ ParseError err
     runUntilDone client (StrictParse.Partial f) getMore = do
       moreData <- getMore
-      if SB8.null moreData
+      if BS8.null moreData
         then liftIO $ throwIO ConnectionClosed
         else runUntilDone client (f moreData) getMore
     runUntilDone client (StrictParse.Done remainder !r) _ = do

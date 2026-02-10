@@ -14,15 +14,14 @@ import           ClusterCommands            (CommandRouting (..),
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BS
-import qualified Data.ByteString.Lazy.Char8 as BSC
+import qualified Data.ByteString.Char8      as BS8
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
 
 -- | Route and execute command parts via ClusterCommandClient
-routeAndExecuteCommand :: (Client client) => [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
+routeAndExecuteCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 routeAndExecuteCommand [] = return $ Left "Empty command"
 routeAndExecuteCommand (cmd:args) = do
   case classifyCommand cmd args of
@@ -31,7 +30,7 @@ routeAndExecuteCommand (cmd:args) = do
     CommandError e -> return $ Left e
 
 -- | Execute a keyless command (routing to any master node)
-executeKeylessCommand :: (Client client) => [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
+executeKeylessCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 executeKeylessCommand parts = do
   clusterClient <- State.get
   result <- liftIO $ ClusterCommandClient.executeKeylessClusterCommand clusterClient (sendRespCommand parts)
@@ -40,7 +39,7 @@ executeKeylessCommand parts = do
     Right resp -> Right resp
 
 -- | Execute a keyed command (routing by key's slot)
-executeKeyedCommand :: (Client client) => BS.ByteString -> [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
+executeKeyedCommand :: (Client client) => BS8.ByteString -> [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 executeKeyedCommand key parts = do
   clusterClient <- State.get
   result <- liftIO $ ClusterCommandClient.executeClusterCommand clusterClient key (sendRespCommand parts)
@@ -51,10 +50,10 @@ executeKeyedCommand key parts = do
 
 -- | Send RESP command and receive response
 -- This function operates within RedisCommandClient monad to send raw commands
-sendRespCommand :: (Client client) => [BS.ByteString] -> RedisCommandClient client RespData
+sendRespCommand :: (Client client) => [BS8.ByteString] -> RedisCommandClient client RespData
 sendRespCommand parts = do
   ClientState client _ <- State.get
-  let respArray = RespArray $ map (RespBulkString . BSC.fromStrict) parts
+  let respArray = RespArray $ map RespBulkString parts
       encoded = Builder.toLazyByteString $ encode respArray
   send client encoded
   parseWith (receive client)

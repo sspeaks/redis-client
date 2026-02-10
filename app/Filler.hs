@@ -14,7 +14,7 @@ import           Control.Monad           (when)
 import qualified Control.Monad.State     as State
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy    as LB
+import qualified Data.ByteString.Lazy    as LBS
 import           Data.Word               (Word64)
 import           FillHelpers             (generateBytes, nextLCG, randomNoise,
                                          threadSeedSpacing)
@@ -29,7 +29,7 @@ initRandomNoise = do
     let !len = BS.length randomNoise
     printf "Initialized shared random noise buffer: %d MB\n" (len `div` (1024 * 1024))
 
-genRandomSet :: Int -> Int -> Int -> Word64 -> LB.ByteString
+genRandomSet :: Int -> Int -> Int -> Word64 -> LBS.ByteString
 genRandomSet batchSize keySize valueSize seed = Builder.toLazyByteString $! go numCommands seed
   where
     numCommands = batchSize
@@ -88,7 +88,7 @@ fillCacheWithDataMB baseSeed threadIdx mb pipelineBatchSize keySize valueSize = 
 -- full chunks and remainder, then sends each via fire-and-forget.
 sendChunkedFill ::
   (Client client) =>
-  (Int -> Word64 -> LB.ByteString) -> -- chunk generator (batchSize -> seed -> data)
+  (Int -> Word64 -> LBS.ByteString) -> -- chunk generator (batchSize -> seed -> data)
   Int ->    -- total MB to fill
   Int ->    -- pipeline batch size
   Int ->    -- bytes per command (keySize + valueSize)

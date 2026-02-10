@@ -6,8 +6,7 @@ import           Cluster                    (calculateSlot)
 import           ClusterCommandClient       (closeClusterClient)
 import           ClusterE2E.Utils
 import           Control.Exception          (bracket)
-import qualified Data.ByteString.Char8      as BSC
-import qualified Data.ByteString.Lazy       as BSL
+import qualified Data.ByteString.Char8      as BS8
 import           RedisCommandClient         (RedisCommands (..))
 import           Resp                       (RespData (..))
 import           Test.Hspec
@@ -45,15 +44,15 @@ spec = describe "Basic cluster operations" $ do
           result <- runCmd client $ set key ("value_" <> key)
           case result of
             RespSimpleString "OK" -> return ()
-            other -> expectationFailure $ "Unexpected SET response for " ++ BSC.unpack key ++ ": " ++ show other
+            other -> expectationFailure $ "Unexpected SET response for " ++ BS8.unpack key ++ ": " ++ show other
           ) keys
 
         -- Get all keys and verify
         mapM_ (\key -> do
           result <- runCmd client $ get key
           case result of
-            RespBulkString val | val == BSL.fromStrict ("value_" <> key) -> return ()
-            other -> expectationFailure $ "Unexpected GET response for " ++ BSC.unpack key ++ ": " ++ show other
+            RespBulkString val | val == ("value_" <> key) -> return ()
+            other -> expectationFailure $ "Unexpected GET response for " ++ BS8.unpack key ++ ": " ++ show other
           ) keys
 
     it "handles keys with hash tags correctly" $ do
@@ -119,7 +118,7 @@ spec = describe "Basic cluster operations" $ do
         _ <- runCmd client $ set "cluster:wrongtype" "value"
         result <- runCmd client $ lpush "cluster:wrongtype" ["item"]
         case result of
-          RespError err -> err `shouldContain` "WRONGTYPE"
+          RespError err -> BS8.isInfixOf "WRONGTYPE" err `shouldBe` True
           other -> expectationFailure $ "Expected WRONGTYPE error, got: " ++ show other
 
     it "DEL removes keys in cluster" $ do

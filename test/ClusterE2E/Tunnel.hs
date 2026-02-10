@@ -12,6 +12,7 @@ import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 import           Control.Monad              (when, forM_)
+import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
 import qualified Data.Map.Strict            as Map
 import           RedisCommandClient         (RedisCommands (..))
@@ -205,7 +206,7 @@ spec = describe "Cluster Tunnel Mode" $ do
 
               result <- runRedisCommand conn1 (get wrongKey)
               case result of
-                RespError err -> err `shouldSatisfy` \e -> "MOVED" `isInfixOf` e
+                RespError err -> BS8.isInfixOf "MOVED" err `shouldBe` True
                 _ -> expectationFailure $ "Expected MOVED error, got: " ++ show result
 
               close conn1

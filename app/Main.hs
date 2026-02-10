@@ -9,7 +9,6 @@ import           ClusterCommandClient       (ClusterCommandClient,
                                              closeClusterClient,
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData)
-import qualified Data.ByteString.Lazy       as BL
 
 import           ClusterSetup               (createClusterClientFromState,
                                              createPlaintextConnector,
@@ -25,8 +24,7 @@ import           Control.Monad.IO.Class
 import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BSSC
-import qualified Data.ByteString.Lazy.Char8 as BSC
+import qualified Data.ByteString.Char8      as BS8
 import           Data.Maybe                 (fromMaybe, isNothing)
 import           Data.Word                  (Word64, Word8)
 import           Filler                     (fillCacheWithData,
@@ -425,9 +423,9 @@ repl isTTY = do
         Just cmd -> do
           when isTTY $ liftIO $ addHistory cmd
           unless (cmd == "exit") $ do
-            (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BSC.pack)) . words $ cmd
+            (send client . Builder.toLazyByteString . encode . RespArray . map (RespBulkString . BS8.pack)) . words $ cmd
             response <- parseWith (receive client)
-            liftIO $ print $ encodeBytesForCLI $ BL.toStrict (BSC.pack (show response))
+            liftIO $ print $ encodeBytesForCLI $ BS8.pack (show response)
             loop client
 
 -- | REPL for cluster mode - uses ClusterCommandClient
@@ -445,10 +443,10 @@ replCluster isTTY = loop
             case parts of
               [] -> return ()
               (cm:args) -> do
-                result <- routeAndExecuteCommand (map BSSC.pack (cm:args))
+                result <- routeAndExecuteCommand (map BS8.pack (cm:args))
                 case result of
                   Left err       -> liftIO $ putStrLn $ "Error: " ++ err
-                  Right response -> liftIO $ print $ encodeBytesForCLI $ BL.toStrict (BSC.pack (show response))
+                  Right response -> liftIO $ print $ encodeBytesForCLI $ BS8.pack (show response)
             loop
 
 -- | Read a command from the user, handling TTY vs pipe input

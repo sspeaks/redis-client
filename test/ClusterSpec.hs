@@ -3,7 +3,7 @@
 module Main (main) where
 
 import Cluster
-import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Char8 as BS8
 import Data.Time.Clock (getCurrentTime)
 import Resp (RespData (..))
 import Test.Hspec
@@ -61,7 +61,7 @@ spec = do
       slot `shouldSatisfy` (< 16384)
 
     it "handles very long keys" $ do
-      let longKey = BS.replicate 1000 'x'
+      let longKey = BS8.replicate 1000 'x'
       slot <- calculateSlot longKey
       slot `shouldSatisfy` (< 16384)
 

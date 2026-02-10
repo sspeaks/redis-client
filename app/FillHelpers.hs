@@ -13,7 +13,7 @@ module FillHelpers
 import           Data.Bits               (shiftR)
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy    as LB
+import qualified Data.ByteString.Lazy    as LBS
 import           Data.Word               (Word64, Word8)
 
 -- 128MB of pre-computed random noise (larger buffer reduces collision probability)
@@ -32,7 +32,7 @@ generateBytes :: Int -> Word64 -> Builder.Builder
 generateBytes size !s
   | size <= 8 =
       -- For very small keys, just use the seed bytes
-      let seedBS = LB.toStrict $ Builder.toLazyByteString (Builder.word64LE s)
+      let seedBS = LBS.toStrict $ Builder.toLazyByteString (Builder.word64LE s)
       in Builder.byteString (BS.take size seedBS)
   | otherwise =
       -- For larger keys, use seed + noise

@@ -11,7 +11,6 @@ import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.Async   (mapConcurrently, concurrently)
 import           Control.Exception          (SomeException, try)
 import           Control.Monad              (forM_)
-import qualified Data.ByteString.Lazy       as LBS
 import           Data.IORef                 (newIORef, atomicModifyIORef', readIORef)
 import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
@@ -49,7 +48,7 @@ spec = describe "Concurrent Cluster Operations" $ do
           -- GET and verify
           gr <- executeClusterCommand client key (get key)
           case gr of
-            Right (RespBulkString v) | v == LBS.fromStrict val -> return ()
+            Right (RespBulkString v) | v == val -> return ()
             Right (RespBulkString _) ->
               -- Wrong value = cross-thread corruption!
               atomicModifyIORef' errors (\n -> (n + 1, ()))

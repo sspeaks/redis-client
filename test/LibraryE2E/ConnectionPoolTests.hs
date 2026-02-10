@@ -10,7 +10,6 @@ import           ConnectionPool             (PoolConfig (..), withConnection, cl
 import           Control.Concurrent.Async   (mapConcurrently)
 import           Control.Exception          (SomeException, try, throwIO)
 import           Control.Monad              (forM_)
-import qualified Data.ByteString.Lazy       as LBS
 import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 
@@ -36,7 +35,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
       -- Every thread should get its own correct value
       forM_ results $ \(tid, result) -> do
         let expected = "value-" <> showBS tid
-        result `shouldBe` Right (RespBulkString (LBS.fromStrict expected))
+        result `shouldBe` Right (RespBulkString expected)
 
       flushAllNodes client
       closeClusterClient client

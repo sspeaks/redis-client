@@ -21,12 +21,12 @@ where
 import           Crc16                      (crc16)
 import           Data.ByteString            (ByteString)
 import qualified Data.ByteString            as BS
-
-import qualified Data.ByteString.Lazy.Char8 as LBSC
+import qualified Data.ByteString.Char8      as BS8
 import           Data.Map.Strict            (Map)
 import qualified Data.Map.Strict            as Map
 import           Data.Text                  (Text)
 import qualified Data.Text                  as T
+import qualified Data.Text.Encoding         as TE
 import           Data.Time                  (UTCTime)
 import           Data.Vector                (Vector)
 import qualified Data.Vector                as V
@@ -124,8 +124,8 @@ parseClusterSlots (RespArray slots) currentTime = do
     parseSlotRange other = Left $ "Invalid slot range format: " ++ show other
 
     parseNodeInfo :: RespData -> Either String (Text, NodeAddress)
-    parseNodeInfo (RespArray (RespBulkString host : RespInteger port : RespBulkString nodeId : _)) =
-      Right (T.pack $ LBSC.unpack nodeId, NodeAddress (LBSC.unpack host) (fromIntegral port))
+    parseNodeInfo (RespArray (RespBulkString host : RespInteger port : RespBulkString nodeIdBS : _)) =
+      Right (TE.decodeUtf8 nodeIdBS, NodeAddress (BS8.unpack host) (fromIntegral port))
     parseNodeInfo other = Left $ "Invalid node info format: " ++ show other
 
     buildTopology :: [(SlotRange, [(Text, NodeAddress)])] -> (Vector Text, Map Text ClusterNode)

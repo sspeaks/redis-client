@@ -11,8 +11,8 @@ import           ClusterE2E.Utils
 import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
-import qualified Data.ByteString.Char8      as BSC
-import qualified Data.ByteString.Lazy       as BSL
+import qualified Data.ByteString.Char8      as BS8
+import qualified Data.ByteString            as BS
 import           Data.Char                  (toLower)
 import           Data.List                  (isInfixOf, nub)
 import qualified Data.Map.Strict            as Map
@@ -52,7 +52,7 @@ spec = describe "Cluster CLI Mode" $ do
               (range:_) ->
                 let slot = slotStart range
                     keyBS = getKeyForNode node ("clitest:" ++ show slot)
-                    key = BSC.unpack keyBS
+                    key = BS8.unpack keyBS
                     value = "node" ++ show slot
                 in ["SET " ++ key ++ " " ++ value]
               _ -> []
@@ -73,7 +73,7 @@ spec = describe "Cluster CLI Mode" $ do
             result <- runRedisCommand conn (get keyBS)
             close conn
             case result of
-              RespBulkString val -> val `shouldBe` BSL.fromStrict (BSC.pack expectedValue)
+              RespBulkString val -> val `shouldBe` BS8.pack expectedValue
               other -> expectationFailure $ "Expected value on node " ++ show (nodeHost addr) ++ ", got: " ++ show other
           _ -> return ()
         ) masterNodes
@@ -100,9 +100,9 @@ spec = describe "Cluster CLI Mode" $ do
         key2 = "route:key2"
         key3 = "route:key3"
 
-    slot1 <- calculateSlot (BSC.pack key1)
-    slot2 <- calculateSlot (BSC.pack key2)
-    slot3 <- calculateSlot (BSC.pack key3)
+    slot1 <- calculateSlot (BS8.pack key1)
+    slot2 <- calculateSlot (BS8.pack key2)
+    slot3 <- calculateSlot (BS8.pack key3)
 
     bracket createTestClusterClient closeClusterClient $ \client -> do
       topology <- readTVarIO (clusterTopology client)
@@ -130,10 +130,10 @@ spec = describe "Cluster CLI Mode" $ do
           let verifyKeyOnNode key expectedNode = do
                 let addr = nodeAddress expectedNode
                 conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-                result <- runRedisCommand conn (get (BSC.pack key))
+                result <- runRedisCommand conn (get (BS8.pack key))
                 close conn
                 case result of
-                  RespBulkString val -> val `shouldSatisfy` (not . BSL.null)
+                  RespBulkString val -> val `shouldSatisfy` (not . BS.null)
                   other -> expectationFailure $ "Key " ++ key ++ " not found on expected node " ++ show (nodeHost addr) ++ ": " ++ show other
 
           verifyKeyOnNode key1 node1

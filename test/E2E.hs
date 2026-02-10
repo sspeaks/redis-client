@@ -11,7 +11,7 @@ import qualified Control.Monad.State        as State
 import           Data.Attoparsec.ByteString (parseOnly)
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Lazy.Char8 as BSC
+import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
 import           E2EHelpers                 (cleanupProcess, drainHandle,
                                              getRedisClientPath,
@@ -92,7 +92,7 @@ main = do
         it "auth negotiates the RESP3 handshake" $ do
           authResp <- runRedisAction (auth "default" "")
           case authResp of
-            RespError err -> expectationFailure $ "Unexpected AUTH error: " <> err
+            RespError err -> expectationFailure $ "Unexpected AUTH error: " <> BS8.unpack err
             RespMap _ -> pure ()
             RespArray _ -> pure ()
             RespSimpleString "OK" -> pure ()
@@ -234,10 +234,10 @@ main = do
           response <- runRedisAction (geopos "geo:pos" ["Palermo", "Catania"])
           case response of
             RespArray [RespArray [RespBulkString lon1, RespBulkString lat1], RespArray [RespBulkString lon2, RespBulkString lat2]] -> do
-              lon1 `shouldSatisfy` (BSC.isPrefixOf "13.36")
-              lat1 `shouldSatisfy` (BSC.isPrefixOf "38.11")
-              lon2 `shouldSatisfy` (BSC.isPrefixOf "15.08")
-              lat2 `shouldSatisfy` (BSC.isPrefixOf "37.50")
+              lon1 `shouldSatisfy` (BS8.isPrefixOf "13.36")
+              lat1 `shouldSatisfy` (BS8.isPrefixOf "38.11")
+              lon2 `shouldSatisfy` (BS8.isPrefixOf "15.08")
+              lat2 `shouldSatisfy` (BS8.isPrefixOf "37.50")
             _ -> expectationFailure $ "Unexpected GEOPOS response: " <> show response
 
         it "georadius returns members ordered with distances" $ do
@@ -245,8 +245,8 @@ main = do
           radiusResult <- runRedisAction (georadius "geo:radius" 15 37 200 Kilometers [GeoWithDist, GeoRadiusAsc])
           case radiusResult of
             RespArray [RespArray [RespBulkString "Catania", RespBulkString dist1], RespArray [RespBulkString "Palermo", RespBulkString dist2]] -> do
-              dist1 `shouldSatisfy` (not . BSC.null)
-              dist2 `shouldSatisfy` (not . BSC.null)
+              dist1 `shouldSatisfy` (not . BS.null)
+              dist2 `shouldSatisfy` (not . BS.null)
             _ -> expectationFailure $ "Unexpected GEORADIUS response: " <> show radiusResult
 
         it "georadiusRo reads data with distance flags" $ do
@@ -254,8 +254,8 @@ main = do
           roResult <- runRedisAction (georadiusRo "geo:radius-ro" 15 37 200 Kilometers [GeoWithDist, GeoRadiusAsc])
           case roResult of
             RespArray [RespArray [RespBulkString "Catania", RespBulkString dist1], RespArray [RespBulkString "Palermo", RespBulkString dist2]] -> do
-              dist1 `shouldSatisfy` (not . BSC.null)
-              dist2 `shouldSatisfy` (not . BSC.null)
+              dist1 `shouldSatisfy` (not . BS.null)
+              dist2 `shouldSatisfy` (not . BS.null)
             _ -> expectationFailure $ "Unexpected GEORADIUS_RO response: " <> show roResult
 
         it "georadiusByMember returns nearby members" $ do
@@ -263,10 +263,10 @@ main = do
           byMember <- runRedisAction (georadiusByMember "geo:member" "Palermo" 200 Kilometers [GeoWithDist, GeoRadiusAsc])
           case byMember of
             RespArray [RespArray [RespBulkString "Palermo"], RespArray [RespBulkString "Catania", RespBulkString dist]] -> do
-              dist `shouldSatisfy` (not . BSC.null)
+              dist `shouldSatisfy` (not . BS.null)
             RespArray [RespArray [RespBulkString "Palermo", RespBulkString distSelf], RespArray [RespBulkString "Catania", RespBulkString distOther]] -> do
-              distSelf `shouldSatisfy` (not . BSC.null)
-              distOther `shouldSatisfy` (not . BSC.null)
+              distSelf `shouldSatisfy` (not . BS.null)
+              distOther `shouldSatisfy` (not . BS.null)
             _ -> expectationFailure $ "Unexpected GEORADIUSBYMEMBER response: " <> show byMember
 
         it "georadiusByMemberRo reads without mutating state" $ do
@@ -274,10 +274,10 @@ main = do
           byMemberRo <- runRedisAction (georadiusByMemberRo "geo:member-ro" "Palermo" 200 Kilometers [GeoWithDist, GeoRadiusAsc])
           case byMemberRo of
             RespArray [RespArray [RespBulkString "Palermo"], RespArray [RespBulkString "Catania", RespBulkString dist]] -> do
-              dist `shouldSatisfy` (not . BSC.null)
+              dist `shouldSatisfy` (not . BS.null)
             RespArray [RespArray [RespBulkString "Palermo", RespBulkString distSelf], RespArray [RespBulkString "Catania", RespBulkString distOther]] -> do
-              distSelf `shouldSatisfy` (not . BSC.null)
-              distOther `shouldSatisfy` (not . BSC.null)
+              distSelf `shouldSatisfy` (not . BS.null)
+              distOther `shouldSatisfy` (not . BS.null)
             _ -> expectationFailure $ "Unexpected GEORADIUSBYMEMBER_RO response: " <> show byMemberRo
 
         it "geosearch and geosearchstore integrate with sorted sets" $ do
@@ -297,7 +297,7 @@ main = do
           runRedisAction (set "string:key" "value") `shouldReturn` RespSimpleString "OK"
           resp <- runRedisAction (lpush "string:key" ["item"])
           case resp of
-            RespError err -> err `shouldSatisfy` ("WRONGTYPE" `isInfixOf`)
+            RespError err -> BS8.isInfixOf "WRONGTYPE" err `shouldBe` True
             _ -> expectationFailure $ "Expected WRONGTYPE error, got: " <> show resp
 
         it "returns error for GET on non-existent key" $ do
@@ -318,17 +318,17 @@ main = do
           runRedisAction
             ( do
                 ClientState client _ <- State.get
-                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100 :: Int]])
+                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BS8.pack (show n), "VALUE" <> BS8.pack (show n)] | n <- [1 .. 100 :: Int]])
                 parseManyWith 100 (receive client)
             )
             `shouldReturn` replicate 100 (RespSimpleString "OK")
           runRedisAction
             ( do
                 ClientState client _ <- State.get
-                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100 :: Int]])
+                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BS8.pack (show n)] | n <- [1 .. 100 :: Int]])
                 parseManyWith 100 (receive client)
             )
-            `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100 :: Int]]
+            `shouldReturn` [RespBulkString ("VALUE" <> BS8.pack (show n)) | n <- [1 .. 100 :: Int]]
     describe "redis-client modes" $ beforeAll_ (void $ runRedisAction flushAll) $ do
       it "fill --data 1 writes expected number of keys" $ do
         (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1"] ""
@@ -366,7 +366,7 @@ main = do
                   return resp
                 Left err -> error $ "Parse error: " ++ err)
         case keyResp of
-          RespBulkString key -> fromIntegral (BSC.length key) `shouldBe` (128 :: Int)
+          RespBulkString key -> BS.length key `shouldBe` (128 :: Int)
           _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
       it "fill with --key-size 64 creates smaller keys" $ do
@@ -490,7 +490,7 @@ main = do
                       return resp
                     Left err -> error $ "Parse error: " ++ err)
             case valueResp of
-              RespBulkString value -> fromIntegral (BSC.length value) `shouldBe` (128 :: Int)
+              RespBulkString value -> BS.length value `shouldBe` (128 :: Int)
               _ -> expectationFailure "Expected bulk string response from GET"
           _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
@@ -529,7 +529,7 @@ main = do
                       return resp
                     Left err -> error $ "Parse error: " ++ err)
             case valueResp of
-              RespBulkString value -> fromIntegral (BSC.length value) `shouldBe` (2048 :: Int)
+              RespBulkString value -> BS.length value `shouldBe` (2048 :: Int)
               _ -> expectationFailure "Expected bulk string response from GET"
           _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
