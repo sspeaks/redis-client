@@ -35,7 +35,7 @@ spec = describe "Error Handling & Resilience" $ do
                  , ("resilience-y", "val-y")
                  ]
       results <- mapM (\(k, v) ->
-        executeClusterCommand client (BS8.pack k) (set k v) testConnector
+        executeClusterCommand client (BS8.pack k) (set k v)
         ) keys
 
       -- All should succeed (MOVED handled transparently if needed)
@@ -43,7 +43,7 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Read them back
       readResults <- mapM (\(k, _) ->
-        executeClusterCommand client (BS8.pack k) (get k) testConnector
+        executeClusterCommand client (BS8.pack k) (get k)
         ) keys
 
       mapM_ (\((_, v), r) -> r `shouldBe` Right (RespBulkString (LBS8.pack v))) (zip keys readResults)
@@ -68,7 +68,7 @@ spec = describe "Error Handling & Resilience" $ do
       -- We try several keys to increase odds of hitting a down node's slots
       let tryKeys = ["maxretry-" ++ show i | i <- [1..20 :: Int]]
       results <- mapM (\k ->
-        executeClusterCommand client (BS8.pack k) (set k "v") testConnector
+        executeClusterCommand client (BS8.pack k) (set k "v")
         ) tryKeys
 
       -- At least some should fail (nodes 4 & 5 own some slots)
@@ -96,7 +96,7 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Warm up a connection to node 3
       -- Use hash tag to target specific node's slots
-      _ <- executeClusterCommand client "conn-close-test" (set "conn-close-test" "v") testConnector
+      _ <- executeClusterCommand client "conn-close-test" (set "conn-close-test" "v")
 
       -- Kill node 3 abruptly
       stopNode 3
@@ -105,7 +105,7 @@ spec = describe "Error Handling & Resilience" $ do
       -- Try operations — some may fail with ConnectionError
       results <- mapM (\i -> do
         let k = "connclose-" ++ show i
-        try (executeClusterCommand client (BS8.pack k) (set k "v") testConnector)
+        try (executeClusterCommand client (BS8.pack k) (set k "v"))
           :: IO (Either SomeException (Either ClusterError RespData))
         ) [1..10 :: Int]
 
@@ -132,7 +132,7 @@ spec = describe "Error Handling & Resilience" $ do
       client <- createTestClient
 
       -- Establish baseline
-      r1 <- executeClusterCommand client "recovery-key" (set "recovery-key" "before") testConnector
+      r1 <- executeClusterCommand client "recovery-key" (set "recovery-key" "before")
       r1 `shouldSatisfy` isRight'
 
       -- Stop node
@@ -145,13 +145,13 @@ spec = describe "Error Handling & Resilience" $ do
       threadDelay 5000000  -- stabilization
 
       -- Force topology refresh
-      _ <- try (refreshTopology client testConnector) :: IO (Either SomeException ())
+      _ <- try (refreshTopology client) :: IO (Either SomeException ())
 
       -- Operations should work again
-      r2 <- executeClusterCommand client "recovery-key2" (set "recovery-key2" "after") testConnector
+      r2 <- executeClusterCommand client "recovery-key2" (set "recovery-key2" "after")
       r2 `shouldSatisfy` isRight'
 
-      r3 <- executeClusterCommand client "recovery-key2" (get "recovery-key2") testConnector
+      r3 <- executeClusterCommand client "recovery-key2" (get "recovery-key2")
       r3 `shouldBe` Right (RespBulkString "after")
 
       flushAllNodes client

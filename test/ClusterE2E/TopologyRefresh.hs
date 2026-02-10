@@ -68,8 +68,6 @@ spec = describe "Topology refresh" $ do
         time3 `shouldSatisfy` (> time1)
 
     it "manual refresh updates topology timestamp" $ do
-      let connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
-
       bracket createTestClusterClient closeClusterClient $ \client -> do
         -- Get initial topology timestamp
         topology1 <- readTVarIO (clusterTopology client)
@@ -79,7 +77,7 @@ spec = describe "Topology refresh" $ do
         threadDelay 100000  -- 100ms
 
         -- Manually refresh topology
-        refreshTopology client connector
+        refreshTopology client
 
         -- Check topology was refreshed
         topology2 <- readTVarIO (clusterTopology client)
@@ -87,8 +85,6 @@ spec = describe "Topology refresh" $ do
         time2 `shouldSatisfy` (> time1)
 
     it "topology remains consistent across multiple commands within refresh interval" $ do
-      let _connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
-
       bracket createTestClusterClient closeClusterClient $ \client -> do
         -- Get initial topology
         topology1 <- readTVarIO (clusterTopology client)
@@ -144,15 +140,13 @@ spec = describe "Topology refresh" $ do
         allOk `shouldBe` True
 
     it "refreshTopology can be called multiple times safely" $ do
-      let connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
-
       bracket createTestClusterClient closeClusterClient $ \client -> do
         -- Refresh multiple times rapidly
-        refreshTopology client connector
+        refreshTopology client
         threadDelay 50000
-        refreshTopology client connector
+        refreshTopology client
         threadDelay 50000
-        refreshTopology client connector
+        refreshTopology client
 
         -- Verify we can still execute commands
         result <- runCmd client $ set "refresh:after:multi" "value"
@@ -161,8 +155,6 @@ spec = describe "Topology refresh" $ do
           other -> expectationFailure $ "Unexpected SET response: " ++ show other
 
     it "topology timestamp is preserved when refresh fails gracefully" $ do
-      let _connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
-
       bracket createTestClusterClient closeClusterClient $ \client -> do
         -- Get initial topology
         topology1 <- readTVarIO (clusterTopology client)

@@ -55,7 +55,7 @@ spec = describe "Topology Refresh" $ do
 
       -- Spawn 50 threads all calling refreshTopology at once
       results <- mapConcurrently (\_ ->
-        try (refreshTopology client testConnector) :: IO (Either SomeException ())
+        try (refreshTopology client) :: IO (Either SomeException ())
         ) [1..50 :: Int]
 
       -- All should succeed (no crashes)
@@ -78,7 +78,7 @@ spec = describe "Topology Refresh" $ do
       client <- createTestClient
 
       -- Write a key to establish baseline
-      r1 <- executeClusterCommand client "topo-recover-key" (set "topo-recover-key" "alive") testConnector
+      r1 <- executeClusterCommand client "topo-recover-key" (set "topo-recover-key" "alive")
       r1 `shouldSatisfy` isRight'
 
       -- Stop a non-seed node to avoid breaking topology discovery
@@ -87,10 +87,10 @@ spec = describe "Topology Refresh" $ do
       threadDelay 3000000  -- 3s for cluster to detect failure
 
       -- Force a topology refresh so the client knows about the change
-      _ <- try (refreshTopology client testConnector) :: IO (Either SomeException ())
+      _ <- try (refreshTopology client) :: IO (Either SomeException ())
 
       -- Operations to other nodes should still work
-      _ <- executeClusterCommand client "topo-other-node" (set "topo-other-node" "works") testConnector
+      _ <- executeClusterCommand client "topo-other-node" (set "topo-other-node" "works")
       -- This might succeed or fail depending on which node owns the key slot
       -- The important thing is it doesn't hang
 
@@ -100,8 +100,8 @@ spec = describe "Topology Refresh" $ do
 
       -- After recovery, all operations should work
       threadDelay 5000000  -- 5s for cluster to stabilize
-      _ <- try (refreshTopology client testConnector) :: IO (Either SomeException ())
-      r3 <- executeClusterCommand client "topo-recover-key" (get "topo-recover-key") testConnector
+      _ <- try (refreshTopology client) :: IO (Either SomeException ())
+      r3 <- executeClusterCommand client "topo-recover-key" (get "topo-recover-key")
       -- After cluster recovery, the key should still be readable
       case r3 of
         Right (RespBulkString "alive") -> return ()

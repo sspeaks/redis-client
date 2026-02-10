@@ -42,13 +42,13 @@ spec = describe "Concurrent Cluster Operations" $ do
               val = "v-" ++ show tid ++ "-" ++ show i
 
           -- SET
-          sr <- executeClusterCommand client (BS8.pack key) (set key val) testConnector
+          sr <- executeClusterCommand client (BS8.pack key) (set key val)
           case sr of
             Left _ -> atomicModifyIORef' errors (\n -> (n + 1, ()))
             Right _ -> return ()
 
           -- GET and verify
-          gr <- executeClusterCommand client (BS8.pack key) (get key) testConnector
+          gr <- executeClusterCommand client (BS8.pack key) (get key)
           case gr of
             Right (RespBulkString v) | v == LBS8.pack val -> return ()
             Right (RespBulkString _) ->
@@ -75,14 +75,14 @@ spec = describe "Concurrent Cluster Operations" $ do
       -- Run topology refreshes concurrently with SET/GET operations
       let refreshAction = do
             forM_ [1..10 :: Int] $ \_ -> do
-              _ <- try (refreshTopology client testConnector) :: IO (Either SomeException ())
+              _ <- try (refreshTopology client) :: IO (Either SomeException ())
               threadDelay 50000  -- 50ms between refreshes
 
           workerAction = do
             mapConcurrently (\tid -> do
               forM_ [1..50 :: Int] $ \i -> do
                 let key = "refresh-storm-" ++ show tid ++ "-" ++ show i
-                r <- executeClusterCommand client (BS8.pack key) (set key "v") testConnector
+                r <- executeClusterCommand client (BS8.pack key) (set key "v")
                 case r of
                   Right _ -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
                   Left _  -> return ()
@@ -106,7 +106,7 @@ spec = describe "Concurrent Cluster Operations" $ do
       -- Warm up connections
       forM_ [1..10 :: Int] $ \i -> do
         let k = "warmup-" ++ show i
-        _ <- executeClusterCommand client (BS8.pack k) (set k "v") testConnector
+        _ <- executeClusterCommand client (BS8.pack k) (set k "v")
         return ()
 
       successCount <- newIORef (0 :: Int)
@@ -116,7 +116,7 @@ spec = describe "Concurrent Cluster Operations" $ do
       let workerAction = mapConcurrently (\tid -> do
             forM_ [1..100 :: Int] $ \i -> do
               let key = "nodefail-" ++ show tid ++ "-" ++ show i
-              r <- try (executeClusterCommand client (BS8.pack key) (set key "v") testConnector)
+              r <- try (executeClusterCommand client (BS8.pack key) (set key "v"))
                     :: IO (Either SomeException (Either ClusterError RespData))
               case r of
                 Right (Right _) -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
@@ -144,8 +144,8 @@ spec = describe "Concurrent Cluster Operations" $ do
       threadDelay 5000000
 
       -- Final verification: cluster is healthy again
-      _ <- try (refreshTopology client testConnector) :: IO (Either SomeException ())
-      r <- executeClusterCommand client "final-check" (set "final-check" "ok") testConnector
+      _ <- try (refreshTopology client) :: IO (Either SomeException ())
+      r <- executeClusterCommand client "final-check" (set "final-check" "ok")
       r `shouldSatisfy` isRight'
 
       flushAllNodes client

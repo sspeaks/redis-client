@@ -165,10 +165,10 @@ tunnCluster state = do
       case tunnelMode state of
         "smart" -> do
           putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
-          serveSmartProxy clusterClient connector
+          serveSmartProxy clusterClient
         "pinned" -> do
           putStrLn "Pinned mode: Creating one listener per cluster node"
-          servePinnedProxy clusterClient connector
+          servePinnedProxy clusterClient
         _ -> do
           printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
           exitFailure
@@ -179,11 +179,11 @@ tunnCluster state = do
         "smart" -> do
           putStrLn "Smart proxy mode: Commands will be routed to appropriate cluster nodes"
           putStrLn "Note: TLS is recommended for production use"
-          serveSmartProxy clusterClient connector
+          serveSmartProxy clusterClient
         "pinned" -> do
           putStrLn "Pinned mode: Creating one listener per cluster node"
           putStrLn "Note: TLS is recommended for production use"
-          servePinnedProxy clusterClient connector
+          servePinnedProxy clusterClient
         _ -> do
           printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
           exitFailure
@@ -405,12 +405,12 @@ cliCluster state = do
     then do
       clusterClient <- createClusterClientFromState state (createTLSConnector state)
       putStrLn $ "Connected to cluster seed node: " ++ host state
-      runClusterCommandClient clusterClient (createTLSConnector state) (replCluster isTTY)
+      runClusterCommandClient clusterClient (replCluster isTTY)
       closeClusterClient clusterClient
     else do
       clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
       putStrLn $ "Connected to cluster seed node: " ++ host state
-      runClusterCommandClient clusterClient (createPlaintextConnector state) (replCluster isTTY)
+      runClusterCommandClient clusterClient (replCluster isTTY)
       closeClusterClient clusterClient
 
 repl :: (Client client) => Bool -> RedisCommandClient client ()

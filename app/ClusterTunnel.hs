@@ -51,9 +51,8 @@ import           Text.Printf                (printf)
 -- Creates single listening socket and routes commands to appropriate nodes
 serveSmartProxy :: (Client client) =>
   ClusterClient client ->
-  Connector client ->
   IO ()
-serveSmartProxy clusterClient connector = do
+serveSmartProxy clusterClient = do
   hSetBuffering stdout LineBuffering
   bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
     setSocketOption sock ReuseAddr 1
@@ -72,16 +71,15 @@ serveSmartProxy clusterClient connector = do
       -- Handle each client in a separate thread
       void $ forkIO $
         finally
-          (handleSmartProxyClient clusterClient connector clientSock)
+          (handleSmartProxyClient clusterClient clientSock)
           (S.close clientSock)
 
 -- | Handle a single client connection in smart proxy mode
 handleSmartProxyClient :: (Client client) =>
   ClusterClient client ->
-  Connector client ->
   Socket ->
   IO ()
-handleSmartProxyClient clusterClient connector clientSock = do
+handleSmartProxyClient clusterClient clientSock = do
   loop
   where
     loop = do
@@ -100,7 +98,7 @@ handleSmartProxyClient clusterClient connector clientSock = do
               loop
             Right respData -> do
               -- Route and execute the command
-              result <- routeSmartProxyCommand clusterClient connector respData
+              result <- routeSmartProxyCommand clusterClient respData
               case result of
                 Left err -> do
                   printf "Command execution error: %s\n" err
@@ -114,31 +112,28 @@ handleSmartProxyClient clusterClient connector clientSock = do
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>
   ClusterClient client ->
-  Connector client ->
   RespData ->
   IO (Either String RespData)
-routeSmartProxyCommand clusterClient connector respData = do
+routeSmartProxyCommand clusterClient respData = do
   case respData of
     RespArray (RespBulkString cmd : args) -> do
       let cmdStrict = LBSC.toStrict cmd
           argKeys = [LBSC.toStrict k | RespBulkString k <- args]
       case classifyCommand cmdStrict argKeys of
-        KeylessRoute   -> executeKeylessCommand clusterClient connector respData
-        KeyedRoute key -> executeKeyedCommand clusterClient connector key respData
+        KeylessRoute   -> executeKeylessCommand clusterClient respData
+        KeyedRoute key -> executeKeyedCommand clusterClient key respData
         CommandError e -> return $ Left e
     _ -> return $ Left "Expected array command"
 
 -- | Execute a keyless command (route to any master)
 executeKeylessCommand :: (Client client) =>
   ClusterClient client ->
-  Connector client ->
   RespData ->
   IO (Either String RespData)
-executeKeylessCommand clusterClient connector respData = do
+executeKeylessCommand clusterClient respData = do
   result <- ClusterCommandClient.executeKeylessClusterCommand
               clusterClient
               (sendRespCommand respData)
-              connector
   return $ case result of
     Left err   -> Left (show err)
     Right resp -> Right resp
@@ -146,16 +141,14 @@ executeKeylessCommand clusterClient connector respData = do
 -- | Execute a keyed command (route by slot)
 executeKeyedCommand :: (Client client) =>
   ClusterClient client ->
-  Connector client ->
   BS.ByteString ->
   RespData ->
   IO (Either String RespData)
-executeKeyedCommand clusterClient connector key respData = do
+executeKeyedCommand clusterClient key respData = do
   result <- ClusterCommandClient.executeClusterCommand
               clusterClient
               key
               (sendRespCommand respData)
-              connector
   return $ case result of
     Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
     Left err                  -> Left (show err)
@@ -173,14 +166,14 @@ sendRespCommand respData = do
 -- Each listener forwards to its corresponding cluster node
 servePinnedProxy :: (Client client) =>
   ClusterClient client ->
-  Connector client ->
   IO ()
-servePinnedProxy clusterClient connector = do
+servePinnedProxy clusterClient = do
   hSetBuffering stdout LineBuffering
 
   -- Get cluster topology
   topology <- readTVarIO (clusterTopology clusterClient)
   let masters = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
+      connector = clusterConnector clusterClient
 
   when (null masters) $ do
     putStrLn "ERROR: No master nodes found in cluster topology"

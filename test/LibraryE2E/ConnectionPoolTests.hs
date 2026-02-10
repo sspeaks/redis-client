@@ -29,8 +29,8 @@ spec = describe "ConnectionPool Thread Safety" $ do
       results <- mapConcurrently (\tid -> do
         let key = "pool-test-" ++ show tid
             val = "value-" ++ show tid
-        _ <- executeClusterCommand client (BS8.pack key) (set key val) testConnector
-        r <- executeClusterCommand client (BS8.pack key) (get key) testConnector
+        _ <- executeClusterCommand client (BS8.pack key) (set key val)
+        r <- executeClusterCommand client (BS8.pack key) (get key)
         return (tid, r)
         ) threadIds
 
@@ -51,7 +51,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
       -- Run 20 sequential commands — should reuse the same pool connections
       forM_ [1..20 :: Int] $ \i -> do
         let key = "reuse-test-" ++ show i
-        result <- executeClusterCommand client (BS8.pack key) (set key "v") testConnector
+        result <- executeClusterCommand client (BS8.pack key) (set key "v")
         result `shouldSatisfy` isRight
 
       flushAllNodes client
@@ -67,7 +67,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
       results <- mapConcurrently (\tid -> do
         let key = "overflow-" ++ show tid
             val = "val-" ++ show tid
-        r <- executeClusterCommand client (BS8.pack key) (set key val) testConnector
+        r <- executeClusterCommand client (BS8.pack key) (set key val)
         return (tid, r)
         ) threadIds
 
@@ -83,7 +83,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
       client <- createTestClient
 
       -- First, do a normal operation to warm the pool
-      _ <- executeClusterCommand client "discard-key" (set "discard-key" "before") testConnector
+      _ <- executeClusterCommand client "discard-key" (set "discard-key" "before")
 
       -- Force an error inside withConnection by throwing in user action
       let pool = clusterConnectionPool client
@@ -92,7 +92,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
         ) :: IO (Either SomeException ())
 
       -- Subsequent operations should still work (pool creates fresh connection)
-      result <- executeClusterCommand client "discard-key" (get "discard-key") testConnector
+      result <- executeClusterCommand client "discard-key" (get "discard-key")
       result `shouldBe` Right (RespBulkString "before")
 
       flushAllNodes client
@@ -103,13 +103,13 @@ spec = describe "ConnectionPool Thread Safety" $ do
       client <- createTestClient
 
       -- Warm pool
-      _ <- executeClusterCommand client "close-test" (set "close-test" "v") testConnector
+      _ <- executeClusterCommand client "close-test" (set "close-test" "v")
 
       -- Close the pool
       closePool (clusterConnectionPool client)
 
       -- After close, new operations should still work (pool creates new connections)
-      result <- executeClusterCommand client "close-test2" (set "close-test2" "v2") testConnector
+      result <- executeClusterCommand client "close-test2" (set "close-test2" "v2")
       result `shouldSatisfy` isRight
 
       closeClusterClient client

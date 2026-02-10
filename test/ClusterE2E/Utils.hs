@@ -72,9 +72,7 @@ createTestClusterClient = do
 
 -- | Helper to run cluster commands using the RedisCommands instance
 runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
-runCmd client = runClusterCommandClient client connector
-  where
-    connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
+runCmd client = runClusterCommandClient client
 
 -- | Helper to run a RedisCommand against a plain connection
 runRedisCommand :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient a -> IO a

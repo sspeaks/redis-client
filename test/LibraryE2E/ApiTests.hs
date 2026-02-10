@@ -34,7 +34,7 @@ spec = describe "API Surface" $ do
       -- Use the connector abstraction directly
       let config = defaultTestConfig
       client <- createClusterClient config clusterPlaintextConnector
-      result <- executeKeylessClusterCommand client ping clusterPlaintextConnector
+      result <- executeKeylessClusterCommand client ping
       result `shouldBe` Right (RespSimpleString "PONG")
       closeClusterClient client
 
@@ -48,7 +48,7 @@ spec = describe "API Surface" $ do
       r1 `shouldBe` RespBulkString "value1"
 
       -- Refresh topology mid-session
-      refreshTopology client testConnector
+      refreshTopology client
 
       -- Commands after refresh still work
       _ <- runCmd client $ set "lifecycle-key2" "value2"

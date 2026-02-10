@@ -79,7 +79,7 @@ createTestClientWith f = createClusterClient (f defaultTestConfig) testConnector
 
 -- | Run a cluster command using the test connector
 runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
-runCmd client = runClusterCommandClient client testConnector
+runCmd client = runClusterCommandClient client
 
 -- | Flush all keys on all master nodes
 flushAllNodes :: ClusterClient PlainTextClient -> IO ()

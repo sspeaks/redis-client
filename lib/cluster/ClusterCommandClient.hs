@@ -6,23 +6,80 @@
 -- | Cluster-aware Redis command client with automatic slot routing, MOVED\/ASK
 -- redirection handling, and connection pooling.
 --
--- Use 'createClusterClient' to discover the initial topology from a seed node,
--- then execute commands with 'executeClusterCommand' (keyed) or
--- 'executeKeylessClusterCommand' (global commands like PING).
--- The 'ClusterCommandClient' monad also implements 'RedisCommands', providing
--- the same API as single-node usage with transparent cluster routing.
+-- == Quick Start
+--
+-- @
+-- -- Create a cluster client
+-- client <- 'createClusterClient' config connector
+--
+-- -- One-shot convenience wrappers (recommended for simple operations):
+-- 'clusterSet' client \"mykey\" \"myvalue\"
+-- result <- 'clusterGet' client \"mykey\"
+--
+-- -- For commands without a convenience wrapper:
+-- 'executeClusterCommand' client (pack \"mykey\") (lrange \"mykey\" 0 10)
+--
+-- -- Monadic style (for multi-command sequences):
+-- 'runClusterCommandClient' client $ do
+--   set \"key1\" \"val1\"
+--   set \"key2\" \"val2\"
+--   get \"key1\"
+--
+-- 'closeClusterClient' client
+-- @
+--
+-- == Choosing an Execution Style
+--
+-- * __Convenience wrappers__ ('clusterGet', 'clusterSet', 'clusterDel', …):
+--   Best for one-shot operations from @IO@. The key is specified once;
+--   routing and command execution are handled together. Keys are 'String',
+--   matching the 'RedisCommands' typeclass, so no manual packing is needed.
+--
+-- * __'executeClusterCommand'__: Low-level one-shot execution from @IO@.
+--   Use when you need a command that doesn't have a convenience wrapper.
+--   Requires the routing key as a 'ByteString' and the command as a
+--   'RedisCommandClient' action.
+--
+-- * __'runClusterCommandClient'__: Monadic interface implementing 'RedisCommands'.
+--   Best for multi-command sequences where you want the same familiar API as
+--   single-node Redis. Note: each command still routes independently; there are
+--   no multi-key transactions across slots.
 module ClusterCommandClient
   ( -- * Client Types
     ClusterClient (..),
     ClusterCommandClient,
-    ClusterClientState (..),
     ClusterError (..),
     ClusterConfig (..),
     -- * Client Lifecycle
     createClusterClient,
     closeClusterClient,
     refreshTopology,
-    -- * Running Commands
+    -- * Convenience Wrappers (one-shot, String keys)
+    -- | These combine routing and command execution so you specify the key once.
+    -- They accept 'String' keys (matching 'RedisCommands') and return
+    -- @IO (Either 'ClusterError' 'RespData')@.
+    clusterGet,
+    clusterSet,
+    clusterDel,
+    clusterPsetex,
+    clusterSetnx,
+    clusterIncr,
+    clusterDecr,
+    clusterExpire,
+    clusterTtl,
+    clusterExists,
+    clusterHset,
+    clusterHget,
+    clusterHdel,
+    clusterLpush,
+    clusterLrange,
+    clusterSadd,
+    clusterSmembers,
+    -- Keyless convenience wrappers
+    clusterPing,
+    clusterFlushAll,
+    clusterDbsize,
+    -- * Low-Level Command Execution
     runClusterCommandClient,
     executeClusterCommand,
     executeKeylessClusterCommand,
@@ -103,32 +160,33 @@ data ClusterClient client = ClusterClient
   { clusterTopology       :: TVar ClusterTopology,
     clusterConnectionPool :: ConnectionPool client,
     clusterConfig         :: ClusterConfig,
+    clusterConnector      :: Connector client,   -- ^ Connector factory used for all connections
     clusterRefreshLock    :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
   }
 
--- | State for ClusterCommandClient monad
-data ClusterClientState client = ClusterClientState
-  { getClusterClient :: ClusterClient client,
-    getConnector     :: Connector client
-  }
-
 -- | Monad for executing Redis commands on a cluster
--- Wraps StateT to abstract away the client state and connector
+-- Wraps StateT to abstract away the client state
 data ClusterCommandClient client a where
   ClusterCommandClient :: (Client client) =>
-    State.StateT (ClusterClientState client) IO a
+    State.StateT (ClusterClient client) IO a
     -> ClusterCommandClient client a
 
--- | Run a 'ClusterCommandClient' action with the given cluster client and connector function.
+-- | Run a sequence of Redis commands against the cluster using the 'RedisCommands'
+-- monad interface. Best for multi-command workflows where you want the familiar
+-- @get@\/@set@\/@del@ API with transparent cluster routing.
+--
+-- Each command within the monad routes independently to the correct node.
+-- There are no multi-key atomicity guarantees across slots.
+--
+-- For one-shot operations, prefer the convenience wrappers ('clusterGet',
+-- 'clusterSet', etc.) or 'executeClusterCommand'.
 runClusterCommandClient ::
   (Client client) =>
   ClusterClient client ->
-  Connector client ->
   ClusterCommandClient client a ->
   IO a
-runClusterCommandClient client connector (ClusterCommandClient action) = do
-  let state = ClusterClientState client connector
-  State.evalStateT action state
+runClusterCommandClient client (ClusterCommandClient action) =
+  State.evalStateT action client
 
 instance (Client client) => Functor (ClusterCommandClient client) where
   fmap :: (a -> b) -> ClusterCommandClient client a -> ClusterCommandClient client b
@@ -148,10 +206,10 @@ instance (Client client) => MonadIO (ClusterCommandClient client) where
   liftIO :: IO a -> ClusterCommandClient client a
   liftIO = ClusterCommandClient . liftIO
 
-instance (Client client) => State.MonadState (ClusterClientState client) (ClusterCommandClient client) where
-  get :: ClusterCommandClient client (ClusterClientState client)
+instance (Client client) => State.MonadState (ClusterClient client) (ClusterCommandClient client) where
+  get :: ClusterCommandClient client (ClusterClient client)
   get = ClusterCommandClient State.get
-  put :: ClusterClientState client -> ClusterCommandClient client ()
+  put :: ClusterClient client -> ClusterCommandClient client ()
   put = ClusterCommandClient . State.put
 
 instance (Client client) => MonadFail (ClusterCommandClient client) where
@@ -180,7 +238,7 @@ createClusterClient config connector = do
     Right initialTopology -> do
       topology <- newTVarIO initialTopology
       refreshLock <- newMVar ()
-      return $ ClusterClient topology pool config refreshLock
+      return $ ClusterClient topology pool config connector refreshLock
 
 -- | Close all pooled connections across every node.
 closeClusterClient :: (Client client) => ClusterClient client -> IO ()
@@ -193,14 +251,14 @@ closeClusterClient client = closePool (clusterConnectionPool client)
 refreshTopology ::
   (Client client) =>
   ClusterClient client ->
-  Connector client ->
   IO ()
-refreshTopology client connector = do
+refreshTopology client = do
   acquired <- tryTakeMVar (clusterRefreshLock client)
   case acquired of
     Nothing -> return ()  -- Another thread is already refreshing
     Just _  -> finally doRefresh (putMVar (clusterRefreshLock client) ())
   where
+    connector = clusterConnector client
     doRefresh = do
       let seedNode = clusterSeedNode (clusterConfig client)
       conn <- getOrCreateConnection (clusterConnectionPool client) seedNode connector
@@ -220,15 +278,14 @@ refreshTopology client connector = do
 refreshTopologyIfStale ::
   (Client client) =>
   ClusterClient client ->
-  Connector client ->
   IO ()
-refreshTopologyIfStale client connector = do
+refreshTopologyIfStale client = do
   topology <- readTVarIO (clusterTopology client)
   currentTime <- getCurrentTime
   let timeSinceUpdate = diffUTCTime currentTime (topologyUpdateTime topology)
       refreshInterval = fromIntegral (clusterTopologyRefreshInterval (clusterConfig client)) :: NominalDiffTime
   when (timeSinceUpdate >= refreshInterval) $ do
-    refreshTopology client connector
+    refreshTopology client
 
 -- | Detect MOVED or ASK errors from RespData
 detectRedirection :: RespData -> Maybe (Either RedirectionInfo RedirectionInfo)
@@ -240,24 +297,25 @@ detectRedirection (RespError msg) =
          Nothing -> Nothing
 detectRedirection _ = Nothing
 
--- | Execute a keyed Redis command with cluster-aware routing.
--- Computes the hash slot from @key@, routes to the owning node, and automatically
--- handles MOVED (triggers topology refresh + retry), ASK (retry at redirected node),
--- and transient errors (exponential backoff up to 'clusterMaxRetries').
--- Returns 'Left' 'ClusterError' only when all retries are exhausted.
+-- | Low-level one-shot command execution with explicit routing key.
+-- The @key@ ('ByteString') determines which cluster node receives the command.
+-- Handles MOVED\/ASK redirection and retries automatically.
+--
+-- For most common operations, prefer the convenience wrappers ('clusterGet',
+-- 'clusterSet', etc.) which accept 'String' keys and eliminate key duplication.
+-- Use this function for commands not covered by a wrapper.
 executeClusterCommand ::
   (Client client) =>
   ClusterClient client ->
   ByteString -> -- The key to determine routing
   RedisCommandClient client RespData ->
-  Connector client ->
   IO (Either ClusterError RespData)
-executeClusterCommand client key action connector = do
-  -- Refresh topology if it's stale
-  refreshTopologyIfStale client connector
+executeClusterCommand client key action = do
+  refreshTopologyIfStale client
   
+  let connector = clusterConnector client
   slot <- calculateSlot key
-  withRetryAndRefresh client connector (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ do
+  withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ do
     executeOnSlot client slot action connector
 
 -- | Execute a command on the node responsible for a given slot
@@ -273,7 +331,6 @@ executeOnSlot client slot action connector = do
   case findNodeForSlot topology slot of
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just nodeId -> do
-      -- Look up the node address from the topology
       case Map.lookup nodeId (topologyNodes topology) of
         Nothing -> return $ Left $ TopologyError $ "Node ID " ++ T.unpack nodeId ++ " not found in topology"
         Just node -> executeOnNodeWithRedirectionDetection client (nodeAddress node) action connector
@@ -321,11 +378,10 @@ executeKeylessClusterCommand ::
   (Client client) =>
   ClusterClient client ->
   RedisCommandClient client a ->
-  Connector client ->
   IO (Either ClusterError a)
-executeKeylessClusterCommand client action connector = do
+executeKeylessClusterCommand client action = do
+  let connector = clusterConnector client
   topology <- readTVarIO (clusterTopology client)
-  -- Find any master node to execute the command on
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
   case masterNodes of
     []       -> return $ Left $ TopologyError "No master nodes available"
@@ -347,12 +403,11 @@ executeKeylessClusterCommand client action connector = do
 withRetryAndRefresh ::
   (Client client) =>
   ClusterClient client ->
-  Connector client ->
   Int -> -- Max retries
   Int -> -- Initial delay (microseconds)
   IO (Either ClusterError a) ->
   IO (Either ClusterError a)
-withRetryAndRefresh client connector maxRetries initialDelay action = go 0 initialDelay
+withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay
   where
     go attempt delay
       | attempt >= maxRetries = return $ Left $ MaxRetriesExceeded $ "Max retries (" ++ show maxRetries ++ ") exceeded"
@@ -360,21 +415,16 @@ withRetryAndRefresh client connector maxRetries initialDelay action = go 0 initi
           result <- action
           case result of
             Left (TryAgainError _) -> do
-              -- Exponential backoff
               threadDelay delay
               go (attempt + 1) (delay * 2)
             Left (MovedError _ _) -> do
-              -- MOVED error indicates topology changed, refresh and retry
-              refreshTopology client connector
+              refreshTopology client
               go (attempt + 1) delay
             Left (AskError _ _) -> do
-              -- ASK is temporary, just retry without refresh
-              -- TODO: Implement ASKING command handling
               threadDelay delay
               go (attempt + 1) delay
             Left (ConnectionError _) -> do
-              -- Node may be down, refresh topology to discover new layout
-              refreshTopology client connector
+              refreshTopology client
               go (attempt + 1) delay
             Left err -> return $ Left err
             Right value -> return $ Right value
@@ -404,8 +454,8 @@ executeKeyedCommand ::
   RedisCommandClient client RespData ->
   ClusterCommandClient client (Either ClusterError RespData)
 executeKeyedCommand key action = do
-  ClusterClientState client connector <- State.get
-  liftIO $ executeClusterCommand client key action connector
+  client <- State.get
+  liftIO $ executeClusterCommand client key action
 
 -- | Internal helper to execute a keyless command within ClusterCommandClient monad
 executeKeylessCommand ::
@@ -413,8 +463,8 @@ executeKeylessCommand ::
   RedisCommandClient client a ->
   ClusterCommandClient client (Either ClusterError a)
 executeKeylessCommand action = do
-  ClusterClientState client connector <- State.get
-  liftIO $ executeKeylessClusterCommand client action connector
+  client <- State.get
+  liftIO $ executeKeylessClusterCommand client action
 
 -- | Helper to unwrap Either ClusterError or fail
 unwrapClusterResult :: (Client client) => Either ClusterError a -> ClusterCommandClient client a
@@ -491,3 +541,94 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   geosearch k from by opts = executeKeyed k (RedisCommandClient.geosearch k from by opts)
   geosearchstore dest src from by opts storeDist = executeKeyed dest (RedisCommandClient.geosearchstore dest src from by opts storeDist)
   clusterSlots = executeKeyless RedisCommandClient.clusterSlots
+
+-- ---------------------------------------------------------------------------
+-- Convenience wrappers: one-shot IO functions with String keys
+-- ---------------------------------------------------------------------------
+-- These eliminate the double-key problem by combining routing and command
+-- execution. Use these for simple one-shot operations from IO.
+
+-- | @clusterGet client key@ — retrieve the value of @key@.
+clusterGet :: (Client client) => ClusterClient client -> String -> IO (Either ClusterError RespData)
+clusterGet client key = executeClusterCommand client (BS.pack key) (RedisCommandClient.get key)
+
+-- | @clusterSet client key value@ — set @key@ to @value@.
+clusterSet :: (Client client) => ClusterClient client -> String -> String -> IO (Either ClusterError RespData)
+clusterSet client key val = executeClusterCommand client (BS.pack key) (RedisCommandClient.set key val)
+
+-- | @clusterDel client keys@ — delete one or more keys. Routed by the first key.
+clusterDel :: (Client client) => ClusterClient client -> [String] -> IO (Either ClusterError RespData)
+clusterDel client keys = case keys of
+  []    -> pure (Right (RespInteger 0))
+  (k:_) -> executeClusterCommand client (BS.pack k) (RedisCommandClient.del keys)
+
+-- | @clusterPsetex client key milliseconds value@ — set @key@ with a TTL in milliseconds.
+clusterPsetex :: (Client client) => ClusterClient client -> String -> Int -> String -> IO (Either ClusterError RespData)
+clusterPsetex client key ms val = executeClusterCommand client (BS.pack key) (RedisCommandClient.psetex key ms val)
+
+-- | @clusterSetnx client key value@ — set @key@ only if it does not already exist.
+clusterSetnx :: (Client client) => ClusterClient client -> String -> String -> IO (Either ClusterError RespData)
+clusterSetnx client key val = executeClusterCommand client (BS.pack key) (RedisCommandClient.setnx key val)
+
+-- | @clusterIncr client key@ — increment the integer value of @key@ by 1.
+clusterIncr :: (Client client) => ClusterClient client -> String -> IO (Either ClusterError RespData)
+clusterIncr client key = executeClusterCommand client (BS.pack key) (RedisCommandClient.incr key)
+
+-- | @clusterDecr client key@ — decrement the integer value of @key@ by 1.
+clusterDecr :: (Client client) => ClusterClient client -> String -> IO (Either ClusterError RespData)
+clusterDecr client key = executeClusterCommand client (BS.pack key) (RedisCommandClient.decr key)
+
+-- | @clusterExpire client key seconds@ — set a timeout on @key@.
+clusterExpire :: (Client client) => ClusterClient client -> String -> Int -> IO (Either ClusterError RespData)
+clusterExpire client key secs = executeClusterCommand client (BS.pack key) (RedisCommandClient.expire key secs)
+
+-- | @clusterTtl client key@ — get the remaining time to live of @key@ in seconds.
+clusterTtl :: (Client client) => ClusterClient client -> String -> IO (Either ClusterError RespData)
+clusterTtl client key = executeClusterCommand client (BS.pack key) (RedisCommandClient.ttl key)
+
+-- | @clusterExists client keys@ — check if one or more keys exist. Routed by the first key.
+clusterExists :: (Client client) => ClusterClient client -> [String] -> IO (Either ClusterError RespData)
+clusterExists client keys = case keys of
+  []    -> pure (Right (RespInteger 0))
+  (k:_) -> executeClusterCommand client (BS.pack k) (RedisCommandClient.exists keys)
+
+-- | @clusterHset client key field value@ — set a hash field.
+clusterHset :: (Client client) => ClusterClient client -> String -> String -> String -> IO (Either ClusterError RespData)
+clusterHset client key field val = executeClusterCommand client (BS.pack key) (RedisCommandClient.hset key field val)
+
+-- | @clusterHget client key field@ — get a hash field value.
+clusterHget :: (Client client) => ClusterClient client -> String -> String -> IO (Either ClusterError RespData)
+clusterHget client key field = executeClusterCommand client (BS.pack key) (RedisCommandClient.hget key field)
+
+-- | @clusterHdel client key fields@ — delete one or more hash fields.
+clusterHdel :: (Client client) => ClusterClient client -> String -> [String] -> IO (Either ClusterError RespData)
+clusterHdel client key fields = executeClusterCommand client (BS.pack key) (RedisCommandClient.hdel key fields)
+
+-- | @clusterLpush client key values@ — prepend values to a list.
+clusterLpush :: (Client client) => ClusterClient client -> String -> [String] -> IO (Either ClusterError RespData)
+clusterLpush client key vals = executeClusterCommand client (BS.pack key) (RedisCommandClient.lpush key vals)
+
+-- | @clusterLrange client key start stop@ — get a range of elements from a list.
+clusterLrange :: (Client client) => ClusterClient client -> String -> Int -> Int -> IO (Either ClusterError RespData)
+clusterLrange client key start stop = executeClusterCommand client (BS.pack key) (RedisCommandClient.lrange key start stop)
+
+-- | @clusterSadd client key members@ — add members to a set.
+clusterSadd :: (Client client) => ClusterClient client -> String -> [String] -> IO (Either ClusterError RespData)
+clusterSadd client key members = executeClusterCommand client (BS.pack key) (RedisCommandClient.sadd key members)
+
+-- | @clusterSmembers client key@ — get all members of a set.
+clusterSmembers :: (Client client) => ClusterClient client -> String -> IO (Either ClusterError RespData)
+clusterSmembers client key = executeClusterCommand client (BS.pack key) (RedisCommandClient.smembers key)
+
+-- | @clusterPing client@ — ping any master node.
+clusterPing :: (Client client) => ClusterClient client -> IO (Either ClusterError RespData)
+clusterPing client = executeKeylessClusterCommand client RedisCommandClient.ping
+
+-- | @clusterFlushAll client@ — flush all keys on one master.
+-- Note: in a cluster, this only affects the targeted node.
+clusterFlushAll :: (Client client) => ClusterClient client -> IO (Either ClusterError RespData)
+clusterFlushAll client = executeKeylessClusterCommand client RedisCommandClient.flushAll
+
+-- | @clusterDbsize client@ — get the number of keys on one master.
+clusterDbsize :: (Client client) => ClusterClient client -> IO (Either ClusterError RespData)
+clusterDbsize client = executeKeylessClusterCommand client RedisCommandClient.dbsize
