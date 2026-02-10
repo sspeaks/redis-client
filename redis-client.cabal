@@ -83,7 +83,6 @@ library cluster
                     , redis-command-client
                     , resp
                     , stm
-                    , text
                     , time
                     , vector
 
@@ -259,5 +258,4 @@ executable redis-client
                     , redis-command-client
                     , resp
                     , stm
-                    , text
                     , vector

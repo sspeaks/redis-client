@@ -83,7 +83,6 @@ import           Data.ByteString             (ByteString)
 import qualified Data.ByteString.Char8       as BS8
 import qualified Data.Map.Strict             as Map
 import           Data.Time.Clock             (NominalDiffTime, diffUTCTime, getCurrentTime)
-import qualified Data.Text                   as T
 import           Data.Word                   (Word16)
 import           RedisCommandClient          (ClientState (..),
                                               RedisCommandClient (..),
@@ -306,7 +305,7 @@ executeOnSlot client slot action connector = do
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just nodeId -> do
       case Map.lookup nodeId (topologyNodes topology) of
-        Nothing -> return $ Left $ TopologyError $ "Node ID " ++ T.unpack nodeId ++ " not found in topology"
+        Nothing -> return $ Left $ TopologyError $ "Node ID " ++ BS8.unpack nodeId ++ " not found in topology"
         Just node -> executeOnNodeWithRedirectionDetection client (nodeAddress node) action connector
 
 -- | Execute a command on a specific node

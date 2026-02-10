@@ -21,11 +21,11 @@ import           Control.Monad           (when)
 import qualified Control.Monad.State     as State
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
+import           Data.ByteString.Char8   (ByteString)
+import qualified Data.ByteString.Char8   as BS8
 import qualified Data.ByteString.Lazy    as LBS
 import           Data.Map.Strict         (Map)
 import qualified Data.Map.Strict         as Map
-import           Data.Text               (Text)
-import qualified Data.Text               as T
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
@@ -102,7 +102,7 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
 
     -- | Calculate which hash slots each master node is responsible for
     -- Returns a map from node ID to list of slot numbers
-    calculateSlotRangesPerMaster :: ClusterTopology -> [ClusterNode] -> Map Text [Word16]
+    calculateSlotRangesPerMaster :: ClusterTopology -> [ClusterNode] -> Map ByteString [Word16]
     calculateSlotRangesPerMaster _ masters =
       Map.fromList [(nodeId node, expandSlotRanges (nodeSlotsServed node)) | node <- masters]
 
@@ -115,7 +115,7 @@ executeJob ::
   (Client client) =>
   ClusterClient client ->
   Connector client ->
-  Map Text [Word16] ->
+  Map ByteString [Word16] ->
   Word64 ->
   Int ->                              -- Key size in bytes
   Int ->                              -- Value size in bytes
@@ -160,7 +160,7 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
                   slots = Map.findWithDefault [] nId slotRanges
 
               when (null slots) $ do
-                printf "Warning: Node %s has no assigned slots\n" (T.unpack nId)
+                printf "Warning: Node %s has no assigned slots\n" (BS8.unpack nId)
 
               -- Fill data for this node using its slots
               fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
