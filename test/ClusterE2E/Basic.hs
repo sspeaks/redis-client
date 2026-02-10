@@ -15,7 +15,7 @@ import           Test.Hspec
 spec :: Spec
 spec = describe "Basic cluster operations" $ do
     it "can connect to cluster and query topology" $ do
-      bracket createTestClusterClient closeClusterClient $ \client -> do
+      bracket createTestClusterClient closeClusterClient $ \_client -> do
         -- Just creating the client queries topology, so if we get here, it worked
         return ()
 
@@ -113,3 +113,20 @@ spec = describe "Basic cluster operations" $ do
             -- Verify we got some slot ranges
             length slots `shouldSatisfy` (> 0)
           other -> expectationFailure $ "Unexpected CLUSTER SLOTS response: " ++ show other
+
+    it "returns WRONGTYPE error for wrong command on key type" $ do
+      bracket createTestClusterClient closeClusterClient $ \client -> do
+        _ <- runCmd client $ set "cluster:wrongtype" "value"
+        result <- runCmd client $ lpush "cluster:wrongtype" ["item"]
+        case result of
+          RespError err -> err `shouldContain` "WRONGTYPE"
+          other -> expectationFailure $ "Expected WRONGTYPE error, got: " ++ show other
+
+    it "DEL removes keys in cluster" $ do
+      bracket createTestClusterClient closeClusterClient $ \client -> do
+        _ <- runCmd client $ set "cluster:deltest" "value"
+        getResult <- runCmd client $ get "cluster:deltest"
+        getResult `shouldBe` RespBulkString "value"
+        _ <- runCmd client $ del ["cluster:deltest"]
+        afterDel <- runCmd client $ get "cluster:deltest"
+        afterDel `shouldBe` RespNullBulkString

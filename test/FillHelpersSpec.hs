@@ -27,10 +27,10 @@ main = hspec $ do
               | BS.null bs = 0
               | otherwise = 
                   let marker = "*3\r\n$3\r\nSET\r\n"
-                      (_, after) = BS.breakSubstring marker bs
-                  in if BS.null after 
+                      (_, afterData) = BS.breakSubstring marker bs
+                  in if BS.null afterData 
                      then 0 
-                     else 1 + count (BS.drop (BS.length marker) after)
+                     else 1 + count (BS.drop (BS.length marker) afterData)
                      
         count strictResult `shouldBe` batchSize
 
@@ -41,9 +41,7 @@ main = hspec $ do
         LB.length result2 `shouldBe` (2 * LB.length result1)
 
       it "generates valid RESP structure for batch size 1" $ do
-        let keySize = 5
-            valSize = 5
-            -- Structure: *3\r\n$3\r\nSET\r\n$<keySize>\r\n<key>\r\n$<valSize>\r\n<val>\r\n
+        let -- Structure: *3\r\n$3\r\nSET\r\n$<keySize>\r\n<key>\r\n$<valSize>\r\n<val>\r\n
             -- Length = (4 + 4 + 5 + 1 + 1 + 2) + 5 + (2 + 1 + 1 + 2) + 5 + 2
             -- *3\r\n$3\r\nSET\r\n$5\r\n (17)
             -- key (5)
@@ -54,7 +52,7 @@ main = hspec $ do
             expectedLen = 35
             result = genRandomSet 1 5 5 12345
         LB.length result `shouldBe` expectedLen
-        let bs = LB.toStrict result
+        let _ = LB.toStrict result
         let expectedPrefix = Builder.toLazyByteString $ Builder.stringUtf8 "*3\r\n$3\r\nSET\r\n"
         LB.isPrefixOf expectedPrefix result `shouldBe` True
 
@@ -146,3 +144,24 @@ main = hspec $ do
       it "supports maximum value size of 524288 bytes" $ do
         let result = Builder.toLazyByteString $ generateBytes 524288 12345
         LB.length result `shouldBe` 524288
+
+    describe "Edge case sizes" $ do
+      it "generates correct size for 0 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 0 12345
+        LB.length result `shouldBe` 0
+
+      it "generates correct size for 7 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 7 12345
+        LB.length result `shouldBe` 7
+
+      it "generates correct size for 9 bytes" $ do
+        let result = Builder.toLazyByteString $ generateBytes 9 12345
+        LB.length result `shouldBe` 9
+
+    describe "Seed collision detection" $ do
+      it "different seeds produce different bytes for same size" $ do
+        let seeds = [0, 1, 2, 100, 999, 65535] :: [Word64]
+            results = map (\s -> Builder.toLazyByteString $ generateBytes 64 s) seeds
+            uniqueResults = length $ filter id [r1 /= r2 | (r1, i) <- zip results [0::Int ..], (r2, j) <- zip results [0..], i < j]
+        -- All pairs should differ
+        uniqueResults `shouldBe` length [(i,j) | i <- [0..length seeds - 1], j <- [0..length seeds - 1], i < j]

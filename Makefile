@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-e2e test-cluster-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
@@ -41,14 +41,14 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e test-cluster-e2e
+test: test-unit test-e2e test-cluster-e2e test-library-e2e
 
 # Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec, and FillHelpersSpec)
 test-unit:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec"
+	nix-shell --run "cabal build RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec && cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec"
 else
-	cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec
+	cabal build RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec && cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec
 endif
 
 # Run end-to-end tests with Docker
@@ -62,7 +62,7 @@ test-e2e:
 		echo "E2E tests require Nix to build the test container image"; \
 		exit 1; \
 	fi
-	./rune2eTests.sh
+	./scripts/run-e2e-tests.sh
 
 # Run cluster end-to-end tests with Docker
 test-cluster-e2e:
@@ -71,11 +71,20 @@ test-cluster-e2e:
 		exit 1; \
 	fi
 	@echo "Running cluster E2E tests..."
-	./runClusterE2ETests.sh
+	./scripts/run-cluster-e2e-tests.sh
+
+# Run library end-to-end tests with Docker
+test-library-e2e:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@echo "Running library E2E tests..."
+	./scripts/run-library-e2e-tests.sh
 
 # Start Redis with Docker Compose
 redis-start:
-	@docker compose up -d redis
+	@docker compose -f docker/docker-compose.yml up -d redis
 	@sleep 2
 
 # Start Redis Cluster with Docker Compose
@@ -86,7 +95,7 @@ redis-cluster-start:
 
 # Stop Redis
 redis-stop:
-	@docker compose stop redis
+	@docker compose -f docker/docker-compose.yml stop redis
 
 # Stop Redis Cluster
 redis-cluster-stop:

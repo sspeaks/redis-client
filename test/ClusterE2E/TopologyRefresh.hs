@@ -7,13 +7,13 @@ import           Cluster                    (ClusterTopology (..), NodeAddress (
 import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..), closeClusterClient, createClusterClient, refreshTopology)
 import           ClusterE2E.Utils
 import           ConnectionPool             (PoolConfig (..))
-import qualified ConnectionPool             (PoolConfig (useTLS))
+
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.Async   (mapConcurrently)
-import           Control.Concurrent.STM     (readTVarIO, atomically, writeTVar)
+import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
-import           Control.Monad              (when)
-import           Data.Time.Clock            (UTCTime, addUTCTime, getCurrentTime, diffUTCTime)
+
+
 import           RedisCommandClient         (RedisCommands (..))
 import           Resp                       (RespData (..))
 import           Test.Hspec
@@ -29,7 +29,7 @@ spec = describe "Topology refresh" $ do
                 { maxConnectionsPerNode = 1,
                   connectionTimeout = 5000,
                   maxRetries = 3,
-                  ConnectionPool.useTLS = False
+                  useTLS = False
                 },
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
@@ -87,7 +87,7 @@ spec = describe "Topology refresh" $ do
         time2 `shouldSatisfy` (> time1)
 
     it "topology remains consistent across multiple commands within refresh interval" $ do
-      let connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
+      let _connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
       bracket createTestClusterClient closeClusterClient $ \client -> do
         -- Get initial topology
@@ -117,7 +117,7 @@ spec = describe "Topology refresh" $ do
                 { maxConnectionsPerNode = 1,  -- Currently only 1 connection is used regardless
                   connectionTimeout = 5000,
                   maxRetries = 3,
-                  ConnectionPool.useTLS = False
+                  useTLS = False
                 },
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
@@ -161,7 +161,7 @@ spec = describe "Topology refresh" $ do
           other -> expectationFailure $ "Unexpected SET response: " ++ show other
 
     it "topology timestamp is preserved when refresh fails gracefully" $ do
-      let connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
+      let _connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
       bracket createTestClusterClient closeClusterClient $ \client -> do
         -- Get initial topology
@@ -170,7 +170,7 @@ spec = describe "Topology refresh" $ do
 
         -- We can't easily force a refresh failure without breaking the cluster,
         -- so we'll just verify that normal operations work and topology is valid
-        result <- runCmd client $ get "refresh:test:verification"
+        _result <- runCmd client $ get "refresh:test:verification"
         
         -- Topology should still be valid
         topology2 <- readTVarIO (clusterTopology client)

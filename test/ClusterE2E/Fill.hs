@@ -2,12 +2,12 @@
 
 module ClusterE2E.Fill (spec) where
 
-import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close, Client)
+import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close)
 import           Cluster                    (NodeAddress (..), NodeRole (..),
                                              ClusterNode (..), ClusterTopology (..), SlotRange(..))
 import           ClusterCommandClient       (closeClusterClient, clusterTopology)
 import           ClusterE2E.Utils
-import           ClusterSlotMapping         (getKeyForNode)
+import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)

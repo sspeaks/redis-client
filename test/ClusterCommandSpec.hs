@@ -5,6 +5,7 @@ module Main (main) where
 import ClusterCommandClient
 import Cluster (NodeAddress (..))
 import ConnectionPool (PoolConfig (..))
+import Data.Maybe (isJust)
 import Test.Hspec
 
 main :: IO ()
@@ -83,6 +84,14 @@ spec = do
         -- Current implementation splits on whitespace, so this might still work
         result `shouldSatisfy` isJust
 
+      it "handles port 0" $ do
+        let result = parseRedirectionError "MOVED" "MOVED 3999 127.0.0.1:0"
+        result `shouldBe` Just (RedirectionInfo 3999 "127.0.0.1" 0)
+
+      it "handles extra fields after host:port" $ do
+        let result = parseRedirectionError "MOVED" "MOVED 3999 127.0.0.1:6381 extra-data"
+        result `shouldBe` Just (RedirectionInfo 3999 "127.0.0.1" 6381)
+
   describe "ClusterError types" $ do
     it "creates MovedError correctly" $ do
       let err = MovedError 3999 (NodeAddress "127.0.0.1" 6381)
@@ -158,7 +167,3 @@ spec = do
           redir3 = RedirectionInfo 4000 "127.0.0.1" 6381
       redir1 `shouldBe` redir2
       redir1 `shouldNotBe` redir3
-
-isJust :: Maybe a -> Bool
-isJust Nothing = False
-isJust (Just _) = True

@@ -3,7 +3,7 @@
 
 set -e
 
-echo "Starting Redis Cluster E2E Tests..."
+echo "Starting Library E2E Tests..."
 
 # Navigate to docker-cluster directory
 cd docker-cluster
@@ -59,8 +59,8 @@ fi
 cd ..
 
 # Build the Docker image
-echo "Building cluster E2E test Docker image..."
-nix-build e2eClusterDockerImg.nix || {
+echo "Building library E2E test Docker image..."
+nix-build nix/library-e2e-docker.nix || {
     echo "Failed to build Docker image"
     cd docker-cluster
     docker compose down
@@ -68,11 +68,10 @@ nix-build e2eClusterDockerImg.nix || {
 }
 
 # Load the Docker image
-echo "Loading cluster E2E test Docker image..."
+echo "Loading library E2E test Docker image..."
 docker load < result
 
 # Get the actual network name created by docker compose
-# Docker compose prefixes the network name with the project name (usually the directory name)
 NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Name}}" | grep -E 'redis-cluster-net$' | head -n 1)
 
 if [ -z "$NETWORK_NAME" ]; then
@@ -82,15 +81,19 @@ if [ -z "$NETWORK_NAME" ]; then
   exit 1
 fi
 
-# Run the cluster E2E tests in Docker on the same network as the cluster
-echo "Running cluster E2E tests in Docker container on network $NETWORK_NAME..."
-docker run --network="$NETWORK_NAME" clustere2etests:latest  || {
+# Run the library E2E tests in Docker on the same network as the cluster
+# Mount Docker socket so tests can stop/start nodes for failure simulation
+echo "Running library E2E tests in Docker container on network $NETWORK_NAME..."
+docker run \
+  --network="$NETWORK_NAME" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  librarye2etests:latest || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
     cd docker-cluster
     docker compose down
     # Clean up docker image
-    docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
+    docker rmi $(docker images "librarye2etests:*" -q) 2>/dev/null || true
     rm -f result
     exit $EXIT_CODE
 }
@@ -100,7 +103,7 @@ echo "Cleaning up..."
 cd docker-cluster
 docker compose down
 cd ..
-docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
+docker rmi $(docker images "librarye2etests:*" -q) 2>/dev/null || true
 rm -f result
 
-echo "Cluster E2E tests completed successfully!"
+echo "Library E2E tests completed successfully!"

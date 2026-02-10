@@ -2,29 +2,34 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Resp where
+-- | Serialization and parsing for the Redis Serialization Protocol (RESP).
+-- Supports RESP2 and RESP3 wire types including bulk strings, arrays, maps, and sets.
+module Resp
+  ( RespData (..)
+  , Encodable (..)
+  , parseRespData
+  , parseStrict
+  ) where
 
 import           Control.Applicative              ((<|>))
 import qualified Data.Attoparsec.ByteString       as StrictParse
 import qualified Data.Attoparsec.ByteString.Char8 as Char8
-import qualified Data.Attoparsec.ByteString.Lazy  as Lazy
 import           Data.ByteString.Builder          as Builder (Builder,
-                                                              byteString,
                                                               lazyByteString)
 import qualified Data.ByteString.Char8            as SB8
 import qualified Data.ByteString.Lazy             as BS
 import qualified Data.ByteString.Lazy.Char8       as B8
-import           Data.List                        (intercalate)
 import qualified Data.Map                         as M
 import qualified Data.Set                         as S
 import qualified Data.String                      as BS
 
+-- | A value in the RESP wire protocol. Each constructor corresponds to a RESP type prefix.
 data RespData where
   RespSimpleString :: !String -> RespData
   RespError :: !String -> RespData
   RespInteger :: !Integer -> RespData
   RespBulkString :: !B8.ByteString -> RespData
-  RespNullBilkString :: RespData
+  RespNullBulkString :: RespData
   RespArray :: ![RespData] -> RespData
   RespMap :: !(M.Map RespData RespData) -> RespData
   RespSet :: !(S.Set RespData) -> RespData
@@ -32,29 +37,21 @@ data RespData where
 
 instance Show RespData where
   show :: RespData -> String
-  show (RespSimpleString !s) = s
-  show (RespError !s) = "ERROR: " <> s
-  show (RespInteger !i) = show i
-  show (RespBulkString !s) = B8.unpack s
-  show RespNullBilkString = "NULL"
-  show (RespArray !xs) = intercalate "\n" (map show xs)
-  show (RespSet !s) = intercalate "\n" (map show (S.toList s))
-  show (RespMap !m) = intercalate "\n" (map showPair (M.toList m))
-    where
-      showPair (k, v) = show k <> ": " <> show v
+  show = B8.unpack . byteShow
 
 byteShow :: RespData -> BS.ByteString
 byteShow (RespSimpleString !s) = BS.fromString s
 byteShow (RespError !s) = "ERROR: " <> BS.fromString s
 byteShow (RespInteger !i) = BS.fromString . show $ i
 byteShow (RespBulkString !s) = s
-byteShow RespNullBilkString = "NULL"
+byteShow RespNullBulkString = "NULL"
 byteShow (RespArray !xs) = BS.intercalate "\n" (map byteShow xs)
 byteShow (RespSet !s) = BS.intercalate "\n" (map byteShow (S.toList s))
 byteShow (RespMap !m) = BS.intercalate "\n" (map showPair (M.toList m))
   where
     showPair (k, v) = byteShow k <> ": " <> byteShow v
 
+-- | Types that can be serialized to the RESP wire format.
 class Encodable a where
   encode :: a -> Builder.Builder
 
@@ -64,14 +61,15 @@ instance Encodable RespData where
   encode (RespError !s) = Builder.lazyByteString $ B8.concat ["-", B8.pack s, "\r\n"]
   encode (RespInteger !i) = Builder.lazyByteString $ B8.concat [":", B8.pack . show $ i, "\r\n"]
   encode (RespBulkString !s) = Builder.lazyByteString $ B8.concat ["$", B8.pack . show . B8.length $ s, "\r\n", s, "\r\n"]
-  encode RespNullBilkString = Builder.lazyByteString "$-1\r\n"
+  encode RespNullBulkString = Builder.lazyByteString "$-1\r\n"
   encode (RespArray !xs) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ length xs, "\r\n"]) <> foldMap encode xs
   encode (RespSet !s) = Builder.lazyByteString (B8.concat ["~", B8.pack . show $ S.size s, "\r\n"]) <> foldMap encode (S.toList s)
   encode (RespMap !m) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ M.size m, "\r\n"]) <> foldMap encodePair (M.toList m)
     where
       encodePair (k, v) = encode k <> encode v
 
--- Parser for RespData
+-- | Attoparsec parser for a single RESP value. Can be composed with other parsers
+-- or used with 'parseStrict' for one-shot parsing.
 parseRespData :: Char8.Parser RespData
 parseRespData =
   Char8.anyChar >>= \case
@@ -118,7 +116,7 @@ parseNullBulkString = do
   _ <- Char8.char '-'
   _ <- Char8.char '1'
   _ <- Char8.endOfLine
-  return RespNullBilkString
+  return RespNullBulkString
 
 parseArray :: Char8.Parser RespData
 parseArray = do

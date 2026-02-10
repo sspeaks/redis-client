@@ -1,49 +1,40 @@
-module ClusterSlotMapping where
+{-# LANGUAGE TemplateHaskell #-}
 
-import qualified Data.ByteString as BS
+-- | Static mapping from Redis cluster hash slots to hash tags.
+-- The mapping is fully resolved at compile time via Template Haskell,
+-- so no parsing or file I/O occurs at runtime.
+module ClusterSlotMapping
+  ( SlotMapping
+  , slotMappings
+  ) where
+
 import qualified Data.ByteString.Char8 as BSC
+import           Data.FileEmbed (embedFile)
 import qualified Data.Vector as V
 import           Data.Vector (Vector)
-import           Data.Word (Word16)
 import qualified Data.Map.Strict as Map
-import           Cluster (ClusterNode, nodeSlotsServed, SlotRange(..))
-import           System.IO.Unsafe (unsafePerformIO)
+import           Data.Word (Word16)
 
-type SlotMapping = Vector BS.ByteString
+-- | Type alias for the slot-to-hash-tag lookup vector.
+-- Index by slot number (0–16383) to get the corresponding hash tag 'ByteString'.
+type SlotMapping = Vector BSC.ByteString
 
+-- | Pre-computed mapping from slot number (0-16383) to hash tag.
+-- The raw file is embedded at compile time; the Vector is constructed
+-- once on first access and shared thereafter (top-level CAF).
 {-# NOINLINE slotMappings #-}
 slotMappings :: SlotMapping
-slotMappings = unsafePerformIO $ do
-  -- Hardcoded path as used in all previous call sites
-  content <- readFile "cluster_slot_mapping.txt"
-  let entries = map parseLine $ lines content
+slotMappings =
+  let raw = $(embedFile "data/cluster_slot_mapping.txt")
+      entries = map parseLine $ BSC.lines raw
       validEntries = [(slot, tag) | Just (slot, tag) <- entries]
       entryMap = Map.fromList validEntries
-  -- Create a vector of 16384 slots, empty ByteString for missing entries
-  return $ V.generate 16384 (\i -> Map.findWithDefault BS.empty (fromIntegral i) entryMap)
+  in V.generate 16384 (\i -> Map.findWithDefault BSC.empty (fromIntegral i) entryMap)
   where
-    parseLine :: String -> Maybe (Word16, BS.ByteString)
+    parseLine :: BSC.ByteString -> Maybe (Word16, BSC.ByteString)
     parseLine line =
-      case words line of
-        [slotStr, tag] -> case reads slotStr of
-          [(slot, "")] -> Just (slot, BSC.pack tag)
+      case BSC.words line of
+        [slotStr, tag] -> case reads (BSC.unpack slotStr) of
+          [(slot, "")] -> Just (slot, tag)
           _            -> Nothing
         _ -> Nothing
-
--- | Generates a key that maps to the specified slot using the global mappings.
--- The key format is "{hashtag}:<suffix>"
-getKeyForSlot :: Word16 -> String -> BS.ByteString
-getKeyForSlot slot suffix =
-    let hashTag = slotMappings V.! fromIntegral slot
-    in if BS.null hashTag
-       then error $ "No hash tag found for slot " ++ show slot
-       else BSC.pack $ "{" ++ BSC.unpack hashTag ++ "}:" ++ suffix
-
--- | Generates a key that maps to the specified node.
--- Examples:
--- getKeyForNode node "mykey"
-getKeyForNode :: ClusterNode -> String -> BS.ByteString
-getKeyForNode node suffix =
-    case nodeSlotsServed node of
-        [] -> error "Node serves no slots"
-        (range:_) -> getKeyForSlot (slotStart range) suffix

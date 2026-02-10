@@ -1,5 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+-- | Redis cluster topology model and slot routing.
+--
+-- Provides types for representing cluster nodes, slot ranges, and the full topology,
+-- plus functions to compute hash slots, parse @CLUSTER SLOTS@ responses, and look up
+-- which node owns a given slot.
 module Cluster
   ( ClusterNode (..),
     SlotRange (..),
@@ -16,7 +21,7 @@ where
 import           Crc16                      (crc16)
 import           Data.ByteString            (ByteString)
 import qualified Data.ByteString            as BS
-import qualified Data.ByteString.Char8      as BSC
+
 import qualified Data.ByteString.Lazy.Char8 as LBSC
 import           Data.Map.Strict            (Map)
 import qualified Data.Map.Strict            as Map
@@ -32,14 +37,14 @@ import           Resp                       (RespData (..))
 data NodeRole = Master | Replica
   deriving (Show, Eq)
 
--- | Node address for connection
+-- | Network address for connecting to a cluster node.
 data NodeAddress = NodeAddress
   { nodeHost :: String,
     nodePort :: Int
   }
   deriving (Show, Eq, Ord)
 
--- | Represents a cluster node with its metadata
+-- | A cluster node with its identity, address, role, and slot assignments.
 data ClusterNode = ClusterNode
   { nodeId          :: Text,
     nodeAddress     :: NodeAddress,
@@ -49,7 +54,7 @@ data ClusterNode = ClusterNode
   }
   deriving (Show, Eq)
 
--- | Represents a range of slots and the nodes serving them
+-- | A contiguous range of hash slots and the nodes responsible for them.
 data SlotRange = SlotRange
   { slotStart    :: Word16, -- 0-16383
     slotEnd      :: Word16,
@@ -58,7 +63,8 @@ data SlotRange = SlotRange
   }
   deriving (Show, Eq)
 
--- | Complete cluster topology
+-- | Full snapshot of the cluster topology: a fast O(1) slot-to-node vector,
+-- a map of all known nodes, and the time the snapshot was taken.
 data ClusterTopology = ClusterTopology
   { topologySlots      :: Vector Text, -- 16384 slots, each mapped to node ID
     topologyNodes      :: Map Text ClusterNode, -- Node ID -> full node details
@@ -66,8 +72,8 @@ data ClusterTopology = ClusterTopology
   }
   deriving (Show)
 
--- | Calculate the hash slot for a given key
--- Uses the existing CRC16 implementation which already computes mod 16384
+-- | Calculate the hash slot (0–16383) for a Redis key.
+-- Respects hash tags: if the key starts with @{tag}@, only @tag@ is hashed.
 calculateSlot :: ByteString -> IO Word16
 calculateSlot key = do
   let hashKey = extractHashTag key
@@ -96,7 +102,8 @@ extractHashTag key =
               | otherwise -> key
       | otherwise -> key
 
--- | Parse CLUSTER SLOTS response into ClusterTopology
+-- | Parse the RESP response from @CLUSTER SLOTS@ into a 'ClusterTopology'.
+-- Returns 'Left' with an error message if the response format is unexpected.
 parseClusterSlots :: RespData -> UTCTime -> Either String ClusterTopology
 parseClusterSlots (RespArray slots) currentTime = do
   ranges <- mapM parseSlotRange slots
@@ -155,7 +162,8 @@ parseClusterSlots (RespArray slots) currentTime = do
             else Map.insert nodeId (ClusterNode nodeId addr role [range] []) nm
 parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ show other
 
--- | Find the node responsible for a given slot
+-- | Look up the master node ID responsible for a given slot.
+-- Returns 'Nothing' if the slot is out of range (≥ 16384).
 findNodeForSlot :: ClusterTopology -> Word16 -> Maybe Text
 findNodeForSlot topology slot
   | slot < 16384 = Just $ topologySlots topology V.! fromIntegral slot

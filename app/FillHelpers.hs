@@ -4,6 +4,10 @@ module FillHelpers
   ( generateBytes
   , generateBytesWithHashTag
   , randomNoise
+  , lcgMultiplier
+  , lcgIncrement
+  , nextLCG
+  , threadSeedSpacing
   ) where
 
 import           Data.Bits               (shiftR)
@@ -19,7 +23,7 @@ randomNoise :: BS.ByteString
 randomNoise = fst $ BS.unfoldrN (128 * 1024 * 1024) step 0
   where
     step :: Word64 -> Maybe (Word8, Word64)
-    step !s = Just (fromIntegral (s `shiftR` 56), s * 6364136223846793005 + 1442695040888963407)
+    step !s = Just (fromIntegral (s `shiftR` 56), nextLCG s)
 {-# NOINLINE randomNoise #-}
 
 -- | Generate arbitrary number of bytes efficiently
@@ -32,7 +36,7 @@ generateBytes size !s
       in Builder.byteString (BS.take size seedBS)
   | otherwise =
       -- For larger keys, use seed + noise
-      let !scrambled = s * 6364136223846793005 + 1442695040888963407
+      let !scrambled = nextLCG s
           !noiseSize = size - 8
           -- Ensure we don't exceed the noise buffer size
           !bufferSize = 128 * 1024 * 1024
@@ -57,10 +61,29 @@ generateBytesWithHashTag size hashTag !seed
          then generateBytes size seed  -- Fall back if prefix too large
          else
            let !paddingNeeded = size - totalPrefixLen
-               !scrambled = seed * 6364136223846793005 + 1442695040888963407
+               !scrambled = nextLCG seed
                !bufferSize = 128 * 1024 * 1024
                !safePaddingSize = min paddingNeeded bufferSize
                !offset = fromIntegral (scrambled `rem` fromIntegral (bufferSize - safePaddingSize))
                !padding = BS.take paddingNeeded (BS.drop offset randomNoise)
            in prefix <> Builder.word64LE seed <> Builder.byteString padding
 {-# INLINE generateBytesWithHashTag #-}
+
+-- | LCG multiplier (PCG-family constant)
+lcgMultiplier :: Word64
+lcgMultiplier = 6364136223846793005
+{-# INLINE lcgMultiplier #-}
+
+-- | LCG increment (PCG-family constant)
+lcgIncrement :: Word64
+lcgIncrement = 1442695040888963407
+{-# INLINE lcgIncrement #-}
+
+-- | Advance the LCG state by one step
+nextLCG :: Word64 -> Word64
+nextLCG !s = s * lcgMultiplier + lcgIncrement
+{-# INLINE nextLCG #-}
+
+-- | Spacing between seeds for different threads to prevent overlap (1 billion keys ~ 1TB data)
+threadSeedSpacing :: Word64
+threadSeedSpacing = 1000000000

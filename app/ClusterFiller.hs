@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module ClusterFiller
   ( fillClusterWithData
@@ -13,6 +12,7 @@ import           Cluster                 (ClusterNode (..),
                                           SlotRange (..))
 import           ClusterCommandClient    (ClusterClient (..))
 import           ClusterSlotMapping      (slotMappings)
+import           Connector               (Connector)
 import           Control.Concurrent      (MVar, forkIO, newEmptyMVar, putMVar,
                                           takeMVar, threadDelay)
 import           Control.Concurrent.STM  (readTVarIO)
@@ -29,8 +29,11 @@ import qualified Data.Text               as T
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
+import           Filler                  (sendChunkedFill)
+import           Data.List               (find)
 import           FillHelpers             (generateBytes,
-                                          generateBytesWithHashTag)
+                                          generateBytesWithHashTag, nextLCG,
+                                          threadSeedSpacing)
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
@@ -43,7 +46,7 @@ import           Text.Printf             (printf)
 fillClusterWithData ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   Int ->              -- Total GB to fill
   Int ->              -- Threads per node
   Word64 ->           -- Base seed for randomness
@@ -88,14 +91,14 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
     -- Distributes the node's workload across multiple threads
     -- Uses MB instead of key counts to match standalone behavior
     createJobsForNode :: Int -> Int -> Int -> (Int, ClusterNode) -> [(NodeAddress, Int, Int)]
-    createJobsForNode baseMB remainder threadsPerNode (nodeIdx, node) =
+    createJobsForNode baseMB remainder tpn (nodeIdx, node) =
       let mbForThisNode = baseMB + (if nodeIdx < remainder then 1 else 0)
-          mbPerThread = mbForThisNode `div` threadsPerNode
-          threadRemainder = mbForThisNode `mod` threadsPerNode
+          mbPerThread = mbForThisNode `div` tpn
+          threadRemainder = mbForThisNode `mod` tpn
       in [(nodeAddress node,
            threadIdx,
            mbPerThread + (if threadIdx < threadRemainder then 1 else 0))
-         | threadIdx <- [0..threadsPerNode - 1]]
+         | threadIdx <- [0..tpn - 1]]
 
     -- | Calculate which hash slots each master node is responsible for
     -- Returns a map from node ID to list of slot numbers
@@ -111,7 +114,7 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
 executeJob ::
   (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   Map Text [Word16] ->
   Word64 ->
   Int ->                              -- Key size in bytes
@@ -175,10 +178,7 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
     -- | Find a cluster node by its address
     -- Returns the first node matching the address, or Nothing if not found
     findNodeByAddress :: [ClusterNode] -> NodeAddress -> Maybe ClusterNode
-    findNodeByAddress nodes nodeAddr =
-      case [n | n <- nodes, nodeAddress n == nodeAddr] of
-        (n:_) -> Just n
-        []    -> Nothing
+    findNodeByAddress nodes nodeAddr = find (\n -> nodeAddress n == nodeAddr) nodes
 
 -- | Fill a specific node with data using its assigned slots
 -- Uses MB for finer-grained allocation, matching standalone mode behavior
@@ -200,46 +200,19 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipeli
   let !slotsVec = VU.fromList slots
 
   -- Deterministic seed for this thread
-  let threadSeed = baseSeed + (fromIntegral threadIdx * 1000000000)
+  let threadSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
+      genChunk batchSize seed = generateClusterChunk slotsVec batchSize keySize valueSize seed
 
   -- Wrap in exception handler and timeout
   catch (do
-    -- Client state for running commands
     let clientState = ClientState conn BS.empty
         fillAction = do
-          -- Turn off client replies for maximum throughput (fire-and-forget)
           _ <- clientReply OFF
-
-          -- Calculate total commands needed based on actual data size
-          -- Each command stores: keySize bytes (key) + valueSize bytes (value)
-          let bytesPerCommand = keySize + valueSize
-              totalBytesNeeded = mbToFill * 1024 * 1024  -- Convert MB to bytes
-              totalCommandsNeeded = (totalBytesNeeded + bytesPerCommand - 1) `div` bytesPerCommand  -- Ceiling division
-              
-              -- Calculate chunks and remainder for exact distribution
-              fullChunks = totalCommandsNeeded `div` pipelineBatchSize
-              remainderCommands = totalCommandsNeeded `mod` pipelineBatchSize
-
-          -- Generate and send all full chunks
-          mapM_ (\chunkIdx -> do
-              ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotsVec pipelineBatchSize keySize valueSize (threadSeed + fromIntegral chunkIdx)
-              send client cmd
-            ) [0..fullChunks - 1]
-          
-          -- Send the remainder chunk if there is one
-          when (remainderCommands > 0) $ do
-              ClientState client _ <- State.get
-              let cmd = generateClusterChunk slotsVec remainderCommands keySize valueSize (threadSeed + fromIntegral fullChunks)
-              send client cmd
-
-          -- Turn replies back on
+          sendChunkedFill genChunk mbToFill pipelineBatchSize (keySize + valueSize) threadSeed
           _ <- clientReply ON
           _ <- dbsize
           return ()
 
-    -- Run the fill action with a 10 minute timeout (600 seconds)
-    -- This is generous but prevents indefinite hangs
     result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState
     case result of
       Just _ -> return ()
@@ -286,8 +259,8 @@ generateClusterChunk slots batchSize keySize valueSize seed =
           !hashTag = slotMappings `V.unsafeIndex` fromIntegral slot
 
           !keySeed = s
-          !valSeed = s * 6364136223846793005 + 1442695040888963407
-          !nextSeed = valSeed * 6364136223846793005 + 1442695040888963407
+          !valSeed = nextLCG s
+          !nextSeed = nextLCG valSeed
 
           !keyData = generateBytesWithHashTag keySize hashTag keySeed
           !valData = generateBytes valueSize valSeed

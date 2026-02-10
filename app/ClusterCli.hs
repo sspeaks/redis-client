@@ -10,36 +10,26 @@ import           Client                     (Client (receive, send))
 import           ClusterCommandClient       (ClusterClientState (..),
                                              ClusterError (..))
 import qualified ClusterCommandClient
-import           ClusterCommands            (keylessCommands,
-                                             requiresKeyCommands)
+import           ClusterCommands            (CommandRouting (..),
+                                             classifyCommand)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS
 import qualified Data.ByteString.Lazy.Char8 as BSC
-import           Data.Char                  (toUpper)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
 
 -- | Route and execute command parts via ClusterCommandClient
--- Uses explicit command lists to determine routing strategy
 routeAndExecuteCommand :: (Client client) => [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 routeAndExecuteCommand [] = return $ Left "Empty command"
 routeAndExecuteCommand (cmd:args) = do
-  let cmdUpper = BS.map toUpper cmd  -- Commands are ASCII, so toUpper is safe
-      cmdStr = BS.unpack cmd
-  -- Route based on command type using explicit lists
-  -- Keyless commands (no key argument) - route to any master
-  if cmdUpper `elem` keylessCommands
-    then executeKeylessCommand (cmd:args)
-    -- Keyed commands (first argument is the key) - route by key slot
-    else case args of
-      [] -> if cmdUpper `elem` requiresKeyCommands
-              then return $ Left $ "Command " ++ cmdStr ++ " requires a key argument"
-              else executeKeylessCommand (cmd:args)  -- Unknown command without args, try keyless
-      (key:_) -> executeKeyedCommand key (cmd:args)
+  case classifyCommand cmd args of
+    KeylessRoute   -> executeKeylessCommand (cmd:args)
+    KeyedRoute key -> executeKeyedCommand key (cmd:args)
+    CommandError e -> return $ Left e
 
 -- | Execute a keyless command (routing to any master node)
 executeKeylessCommand :: (Client client) => [BS.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)

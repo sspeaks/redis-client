@@ -12,32 +12,33 @@ import           Data.Attoparsec.ByteString (parseOnly)
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Lazy.Char8 as BSC
-import           Data.List                  (foldl', isInfixOf)
+import           Data.List                  (isInfixOf)
+import           E2EHelpers                 (cleanupProcess, drainHandle,
+                                             getRedisClientPath,
+                                             waitForSubstring)
+import           AppConfig                  (RunState (..),
+                                             runCommandsAgainstPlaintextHost)
 import           RedisCommandClient         (ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),
                                              GeoSearchFrom (..),
                                              GeoSearchOption (..), GeoUnit (..),
                                              RedisCommandClient,
-                                             RedisCommands (..), RunState (..),
-                                             parseManyWith,
-                                             runCommandsAgainstPlaintextHost)
+                                             RedisCommands (..),
+                                             parseManyWith)
 import           Resp                       (Encodable (encode), RespData (..),
                                              parseRespData)
-import           System.Directory           (doesFileExist, findExecutable)
-import           System.Environment         (getEnvironment, getExecutablePath)
+import           System.Environment         (getEnvironment)
 import           System.Exit                (ExitCode (..))
-import           System.FilePath            (takeDirectory, (</>))
-import           System.IO                  (BufferMode (LineBuffering), Handle,
+import           System.IO                  (BufferMode (LineBuffering),
                                              hClose, hFlush, hGetContents,
-                                             hGetLine, hIsTerminalDevice,
-                                             hPutStrLn, hSetBuffering, isEOF,
-                                             stdin, stdout)
-import           System.Process             (CreateProcess (..), ProcessHandle,
+                                             hPutStrLn,
+                                             hSetBuffering)
+import           System.Process             (CreateProcess (..),
                                              StdStream (CreatePipe),
-                                             getProcessExitCode, proc,
+                                             proc,
                                              readCreateProcessWithExitCode,
-                                             terminateProcess, waitForProcess,
+                                             waitForProcess,
                                              withCreateProcess)
 import           System.Timeout             (timeout)
 import           Test.Hspec                 (beforeAll_, before_, describe,
@@ -64,42 +65,6 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , numProcesses = Nothing
   , processIndex = Nothing
   })
-
-getRedisClientPath :: IO FilePath
-getRedisClientPath = do
-  execPath <- getExecutablePath
-  let binDir = takeDirectory execPath
-      sibling = binDir </> "redis-client"
-  siblingExists <- doesFileExist sibling
-  if siblingExists
-    then return sibling
-    else do
-      found <- findExecutable "redis-client"
-      case found of
-        Just path -> return path
-        Nothing -> error $ "Could not locate redis-client executable starting from " <> binDir
-
-cleanupProcess :: ProcessHandle -> IO ()
-cleanupProcess ph = do
-  _ <- (try (terminateProcess ph) :: IO (Either IOException ()))
-  _ <- (try (waitForProcess ph) :: IO (Either IOException ExitCode))
-  pure ()
-
-waitForSubstring :: Handle -> String -> IO ()
-waitForSubstring handle needle = do
-  line <- hGetLine handle
-  if needle `isInfixOf` line
-    then pure ()
-    else waitForSubstring handle needle
-
-drainHandle :: Handle -> IO String
-drainHandle handle = do
-  result <- try (hGetContents handle) :: IO (Either IOException String)
-  case result of
-    Left _ -> pure ""
-    Right contents -> do
-      void $ evaluate (length contents)
-      pure contents
 
 main :: IO ()
 main = do
@@ -141,11 +106,11 @@ main = do
           runRedisAction (set "mget:key1" "value1") `shouldReturn` RespSimpleString "OK"
           runRedisAction (set "mget:key2" "value2") `shouldReturn` RespSimpleString "OK"
           runRedisAction (mget ["mget:key1", "mget:key2", "mget:missing"]) `shouldReturn`
-            RespArray [RespBulkString "value1", RespBulkString "value2", RespNullBilkString]
+            RespArray [RespBulkString "value1", RespBulkString "value2", RespNullBulkString]
         it "del is encoded properly and deletes the key" $ do
           runRedisAction (set "testKey" "testValue") `shouldReturn` RespSimpleString "OK"
           runRedisAction (del ["testKey"]) `shouldReturn` RespInteger 1
-          runRedisAction (get "testKey") `shouldReturn` RespNullBilkString
+          runRedisAction (get "testKey") `shouldReturn` RespNullBulkString
         it "exists is encoded properly and checks if the key exists" $ do
           runRedisAction (set "testKey" "testValue") `shouldReturn` RespSimpleString "OK"
           runRedisAction (exists ["testKey"]) `shouldReturn` RespInteger 1
@@ -180,7 +145,7 @@ main = do
           runRedisAction (hset "hash:multi" "field1" "value1") `shouldReturn` RespInteger 1
           runRedisAction (hset "hash:multi" "field2" "value2") `shouldReturn` RespInteger 1
           runRedisAction (hmget "hash:multi" ["field1", "field2", "missing"]) `shouldReturn`
-            RespArray [RespBulkString "value1", RespBulkString "value2", RespNullBilkString]
+            RespArray [RespBulkString "value1", RespBulkString "value2", RespNullBulkString]
         it "hexists indicates whether a hash field exists" $ do
           runRedisAction (hset "hash:exists" "field" "value") `shouldReturn` RespInteger 1
           runRedisAction (hexists "hash:exists" "field") `shouldReturn` RespInteger 1
@@ -211,7 +176,7 @@ main = do
         it "hdel is encoded properly and works correctly" $ do
           runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
           runRedisAction (hdel "myhash" ["field1"]) `shouldReturn` RespInteger 1
-          runRedisAction (hget "myhash" "field1") `shouldReturn` RespNullBilkString
+          runRedisAction (hget "myhash" "field1") `shouldReturn` RespNullBulkString
         it "hkeys is encoded properly and works correctly" $ do
           runRedisAction (hset "myhash" "field1" "value1") `shouldReturn` RespInteger 1
           runRedisAction (hset "myhash" "field2" "value2") `shouldReturn` RespInteger 1
@@ -252,9 +217,9 @@ main = do
 
         it "fill with pipeline batch size flag works correctly" $ do
           -- Just test that the flag doesn't crash the program and data is written.
-          redisClient <- getRedisClientPath
+          redisClientPath <- getRedisClientPath
           (code, _, _) <- readCreateProcessWithExitCode
-            (proc redisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f"])
+            (proc redisClientPath ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f"])
             ""
           code `shouldBe` ExitSuccess
           -- Simple check that some data was written.
@@ -328,22 +293,42 @@ main = do
               member2 `shouldBe` "Palermo"
             _ -> expectationFailure $ "Unexpected GEOSEARCHSTORE ZRANGE response: " <> show storeResult
 
+        it "returns error when using wrong command for key type" $ do
+          runRedisAction (set "string:key" "value") `shouldReturn` RespSimpleString "OK"
+          resp <- runRedisAction (lpush "string:key" ["item"])
+          case resp of
+            RespError err -> err `shouldSatisfy` ("WRONGTYPE" `isInfixOf`)
+            _ -> expectationFailure $ "Expected WRONGTYPE error, got: " <> show resp
+
+        it "returns error for GET on non-existent key" $ do
+          runRedisAction (get "nonexistent:key") `shouldReturn` RespNullBulkString
+
+        it "TTL decrements over time" $ do
+          runRedisAction (set "ttl:key" "value") `shouldReturn` RespSimpleString "OK"
+          runRedisAction (expire "ttl:key" 100) `shouldReturn` RespInteger 1
+          t1 <- runRedisAction (ttl "ttl:key")
+          threadDelay 1100000 -- 1.1 seconds
+          t2 <- runRedisAction (ttl "ttl:key")
+          case (t1, t2) of
+            (RespInteger a, RespInteger b) -> a `shouldSatisfy` (> b)
+            _ -> expectationFailure $ "Expected integers, got: " <> show (t1, t2)
+
       describe "Pipelining works: " $ do
         it "can pipeline 100 commands and retrieve their values" $ do
           runRedisAction
             ( do
                 ClientState client _ <- State.get
-                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100]])
+                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["SET", "KEY" <> BSC.pack (show n), "VALUE" <> BSC.pack (show n)] | n <- [1 .. 100 :: Int]])
                 parseManyWith 100 (receive client)
             )
             `shouldReturn` replicate 100 (RespSimpleString "OK")
           runRedisAction
             ( do
                 ClientState client _ <- State.get
-                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100]])
+                send client $ mconcat ([Builder.toLazyByteString . encode . RespArray $ map RespBulkString ["GET", "KEY" <> BSC.pack (show n)] | n <- [1 .. 100 :: Int]])
                 parseManyWith 100 (receive client)
             )
-            `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100]]
+            `shouldReturn` [RespBulkString ("VALUE" <> BSC.pack (show n)) | n <- [1 .. 100 :: Int]]
     describe "redis-client modes" $ beforeAll_ (void $ runRedisAction flushAll) $ do
       it "fill --data 1 writes expected number of keys" $ do
         (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1"] ""
@@ -413,7 +398,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 1677722
+            let expected = (1677722 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -430,7 +415,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 1864128
+            let expected = (1864128 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -447,7 +432,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 1398102
+            let expected = (1398102 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -464,7 +449,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 1048576
+            let expected = (1048576 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -565,7 +550,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 698880
+            let expected = (698880 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -582,7 +567,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 123362
+            let expected = (123362 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -599,7 +584,7 @@ main = do
         case dbSizeResp of
           RespInteger n -> do
             -- Allow ±0.1% tolerance due to remainder chunks
-            let expected = 838861
+            let expected = (838861 :: Int)
             let lowerBound = round (fromIntegral expected * 0.999 :: Double)
             let upperBound = round (fromIntegral expected * 1.001 :: Double)
             n `shouldSatisfy` (\k -> k >= lowerBound && k <= upperBound)
@@ -630,19 +615,22 @@ main = do
       it "cli mode responds to commands" $ do
         let cp =
               (proc redisClient ["cli", "--host", "redis.local"]) {std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
-        withCreateProcess cp $ \(Just hin) (Just hout) (Just herr) ph -> do
-          hSetBuffering hin LineBuffering
-          hPutStrLn hin "PING"
-          hPutStrLn hin "exit"
-          hFlush hin
-          hClose hin
-          stdoutOut <- hGetContents hout
-          stderrOut <- hGetContents herr
-          exitCode <- waitForProcess ph
-          void $ evaluate (length stdoutOut)
-          void $ evaluate (length stderrOut)
-          exitCode `shouldBe` ExitSuccess
-          stdoutOut `shouldSatisfy` ("PONG" `isInfixOf`)
+        withCreateProcess cp $ \mhin mhout mherr ph -> do
+          case (mhin, mhout, mherr) of
+            (Just hin, Just hout, Just herr) -> do
+              hSetBuffering hin LineBuffering
+              hPutStrLn hin "PING"
+              hPutStrLn hin "exit"
+              hFlush hin
+              hClose hin
+              stdoutOut <- hGetContents hout
+              stderrOut <- hGetContents herr
+              exitCode <- waitForProcess ph
+              void $ evaluate (length stdoutOut)
+              void $ evaluate (length stderrOut)
+              exitCode `shouldBe` ExitSuccess
+              stdoutOut `shouldSatisfy` ("PONG" `isInfixOf`)
+            _ -> expectationFailure "Expected CreatePipe to produce Just handles"
 
       it "tunnel proxies plaintext traffic to TLS redis" $ do
         let cp =
@@ -700,7 +688,7 @@ main = do
                         pongResp `shouldBe` RespSimpleString "PONG"
                         echoResp `shouldBe` RespBulkString "via-tls"
                         runRedisAction (get "tunnel:key") `shouldReturn` RespBulkString "via-tls"
-                        runRedisAction flushAll
+                        _ <- runRedisAction flushAll
                         postAccept <- timeout (2 * 1000000) (try (waitForSubstring hout "Accepted connection") :: IO (Either IOException ()))
                         case postAccept of
                           Nothing -> expectationFailure "Tunnel never logged an accepted connection"

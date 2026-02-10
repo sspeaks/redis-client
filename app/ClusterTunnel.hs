@@ -14,8 +14,9 @@ import           Cluster                    (ClusterNode (..),
 import           ClusterCommandClient       (ClusterClient (..),
                                              ClusterError (..))
 import qualified ClusterCommandClient
-import           ClusterCommands            (keylessCommands,
-                                             requiresKeyCommands)
+import           ClusterCommands            (CommandRouting (..),
+                                             classifyCommand)
+import           Connector                  (Connector)
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
                                              putMVar, takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -25,10 +26,9 @@ import           Control.Monad              (forever, void, when)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BSC
 import qualified Data.ByteString.Lazy       as LB
 import qualified Data.ByteString.Lazy.Char8 as LBSC
-import           Data.Char                  (isAlphaNum, toUpper)
+import           Data.Char                  (isAlphaNum)
 import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word8)
@@ -51,7 +51,7 @@ import           Text.Printf                (printf)
 -- Creates single listening socket and routes commands to appropriate nodes
 serveSmartProxy :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO ()
 serveSmartProxy clusterClient connector = do
   hSetBuffering stdout LineBuffering
@@ -78,7 +78,7 @@ serveSmartProxy clusterClient connector = do
 -- | Handle a single client connection in smart proxy mode
 handleSmartProxyClient :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   Socket ->
   IO ()
 handleSmartProxyClient clusterClient connector clientSock = do
@@ -114,32 +114,24 @@ handleSmartProxyClient clusterClient connector clientSock = do
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   RespData ->
   IO (Either String RespData)
 routeSmartProxyCommand clusterClient connector respData = do
   case respData of
     RespArray (RespBulkString cmd : args) -> do
-      let cmdUpper = BSC.map toUpper (LBSC.toStrict cmd)
-          cmdStr = BSC.unpack cmdUpper
-
-      -- Check if it's a keyless command
-      if cmdUpper `elem` keylessCommands
-        then executeKeylessCommand clusterClient connector respData
-        else case args of
-          [] -> if cmdUpper `elem` requiresKeyCommands
-                  then return $ Left $ "Command " ++ cmdStr ++ " requires a key argument"
-                  else executeKeylessCommand clusterClient connector respData
-          (RespBulkString key : _) -> do
-            -- Execute keyed command
-            executeKeyedCommand clusterClient connector (LBSC.toStrict key) respData
-          _ -> return $ Left "Invalid command format"
+      let cmdStrict = LBSC.toStrict cmd
+          argKeys = [LBSC.toStrict k | RespBulkString k <- args]
+      case classifyCommand cmdStrict argKeys of
+        KeylessRoute   -> executeKeylessCommand clusterClient connector respData
+        KeyedRoute key -> executeKeyedCommand clusterClient connector key respData
+        CommandError e -> return $ Left e
     _ -> return $ Left "Expected array command"
 
 -- | Execute a keyless command (route to any master)
 executeKeylessCommand :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   RespData ->
   IO (Either String RespData)
 executeKeylessCommand clusterClient connector respData = do
@@ -154,7 +146,7 @@ executeKeylessCommand clusterClient connector respData = do
 -- | Execute a keyed command (route by slot)
 executeKeyedCommand :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   BS.ByteString ->
   RespData ->
   IO (Either String RespData)
@@ -181,7 +173,7 @@ sendRespCommand respData = do
 -- Each listener forwards to its corresponding cluster node
 servePinnedProxy :: (Client client) =>
   ClusterClient client ->
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   IO ()
 servePinnedProxy clusterClient connector = do
   hSetBuffering stdout LineBuffering
@@ -207,7 +199,7 @@ servePinnedProxy clusterClient connector = do
 
 -- | Create a listener for a specific cluster node
 createPinnedListener :: (Client client) =>
-  (NodeAddress -> IO (client 'Connected)) ->
+  Connector client ->
   ClusterNode ->
   IO (MVar ())
 createPinnedListener connector node = do
