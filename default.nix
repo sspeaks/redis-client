@@ -5,19 +5,25 @@ let
 in 
 rec {
   fullPackage = pkgs.haskellPackages.callCabal2nix "redis-client" src { };
-  justStaticEndToEnd = pkgs.lib.pipe fullPackage [
+  e2ePackageWithFlag = pkgs.haskell.lib.enableCabalFlag
+    (pkgs.haskell.lib.addBuildDepends fullPackage [
+      pkgs.haskellPackages.hspec
+      pkgs.haskellPackages.async
+    ])
+    "e2e";
+  justStaticEndToEnd = pkgs.lib.pipe e2ePackageWithFlag [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "EndToEnd" "redis-client" ])
   ];
   
-  justStaticClusterEndToEnd = pkgs.lib.pipe fullPackage [
+  justStaticClusterEndToEnd = pkgs.lib.pipe e2ePackageWithFlag [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "ClusterEndToEnd" "redis-client" ])
   ];
 
-  justStaticLibraryEndToEnd = pkgs.lib.pipe fullPackage [
+  justStaticLibraryEndToEnd = pkgs.lib.pipe e2ePackageWithFlag [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "LibraryE2E" ])
