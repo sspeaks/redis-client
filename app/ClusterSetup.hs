@@ -94,10 +94,10 @@ flushAllClusterNodes clusterClient connector = do
   mapM_ (\node -> do
       let addr = nodeAddress node
       printf "  Flushing node %s:%d\n" (nodeHost addr) (nodePort addr)
-      conn <- CP.getOrCreateConnection (clusterConnectionPool clusterClient) addr connector
-      let clientState = ClientState conn BS.empty
-      _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
-      return ()
+      CP.withConnection (clusterConnectionPool clusterClient) addr connector $ \conn -> do
+        let clientState = ClientState conn BS.empty
+        _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
+        return ()
     ) masterNodes
 
   putStrLn "All master nodes flushed successfully"

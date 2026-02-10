@@ -30,7 +30,6 @@ common test-defaults
 
 library resp
     import:           defaults
-    visibility:       public
     hs-source-dirs:   lib/resp
     exposed-modules:  Resp
     build-depends:    attoparsec
@@ -39,7 +38,6 @@ library resp
 
 library client
     import:           defaults
-    visibility:       public
     hs-source-dirs:   lib/client
     exposed-modules:  Client
     build-depends:    bytestring
@@ -52,7 +50,6 @@ library client
 
 library crc16
     import:           defaults
-    visibility:       public
     hs-source-dirs:   lib/crc16
     exposed-modules:  Crc16
     c-sources:        lib/crc16/crc16.c
@@ -60,7 +57,6 @@ library crc16
 
 library redis-command-client
     import:           defaults
-    visibility:       public
     hs-source-dirs:   lib/redis-command-client
     exposed-modules:  RedisCommandClient
     build-depends:    attoparsec
@@ -71,7 +67,6 @@ library redis-command-client
 
 library cluster
     import:           defaults
-    visibility:       public
     hs-source-dirs:   lib/cluster
     exposed-modules:  Cluster
                     , ClusterCommandClient
@@ -79,7 +74,6 @@ library cluster
                     , ClusterSlotMapping
                     , ConnectionPool
                     , Connector
-                    , Redis
     build-depends:    bytestring
                     , client
                     , containers
@@ -92,6 +86,16 @@ library cluster
                     , text
                     , time
                     , vector
+
+library redis
+    import:           defaults
+    visibility:       public
+    hs-source-dirs:   lib/redis
+    exposed-modules:  Redis
+    build-depends:    client
+                    , cluster
+                    , redis-command-client
+                    , resp
 
 -- ---------------------------------------------------------------------------
 -- Test suites
