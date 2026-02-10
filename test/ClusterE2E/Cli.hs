@@ -12,7 +12,7 @@ import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 import qualified Data.ByteString.Char8      as BSC
-import qualified Data.ByteString.Lazy.Char8 as BSL
+import qualified Data.ByteString.Lazy       as BSL
 import           Data.Char                  (toLower)
 import           Data.List                  (isInfixOf, nub)
 import qualified Data.Map.Strict            as Map
@@ -67,14 +67,13 @@ spec = describe "Cluster CLI Mode" $ do
           (range:_) -> do
             let slot = slotStart range
                 keyBS = getKeyForNode node ("clitest:" ++ show slot)
-                key = BSC.unpack keyBS
                 expectedValue = "node" ++ show slot
                 addr = nodeAddress node
             conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-            result <- runRedisCommand conn (get key)
+            result <- runRedisCommand conn (get keyBS)
             close conn
             case result of
-              RespBulkString val -> val `shouldBe` BSL.pack expectedValue
+              RespBulkString val -> val `shouldBe` BSL.fromStrict (BSC.pack expectedValue)
               other -> expectationFailure $ "Expected value on node " ++ show (nodeHost addr) ++ ", got: " ++ show other
           _ -> return ()
         ) masterNodes
@@ -131,7 +130,7 @@ spec = describe "Cluster CLI Mode" $ do
           let verifyKeyOnNode key expectedNode = do
                 let addr = nodeAddress expectedNode
                 conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-                result <- runRedisCommand conn (get key)
+                result <- runRedisCommand conn (get (BSC.pack key))
                 close conn
                 case result of
                   RespBulkString val -> val `shouldSatisfy` (not . BSL.null)

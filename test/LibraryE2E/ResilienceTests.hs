@@ -10,9 +10,8 @@ import           ClusterCommandClient       (ClusterConfig (..),
                                              refreshTopology)
 import           Control.Concurrent         (threadDelay)
 import           Control.Exception          (SomeException, try)
-import qualified Data.ByteString.Char8      as BS8
-import qualified Data.ByteString.Lazy.Char8 as LBS8
-import           RedisCommandClient         (RedisCommands (..))
+import qualified Data.ByteString.Lazy       as LBS
+import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 
 import           LibraryE2E.Utils
@@ -35,7 +34,7 @@ spec = describe "Error Handling & Resilience" $ do
                  , ("resilience-y", "val-y")
                  ]
       results <- mapM (\(k, v) ->
-        executeClusterCommand client (BS8.pack k) (set k v)
+        executeClusterCommand client k (set k v)
         ) keys
 
       -- All should succeed (MOVED handled transparently if needed)
@@ -43,10 +42,10 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Read them back
       readResults <- mapM (\(k, _) ->
-        executeClusterCommand client (BS8.pack k) (get k)
+        executeClusterCommand client k (get k)
         ) keys
 
-      mapM_ (\((_, v), r) -> r `shouldBe` Right (RespBulkString (LBS8.pack v))) (zip keys readResults)
+      mapM_ (\((_, v), r) -> r `shouldBe` Right (RespBulkString (LBS.fromStrict v))) (zip keys readResults)
 
       flushAllNodes client
       closeClusterClient client
@@ -66,9 +65,9 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Try operations — some should fail with MaxRetriesExceeded or ConnectionError
       -- We try several keys to increase odds of hitting a down node's slots
-      let tryKeys = ["maxretry-" ++ show i | i <- [1..20 :: Int]]
+      let tryKeys = ["maxretry-" <> showBS i | i <- [1..20 :: Int]]
       results <- mapM (\k ->
-        executeClusterCommand client (BS8.pack k) (set k "v")
+        executeClusterCommand client k (set k "v")
         ) tryKeys
 
       -- At least some should fail (nodes 4 & 5 own some slots)
@@ -104,8 +103,8 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Try operations — some may fail with ConnectionError
       results <- mapM (\i -> do
-        let k = "connclose-" ++ show i
-        try (executeClusterCommand client (BS8.pack k) (set k "v"))
+        let k = "connclose-" <> showBS i
+        try (executeClusterCommand client k (set k "v"))
           :: IO (Either SomeException (Either ClusterError RespData))
         ) [1..10 :: Int]
 

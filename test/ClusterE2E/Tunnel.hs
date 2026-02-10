@@ -12,7 +12,6 @@ import           SlotMappingHelpers         (getKeyForNode)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 import           Control.Monad              (when, forM_)
-import qualified Data.ByteString.Char8      as BSC
 import           Data.List                  (isInfixOf)
 import qualified Data.Map.Strict            as Map
 import           RedisCommandClient         (RedisCommands (..))
@@ -54,8 +53,8 @@ spec = describe "Cluster Tunnel Mode" $ do
             expectationFailure "Need at least 2 master nodes for this test"
 
           let (node1:node2:_) = masterNodes
-              key1 = BSC.unpack $ getKeyForNode node1 "key1"
-              key2 = BSC.unpack $ getKeyForNode node2 "key2"
+              key1 = getKeyForNode node1 "key1"
+              key2 = getKeyForNode node2 "key2"
 
           conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
 
@@ -134,7 +133,7 @@ spec = describe "Cluster Tunnel Mode" $ do
           forM_ masterNodes $ \masterNode -> do
             let addr = nodeAddress masterNode
                 localPort = nodePort addr
-                testKey = BSC.unpack $ getKeyForNode masterNode "test"
+                testKey = getKeyForNode masterNode "test"
 
             conn <- connect (NotConnectedPlainTextClient "localhost" (Just localPort))
 
@@ -164,8 +163,8 @@ spec = describe "Cluster Tunnel Mode" $ do
                   addr2 = nodeAddress node2
                   port1 = nodePort addr1
                   port2 = nodePort addr2
-                  testKey1 = BSC.unpack $ getKeyForNode node1 "node1"
-                  testKey2 = BSC.unpack $ getKeyForNode node2 "node2"
+                  testKey1 = getKeyForNode node1 "node1"
+                  testKey2 = getKeyForNode node2 "node2"
 
               conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
               conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
@@ -200,7 +199,7 @@ spec = describe "Cluster Tunnel Mode" $ do
             (node1:node2:_) -> do
               let addr1 = nodeAddress node1
                   port1 = nodePort addr1
-                  wrongKey = BSC.unpack $ getKeyForNode node2 "wrong"
+                  wrongKey = getKeyForNode node2 "wrong"
 
               conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
 

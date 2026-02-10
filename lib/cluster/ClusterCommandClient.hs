@@ -446,9 +446,9 @@ unwrapClusterResult (Right a)  = pure a
 unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
 
 -- | Execute a keyed command and unwrap the result
-executeKeyed :: (Client client) => String -> RedisCommandClient client RespData -> ClusterCommandClient client RespData
+executeKeyed :: (Client client) => ByteString -> RedisCommandClient client RespData -> ClusterCommandClient client RespData
 executeKeyed key action = do
-  result <- executeKeyedCommand (BS.pack key) action
+  result <- executeKeyedCommand key action
   unwrapClusterResult result
 
 -- | Execute a keyless command and unwrap the result

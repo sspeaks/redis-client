@@ -27,11 +27,14 @@ module Redis
   , module ConnectionPool
     -- * Connection Helpers
   , module Connector
+    -- * ByteString (re-exported for convenience)
+  , ByteString
   ) where
 
+import Data.ByteString (ByteString)
 import Resp (RespData (..), Encodable (..), parseRespData, parseStrict)
 import Client (Client (..), PlainTextClient (..), TLSClient (..), ConnectionStatus (..))
-import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), parseWith, parseManyWith)
+import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), showBS, parseWith, parseManyWith)
 import Cluster (NodeAddress (..), ClusterNode (..), SlotRange (..), ClusterTopology (..), NodeRole (..))
 import ClusterCommandClient (ClusterClient (..), ClusterConfig (..), ClusterError (..), ClusterCommandClient, createClusterClient, closeClusterClient, refreshTopology, runClusterCommandClient)
 import ConnectionPool (ConnectionPool (..), PoolConfig (..), withConnection, createPool, closePool)

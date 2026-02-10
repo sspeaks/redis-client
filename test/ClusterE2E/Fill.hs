@@ -12,10 +12,10 @@ import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 import qualified Data.ByteString.Char8      as BSC
-import qualified Data.ByteString.Lazy.Char8 as BSL
+import qualified Data.ByteString.Lazy       as BSL
 import           Data.List                  (isInfixOf)
 import qualified Data.Map.Strict            as Map
-import           RedisCommandClient         (RedisCommands (..))
+import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 import           System.Exit                (ExitCode (..))
 import           System.Process             (proc, readCreateProcessWithExitCode)
@@ -107,13 +107,12 @@ spec = describe "Cluster Fill Mode" $ do
         case nodeSlotsServed node of
           (range:_) -> do
             let slot = slotStart range
-                keyBS = getKeyForNode node ("testkey:" ++ show slot)
-                key = BSC.unpack keyBS
+                key = getKeyForNode node ("testkey:" ++ show slot)
 
-            result <- runCmd client $ set key ("value" ++ show slot)
+            result <- runCmd client $ set key ("value" <> showBS slot)
             case result of
               RespSimpleString "OK" -> return ()
-              other -> expectationFailure $ "Failed to set key " ++ key ++ ": " ++ show other
+              other -> expectationFailure $ "Failed to set key " ++ BSC.unpack key ++ ": " ++ show other
 
             -- Verify the key was set on the correct node by connecting directly
             let addr = nodeAddress node
@@ -121,7 +120,7 @@ spec = describe "Cluster Fill Mode" $ do
             getResult <- runRedisCommand conn (get key)
             close conn
             case getResult of
-              RespBulkString val -> val `shouldBe` BSL.pack ("value" ++ show slot)
+              RespBulkString val -> val `shouldBe` BSL.fromStrict ("value" <> showBS slot)
               other -> expectationFailure $ "Key not found on expected node: " ++ show other
           [] -> return ()  -- Skip nodes with no slots
         ) masterNodes

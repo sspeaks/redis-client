@@ -92,7 +92,8 @@ library redis
     visibility:       public
     hs-source-dirs:   lib/redis
     exposed-modules:  Redis
-    build-depends:    client
+    build-depends:    bytestring
+                    , client
                     , cluster
                     , redis-command-client
                     , resp

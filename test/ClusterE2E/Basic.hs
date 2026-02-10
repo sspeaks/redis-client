@@ -7,7 +7,7 @@ import           ClusterCommandClient       (closeClusterClient)
 import           ClusterE2E.Utils
 import           Control.Exception          (bracket)
 import qualified Data.ByteString.Char8      as BSC
-import qualified Data.ByteString.Lazy.Char8 as BSL
+import qualified Data.ByteString.Lazy       as BSL
 import           RedisCommandClient         (RedisCommands (..))
 import           Resp                       (RespData (..))
 import           Test.Hspec
@@ -42,18 +42,18 @@ spec = describe "Basic cluster operations" $ do
 
         -- Set all keys
         mapM_ (\key -> do
-          result <- runCmd client $ set key ("value_" ++ key)
+          result <- runCmd client $ set key ("value_" <> key)
           case result of
             RespSimpleString "OK" -> return ()
-            other -> expectationFailure $ "Unexpected SET response for " ++ key ++ ": " ++ show other
+            other -> expectationFailure $ "Unexpected SET response for " ++ BSC.unpack key ++ ": " ++ show other
           ) keys
 
         -- Get all keys and verify
         mapM_ (\key -> do
           result <- runCmd client $ get key
           case result of
-            RespBulkString val | val == BSL.pack ("value_" ++ key) -> return ()
-            other -> expectationFailure $ "Unexpected GET response for " ++ key ++ ": " ++ show other
+            RespBulkString val | val == BSL.fromStrict ("value_" <> key) -> return ()
+            other -> expectationFailure $ "Unexpected GET response for " ++ BSC.unpack key ++ ": " ++ show other
           ) keys
 
     it "handles keys with hash tags correctly" $ do
@@ -63,8 +63,8 @@ spec = describe "Basic cluster operations" $ do
             key2 = "{user:123}:settings"
 
         -- Both keys should hash to the same slot
-        slot1 <- calculateSlot (BSC.pack key1)
-        slot2 <- calculateSlot (BSC.pack key2)
+        slot1 <- calculateSlot key1
+        slot2 <- calculateSlot key2
         slot1 `shouldBe` slot2
 
         -- Set both keys

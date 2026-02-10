@@ -14,7 +14,7 @@ import           Control.Concurrent.STM     (readTVarIO)
 import           Control.Exception          (bracket)
 
 
-import           RedisCommandClient         (RedisCommands (..))
+import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 import           Test.Hspec
 
@@ -92,7 +92,7 @@ spec = describe "Topology refresh" $ do
 
         -- Execute multiple commands quickly
         mapM_ (\n -> do
-            result <- runCmd client $ set ("refresh:multi:" ++ show n) ("value" ++ show n)
+            result <- runCmd client $ set ("refresh:multi:" <> showBS n) ("value" <> showBS n)
             case result of
               RespSimpleString "OK" -> return ()
               other -> expectationFailure $ "Unexpected SET response: " ++ show other
@@ -129,7 +129,7 @@ spec = describe "Topology refresh" $ do
         -- The key test is that topology refresh during these operations doesn't break anything
         results <- mapConcurrently (\n -> do
             threadDelay (n * 10000)  -- 0-90ms stagger
-            runCmd client $ set ("refresh:concurrent:" ++ show n) ("value" ++ show n)
+            runCmd client $ set ("refresh:concurrent:" <> showBS n) ("value" <> showBS n)
           ) [1..10 :: Int]
 
         -- All commands should succeed despite topology refresh happening concurrently

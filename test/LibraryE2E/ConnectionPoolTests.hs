@@ -10,9 +10,8 @@ import           ConnectionPool             (PoolConfig (..), withConnection, cl
 import           Control.Concurrent.Async   (mapConcurrently)
 import           Control.Exception          (SomeException, try, throwIO)
 import           Control.Monad              (forM_)
-import qualified Data.ByteString.Char8      as BS8
-import qualified Data.ByteString.Lazy.Char8 as LBS8
-import           RedisCommandClient         (RedisCommands (..))
+import qualified Data.ByteString.Lazy       as LBS
+import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 
 import           LibraryE2E.Utils
@@ -27,17 +26,17 @@ spec = describe "ConnectionPool Thread Safety" $ do
       client <- createTestClient
       let threadIds = [1..50 :: Int]
       results <- mapConcurrently (\tid -> do
-        let key = "pool-test-" ++ show tid
-            val = "value-" ++ show tid
-        _ <- executeClusterCommand client (BS8.pack key) (set key val)
-        r <- executeClusterCommand client (BS8.pack key) (get key)
+        let key = "pool-test-" <> showBS tid
+            val = "value-" <> showBS tid
+        _ <- executeClusterCommand client key (set key val)
+        r <- executeClusterCommand client key (get key)
         return (tid, r)
         ) threadIds
 
       -- Every thread should get its own correct value
       forM_ results $ \(tid, result) -> do
-        let expected = "value-" ++ show tid
-        result `shouldBe` Right (RespBulkString (LBS8.pack expected))
+        let expected = "value-" <> showBS tid
+        result `shouldBe` Right (RespBulkString (LBS.fromStrict expected))
 
       flushAllNodes client
       closeClusterClient client
@@ -50,8 +49,8 @@ spec = describe "ConnectionPool Thread Safety" $ do
 
       -- Run 20 sequential commands — should reuse the same pool connections
       forM_ [1..20 :: Int] $ \i -> do
-        let key = "reuse-test-" ++ show i
-        result <- executeClusterCommand client (BS8.pack key) (set key "v")
+        let key = "reuse-test-" <> showBS i
+        result <- executeClusterCommand client key (set key "v")
         result `shouldSatisfy` isRight
 
       flushAllNodes client
@@ -65,9 +64,9 @@ spec = describe "ConnectionPool Thread Safety" $ do
 
       let threadIds = [1..10 :: Int]
       results <- mapConcurrently (\tid -> do
-        let key = "overflow-" ++ show tid
-            val = "val-" ++ show tid
-        r <- executeClusterCommand client (BS8.pack key) (set key val)
+        let key = "overflow-" <> showBS tid
+            val = "val-" <> showBS tid
+        r <- executeClusterCommand client key (set key val)
         return (tid, r)
         ) threadIds
 
