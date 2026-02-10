@@ -90,7 +90,7 @@ fi
 
 # Run the cluster E2E tests in Docker on the same network as the cluster
 echo "Running cluster E2E tests in Docker container on network $NETWORK_NAME..."
-docker run --network="$NETWORK_NAME" clustere2etests:latest  || {
+docker run --rm --network="$NETWORK_NAME" clustere2etests:latest  || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
     exit $EXIT_CODE

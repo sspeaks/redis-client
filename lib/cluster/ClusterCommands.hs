@@ -11,7 +11,7 @@ module ClusterCommands
 where
 
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Char8 as BS8
 import Data.Char (toUpper)
 
 -- | Result of classifying a command for cluster routing
@@ -26,12 +26,12 @@ data CommandRouting
 -- or 'CommandError' if a key-requiring command is missing its key argument.
 classifyCommand :: ByteString -> [ByteString] -> CommandRouting
 classifyCommand cmd args =
-  let cmdUpper = BS.map toUpper cmd
+  let cmdUpper = BS8.map toUpper cmd
   in if cmdUpper `elem` keylessCommands
      then KeylessRoute
      else case args of
        [] -> if cmdUpper `elem` requiresKeyCommands
-               then CommandError $ "Command " ++ BS.unpack cmd ++ " requires a key argument"
+               then CommandError $ "Command " ++ BS8.unpack cmd ++ " requires a key argument"
                else KeylessRoute  -- Unknown command without args, try keyless
        (key:_) -> KeyedRoute key
 

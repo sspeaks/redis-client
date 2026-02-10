@@ -11,10 +11,8 @@ import           Control.Concurrent         (threadDelay)
 import           Control.Concurrent.Async   (mapConcurrently, concurrently)
 import           Control.Exception          (SomeException, try)
 import           Control.Monad              (forM_)
-import qualified Data.ByteString.Char8      as BS8
-import qualified Data.ByteString.Lazy.Char8 as LBS8
 import           Data.IORef                 (newIORef, atomicModifyIORef', readIORef)
-import           RedisCommandClient         (RedisCommands (..))
+import           RedisCommandClient         (RedisCommands (..), showBS)
 import           Resp                       (RespData (..))
 
 import           LibraryE2E.Utils
@@ -34,23 +32,23 @@ spec = describe "Concurrent Cluster Operations" $ do
       _ <- newIORef (0 :: Int)
 
       results <- mapConcurrently (\tid -> do
-        let prefix = "storm-t" ++ show tid ++ "-"
+        let prefix = "storm-t" <> showBS tid <> "-"
         errors <- newIORef (0 :: Int)
 
         forM_ [1..opsPerThread] $ \i -> do
-          let key = prefix ++ show i
-              val = "v-" ++ show tid ++ "-" ++ show i
+          let key = prefix <> showBS i
+              val = "v-" <> showBS tid <> "-" <> showBS i
 
           -- SET
-          sr <- executeClusterCommand client (BS8.pack key) (set key val)
+          sr <- executeClusterCommand client key (set key val)
           case sr of
             Left _ -> atomicModifyIORef' errors (\n -> (n + 1, ()))
             Right _ -> return ()
 
           -- GET and verify
-          gr <- executeClusterCommand client (BS8.pack key) (get key)
+          gr <- executeClusterCommand client key (get key)
           case gr of
-            Right (RespBulkString v) | v == LBS8.pack val -> return ()
+            Right (RespBulkString v) | v == val -> return ()
             Right (RespBulkString _) ->
               -- Wrong value = cross-thread corruption!
               atomicModifyIORef' errors (\n -> (n + 1, ()))
@@ -81,8 +79,8 @@ spec = describe "Concurrent Cluster Operations" $ do
           workerAction = do
             mapConcurrently (\tid -> do
               forM_ [1..50 :: Int] $ \i -> do
-                let key = "refresh-storm-" ++ show tid ++ "-" ++ show i
-                r <- executeClusterCommand client (BS8.pack key) (set key "v")
+                let key = "refresh-storm-" <> showBS tid <> "-" <> showBS i
+                r <- executeClusterCommand client key (set key "v")
                 case r of
                   Right _ -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
                   Left _  -> return ()
@@ -105,8 +103,8 @@ spec = describe "Concurrent Cluster Operations" $ do
 
       -- Warm up connections
       forM_ [1..10 :: Int] $ \i -> do
-        let k = "warmup-" ++ show i
-        _ <- executeClusterCommand client (BS8.pack k) (set k "v")
+        let k = "warmup-" <> showBS i
+        _ <- executeClusterCommand client k (set k "v")
         return ()
 
       successCount <- newIORef (0 :: Int)
@@ -115,8 +113,8 @@ spec = describe "Concurrent Cluster Operations" $ do
       -- Run workers, kill a node mid-flight
       let workerAction = mapConcurrently (\tid -> do
             forM_ [1..100 :: Int] $ \i -> do
-              let key = "nodefail-" ++ show tid ++ "-" ++ show i
-              r <- try (executeClusterCommand client (BS8.pack key) (set key "v"))
+              let key = "nodefail-" <> showBS tid <> "-" <> showBS i
+              r <- try (executeClusterCommand client key (set key "v"))
                     :: IO (Either SomeException (Either ClusterError RespData))
               case r of
                 Right (Right _) -> atomicModifyIORef' successCount (\n -> (n + 1, ()))

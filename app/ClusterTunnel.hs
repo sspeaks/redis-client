@@ -26,8 +26,8 @@ import           Control.Monad              (forever, void, when)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Lazy       as LB
-import qualified Data.ByteString.Lazy.Char8 as LBSC
+import qualified Data.ByteString.Char8      as BS8
+import qualified Data.ByteString.Lazy       as LBS
 import           Data.Char                  (isAlphaNum)
 import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
@@ -93,8 +93,8 @@ handleSmartProxyClient clusterClient clientSock = do
             Left err -> do
               printf "Failed to parse RESP: %s\n" err
               -- Send error back to client
-              let errorResp = RespError ("ERR Failed to parse command: " ++ err)
-              sendAll clientSock (LB.toStrict $ Builder.toLazyByteString $ encode errorResp)
+              let errorResp = RespError (BS8.pack $ "ERR Failed to parse command: " ++ err)
+              sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
               loop
             Right respData -> do
               -- Route and execute the command
@@ -102,11 +102,11 @@ handleSmartProxyClient clusterClient clientSock = do
               case result of
                 Left err -> do
                   printf "Command execution error: %s\n" err
-                  let errorResp = RespError ("ERR " ++ err)
-                  sendAll clientSock (LB.toStrict $ Builder.toLazyByteString $ encode errorResp)
+                  let errorResp = RespError (BS8.pack $ "ERR " ++ err)
+                  sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
                 Right response -> do
                   -- Send response back to client
-                  sendAll clientSock (LB.toStrict $ Builder.toLazyByteString $ encode response)
+                  sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode response)
               loop
 
 -- | Route and execute a command in smart proxy mode
@@ -117,9 +117,8 @@ routeSmartProxyCommand :: (Client client) =>
 routeSmartProxyCommand clusterClient respData = do
   case respData of
     RespArray (RespBulkString cmd : args) -> do
-      let cmdStrict = LBSC.toStrict cmd
-          argKeys = [LBSC.toStrict k | RespBulkString k <- args]
-      case classifyCommand cmdStrict argKeys of
+      let argKeys = [k | RespBulkString k <- args]
+      case classifyCommand cmd argKeys of
         KeylessRoute   -> executeKeylessCommand clusterClient respData
         KeyedRoute key -> executeKeyedCommand clusterClient key respData
         CommandError e -> return $ Left e
@@ -287,7 +286,7 @@ forwardPinnedConnection clientSock redisConn addr = do
               -- Forward to Redis
               printf "[Pinned %s:%d] [Req %d] Forwarding to Redis...\n" (nodeHost addr) (nodePort addr) reqNum
               hFlush stdout
-              send redisConn (LB.fromStrict dat)
+              send redisConn (LBS.fromStrict dat)
 
               -- Receive response from Redis
               printf "[Pinned %s:%d] [Req %d] Waiting for Redis response...\n" (nodeHost addr) (nodePort addr) reqNum
@@ -329,7 +328,7 @@ rewriteClusterResponse dat =
     Left _ -> dat  -- Can't parse, return as-is
     Right respData ->
       let rewritten = rewriteRespData respData
-      in LB.toStrict $ Builder.toLazyByteString $ encode rewritten
+      in LBS.toStrict $ Builder.toLazyByteString $ encode rewritten
 
 -- | Rewrite RespData to replace hosts with localhost
 -- Handles three types of responses:
@@ -339,17 +338,18 @@ rewriteClusterResponse dat =
 rewriteRespData :: RespData -> RespData
 rewriteRespData (RespError msg) =
   -- Handle MOVED and ASK errors: rewrite "host:port" to "127.0.0.1:port"
-  if "MOVED" `isPrefixOf` msg || "ASK" `isPrefixOf` msg
-    then RespError (rewriteRedirectionError msg)
+  let msgStr = BS8.unpack msg
+  in if "MOVED" `isPrefixOf` msgStr || "ASK" `isPrefixOf` msgStr
+    then RespError (BS8.pack $ rewriteRedirectionError msgStr)
     else RespError msg
 rewriteRespData (RespBulkString bs) =
-  let text = LBSC.unpack bs
+  let text = BS8.unpack bs
   in if isClusterNodesFormat text
        -- CLUSTER NODES format: multi-line text with node info
        then RespBulkString (rewriteClusterNodesText bs)
        -- Plain IPv4 address from CLUSTER SLOTS: replace with 127.0.0.1
        else if isIPv4Address text || isHostname text
-              then RespBulkString (LBSC.pack "127.0.0.1")
+              then RespBulkString "127.0.0.1"
               else RespBulkString bs
 
 rewriteRespData (RespArray items) =
@@ -414,12 +414,12 @@ rewriteRedirectionError msg =
        _ -> msg
 
 -- | Rewrite CLUSTER NODES response text
-rewriteClusterNodesText :: LBSC.ByteString -> LBSC.ByteString
+rewriteClusterNodesText :: BS.ByteString -> BS.ByteString
 rewriteClusterNodesText bs =
-  let text = LBSC.unpack bs
+  let text = BS8.unpack bs
       textLines = lines text
       rewritten = map rewriteClusterNodesLine textLines
-  in LBSC.pack (unlines rewritten)
+  in BS8.pack (unlines rewritten)
 
 -- | Rewrite a single line from CLUSTER NODES
 rewriteClusterNodesLine :: String -> String

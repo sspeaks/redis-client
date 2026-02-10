@@ -80,10 +80,9 @@ import           Control.Monad               (when)
 import           Control.Monad.IO.Class      (MonadIO (..))
 import qualified Control.Monad.State         as State
 import           Data.ByteString             (ByteString)
-import qualified Data.ByteString.Char8       as BS
+import qualified Data.ByteString.Char8       as BS8
 import qualified Data.Map.Strict             as Map
 import           Data.Time.Clock             (NominalDiffTime, diffUTCTime, getCurrentTime)
-import qualified Data.Text                   as T
 import           Data.Word                   (Word16)
 import           RedisCommandClient          (ClientState (..),
                                               RedisCommandClient (..),
@@ -204,7 +203,7 @@ createClusterClient config connector = do
   -- Discover initial topology before creating TVar
   let seedNode = clusterSeedNode config
   response <- withConnection pool seedNode connector $ \conn -> do
-    let clientState = ClientState conn BS.empty
+    let clientState = ClientState conn BS8.empty
     State.evalStateT (runRedisCommandClient clusterSlots) clientState
   
   currentTime <- getCurrentTime
@@ -237,7 +236,7 @@ refreshTopology client = do
     doRefresh = do
       let seedNode = clusterSeedNode (clusterConfig client)
       response <- withConnection (clusterConnectionPool client) seedNode connector $ \conn -> do
-        let clientState = ClientState conn BS.empty
+        let clientState = ClientState conn BS8.empty
         State.evalStateT (runRedisCommandClient clusterSlots) clientState
 
       currentTime <- getCurrentTime
@@ -306,7 +305,7 @@ executeOnSlot client slot action connector = do
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just nodeId -> do
       case Map.lookup nodeId (topologyNodes topology) of
-        Nothing -> return $ Left $ TopologyError $ "Node ID " ++ T.unpack nodeId ++ " not found in topology"
+        Nothing -> return $ Left $ TopologyError $ "Node ID " ++ BS8.unpack nodeId ++ " not found in topology"
         Just node -> executeOnNodeWithRedirectionDetection client (nodeAddress node) action connector
 
 -- | Execute a command on a specific node
@@ -319,7 +318,7 @@ executeOnNode ::
   IO (Either ClusterError a)
 executeOnNode client nodeAddr action connector = do
   result <- try $ withConnection (clusterConnectionPool client) nodeAddr connector $ \conn -> do
-    let clientState = ClientState conn BS.empty
+    let clientState = ClientState conn BS8.empty
     State.evalStateT (runRedisCommandClient action) clientState
 
   case result of
@@ -405,17 +404,18 @@ withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay
 
 -- | Parse redirection error messages
 -- Format: "MOVED 3999 127.0.0.1:6381" or "ASK 3999 127.0.0.1:6381"
-parseRedirectionError :: String -> String -> Maybe RedirectionInfo
+parseRedirectionError :: ByteString -> ByteString -> Maybe RedirectionInfo
 parseRedirectionError errorType msg =
-  case words msg of
+  case BS8.words msg of
     (prefix : slotStr : hostPort : _)
       | prefix == errorType ->
-          case (reads slotStr :: [(Integer, String)]) of
-            [(slot, "")] ->
-              case break (== ':') hostPort of
-                (host, ':' : portStr) ->
-                  case reads portStr of
-                    [(port, "")] -> Just $ RedirectionInfo (fromIntegral slot) host port
+          case BS8.readInt slotStr of
+            Just (slot, rest) | BS8.null rest ->
+              case BS8.break (== ':') hostPort of
+                (host, portPart) | not (BS8.null portPart) ->
+                  case BS8.readInt (BS8.tail portPart) of
+                    Just (port, rest') | BS8.null rest' ->
+                      Just $ RedirectionInfo (fromIntegral slot) (BS8.unpack host) port
                     _ -> Nothing
                 _ -> Nothing
             _ -> Nothing
@@ -446,9 +446,9 @@ unwrapClusterResult (Right a)  = pure a
 unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
 
 -- | Execute a keyed command and unwrap the result
-executeKeyed :: (Client client) => String -> RedisCommandClient client RespData -> ClusterCommandClient client RespData
+executeKeyed :: (Client client) => ByteString -> RedisCommandClient client RespData -> ClusterCommandClient client RespData
 executeKeyed key action = do
-  result <- executeKeyedCommand (BS.pack key) action
+  result <- executeKeyedCommand key action
   unwrapClusterResult result
 
 -- | Execute a keyless command and unwrap the result

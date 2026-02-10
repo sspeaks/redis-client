@@ -8,7 +8,7 @@ module SlotMappingHelpers
   ) where
 
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Vector as V
 import           Data.Word (Word16)
 import           Cluster (ClusterNode, nodeSlotsServed, SlotRange (..))
@@ -21,7 +21,7 @@ getKeyForSlot slot suffix =
     let hashTag = slotMappings V.! fromIntegral slot
     in if BS.null hashTag
        then error $ "No hash tag found for slot " ++ show slot
-       else BSC.pack $ "{" ++ BSC.unpack hashTag ++ "}:" ++ suffix
+       else BS8.pack $ "{" ++ BS8.unpack hashTag ++ "}:" ++ suffix
 
 -- | Generates a key that maps to the specified node.
 getKeyForNode :: ClusterNode -> String -> BS.ByteString

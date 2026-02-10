@@ -35,7 +35,7 @@ endif
 # Build the project
 build:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal build"
+	nix-shell --run "cabal build -fe2e"
 else
 	cabal build
 endif

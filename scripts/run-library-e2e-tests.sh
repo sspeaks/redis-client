@@ -90,7 +90,7 @@ fi
 # Run the library E2E tests in Docker on the same network as the cluster
 # Mount Docker socket so tests can stop/start nodes for failure simulation
 echo "Running library E2E tests in Docker container on network $NETWORK_NAME..."
-docker run \
+docker run --rm \
   --network="$NETWORK_NAME" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   librarye2etests:latest || {

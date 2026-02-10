@@ -14,21 +14,18 @@ module Resp
 import           Control.Applicative              ((<|>))
 import qualified Data.Attoparsec.ByteString       as StrictParse
 import qualified Data.Attoparsec.ByteString.Char8 as Char8
-import           Data.ByteString.Builder          as Builder (Builder,
-                                                              lazyByteString)
-import qualified Data.ByteString.Char8            as SB8
-import qualified Data.ByteString.Lazy             as BS
-import qualified Data.ByteString.Lazy.Char8       as B8
+import           Data.ByteString                  (ByteString)
+import qualified Data.ByteString.Builder          as Builder
+import qualified Data.ByteString.Char8            as BS8
 import qualified Data.Map                         as M
 import qualified Data.Set                         as S
-import qualified Data.String                      as BS
 
 -- | A value in the RESP wire protocol. Each constructor corresponds to a RESP type prefix.
 data RespData where
-  RespSimpleString :: !String -> RespData
-  RespError :: !String -> RespData
+  RespSimpleString :: !ByteString -> RespData
+  RespError :: !ByteString -> RespData
   RespInteger :: !Integer -> RespData
-  RespBulkString :: !B8.ByteString -> RespData
+  RespBulkString :: !ByteString -> RespData
   RespNullBulkString :: RespData
   RespArray :: ![RespData] -> RespData
   RespMap :: !(M.Map RespData RespData) -> RespData
@@ -37,17 +34,17 @@ data RespData where
 
 instance Show RespData where
   show :: RespData -> String
-  show = B8.unpack . byteShow
+  show = BS8.unpack . byteShow
 
-byteShow :: RespData -> BS.ByteString
-byteShow (RespSimpleString !s) = BS.fromString s
-byteShow (RespError !s) = "ERROR: " <> BS.fromString s
-byteShow (RespInteger !i) = BS.fromString . show $ i
+byteShow :: RespData -> ByteString
+byteShow (RespSimpleString !s) = s
+byteShow (RespError !s) = "ERROR: " <> s
+byteShow (RespInteger !i) = BS8.pack . show $ i
 byteShow (RespBulkString !s) = s
 byteShow RespNullBulkString = "NULL"
-byteShow (RespArray !xs) = BS.intercalate "\n" (map byteShow xs)
-byteShow (RespSet !s) = BS.intercalate "\n" (map byteShow (S.toList s))
-byteShow (RespMap !m) = BS.intercalate "\n" (map showPair (M.toList m))
+byteShow (RespArray !xs) = BS8.intercalate "\n" (map byteShow xs)
+byteShow (RespSet !s) = BS8.intercalate "\n" (map byteShow (S.toList s))
+byteShow (RespMap !m) = BS8.intercalate "\n" (map showPair (M.toList m))
   where
     showPair (k, v) = byteShow k <> ": " <> byteShow v
 
@@ -57,14 +54,14 @@ class Encodable a where
 
 instance Encodable RespData where
   encode :: RespData -> Builder.Builder
-  encode (RespSimpleString !s) = Builder.lazyByteString $ B8.concat ["+", B8.pack s, "\r\n"]
-  encode (RespError !s) = Builder.lazyByteString $ B8.concat ["-", B8.pack s, "\r\n"]
-  encode (RespInteger !i) = Builder.lazyByteString $ B8.concat [":", B8.pack . show $ i, "\r\n"]
-  encode (RespBulkString !s) = Builder.lazyByteString $ B8.concat ["$", B8.pack . show . B8.length $ s, "\r\n", s, "\r\n"]
-  encode RespNullBulkString = Builder.lazyByteString "$-1\r\n"
-  encode (RespArray !xs) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ length xs, "\r\n"]) <> foldMap encode xs
-  encode (RespSet !s) = Builder.lazyByteString (B8.concat ["~", B8.pack . show $ S.size s, "\r\n"]) <> foldMap encode (S.toList s)
-  encode (RespMap !m) = Builder.lazyByteString (B8.concat ["*", B8.pack . show $ M.size m, "\r\n"]) <> foldMap encodePair (M.toList m)
+  encode (RespSimpleString !s) = Builder.char8 '+' <> Builder.byteString s <> Builder.byteString "\r\n"
+  encode (RespError !s) = Builder.char8 '-' <> Builder.byteString s <> Builder.byteString "\r\n"
+  encode (RespInteger !i) = Builder.char8 ':' <> Builder.integerDec i <> Builder.byteString "\r\n"
+  encode (RespBulkString !s) = Builder.char8 '$' <> Builder.intDec (BS8.length s) <> Builder.byteString "\r\n" <> Builder.byteString s <> Builder.byteString "\r\n"
+  encode RespNullBulkString = Builder.byteString "$-1\r\n"
+  encode (RespArray !xs) = Builder.char8 '*' <> Builder.intDec (length xs) <> Builder.byteString "\r\n" <> foldMap encode xs
+  encode (RespSet !s) = Builder.char8 '~' <> Builder.intDec (S.size s) <> Builder.byteString "\r\n" <> foldMap encode (S.toList s)
+  encode (RespMap !m) = Builder.char8 '*' <> Builder.intDec (M.size m) <> Builder.byteString "\r\n" <> foldMap encodePair (M.toList m)
     where
       encodePair (k, v) = encode k <> encode v
 
@@ -82,20 +79,20 @@ parseRespData =
     '%' -> parseMap
     v -> do
       rest <- Char8.takeByteString
-      let catted = SB8.cons v rest
-      fail ("Invalid RESP data type: Remaining string " <> SB8.unpack catted)
+      let catted = BS8.cons v rest
+      fail ("Invalid RESP data type: Remaining string " <> BS8.unpack catted)
 
 parseSimpleString :: Char8.Parser RespData
 parseSimpleString = do
   !s <- Char8.takeTill (== '\r')
   _ <- Char8.take 2
-  return $ RespSimpleString (SB8.unpack s)
+  return $ RespSimpleString s
 
 parseError :: Char8.Parser RespData
 parseError = do
   !s <- Char8.takeTill (== '\r')
   _ <- Char8.take 2
-  return $ RespError (SB8.unpack s)
+  return $ RespError s
 
 parseInteger :: Char8.Parser RespData
 parseInteger = do
@@ -109,7 +106,7 @@ parseBulkString = do
   _ <- Char8.endOfLine
   !s <- Char8.take len
   _ <- Char8.endOfLine
-  return $ RespBulkString (B8.fromStrict s)
+  return $ RespBulkString s
 
 parseNullBulkString :: Char8.Parser RespData
 parseNullBulkString = do
@@ -145,5 +142,5 @@ parseMap = do
       return (k, v)
 
 -- | Parse strict ByteString into RespData
-parseStrict :: SB8.ByteString -> Either String RespData
+parseStrict :: BS8.ByteString -> Either String RespData
 parseStrict = StrictParse.parseOnly parseRespData

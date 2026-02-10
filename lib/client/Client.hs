@@ -20,10 +20,9 @@ module Client
 import Control.Exception (IOException, bracket, catch, finally, throwIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class
-import Data.ByteString qualified as B
-import Data.ByteString.Char8 qualified as BSC
-import Data.ByteString.Lazy (fromStrict)
-import Data.ByteString.Lazy qualified as Lazy
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy qualified as LBS
 import Data.Default.Class (def)
 import Data.IP (IPv4, toHostAddress)
 import Data.Kind (Type)
@@ -68,8 +67,8 @@ data ConnectionStatus = Connected | NotConnected | Server
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
   close :: (MonadIO m) => client 'Connected -> m ()
-  send :: (MonadIO m) => client 'Connected -> Lazy.ByteString -> m ()
-  receive :: (MonadIO m, MonadFail m) => client 'Connected -> m B.ByteString
+  send :: (MonadIO m) => client 'Connected -> LBS.ByteString -> m ()
+  receive :: (MonadIO m, MonadFail m) => client 'Connected -> m BS.ByteString
 
 -- | Plain TCP client. Construct with 'NotConnectedPlainTextClient' providing
 -- a hostname and optional port (defaults to 6379).
@@ -90,10 +89,10 @@ instance Client PlainTextClient where
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
   close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
 
-  send :: (MonadIO m) => PlainTextClient 'Connected -> Lazy.ByteString -> m ()
+  send :: (MonadIO m) => PlainTextClient 'Connected -> LBS.ByteString -> m ()
   send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
 
-  receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m B.ByteString
+  receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m BS.ByteString
   receive (ConnectedPlainTextClient _ _ sock) = do
     -- Timeout increased to 300s (5 minutes) to handle massive backlogs during fill operations
     val <- liftIO $ timeout (300 * 1000000) $ recv sock 16384
@@ -125,10 +124,10 @@ instance Client TLSClient where
   close :: (MonadIO m) => TLSClient 'Connected -> m ()
   close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx `finally` S.close sock
 
-  send :: (MonadIO m) => TLSClient 'Connected -> Lazy.ByteString -> m ()
+  send :: (MonadIO m) => TLSClient 'Connected -> LBS.ByteString -> m ()
   send (ConnectedTLSClient _ _ _ ctx) dat = liftIO $ sendData ctx dat
 
-  receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m B.ByteString
+  receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m BS.ByteString
   receive (ConnectedTLSClient _ _ _ ctx) = do
     -- Timeout increased to 300s (5 minutes) to handle massive backlogs
     val <- liftIO $ timeout (300 * 1000000) $ recvData ctx
@@ -186,9 +185,9 @@ serve (TLSTunnel redisClient) = liftIO $ do
   where
     loop client redis = do
       dat <- recv client 4096
-      send redisClient (fromStrict dat)
+      send redisClient (LBS.fromStrict dat)
       receivedData <- receive redis
-      sendAll client (fromStrict receivedData)
+      sendAll client (LBS.fromStrict receivedData)
       loop client redis
 
 -- | Create a TCP socket with standard options (NoDelay, KeepAlive) and resolve the hostname.
@@ -209,7 +208,7 @@ resolve address =
     [(ip, "")] -> return (toHostAddress ip)
     _ -> do
       rs <- makeResolvSeed defaultResolvConf
-      result <- withResolver rs $ \resolver -> lookupA resolver (BSC.pack address)
+      result <- withResolver rs $ \resolver -> lookupA resolver (BS8.pack address)
       case result of
         Right (a : _) -> return (toHostAddress a)
         _             -> error $ "no address found for: " ++ address

@@ -23,6 +23,7 @@ module RedisCommandClient
   , GeoSearchOption (..)
     -- * Helpers
   , wrapInRay
+  , showBS
   , geoUnitKeyword
   , geoRadiusFlagToList
   , geoSearchFromToList
@@ -41,9 +42,9 @@ import Control.Monad.State as State
     StateT,
   )
 import Data.Attoparsec.ByteString.Char8 qualified as StrictParse
+import Data.ByteString (ByteString)
 import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Char8 qualified as SB8
-import Data.ByteString.Lazy.Char8 qualified as BSC
+import Data.ByteString.Char8 qualified as BS8
 import Data.Kind (Type)
 import Data.Typeable (Typeable)
 import Resp (Encodable (encode), RespData (..), parseRespData)
@@ -60,7 +61,7 @@ instance Exception RedisError
 -- and an unparsed RESP byte buffer from previous receives.
 data ClientState client = ClientState
   { getClient :: client 'Connected,
-    getParseBuffer :: SB8.ByteString
+    getParseBuffer :: BS8.ByteString
   }
 
 -- | A monad for sequencing Redis commands over a single connection.
@@ -99,66 +100,70 @@ instance (Client client) => MonadFail (RedisCommandClient client) where
 
 -- | The standard set of Redis commands. Implemented for both single-node
 -- ('RedisCommandClient') and cluster ('ClusterCommandClient') monads.
+-- Keys and values use strict 'ByteString' to avoid O(n) String conversions.
 class (MonadIO m) => RedisCommands m where
-  auth :: String -> String -> m RespData
+  auth :: ByteString -> ByteString -> m RespData
   ping :: m RespData
-  set :: String -> String -> m RespData
-  get :: String -> m RespData
-  mget :: [String] -> m RespData
-  setnx :: String -> String -> m RespData
-  decr :: String -> m RespData
-  psetex :: String -> Int -> String -> m RespData
-  bulkSet :: [(String, String)] -> m RespData
+  set :: ByteString -> ByteString -> m RespData
+  get :: ByteString -> m RespData
+  mget :: [ByteString] -> m RespData
+  setnx :: ByteString -> ByteString -> m RespData
+  decr :: ByteString -> m RespData
+  psetex :: ByteString -> Int -> ByteString -> m RespData
+  bulkSet :: [(ByteString, ByteString)] -> m RespData
   flushAll :: m RespData
   dbsize :: m RespData
-  del :: [String] -> m RespData
-  exists :: [String] -> m RespData
-  incr :: String -> m RespData
-  hset :: String -> String -> String -> m RespData
-  hget :: String -> String -> m RespData
-  hmget :: String -> [String] -> m RespData
-  hexists :: String -> String -> m RespData
-  lpush :: String -> [String] -> m RespData
-  lrange :: String -> Int -> Int -> m RespData
-  expire :: String -> Int -> m RespData
-  ttl :: String -> m RespData
-  rpush :: String -> [String] -> m RespData
-  lpop :: String -> m RespData
-  rpop :: String -> m RespData
-  sadd :: String -> [String] -> m RespData
-  smembers :: String -> m RespData
-  scard :: String -> m RespData
-  sismember :: String -> String -> m RespData
-  hdel :: String -> [String] -> m RespData
-  hkeys :: String -> m RespData
-  hvals :: String -> m RespData
-  llen :: String -> m RespData
-  lindex :: String -> Int -> m RespData
-  clientSetInfo :: [String] -> m RespData
+  del :: [ByteString] -> m RespData
+  exists :: [ByteString] -> m RespData
+  incr :: ByteString -> m RespData
+  hset :: ByteString -> ByteString -> ByteString -> m RespData
+  hget :: ByteString -> ByteString -> m RespData
+  hmget :: ByteString -> [ByteString] -> m RespData
+  hexists :: ByteString -> ByteString -> m RespData
+  lpush :: ByteString -> [ByteString] -> m RespData
+  lrange :: ByteString -> Int -> Int -> m RespData
+  expire :: ByteString -> Int -> m RespData
+  ttl :: ByteString -> m RespData
+  rpush :: ByteString -> [ByteString] -> m RespData
+  lpop :: ByteString -> m RespData
+  rpop :: ByteString -> m RespData
+  sadd :: ByteString -> [ByteString] -> m RespData
+  smembers :: ByteString -> m RespData
+  scard :: ByteString -> m RespData
+  sismember :: ByteString -> ByteString -> m RespData
+  hdel :: ByteString -> [ByteString] -> m RespData
+  hkeys :: ByteString -> m RespData
+  hvals :: ByteString -> m RespData
+  llen :: ByteString -> m RespData
+  lindex :: ByteString -> Int -> m RespData
+  clientSetInfo :: [ByteString] -> m RespData
   clientReply :: ClientReplyValues -> m (Maybe RespData)
-  zadd :: String -> [(Int, String)] -> m RespData
-  zrange :: String -> Int -> Int -> Bool -> m RespData
-  geoadd :: String -> [(Double, Double, String)] -> m RespData
-  geodist :: String -> String -> String -> Maybe GeoUnit -> m RespData
-  geohash :: String -> [String] -> m RespData
-  geopos :: String -> [String] -> m RespData
-  georadius :: String -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  georadiusRo :: String -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  georadiusByMember :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  georadiusByMemberRo :: String -> String -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  geosearch :: String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m RespData
-  geosearchstore :: String -> String -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m RespData
+  zadd :: ByteString -> [(Int, ByteString)] -> m RespData
+  zrange :: ByteString -> Int -> Int -> Bool -> m RespData
+  geoadd :: ByteString -> [(Double, Double, ByteString)] -> m RespData
+  geodist :: ByteString -> ByteString -> ByteString -> Maybe GeoUnit -> m RespData
+  geohash :: ByteString -> [ByteString] -> m RespData
+  geopos :: ByteString -> [ByteString] -> m RespData
+  georadius :: ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  georadiusRo :: ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  georadiusByMember :: ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  georadiusByMemberRo :: ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
+  geosearch :: ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m RespData
+  geosearchstore :: ByteString -> ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m RespData
   clusterSlots :: m RespData
 
--- | Wrap a list of strings into a RESP array of bulk strings, ready for sending.
-wrapInRay :: [String] -> RespData
+-- | Helper to convert a showable value to ByteString for use in commands.
+showBS :: (Show a) => a -> ByteString
+showBS = BS8.pack . show
+
+-- | Wrap a list of strict ByteStrings into a RESP array of bulk strings.
+wrapInRay :: [ByteString] -> RespData
 wrapInRay inp =
-  let !res = RespArray . map (RespBulkString . BSC.pack) $ inp
+  let !res = RespArray . map RespBulkString $ inp
    in res
 
--- | Send a command and parse the response. Eliminates the 3-line boilerplate
--- of State.get → send wrapInRay → parseWith receive repeated across all commands.
-executeCommand :: (Client client) => [String] -> RedisCommandClient client RespData
+-- | Send a command and parse the response.
+executeCommand :: (Client client) => [ByteString] -> RedisCommandClient client RespData
 executeCommand args = do
   ClientState !client _ <- State.get
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
@@ -172,7 +177,7 @@ data GeoUnit
   | Feet
   deriving (Eq, Show)
 
-geoUnitKeyword :: GeoUnit -> String
+geoUnitKeyword :: GeoUnit -> ByteString
 geoUnitKeyword unit =
   case unit of
     Meters -> "M"
@@ -188,17 +193,17 @@ data GeoRadiusFlag
   | GeoRadiusCount Int Bool -- Bool indicates whether ANY is appended
   | GeoRadiusAsc
   | GeoRadiusDesc
-  | GeoRadiusStore String
-  | GeoRadiusStoreDist String
+  | GeoRadiusStore ByteString
+  | GeoRadiusStoreDist ByteString
   deriving (Eq, Show)
 
-geoRadiusFlagToList :: GeoRadiusFlag -> [String]
+geoRadiusFlagToList :: GeoRadiusFlag -> [ByteString]
 geoRadiusFlagToList flag =
   case flag of
     GeoWithCoord -> ["WITHCOORD"]
     GeoWithDist -> ["WITHDIST"]
     GeoWithHash -> ["WITHHASH"]
-    GeoRadiusCount n useAny -> ["COUNT", show n] <> ["ANY" | useAny]
+    GeoRadiusCount n useAny -> ["COUNT", showBS n] <> ["ANY" | useAny]
     GeoRadiusAsc -> ["ASC"]
     GeoRadiusDesc -> ["DESC"]
     GeoRadiusStore key -> ["STORE", key]
@@ -207,13 +212,13 @@ geoRadiusFlagToList flag =
 -- | Origin for a GEOSEARCH query: either a longitude\/latitude pair or an existing member.
 data GeoSearchFrom
   = GeoFromLonLat Double Double
-  | GeoFromMember String
+  | GeoFromMember ByteString
   deriving (Eq, Show)
 
-geoSearchFromToList :: GeoSearchFrom -> [String]
+geoSearchFromToList :: GeoSearchFrom -> [ByteString]
 geoSearchFromToList fromSpec =
   case fromSpec of
-    GeoFromLonLat lon lat -> ["FROMLONLAT", show lon, show lat]
+    GeoFromLonLat lon lat -> ["FROMLONLAT", showBS lon, showBS lat]
     GeoFromMember member -> ["FROMMEMBER", member]
 
 -- | Shape for a GEOSEARCH query: circular radius or rectangular box.
@@ -222,11 +227,11 @@ data GeoSearchBy
   | GeoByBox Double Double GeoUnit
   deriving (Eq, Show)
 
-geoSearchByToList :: GeoSearchBy -> [String]
+geoSearchByToList :: GeoSearchBy -> [ByteString]
 geoSearchByToList bySpec =
   case bySpec of
-    GeoByRadius radius unit -> ["BYRADIUS", show radius, geoUnitKeyword unit]
-    GeoByBox width height unit -> ["BYBOX", show width, show height, geoUnitKeyword unit]
+    GeoByRadius radius unit -> ["BYRADIUS", showBS radius, geoUnitKeyword unit]
+    GeoByBox width height unit -> ["BYBOX", showBS width, showBS height, geoUnitKeyword unit]
 
 -- | Optional modifiers for GEOSEARCH: include coordinates, distances, hashes,
 -- limit count, or sort order.
@@ -239,13 +244,13 @@ data GeoSearchOption
   | GeoSearchDesc
   deriving (Eq, Show)
 
-geoSearchOptionToList :: GeoSearchOption -> [String]
+geoSearchOptionToList :: GeoSearchOption -> [ByteString]
 geoSearchOptionToList opt =
   case opt of
     GeoSearchWithCoord -> ["WITHCOORD"]
     GeoSearchWithDist -> ["WITHDIST"]
     GeoSearchWithHash -> ["WITHHASH"]
-    GeoSearchCount n useAny -> ["COUNT", show n] <> ["ANY" | useAny]
+    GeoSearchCount n useAny -> ["COUNT", showBS n] <> ["ANY" | useAny]
     GeoSearchAsc -> ["ASC"]
     GeoSearchDesc -> ["DESC"]
 
@@ -260,7 +265,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   mget keys = executeCommand ("MGET" : keys)
   setnx key value = executeCommand ["SETNX", key, value]
   decr key = executeCommand ["DECR", key]
-  psetex key milliseconds value = executeCommand ["PSETEX", key, show milliseconds, value]
+  psetex key milliseconds value = executeCommand ["PSETEX", key, showBS milliseconds, value]
   auth username password = executeCommand ["HELLO", "3", "AUTH", username, password]
   bulkSet kvs = executeCommand (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
   flushAll = executeCommand ["FLUSHALL"]
@@ -273,8 +278,8 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   hmget key fields = executeCommand ("HMGET" : key : fields)
   hexists key field = executeCommand ["HEXISTS", key, field]
   lpush key values = executeCommand ("LPUSH" : key : values)
-  lrange key start stop = executeCommand ["LRANGE", key, show start, show stop]
-  expire key seconds = executeCommand ["EXPIRE", key, show seconds]
+  lrange key start stop = executeCommand ["LRANGE", key, showBS start, showBS stop]
+  expire key seconds = executeCommand ["EXPIRE", key, showBS seconds]
   ttl key = executeCommand ["TTL", key]
   rpush key values = executeCommand ("RPUSH" : key : values)
   lpop key = executeCommand ["LPOP", key]
@@ -287,28 +292,28 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   hkeys key = executeCommand ["HKEYS", key]
   hvals key = executeCommand ["HVALS", key]
   llen key = executeCommand ["LLEN", key]
-  lindex key index = executeCommand ["LINDEX", key, show index]
+  lindex key index = executeCommand ["LINDEX", key, showBS index]
   clientSetInfo info = executeCommand (["CLIENT", "SETINFO"] ++ info)
   clusterSlots = executeCommand ["CLUSTER", "SLOTS"]
 
   clientReply val = do
     ClientState !client _ <- State.get
-    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", show val])
+    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", showBS val])
     case val of
       ON -> Just <$> parseWith (receive client)
       _ -> return Nothing
 
   zadd key members =
-    let payload = concatMap (\(score, member) -> [show score, member]) members
+    let payload = concatMap (\(score, member) -> [showBS score, member]) members
     in executeCommand ("ZADD" : key : payload)
 
   zrange key start stop withScores =
-    let base = ["ZRANGE", key, show start, show stop]
+    let base = ["ZRANGE", key, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
     in executeCommand command
 
   geoadd key entries =
-    let payload = concatMap (\(lon, lat, member) -> [show lon, show lat, member]) entries
+    let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
     in executeCommand ("GEOADD" : key : payload)
 
   geodist key member1 member2 unit =
@@ -319,19 +324,19 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   geopos key members = executeCommand ("GEOPOS" : key : members)
 
   georadius key longitude latitude radius unit flags =
-    let base = ["GEORADIUS", key, show longitude, show latitude, show radius, geoUnitKeyword unit]
+    let base = ["GEORADIUS", key, showBS longitude, showBS latitude, showBS radius, geoUnitKeyword unit]
     in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusRo key longitude latitude radius unit flags =
-    let base = ["GEORADIUS_RO", key, show longitude, show latitude, show radius, geoUnitKeyword unit]
+    let base = ["GEORADIUS_RO", key, showBS longitude, showBS latitude, showBS radius, geoUnitKeyword unit]
     in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusByMember key member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER", key, member, show radius, geoUnitKeyword unit]
+    let base = ["GEORADIUSBYMEMBER", key, member, showBS radius, geoUnitKeyword unit]
     in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusByMemberRo key member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER_RO", key, member, show radius, geoUnitKeyword unit]
+    let base = ["GEORADIUSBYMEMBER_RO", key, member, showBS radius, geoUnitKeyword unit]
     in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
 
   geosearch key fromSpec bySpec options =
@@ -350,7 +355,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
 
 -- | Receive exactly one RESP value, fetching more bytes from the connection as needed.
 -- Throws 'ParseError' on malformed data and 'ConnectionClosed' if the remote end hangs up.
-parseWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => m SB8.ByteString -> m RespData
+parseWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => m BS8.ByteString -> m RespData
 parseWith recv = do
   result <- parseManyWith 1 recv
   case result of
@@ -359,7 +364,7 @@ parseWith recv = do
 
 -- | Receive exactly @cnt@ RESP values from the connection, performing incremental
 -- parsing against the internal buffer and fetching more bytes as needed.
-parseManyWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => Int -> m SB8.ByteString -> m [RespData]
+parseManyWith :: (Client client, MonadIO m, MonadState (ClientState client) m) => Int -> m BS8.ByteString -> m [RespData]
 parseManyWith cnt recv = do
   (ClientState !client !input) <- State.get
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
@@ -369,11 +374,11 @@ parseManyWith cnt recv = do
       State.put (ClientState client remainder)
       return r
   where
-    runUntilDone :: (Client client, MonadIO m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult SB8.ByteString r -> m SB8.ByteString -> m r
+    runUntilDone :: (Client client, MonadIO m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult BS8.ByteString r -> m BS8.ByteString -> m r
     runUntilDone _client (StrictParse.Fail _ _ err) _ = liftIO $ throwIO $ ParseError err
     runUntilDone client (StrictParse.Partial f) getMore = do
       moreData <- getMore
-      if SB8.null moreData
+      if BS8.null moreData
         then liftIO $ throwIO ConnectionClosed
         else runUntilDone client (f moreData) getMore
     runUntilDone client (StrictParse.Done remainder !r) _ = do
