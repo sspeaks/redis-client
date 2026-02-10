@@ -3,6 +3,17 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+cleanup() {
+  echo "Cleaning up containers..."
+  docker compose -f "$SCRIPT_DIR/docker-cluster/docker-compose.yml" down 2>/dev/null || true
+  # shellcheck disable=SC2046
+  docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
+  rm -f "$SCRIPT_DIR/result"
+}
+trap cleanup EXIT
+
 echo "Starting Redis Cluster E2E Tests..."
 
 # Navigate to docker-cluster directory
@@ -19,8 +30,7 @@ sleep 5
 # Create the cluster
 echo "Creating Redis cluster..."
 ./make_cluster.sh || {
-    echo "Cluster creation failed. Cleaning up..."
-    docker compose down
+    echo "Cluster creation failed."
     exit 1
 }
 
@@ -62,8 +72,6 @@ cd ..
 echo "Building cluster E2E test Docker image..."
 nix-build nix/cluster-e2e-docker.nix || {
     echo "Failed to build Docker image"
-    cd docker-cluster
-    docker compose down
     exit 1
 }
 
@@ -77,8 +85,6 @@ NETWORK_NAME=$(docker network ls --filter name=redis-cluster-net --format "{{.Na
 
 if [ -z "$NETWORK_NAME" ]; then
   echo "Error: Could not find redis-cluster-net network"
-  cd docker-cluster
-  docker compose down
   exit 1
 fi
 
@@ -87,20 +93,7 @@ echo "Running cluster E2E tests in Docker container on network $NETWORK_NAME..."
 docker run --network="$NETWORK_NAME" clustere2etests:latest  || {
     EXIT_CODE=$?
     echo "Tests failed with exit code $EXIT_CODE"
-    cd docker-cluster
-    docker compose down
-    # Clean up docker image
-    docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
-    rm -f result
     exit $EXIT_CODE
 }
-
-# Cleanup
-echo "Cleaning up..."
-cd docker-cluster
-docker compose down
-cd ..
-docker rmi $(docker images "clustere2etests:*" -q) 2>/dev/null || true
-rm -f result
 
 echo "Cluster E2E tests completed successfully!"
