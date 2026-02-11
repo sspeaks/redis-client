@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- | Multiplexed command pipelining over a single Redis connection.
 --
@@ -17,14 +18,18 @@
 module Multiplexer
   ( Multiplexer
   , MultiplexerException (..)
+  , SlotPool
+  , createSlotPool
   , createMultiplexer
   , submitCommand
+  , submitCommandPooled
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where
 
 import Client (Client (..), ConnectionStatus (..))
-import Control.Concurrent (ThreadId, forkIO, killThread)
+import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId)
+import qualified GHC.Conc as GHC (threadCapability)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, takeMVar, tryPutMVar)
 import Control.Exception
   ( Exception
@@ -44,6 +49,7 @@ import Data.List (foldl')
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
+import qualified Data.Vector as V
 import Resp (RespData, parseRespData)
 
 -- | Exception thrown when submitting to a dead multiplexer.
@@ -63,6 +69,60 @@ data ResponseSlot = ResponseSlot
   { slotResult :: !(IORef (Maybe (Either SomeException RespData)))
   , slotSignal :: !(MVar ())
   }
+
+-- | Striped pool of pre-allocated ResponseSlots.
+-- Uses multiple IORef-based stacks indexed by capability (core) to reduce
+-- CAS contention between threads on different cores.
+data SlotPool = SlotPool
+  { spStripes :: !(V.Vector (IORef [ResponseSlot]))
+  , spNumStripes :: !Int
+  }
+
+-- | Create a striped pool. Each stripe gets @n `div` numStripes@ pre-allocated slots.
+createSlotPool :: Int -> IO SlotPool
+createSlotPool n = do
+  let numStripes = 16
+      perStripe = max 4 (n `div` numStripes)
+  stripes <- V.replicateM numStripes $ do
+    slots <- mapM (\_ -> do
+      r <- newIORef Nothing
+      s <- newEmptyMVar
+      return $ ResponseSlot r s
+      ) [1..perStripe]
+    newIORef slots
+  return $ SlotPool stripes numStripes
+
+-- | Pick a stripe based on the current thread's capability.
+getStripe :: SlotPool -> IO (IORef [ResponseSlot])
+getStripe sp = do
+  tid <- myThreadId
+  (cap, _) <- GHC.threadCapability tid
+  let !idx = cap `mod` spNumStripes sp
+  return $! spStripes sp V.! idx
+{-# INLINE getStripe #-}
+
+-- | Acquire a ResponseSlot from the pool, or allocate a fresh one if empty.
+-- Resets the slot's IORef to Nothing before returning.
+acquireSlot :: SlotPool -> IO ResponseSlot
+acquireSlot sp = do
+  ref <- getStripe sp
+  mSlot <- atomicModifyIORef' ref $ \case
+    []     -> ([], Nothing)
+    (x:xs) -> (xs, Just x)
+  case mSlot of
+    Just slot -> do
+      writeIORef (slotResult slot) Nothing
+      return slot
+    Nothing -> do
+      r <- newIORef Nothing
+      s <- newEmptyMVar
+      return $ ResponseSlot r s
+
+-- | Return a ResponseSlot to the pool for reuse.
+releaseSlot :: SlotPool -> ResponseSlot -> IO ()
+releaseSlot sp slot = do
+  ref <- getStripe sp
+  atomicModifyIORef' ref $ \xs -> (slot : xs, ())
 
 -- | A command waiting to be sent, paired with a response slot.
 data PendingCommand = PendingCommand
@@ -203,6 +263,25 @@ submitCommand mux cmdBuilder = do
       commandEnqueue (muxCommandQueue mux) pending
       takeMVar signal
       mResult <- readIORef resultRef
+      case mResult of
+        Just (Right resp) -> return resp
+        Just (Left e)     -> throwIO e
+        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+
+-- | Like 'submitCommand', but acquires a 'ResponseSlot' from the pool
+-- instead of allocating a fresh IORef+MVar per call.
+submitCommandPooled :: SlotPool -> Multiplexer -> Builder.Builder -> IO RespData
+submitCommandPooled pool mux cmdBuilder = do
+  isAlive <- readIORef (muxAlive mux)
+  if not isAlive
+    then throwIO $ MultiplexerDead "Multiplexer is not alive"
+    else do
+      slot <- acquireSlot pool
+      let pending = PendingCommand cmdBuilder slot
+      commandEnqueue (muxCommandQueue mux) pending
+      takeMVar (slotSignal slot)
+      mResult <- readIORef (slotResult slot)
+      releaseSlot pool slot
       case mResult of
         Just (Right resp) -> return resp
         Just (Left e)     -> throwIO e

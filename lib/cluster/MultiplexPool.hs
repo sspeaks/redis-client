@@ -22,16 +22,18 @@ import Client (Client (..))
 import Cluster (NodeAddress (..))
 import Connector (Connector)
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar)
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, catch, throwIO)
 import Data.IORef (IORef, newIORef, readIORef, atomicWriteIORef)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Multiplexer
   ( Multiplexer
+  , SlotPool
+  , createSlotPool
   , createMultiplexer
   , destroyMultiplexer
   , isMultiplexerAlive
-  , submitCommand
+  , submitCommandPooled
   )
 import Resp (RespData)
 import qualified Data.ByteString.Builder as Builder
@@ -39,10 +41,12 @@ import qualified Data.ByteString.Builder as Builder
 -- | A pool of multiplexers, one per node address.
 -- Uses IORef for fast lock-free reads on the hot path,
 -- with MVar protecting creation/replacement (exclusive writes).
+-- Includes a per-pool SlotPool for ResponseSlot reuse.
 data MultiplexPool client = MultiplexPool
   { poolNodesRef   :: !(IORef (Map NodeAddress Multiplexer))  -- fast reads
   , poolNodesLock  :: !(MVar ())                              -- protects writes
   , poolConnector  :: !(Connector client)
+  , poolSlotPool   :: !SlotPool                               -- reusable ResponseSlots
   }
 
 -- | Create a new empty multiplexer pool.
@@ -54,11 +58,12 @@ createMultiplexPool
 createMultiplexPool connector = do
   nodesRef <- newIORef Map.empty
   nodesLock <- newMVar ()
-  return $ MultiplexPool nodesRef nodesLock connector
+  slotPool <- createSlotPool 256
+  return $ MultiplexPool nodesRef nodesLock connector slotPool
 
 -- | Submit a pre-encoded RESP command (as a Builder) to the multiplexer for a given node.
 -- Creates the multiplexer on demand if the node hasn't been seen before.
--- Automatically replaces dead multiplexers.
+-- On submission failure (dead multiplexer), replaces it and retries once.
 submitToNode
   :: (Client client)
   => MultiplexPool client
@@ -67,11 +72,20 @@ submitToNode
   -> IO RespData
 submitToNode pool addr cmdBuilder = do
   mux <- getMultiplexer pool addr
-  submitCommand mux cmdBuilder
+  submitCommandPooled (poolSlotPool pool) mux cmdBuilder
+    `catch` \(e :: SomeException) -> do
+      -- Multiplexer may be dead; try to replace and retry once
+      alive <- isMultiplexerAlive mux
+      if alive
+        then throwIO e  -- mux is alive, error is something else
+        else do
+          newMux <- replaceMux pool addr mux
+          submitCommandPooled (poolSlotPool pool) newMux cmdBuilder
 
 -- | Get or create the single multiplexer for a node.
 -- Uses readIORef for the common path (lock-free, no MVar overhead).
--- Falls back to MVar-protected creation only on cache miss or dead multiplexer.
+-- Skips isMultiplexerAlive check on the hot path — errors are caught
+-- by the caller (submitToNode) which triggers replacement on failure.
 getMultiplexer
   :: (Client client)
   => MultiplexPool client
@@ -80,11 +94,7 @@ getMultiplexer
 getMultiplexer pool addr = do
   m <- readIORef (poolNodesRef pool)
   case Map.lookup addr m of
-    Just mux -> do
-      alive <- isMultiplexerAlive mux
-      if alive
-        then return mux
-        else replaceMux pool addr mux
+    Just mux -> return mux
     Nothing -> modifyMVar (poolNodesLock pool) $ \() -> do
       -- Double-check after acquiring lock
       m' <- readIORef (poolNodesRef pool)
