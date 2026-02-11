@@ -4,9 +4,28 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
   outputs = { nixpkgs, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+    let
+      src = builtins.path { path = ./.; name = "source"; };
+
+      # Overlay that adds redis-client to haskellPackages.
+      # Apply this in your own flake to use redis-client as a library:
+      #   nixpkgs.overlays = [ redis-client.overlays.default ];
+      overlay = final: prev: {
+        haskellPackages = prev.haskellPackages.override {
+          overrides = hfinal: hprev: {
+            redis-client = hfinal.callCabal2nix "redis-client" src { };
+          };
+        };
+      };
+    in
+    {
+      overlays.default = overlay;
+    } // flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ overlay ];
+        };
       in
       {
         defaultPackage = (import ./default.nix { inherit pkgs; }).fullPackageWithScripts;

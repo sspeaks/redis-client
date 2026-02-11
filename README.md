@@ -82,6 +82,49 @@ azure-redis-connect --resource-group <rg-name>
 
 See [docs/AZURE_EXAMPLES.md](docs/AZURE_EXAMPLES.md) for detailed examples.
 
+## Using as a Nix Overlay
+
+You can add `redis-client` to your local nixpkgs Haskell package set via the exported overlay. This lets you use it as a library dependency in other Haskell packages built with nixpkgs.
+
+**In a consumer flake:**
+```nix
+{
+  inputs = {
+    nixpkgs.url = "nixpkgs/nixos-25.05";
+    redis-client.url = "github:sspeaks/redis-client";
+  };
+
+  outputs = { nixpkgs, redis-client, ... }:
+    let
+      pkgs = import nixpkgs {
+        system = "x86_64-linux";
+        overlays = [ redis-client.overlays.default ];
+      };
+    in {
+      # haskellPackages.redis-client is now available
+      defaultPackage.x86_64-linux =
+        pkgs.haskellPackages.callCabal2nix "my-app" ./. { };
+    };
+}
+```
+
+Your `.cabal` file just needs `redis-client` in `build-depends` — the overlay makes it visible to `callCabal2nix` automatically.
+
+**Without flakes (e.g. in `shell.nix` or `default.nix`):**
+```nix
+let
+  redis-client-src = builtins.fetchGit {
+    url = "https://github.com/sspeaks/redis-client.git";
+    ref = "main";
+  };
+  redis-client-flake = builtins.getFlake (toString redis-client-src);
+  pkgs = import <nixpkgs> {
+    overlays = [ redis-client-flake.overlays.default ];
+  };
+in
+  pkgs.haskellPackages.callCabal2nix "my-app" ./. { }
+```
+
 ## Development
 
 ### Building
