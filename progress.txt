@@ -8,6 +8,8 @@ Started: Wed Feb 11 14:27:03 PST 2026
 - Always add `.gitignore` with `bin/` and `obj/` for dotnet projects to avoid committing build artifacts
 - TLS vs Plaintext connectors are different types — can't mix in `if-then-else`; use separate code branches
 - Use `encodeCommandBuilder` from `RedisCommandClient` to build RESP Builders for `MultiplexPool.submitToNode`
+- For SET/GET hot paths, use specialized `encodeSetBuilder`/`encodeGetBuilder` instead of `encodeCommandBuilder` — avoids list allocation and length traversal
+- Use NOINLINE on constant Builders (preambles) so they're computed once as CAFs; use INLINE on encoder functions for call-site specialization
 - `ClusterClient(..)` is in `ClusterCommandClient` module; access `clusterTopology` to read topology TVar
 - Pre-existing nix-build failure in `test/ClusterE2E/Utils.hs` — not caused by recent changes
 - Prof files (*.prof) are gitignored — document profiling results in .md files instead
@@ -172,4 +174,31 @@ Started: Wed Feb 11 14:27:03 PST 2026
   - Profiling overhead is ~15-20% — always compare profiled-to-profiled and non-profiled-to-non-profiled
   - On localhost, network I/O (socket read/write) dominates at ~25% — per-command overhead optimizations show more impact on real network latency
   - MIXED workload benefits most from submission path optimization because it alternates between SET/GET patterns
+---
+
+## 2026-02-11T23:26 - US-008
+- Optimized RESP serialization with three changes:
+  1. **Pre-computed preamble constants**: `setPreamble` (`*3\r\n$3\r\nSET\r\n`) and `getPreamble` (`*2\r\n$3\r\nGET\r\n`) as NOINLINE Builder constants, avoiding per-call construction of fixed protocol overhead
+  2. **Specialized encoders**: `encodeSetBuilder key val` and `encodeGetBuilder key` that skip list construction, `length` traversal, and `foldMap` overhead — directly concatenate preamble + bulk args
+  3. **Extracted `encodeBulkArg`**: INLINE helper for `$LEN\r\nDATA\r\n` encoding, shared by both specialized and general encoders
+- Applied specialized encoders in benchmark hot path (benchWorker and benchPrePopulate)
+- Profiling results (SET, 10s, n=4, profiled):
+  - `encodeCommandBuilder`: 2.9% time, 3.7% alloc → **completely eliminated from top cost centers** (inlined away)
+  - Total alloc: 7,597M → 7,341M bytes (3.4% reduction)
+  - `submitToNode`: 5.3% → 0.6% individual time
+- Benchmark results (non-profiled, n=4, 15s):
+  - SET: 17,779 → 17,643 ops/sec (within noise, no regression)
+  - GET: 18,893 → 18,742 ops/sec (within noise, no regression)
+  - MIXED: 17,031 → 19,119 ops/sec (+12.3% improvement)
+- All 27 unit tests pass
+- Files changed:
+  - `lib/redis-command-client/RedisCommandClient.hs` — Added setPreamble, getPreamble, encodeSetBuilder, encodeGetBuilder, encodeBulkArg; refactored encodeCommandBuilder to use encodeBulkArg
+  - `app/Main.hs` — Switched benchWorker and benchPrePopulate to use encodeSetBuilder/encodeGetBuilder
+  - `lib/redis/Redis.hs` — Re-exported new specialized encoder functions
+- **Learnings for future iterations:**
+  - NOINLINE on preamble constants ensures they are computed once as CAFs (Constant Applicative Forms), not rebuilt per call
+  - INLINE on encoder functions lets GHC specialize at call sites — the profiler shows them disappearing into callers
+  - `encodeCommandBuilder` was only 2.9% of time — serialization is not a major bottleneck on localhost; the improvement is more significant with real network latency where CPU cycles matter more relative to I/O
+  - Pre-computing fixed RESP protocol overhead as ByteString constants (`"*3\r\n$3\r\nSET\r\n"`) is more efficient than building char-by-char with Builder.char8 and Builder.intDec
+  - MIXED workload benefits most because it alternates encoders and the specialized paths avoid list allocation overhead
 ---
