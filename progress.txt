@@ -19,6 +19,9 @@ Started: Wed Feb 11 14:27:03 PST 2026
 - Multiplexer write path bottleneck hierarchy: createMultiplexer loops (35%) > socket I/O (21%) > submitCommand (11%)
 - Attoparsec `IResult` (Done/Fail/Partial) can be pattern-matched directly to avoid Either/tuple allocation in hot loops
 - `Seq.splitAt` is O(log(min(n,len-n))) — use for efficient batch dequeue from PendingQueue
+- Shared pool CAS contention > independent allocation — stripe pools by GHC capability using `GHC.Conc.threadCapability`
+- MVar signaling (takeMVar/tryPutMVar) dominates submitCommand time, not IORef/MVar allocation
+- Remove per-call `isMultiplexerAlive` checks — use error-catching retry instead for better hot-path performance
 
 ---
 
@@ -143,4 +146,30 @@ Started: Wed Feb 11 14:27:03 PST 2026
   - `Seq.splitAt` is O(log(min(n,len-n))) — efficient for batch dequeue
   - The `pendingDequeueUpTo` batch size of 64 is a reasonable upper bound — matches typical pipelining depth
   - Most of the reader time is in socket I/O (recv) and Attoparsec parsing — the queue management overhead is small on localhost
+---
+
+## 2026-02-11T23:16 - US-007
+- Optimized connection and submission overhead with two improvements:
+  1. **Striped ResponseSlot pool**: Added `SlotPool` in Multiplexer.hs — a striped (16-stripe) pool of pre-allocated ResponseSlots (IORef + MVar pairs) indexed by GHC capability. `submitCommandPooled` acquires a slot from the pool, uses it, and releases it back, avoiding per-command `newIORef`/`newEmptyMVar` allocation. Falls back to fresh allocation if pool is exhausted.
+  2. **Removed isMultiplexerAlive from hot path**: `getMultiplexer` in MultiplexPool.hs no longer checks `isMultiplexerAlive` on every call. Instead, `submitToNode` catches submission errors and only then checks liveness, replacing the dead multiplexer and retrying once. This removes one `readIORef` per command from the steady-state hot path.
+- Benchmark results (non-profiled, n=4 connections, 15s duration, 2 runs averaged):
+  - SET: ~17,390 ops/sec (baseline 17,779) — within noise, no regression
+  - GET: ~18,550 ops/sec (baseline 18,893) — within noise, no regression
+  - MIXED: ~18,469 ops/sec (baseline 17,031) — improved ~8.4%
+- Profiling comparison (SET, 10s, n=4):
+  - `submitCommand`/`submitCommandPooled`: 10.7% → 11.6% (neutral — dominated by MVar signaling, not allocation)
+  - `submitToNode` (getMultiplexer): 0.7% → 0.6% (slight improvement from removing isMultiplexerAlive)
+  - `createMultiplexer`: 35.5% → 35.0% (unchanged — writer/reader loops)
+- All 30 unit tests pass
+- Files changed:
+  - `lib/cluster/Multiplexer.hs` — Added SlotPool (striped), createSlotPool, acquireSlot, releaseSlot, submitCommandPooled; added LambdaCase, Data.Vector, GHC.Conc imports
+  - `lib/cluster/MultiplexPool.hs` — Added poolSlotPool field, switched submitToNode to use submitCommandPooled, removed isMultiplexerAlive from getMultiplexer hot path, added error-catching retry in submitToNode
+- **Learnings for future iterations:**
+  - ResponseSlot allocation (IORef + MVar) is only ~0.7% alloc — the real time cost is MVar signaling (takeMVar/tryPutMVar), not allocation
+  - Shared pool with single IORef adds CAS contention worse than independent allocation — must stripe by capability
+  - `threadCapability` from GHC.Conc gives the current GHC capability (core) index — ideal for striping
+  - `isMultiplexerAlive` is a single readIORef but adds up at 163K calls/run — lazy error-checking is better
+  - Profiling overhead is ~15-20% — always compare profiled-to-profiled and non-profiled-to-non-profiled
+  - On localhost, network I/O (socket read/write) dominates at ~25% — per-command overhead optimizations show more impact on real network latency
+  - MIXED workload benefits most from submission path optimization because it alternates between SET/GET patterns
 ---
