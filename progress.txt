@@ -17,6 +17,8 @@ Started: Wed Feb 11 14:27:03 PST 2026
 - `submitCommand` allocates IORef + MVar per command — primary optimization target (~10% time)
 - `foldl'` from `Data.List` needed for strict left folds (not auto-imported in this project)
 - Multiplexer write path bottleneck hierarchy: createMultiplexer loops (35%) > socket I/O (21%) > submitCommand (11%)
+- Attoparsec `IResult` (Done/Fail/Partial) can be pattern-matched directly to avoid Either/tuple allocation in hot loops
+- `Seq.splitAt` is O(log(min(n,len-n))) — use for efficient batch dequeue from PendingQueue
 
 ---
 
@@ -118,4 +120,27 @@ Started: Wed Feb 11 14:27:03 PST 2026
   - The write path is not the primary bottleneck — `createMultiplexer` (35%) and socket I/O (21%) dominate
   - Non-blocking double-drain helps most under load when commands arrive faster than they're sent
   - Profiling overhead is ~15-20% — always compare profiled-to-profiled or non-profiled-to-non-profiled
+---
+
+## 2026-02-11T22:58 - US-006
+- Optimized Multiplexer read path (`readerLoop`) with three improvements:
+  1. **Batch dequeue**: Added `pendingDequeueUpTo` for non-blocking batch dequeue of up to 64 slots. When buffer has remaining data after parsing, grabs multiple slots at once instead of one-at-a-time `pendingDequeue` (which does atomicModifyIORef' per call).
+  2. **Direct IResult handling**: Replaced `parseOneResp` (which returned `Either SomeException (RespData, ByteString)`) with inline `feedParse`/`feedParseBatch` that pattern-match on Attoparsec's `Done`/`Fail`/`Partial` directly, eliminating per-response Either/tuple allocation.
+  3. **Tight inner loop**: When buffer has data, enters `drainBuffer` → `fillSlots` → `feedParseBatch` loop that parses and fills multiple response slots without going through the outer `go` loop's alive check and blocking dequeue.
+- Removed unused `parseOneResp` function (was not exported, now inlined into reader loop)
+- Benchmark results (non-profiled, n=4 connections, 15s duration):
+  - GET: 18,180 ops/sec (baseline 18,893) — within noise, no regression
+  - SET: 16,945 ops/sec (baseline 17,779) — within noise, no regression
+  - MIXED: 17,630 ops/sec (baseline 17,031) — improved ~3.5%
+- Profiled GET: 18,043 ops/sec (baseline profiled 17,492) — ~3% improvement
+- All 30 unit tests pass
+- Files changed:
+  - `lib/cluster/Multiplexer.hs` — readerLoop batch optimization, pendingDequeueUpTo, removed parseOneResp
+- **Learnings for future iterations:**
+  - Local Docker cluster is too fast (no network latency) for read path optimizations to show dramatic improvement — recv buffers rarely accumulate multiple responses
+  - Batch dequeue helps more with real network latency where TCP recv returns multiple responses
+  - Attoparsec `IResult` pattern matching is cleaner and avoids allocation vs wrapping in Either
+  - `Seq.splitAt` is O(log(min(n,len-n))) — efficient for batch dequeue
+  - The `pendingDequeueUpTo` batch size of 64 is a reasonable upper bound — matches typical pipelining depth
+  - Most of the reader time is in socket I/O (recv) and Attoparsec parsing — the queue management overhead is small on localhost
 ---
