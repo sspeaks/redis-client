@@ -261,4 +261,5 @@ executable redis-client
                     , redis-command-client
                     , resp
                     , stm
+                    , time
                     , vector

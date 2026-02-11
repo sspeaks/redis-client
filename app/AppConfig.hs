@@ -34,7 +34,9 @@ data RunState = RunState
     pipelineBatchSize :: Int,
     numProcesses :: Maybe Int,
     processIndex :: Maybe Int,
-    useMux :: Bool
+    useMux :: Bool,
+    benchOperation :: String,
+    benchDuration :: Int
   }
   deriving (Show)
 
@@ -57,6 +59,8 @@ defaultRunState = RunState
   , numProcesses = Nothing
   , processIndex = Nothing
   , useMux = False
+  , benchOperation = "set"
+  , benchDuration = 30
   }
 
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
