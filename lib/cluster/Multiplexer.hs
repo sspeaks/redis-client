@@ -40,6 +40,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicWriteIORef, atomicModifyIORef')
+import Data.List (foldl')
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
@@ -83,11 +84,11 @@ newPendingQueue = do
   signal <- newEmptyMVar
   return $ PendingQueue slots signal
 
--- | Enqueue response slots (writer thread only — single producer).
-pendingEnqueue :: PendingQueue -> [ResponseSlot] -> IO ()
-pendingEnqueue pq newSlots = do
+-- | Enqueue a Seq of response slots directly (avoids Seq.fromList conversion).
+pendingEnqueueSeq :: PendingQueue -> Seq ResponseSlot -> IO ()
+pendingEnqueueSeq pq newSlots = do
   atomicModifyIORef' (pqSlots pq) $ \s ->
-    (s <> Seq.fromList newSlots, ())
+    (s <> newSlots, ())
   void $ tryPutMVar (pqSignal pq) ()
 
 -- | Dequeue one response slot (reader thread only — single consumer).
@@ -137,6 +138,15 @@ commandDrain cq = do
   takeMVar (cqSignal cq)
   batch <- atomicModifyIORef' (cqItems cq) $ \xs -> ([], xs)
   return (reverse batch)
+
+-- | Non-blocking drain of any additional commands that have arrived.
+-- Returns commands in submission order. Returns [] if none available.
+commandTryDrain :: CommandQueue -> IO [PendingCommand]
+commandTryDrain cq = do
+  batch <- atomicModifyIORef' (cqItems cq) $ \xs -> ([], xs)
+  case batch of
+    [] -> return []
+    _  -> return (reverse batch)
 
 -- | Drain remaining commands without blocking (for cleanup).
 commandFlush :: CommandQueue -> IO [PendingCommand]
@@ -223,12 +233,21 @@ writerLoop cmdQueue pendingQueue conn alive = go
         else do
           -- Drain command queue (lock-free MPSC, blocks if empty)
           batch <- commandDrain cmdQueue
+          -- Non-blocking double-drain: pick up extra commands that arrived
+          extra <- commandTryDrain cmdQueue
+          let allCmds = batch ++ extra
 
-          -- Push response slots to pending queue in IO (not STM — SPSC safe)
-          pendingEnqueue pendingQueue (map pcSlot batch)
+          -- Single-pass: extract slots (as Seq) and build the combined Builder
+          let (!slots, !builder) = foldl'
+                (\(!sAcc, !bAcc) pc -> (sAcc Seq.|> pcSlot pc, bAcc <> pcBuilder pc))
+                (Seq.empty, mempty)
+                allCmds
 
-          -- Batch-materialize and send
-          let allBytes = Builder.toLazyByteString $ foldMap pcBuilder batch
+          -- Push response slots to pending queue (Seq avoids fromList conversion)
+          pendingEnqueueSeq pendingQueue slots
+
+          -- Materialize and send
+          let allBytes = Builder.toLazyByteString builder
           result <- try $ send conn allBytes
           case result of
             Right () -> go
@@ -236,7 +255,7 @@ writerLoop cmdQueue pendingQueue conn alive = go
               atomicWriteIORef alive False
               remaining <- pendingDrainAll pendingQueue
               forM_ remaining $ \slot -> failSlot slot e
-              forM_ batch $ \pc -> failSlot (pcSlot pc) e
+              forM_ allCmds $ \pc -> failSlot (pcSlot pc) e
 
 -- Reader thread: pops response slots from the pending queue and fills
 -- them with parsed RESP responses, one at a time.
