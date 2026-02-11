@@ -105,6 +105,14 @@ pendingDequeue pq = do
       takeMVar (pqSignal pq)
       pendingDequeue pq
 
+-- | Non-blocking dequeue of up to N response slots.
+-- Returns empty Seq if none available.
+pendingDequeueUpTo :: PendingQueue -> Int -> IO (Seq ResponseSlot)
+pendingDequeueUpTo pq n = do
+  atomicModifyIORef' (pqSlots pq) $ \s ->
+    let (taken, rest) = Seq.splitAt n s
+    in (rest, taken)
+
 -- | Drain all pending slots (for error propagation).
 pendingDrainAll :: PendingQueue -> IO [ResponseSlot]
 pendingDrainAll pq = do
@@ -258,7 +266,10 @@ writerLoop cmdQueue pendingQueue conn alive = go
               forM_ allCmds $ \pc -> failSlot (pcSlot pc) e
 
 -- Reader thread: pops response slots from the pending queue and fills
--- them with parsed RESP responses, one at a time.
+-- them with parsed RESP responses. When the buffer contains additional
+-- data after parsing, batch-dequeues more slots and parses in a tight
+-- inner loop to reduce per-response dequeue overhead.
+-- Uses Attoparsec IResult directly to avoid Either allocation per response.
 readerLoop
   :: PendingQueue
   -> IO ByteString
@@ -272,38 +283,100 @@ readerLoop pendingQueue recv alive = go BS.empty
         then return ()
         else do
           slot <- pendingDequeue pendingQueue
+          feedParse slot (StrictParse.parse parseRespData buffer)
 
-          parseResult <- parseOneResp buffer recv
-          case parseResult of
-            Right (resp, remainder) -> do
-              writeIORef (slotResult slot) (Just (Right resp))
-              void $ tryPutMVar (slotSignal slot) ()
-              go remainder
-            Left e -> do
+    -- Drive the incremental parser, feeding data until Done or Fail.
+    -- Avoids allocating Either/tuple wrappers on the hot path.
+    feedParse !slot (StrictParse.Done !remainder !resp) = do
+      writeIORef (slotResult slot) (Just (Right resp))
+      void $ tryPutMVar (slotSignal slot) ()
+      -- If there's remaining data, try to parse more in a tight loop
+      if BS.null remainder
+        then go remainder
+        else drainBuffer remainder
+    feedParse !slot (StrictParse.Fail _ _ err) = do
+      let !e = toException $ MultiplexerParseError err
+      writeIORef (slotResult slot) (Just (Left e))
+      void $ tryPutMVar (slotSignal slot) ()
+      atomicWriteIORef alive False
+      remaining <- pendingDrainAll pendingQueue
+      forM_ remaining $ \s -> failSlot s e
+    feedParse !slot (StrictParse.Partial cont) = do
+      moreResult <- try recv
+      case moreResult of
+        Left (e :: SomeException) -> do
+          writeIORef (slotResult slot) (Just (Left e))
+          void $ tryPutMVar (slotSignal slot) ()
+          atomicWriteIORef alive False
+          remaining <- pendingDrainAll pendingQueue
+          forM_ remaining $ \s -> failSlot s e
+        Right moreData
+          | BS.null moreData -> do
+              let !e = toException MultiplexerConnectionClosed
               writeIORef (slotResult slot) (Just (Left e))
               void $ tryPutMVar (slotSignal slot) ()
               atomicWriteIORef alive False
               remaining <- pendingDrainAll pendingQueue
               forM_ remaining $ \s -> failSlot s e
+          | otherwise -> feedParse slot (cont moreData)
 
--- | Parse exactly one RESP value from the buffer + socket.
-parseOneResp
-  :: ByteString
-  -> IO ByteString
-  -> IO (Either SomeException (RespData, ByteString))
-parseOneResp buffer recv = go' (StrictParse.parse parseRespData buffer)
-  where
-    go' (StrictParse.Done remainder resp) = return $ Right (resp, remainder)
-    go' (StrictParse.Fail _ _ err) =
-      return $ Left $ toException $ MultiplexerParseError err
-    go' (StrictParse.Partial cont) = do
+    -- Tight inner loop: buffer has data, grab available slots and parse
+    -- without blocking on empty queue. Falls back to outer loop when
+    -- no more slots are available or buffer is exhausted.
+    drainBuffer !buffer = do
+      isAlive <- readIORef alive
+      if not isAlive
+        then return ()
+        else do
+          extraSlots <- pendingDequeueUpTo pendingQueue 64
+          case Seq.viewl extraSlots of
+            Seq.EmptyL -> go buffer  -- no slots ready, back to outer loop
+            firstSlot Seq.:< restSlots ->
+              fillSlots buffer firstSlot restSlots
+
+    -- Parse and fill slots one at a time from the batch.
+    -- Uses Attoparsec IResult directly (no Either wrapper).
+    fillSlots !buffer !slot !remaining =
+      feedParseBatch slot remaining (StrictParse.parse parseRespData buffer)
+
+    feedParseBatch !slot !remaining (StrictParse.Done !remainder !resp) = do
+      writeIORef (slotResult slot) (Just (Right resp))
+      void $ tryPutMVar (slotSignal slot) ()
+      case Seq.viewl remaining of
+        Seq.EmptyL ->
+          if BS.null remainder
+            then go remainder
+            else drainBuffer remainder
+        nextSlot Seq.:< restSlots ->
+          feedParseBatch nextSlot restSlots (StrictParse.parse parseRespData remainder)
+    feedParseBatch !slot !remaining (StrictParse.Fail _ _ err) = do
+      let !e = toException $ MultiplexerParseError err
+      writeIORef (slotResult slot) (Just (Left e))
+      void $ tryPutMVar (slotSignal slot) ()
+      atomicWriteIORef alive False
+      forM_ remaining $ \s -> failSlot s e
+      queued <- pendingDrainAll pendingQueue
+      forM_ queued $ \s -> failSlot s e
+    feedParseBatch !slot !remaining (StrictParse.Partial cont) = do
       moreResult <- try recv
       case moreResult of
-        Left (e :: SomeException) -> return $ Left e
+        Left (e :: SomeException) -> do
+          writeIORef (slotResult slot) (Just (Left e))
+          void $ tryPutMVar (slotSignal slot) ()
+          atomicWriteIORef alive False
+          forM_ remaining $ \s -> failSlot s e
+          queued <- pendingDrainAll pendingQueue
+          forM_ queued $ \s -> failSlot s e
         Right moreData
-          | BS.null moreData ->
-              return $ Left $ toException MultiplexerConnectionClosed
-          | otherwise -> go' (cont moreData)
+          | BS.null moreData -> do
+              let !e = toException MultiplexerConnectionClosed
+              writeIORef (slotResult slot) (Just (Left e))
+              void $ tryPutMVar (slotSignal slot) ()
+              atomicWriteIORef alive False
+              forM_ remaining $ \s -> failSlot s e
+              queued <- pendingDrainAll pendingQueue
+              forM_ queued $ \s -> failSlot s e
+          | otherwise -> feedParseBatch slot remaining (cont moreData)
 
 -- | Fail a response slot with an exception.
 failSlot :: ResponseSlot -> SomeException -> IO ()
