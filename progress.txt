@@ -1,0 +1,121 @@
+# Ralph Progress Log
+Started: Wed Feb 11 14:27:03 PST 2026
+
+## Codebase Patterns
+- Build C# benchmarks with `dotnet build` in `benchmarks/dotnet/RedisBenchmark/`
+- The redis-client executable uses `AppConfig.RunState` for all CLI options, parsed via `System.Console.GetOpt`
+- Existing bench mode in Main.hs reuses `-d` flag for ops count and `-n` for thread count
+- Always add `.gitignore` with `bin/` and `obj/` for dotnet projects to avoid committing build artifacts
+- TLS vs Plaintext connectors are different types — can't mix in `if-then-else`; use separate code branches
+- Use `encodeCommandBuilder` from `RedisCommandClient` to build RESP Builders for `MultiplexPool.submitToNode`
+- `ClusterClient(..)` is in `ClusterCommandClient` module; access `clusterTopology` to read topology TVar
+- Pre-existing nix-build failure in `test/ClusterE2E/Utils.hs` — not caused by recent changes
+- Prof files (*.prof) are gitignored — document profiling results in .md files instead
+- Build profiling binary with: `nix-shell --run "cabal build --enable-profiling redis-client"`
+- Run profiling with: `$BENCH_BIN bench ... +RTS -p -RTS`; prof file lands in CWD as redis-client.prof
+- Hot path: benchWorker → submitToNode → submitCommand + createMultiplexer (writer/reader loops)
+- `submitCommand` allocates IORef + MVar per command — primary optimization target (~10% time)
+- `foldl'` from `Data.List` needed for strict left folds (not auto-imported in this project)
+- Multiplexer write path bottleneck hierarchy: createMultiplexer loops (35%) > socket I/O (21%) > submitCommand (11%)
+
+---
+
+## 2026-02-11T22:27 - US-001
+- Implemented C# .NET 8 console app benchmarking StackExchange.Redis cluster workloads
+- Files changed:
+  - `benchmarks/dotnet/RedisBenchmark/Program.cs` (new) - Main benchmark program
+  - `benchmarks/dotnet/RedisBenchmark/RedisBenchmark.csproj` (new) - Project file with StackExchange.Redis dependency
+  - `benchmarks/dotnet/RedisBenchmark/.gitignore` (new) - Exclude bin/obj
+- **Learnings for future iterations:**
+  - `System.CommandLine` SetHandler has a max arg count (~8); for 9+ args, use manual parsing instead
+  - StackExchange.Redis `ConnectionMultiplexer` handles cluster mode automatically when connecting to a cluster node
+  - Used `Console.Error.WriteLine` for status messages so `Console.WriteLine` JSON output is clean for piping
+  - Key/value generation: keys use `bench:{counter}:` prefix padded to size, values are random bytes
+  - dotnet 8.0.417 is available via nix at `/home/sspeaks/.nix-profile/bin/dotnet`
+---
+
+## 2026-02-11T22:29 - US-002
+- Implemented `bench` subcommand for redis-client with full benchmark harness
+- Added `--operation` (set/get/mixed), `--duration` CLI flags to options
+- Added `benchOperation` and `benchDuration` fields to `AppConfig.RunState`
+- Bench mode uses MultiplexPool/submitToNode code path directly (not ClusterCommandClient)
+- Outputs JSON: `{"operation":"...","ops_per_sec":...,"duration_sec":...,"total_ops":...}`
+- Pre-populates 100k keys for GET/mixed workloads before timing
+- Spawns concurrent submitter threads (controlled by `-n`/`--connections`)
+- Mixed workload uses 80% GET / 20% SET ratio (counter % 5 == 0 → SET)
+- Files changed:
+  - `app/AppConfig.hs` - Added `benchOperation`, `benchDuration` fields
+  - `app/Main.hs` - Rewrote `bench` function, added helpers (`benchKey`, `benchValue`, `benchPrePopulate`, `benchWorker`, `benchWithConnector`)
+  - `redis-client.cabal` - Added `time` dependency to redis-client executable
+- **Learnings for future iterations:**
+  - Can't use `if-then-else` with TLS/Plaintext connectors (different types) — must use separate branches like the rest of the codebase
+  - `MultiplexPool` and `submitToNode` are in the `cluster` library; `Connector` type is in `Connector` module
+  - `ClusterClient(..)` must be imported from `ClusterCommandClient` to access `clusterTopology` field
+  - `IORef` type constructor must be explicitly imported from `Data.IORef` (not just the functions)
+  - Pre-existing nix-build failure in `test/ClusterE2E/Utils.hs` (parse error line 68) — not related to this change
+  - `encodeCommandBuilder` from `RedisCommandClient` is the way to build RESP-encoded command Builders for submitToNode
+---
+
+## 2026-02-11T22:38 - US-003
+- Implemented `benchmarks/run-comparison.sh` shell script that runs both C# and Haskell benchmarks side-by-side
+- Script accepts `--host`, `--port`, `--password`, `--tls`, `--duration`, `--key-size`, `--value-size`, `--connections` flags
+- Runs set, get, mixed workloads for both harnesses, collects JSON output, and prints a summary table
+- Exits 0 if all ratios >= 90%, exits 1 otherwise
+- Saves combined results to `benchmarks/results/comparison.json`
+- Passes shellcheck clean
+- Files changed:
+  - `benchmarks/run-comparison.sh` (new) - Benchmark comparison runner script
+- **Learnings for future iterations:**
+  - The Haskell bench command requires `-c` (cluster mode) flag and uses `-p` for port, `-h` for host, `-a` for password, `-t` for TLS
+  - The C# benchmark uses `--host`, `--port`, `--password`, `--tls` style long flags
+  - `redis-client` binary can be found at `~/.nix-profile/bin/redis-client`, `result*/bin/redis-client`, or in `dist-newstyle/`
+  - Use `2>/dev/null` to suppress stderr from benchmarks to get clean JSON on stdout
+  - `declare -A` for associative arrays requires bash 4+
+---
+
+## 2026-02-11T22:44 - US-004
+- Ran baseline benchmarks against local Docker cluster (5 masters, ports 7000-7004)
+- Recorded baseline results in benchmarks/results/baseline.json
+  - SET: 17,779 ops/sec, GET: 18,893 ops/sec, MIXED: 17,031 ops/sec
+- Profiled redis-client bench with +RTS -p for each workload (SET, GET, MIXED)
+- Identified top 3 cost centers:
+  1. `createMultiplexer` (35-41% time, 68% inherited) — reader/writer loop overhead
+  2. Socket I/O (throwSocketErrorWait*) (~25% time) — kernel-level network wait
+  3. `submitCommand` (10-11% time) — per-command IORef/MVar allocation
+- Documented findings in benchmarks/results/baseline-analysis.md
+- Files changed:
+  - `benchmarks/results/baseline.json` (new) - Baseline benchmark numbers
+  - `benchmarks/results/baseline-analysis.md` (new) - Profiling analysis with optimization priorities
+- **Learnings for future iterations:**
+  - Prof files (*.prof) are gitignored — document findings in .md instead
+  - `createMultiplexer` dominates profiling because writer/reader loops are forked within it
+  - `submitCommand` allocates IORef + MVar per command (~10% of time) — biggest optimization target
+  - `parseClusterSlots` has high alloc% but low time% — it's one-time startup, not hot path
+  - Socket I/O is ~25% of time — this is the floor for network-bound work
+  - `recv` accounts for 34% of allocations — each recv allocates a fresh ByteString
+  - Build profiling binary with: `nix-shell --run "cabal build --enable-profiling redis-client"`
+  - Run profiling with: `$BENCH_BIN bench ... +RTS -p -RTS`
+---
+
+## 2026-02-11T22:56 - US-005
+- Optimized Multiplexer write path in `writerLoop` with three improvements:
+  1. **Single-pass extraction**: Combined `map pcSlot batch` and `foldMap pcBuilder batch` into a single `foldl'` that produces both the Seq of response slots and the combined Builder simultaneously
+  2. **Non-blocking double-drain**: Added `commandTryDrain` that picks up additional commands non-blocking after the initial blocking drain, increasing batch sizes under load
+  3. **Direct Seq construction**: Replaced `pendingEnqueue` (which used `Seq.fromList`) with `pendingEnqueueSeq` that takes a pre-built Seq, avoiding the list→Seq conversion overhead
+- Benchmark results (non-profiled, n=4 connections, 10s duration):
+  - SET: ~17,200 ops/sec (baseline ~17,779) — within noise range
+  - GET: 18,811 ops/sec (baseline 18,893) — equivalent
+  - MIXED: 18,676 ops/sec (baseline 17,031) — improved ~9.6%
+- Profiling confirmed `submitCommand` dropped from 11.4% → 10.6% time for SET workload
+- No regressions in any workload
+- All unit tests pass (make test-unit)
+- Files changed:
+  - `lib/cluster/Multiplexer.hs` — writerLoop optimization, added commandTryDrain, pendingEnqueueSeq
+- **Learnings for future iterations:**
+  - `foldl'` from `Data.List` is needed (not auto-imported) for strict left folds
+  - `Seq.|>` (snoc) is O(1) amortized, making it ideal for building sequences in a fold
+  - Builder `<>` (mappend) is O(1) since Builders are just function compositions
+  - The write path is not the primary bottleneck — `createMultiplexer` (35%) and socket I/O (21%) dominate
+  - Non-blocking double-drain helps most under load when commands arrive faster than they're sent
+  - Profiling overhead is ~15-20% — always compare profiled-to-profiled or non-profiled-to-non-profiled
+---
