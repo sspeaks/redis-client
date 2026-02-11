@@ -142,7 +142,9 @@ spec = do
               clusterPoolConfig = poolConfig,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 600
+              clusterTopologyRefreshInterval = 600,
+              clusterUseMultiplexing = False,
+              clusterMuxPerNode = 2
             }
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000

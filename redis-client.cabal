@@ -74,7 +74,10 @@ library cluster
                     , ClusterSlotMapping
                     , ConnectionPool
                     , Connector
-    build-depends:    bytestring
+                    , Multiplexer
+                    , MultiplexPool
+    build-depends:    attoparsec
+                    , bytestring
                     , client
                     , containers
                     , crc16
