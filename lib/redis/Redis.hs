@@ -42,5 +42,5 @@ import Cluster (NodeAddress (..), ClusterNode (..), SlotRange (..), ClusterTopol
 import ClusterCommandClient (ClusterClient (..), ClusterConfig (..), ClusterError (..), ClusterCommandClient, createClusterClient, closeClusterClient, refreshTopology, runClusterCommandClient)
 import ConnectionPool (ConnectionPool (..), PoolConfig (..), withConnection, createPool, closePool)
 import Multiplexer (Multiplexer, MultiplexerException (..), createMultiplexer, submitCommand, destroyMultiplexer, isMultiplexerAlive)
-import MultiplexPool (MultiplexPool, MultiplexPoolConfig (..), createMultiplexPool, submitToNode, closeMultiplexPool)
+import MultiplexPool (MultiplexPool, createMultiplexPool, submitToNode, closeMultiplexPool)
 import Connector (Connector, connectPlaintext, connectTLS, clusterPlaintextConnector, clusterTLSConnector)

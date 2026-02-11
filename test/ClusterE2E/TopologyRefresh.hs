@@ -35,7 +35,6 @@ spec = describe "Topology refresh" $ do
               clusterRetryDelay = 100000,
               clusterTopologyRefreshInterval = 1,  -- 1 second for fast testing
               clusterUseMultiplexing = False,
-              clusterMuxPerNode = 2
             }
           connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
@@ -121,7 +120,6 @@ spec = describe "Topology refresh" $ do
               clusterRetryDelay = 100000,
               clusterTopologyRefreshInterval = 1,  -- 1 second
               clusterUseMultiplexing = False,
-              clusterMuxPerNode = 2
             }
           connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 

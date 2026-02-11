@@ -25,40 +25,25 @@ module Multiplexer
 
 import Client (Client (..), ConnectionStatus (..))
 import Control.Concurrent (ThreadId, forkIO, killThread)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
-import Control.Concurrent.STM
-  ( STM
-  , TBQueue
-  , TQueue
-  , atomically
-  , flushTBQueue
-  , newTBQueueIO
-  , newTQueueIO
-  , orElse
-  , readTBQueue
-  , readTQueue
-  , writeTBQueue
-  , writeTQueue
-  )
+import Control.Concurrent.MVar (MVar, newEmptyMVar, takeMVar, tryPutMVar)
 import Control.Exception
   ( Exception
   , SomeException
-  , catch
   , mask_
   , throwIO
   , toException
   , try
   )
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
-import Data.IORef (IORef, newIORef, readIORef, atomicWriteIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicWriteIORef, atomicModifyIORef')
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import Data.Typeable (Typeable)
 import Resp (RespData, parseRespData)
-
-import Numeric.Natural (Natural)
 
 -- | Exception thrown when submitting to a dead multiplexer.
 data MultiplexerException
@@ -69,25 +54,103 @@ data MultiplexerException
 
 instance Exception MultiplexerException
 
--- | A command waiting to be sent, paired with a one-shot response slot.
-data PendingCommand = PendingCommand
-  { pcBuilder  :: !Builder.Builder
-  , pcResponse :: !(MVar (Either SomeException RespData))
+-- | Response slot: an IORef for the result and an MVar for signaling.
+-- The reader writes the result to the IORef, then signals the MVar.
+-- The caller waits on the MVar, then reads the IORef.
+-- This avoids the heavier MVar write+wakeup pattern for the result itself.
+data ResponseSlot = ResponseSlot
+  { slotResult :: !(IORef (Maybe (Either SomeException RespData)))
+  , slotSignal :: !(MVar ())
   }
 
+-- | A command waiting to be sent, paired with a response slot.
+data PendingCommand = PendingCommand
+  { pcBuilder  :: !Builder.Builder
+  , pcSlot     :: !ResponseSlot
+  }
+
+-- | SPSC queue for pending response slots.
+-- Writer is sole producer, reader is sole consumer.
+-- Uses IORef + MVar signaling instead of STM TQueue.
+data PendingQueue = PendingQueue
+  { pqSlots  :: !(IORef (Seq ResponseSlot))
+  , pqSignal :: !(MVar ())  -- signaled when new items are available
+  }
+
+newPendingQueue :: IO PendingQueue
+newPendingQueue = do
+  slots <- newIORef Seq.empty
+  signal <- newEmptyMVar
+  return $ PendingQueue slots signal
+
+-- | Enqueue response slots (writer thread only — single producer).
+pendingEnqueue :: PendingQueue -> [ResponseSlot] -> IO ()
+pendingEnqueue pq newSlots = do
+  atomicModifyIORef' (pqSlots pq) $ \s ->
+    (s <> Seq.fromList newSlots, ())
+  void $ tryPutMVar (pqSignal pq) ()
+
+-- | Dequeue one response slot (reader thread only — single consumer).
+-- Blocks if empty.
+pendingDequeue :: PendingQueue -> IO ResponseSlot
+pendingDequeue pq = do
+  mSlot <- atomicModifyIORef' (pqSlots pq) $ \s ->
+    case Seq.viewl s of
+      Seq.EmptyL  -> (s, Nothing)
+      x Seq.:< xs -> (xs, Just x)
+  case mSlot of
+    Just slot -> return slot
+    Nothing -> do
+      takeMVar (pqSignal pq)
+      pendingDequeue pq
+
+-- | Drain all pending slots (for error propagation).
+pendingDrainAll :: PendingQueue -> IO [ResponseSlot]
+pendingDrainAll pq = do
+  slots <- atomicModifyIORef' (pqSlots pq) $ \s -> (Seq.empty, s)
+  return $ foldr (:) [] slots
+
+-- | Lock-free MPSC (multi-producer, single-consumer) command queue.
+-- Producers use atomicModifyIORef' to cons onto the list (single CAS).
+-- The consumer reverses once per drain. MVar signals new item availability.
+data CommandQueue = CommandQueue
+  { cqItems    :: !(IORef [PendingCommand])  -- reverse order (newest first)
+  , cqSignal   :: !(MVar ())                 -- wake writer when items available
+  }
+
+newCommandQueue :: IO CommandQueue
+newCommandQueue = do
+  items  <- newIORef []
+  signal <- newEmptyMVar
+  return $ CommandQueue items signal
+
+-- | Enqueue a command (caller thread — multi-producer safe).
+commandEnqueue :: CommandQueue -> PendingCommand -> IO ()
+commandEnqueue cq pc = do
+  atomicModifyIORef' (cqItems cq) $ \xs -> (pc : xs, ())
+  void $ tryPutMVar (cqSignal cq) ()
+
+-- | Drain all commands (writer thread only — single consumer).
+-- Blocks if empty. Returns commands in submission order.
+commandDrain :: CommandQueue -> IO [PendingCommand]
+commandDrain cq = do
+  takeMVar (cqSignal cq)
+  batch <- atomicModifyIORef' (cqItems cq) $ \xs -> ([], xs)
+  return (reverse batch)
+
+-- | Drain remaining commands without blocking (for cleanup).
+commandFlush :: CommandQueue -> IO [PendingCommand]
+commandFlush cq = do
+  batch <- atomicModifyIORef' (cqItems cq) $ \xs -> ([], xs)
+  return (reverse batch)
+
 -- | A multiplexer wrapping a single Redis connection.
--- The writer thread batches commands from the queue and sends them;
--- the reader thread parses responses and dispatches to callers in order.
 data Multiplexer = Multiplexer
-  { muxCommandQueue :: !(TBQueue PendingCommand)
+  { muxCommandQueue :: !CommandQueue
   , muxWriterThread :: !ThreadId
   , muxReaderThread :: !ThreadId
   , muxAlive        :: !(IORef Bool)
   }
-
--- | Default command queue capacity (backpressure threshold).
-defaultQueueCapacity :: Natural
-defaultQueueCapacity = 4096
 
 -- | Create a multiplexer over an already-connected client.
 --
@@ -99,29 +162,33 @@ createMultiplexer
   -> IO ByteString       -- ^ Action to receive bytes from the connection
   -> IO Multiplexer
 createMultiplexer conn recv = do
-  cmdQueue     <- newTBQueueIO defaultQueueCapacity
-  pendingQueue <- newTQueueIO
+  cmdQueue     <- newCommandQueue
+  pendingQueue <- newPendingQueue
   alive        <- newIORef True
 
   readerId <- forkIO $ readerLoop pendingQueue recv alive
-  writerId <- forkIO $ writerLoop cmdQueue pendingQueue conn alive readerId
+  writerId <- forkIO $ writerLoop cmdQueue pendingQueue conn alive
 
   return $ Multiplexer cmdQueue writerId readerId alive
 
 -- | Submit a pre-encoded RESP command as a Builder and block until the response arrives.
--- Throws 'MultiplexerDead' if the multiplexer has been destroyed or its
--- connection has failed.
 submitCommand :: Multiplexer -> Builder.Builder -> IO RespData
 submitCommand mux cmdBuilder = do
   isAlive <- readIORef (muxAlive mux)
   if not isAlive
     then throwIO $ MultiplexerDead "Multiplexer is not alive"
     else do
-      responseMVar <- newEmptyMVar
-      let pending = PendingCommand cmdBuilder responseMVar
-      atomically $ writeTBQueue (muxCommandQueue mux) pending
-      result <- readMVar responseMVar
-      either throwIO return result
+      resultRef <- newIORef Nothing
+      signal <- newEmptyMVar
+      let slot = ResponseSlot resultRef signal
+          pending = PendingCommand cmdBuilder slot
+      commandEnqueue (muxCommandQueue mux) pending
+      takeMVar signal
+      mResult <- readIORef resultRef
+      case mResult of
+        Just (Right resp) -> return resp
+        Just (Left e)     -> throwIO e
+        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
 
 -- | Tear down the multiplexer: kill both threads and fail all pending commands.
 destroyMultiplexer :: Multiplexer -> IO ()
@@ -129,75 +196,76 @@ destroyMultiplexer mux = mask_ $ do
   atomicWriteIORef (muxAlive mux) False
   killThread (muxWriterThread mux)
   killThread (muxReaderThread mux)
-  -- Drain any remaining commands and fail them
-  remaining <- atomically $ flushTBQueue (muxCommandQueue mux)
+  remaining <- commandFlush (muxCommandQueue mux)
   let err = MultiplexerDead "Multiplexer destroyed"
   forM_ remaining $ \pc ->
-    putMVar (pcResponse pc) (Left $ toException err)
+    failSlot (pcSlot pc) (toException err)
 
 -- | Check if the multiplexer's threads are still running.
 isMultiplexerAlive :: Multiplexer -> IO Bool
 isMultiplexerAlive = readIORef . muxAlive
 
--- Writer thread: drains command queue, pushes response MVars onto pending
--- queue (preserving send order), and sends batched bytes over the wire.
+-- Writer thread: drains command queue, pushes response slots onto pending
+-- queue (in IO, not STM), and sends batched bytes over the wire.
 writerLoop
   :: (Client client)
-  => TBQueue PendingCommand
-  -> TQueue (MVar (Either SomeException RespData))
+  => CommandQueue
+  -> PendingQueue
   -> client 'Connected
   -> IORef Bool
-  -> ThreadId  -- ^ Reader thread ID, killed on writer failure
   -> IO ()
-writerLoop cmdQueue pendingQueue conn alive readerId = go
+writerLoop cmdQueue pendingQueue conn alive = go
   where
     go = do
-      -- Block until at least one command, then drain all available.
-      -- Push response MVars onto pending queue in send order within
-      -- the same STM transaction to reduce overhead.
-      batch <- atomically $ do
-        first <- readTBQueue cmdQueue
-        rest  <- flushTBQueue cmdQueue
-        let batch = first : rest
-        forM_ batch $ \pc ->
-          writeTQueue pendingQueue (pcResponse pc)
-        return batch
+      isAlive <- readIORef alive
+      if not isAlive
+        then return ()
+        else do
+          -- Drain command queue (lock-free MPSC, blocks if empty)
+          batch <- commandDrain cmdQueue
 
-      -- Batch-materialize all builders into a single lazy ByteString and send
-      let allBytes = Builder.toLazyByteString $ foldMap pcBuilder batch
-      result <- try $ send conn allBytes
-      case result of
-        Right () -> go
-        Left (e :: SomeException) -> do
-          atomicWriteIORef alive False
-          killThread readerId
-          failPending pendingQueue e
-          failBatch batch e
+          -- Push response slots to pending queue in IO (not STM — SPSC safe)
+          pendingEnqueue pendingQueue (map pcSlot batch)
 
--- Reader thread: pops response MVars from the pending queue and fills
+          -- Batch-materialize and send
+          let allBytes = Builder.toLazyByteString $ foldMap pcBuilder batch
+          result <- try $ send conn allBytes
+          case result of
+            Right () -> go
+            Left (e :: SomeException) -> do
+              atomicWriteIORef alive False
+              remaining <- pendingDrainAll pendingQueue
+              forM_ remaining $ \slot -> failSlot slot e
+              forM_ batch $ \pc -> failSlot (pcSlot pc) e
+
+-- Reader thread: pops response slots from the pending queue and fills
 -- them with parsed RESP responses, one at a time.
 readerLoop
-  :: TQueue (MVar (Either SomeException RespData))
+  :: PendingQueue
   -> IO ByteString
   -> IORef Bool
   -> IO ()
 readerLoop pendingQueue recv alive = go BS.empty
   where
     go !buffer = do
-      -- Block until a response MVar is available
-      responseMVar <- atomically $ readTQueue pendingQueue
+      isAlive <- readIORef alive
+      if not isAlive
+        then return ()
+        else do
+          slot <- pendingDequeue pendingQueue
 
-      -- Parse one RespData from socket, using buffer for leftovers
-      parseResult <- parseOneResp buffer recv
-      case parseResult of
-        Right (resp, remainder) -> do
-          putMVar responseMVar (Right resp)
-          go remainder
-        Left e -> do
-          putMVar responseMVar (Left e)
-          atomicWriteIORef alive False
-          -- Fail all remaining pending responses
-          failPending pendingQueue e
+          parseResult <- parseOneResp buffer recv
+          case parseResult of
+            Right (resp, remainder) -> do
+              writeIORef (slotResult slot) (Just (Right resp))
+              void $ tryPutMVar (slotSignal slot) ()
+              go remainder
+            Left e -> do
+              writeIORef (slotResult slot) (Just (Left e))
+              void $ tryPutMVar (slotSignal slot) ()
+              atomicWriteIORef alive False
+              remaining <- pendingDrainAll pendingQueue
+              forM_ remaining $ \s -> failSlot s e
 
 -- | Parse exactly one RESP value from the buffer + socket.
 parseOneResp
@@ -218,25 +286,9 @@ parseOneResp buffer recv = go' (StrictParse.parse parseRespData buffer)
               return $ Left $ toException MultiplexerConnectionClosed
           | otherwise -> go' (cont moreData)
 
--- | Drain the pending queue and fail all waiting callers.
-failPending :: TQueue (MVar (Either SomeException RespData)) -> SomeException -> IO ()
-failPending pendingQueue e = do
-  remaining <- atomically $ flushTQueue pendingQueue
-  forM_ remaining $ \mvar ->
-    putMVar mvar (Left e) `catch` \(_ :: SomeException) -> return ()
+-- | Fail a response slot with an exception.
+failSlot :: ResponseSlot -> SomeException -> IO ()
+failSlot slot e = do
+  writeIORef (slotResult slot) (Just (Left e))
+  void $ tryPutMVar (slotSignal slot) ()
 
--- | Drain all items from a TQueue (STM transaction, non-blocking).
-flushTQueue :: TQueue a -> STM [a]
-flushTQueue q = go' []
-  where
-    go' acc = do
-      mItem <- (Just <$> readTQueue q) `orElse` return Nothing
-      case mItem of
-        Nothing   -> return (reverse acc)
-        Just item -> go' (item : acc)
-
--- | Fail all commands in a batch that haven't been dispatched yet.
-failBatch :: [PendingCommand] -> SomeException -> IO ()
-failBatch batch e =
-  forM_ batch $ \pc ->
-    putMVar (pcResponse pc) (Left e) `catch` \(_ :: SomeException) -> return ()

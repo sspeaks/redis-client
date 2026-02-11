@@ -143,8 +143,7 @@ spec = do
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
               clusterTopologyRefreshInterval = 600,
-              clusterUseMultiplexing = False,
-              clusterMuxPerNode = 2
+              clusterUseMultiplexing = False
             }
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000

@@ -33,7 +33,8 @@ data RunState = RunState
     valueSize :: Int,
     pipelineBatchSize :: Int,
     numProcesses :: Maybe Int,
-    processIndex :: Maybe Int
+    processIndex :: Maybe Int,
+    useMux :: Bool
   }
   deriving (Show)
 
@@ -55,6 +56,7 @@ defaultRunState = RunState
   , pipelineBatchSize = 8192
   , numProcesses = Nothing
   , processIndex = Nothing
+  , useMux = False
   }
 
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData

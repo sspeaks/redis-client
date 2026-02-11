@@ -68,7 +68,7 @@ import           Connector                   (Connector)
 import           ConnectionPool              (ConnectionPool, PoolConfig (..),
                                               closePool, createPool,
                                               withConnection)
-import           MultiplexPool               (MultiplexPool, MultiplexPoolConfig (..),
+import           MultiplexPool               (MultiplexPool,
                                               createMultiplexPool, submitToNode,
                                               closeMultiplexPool)
 import           Control.Concurrent          (threadDelay)
@@ -82,7 +82,6 @@ import           Control.Monad               (when)
 import           Control.Monad.IO.Class      (MonadIO (..))
 import qualified Control.Monad.State         as State
 import           Data.ByteString             (ByteString)
-import qualified Data.ByteString.Builder     as Builder
 import qualified Data.ByteString.Builder     as Builder
 import qualified Data.ByteString.Char8       as BS8
 import qualified Data.Map.Strict             as Map
@@ -126,8 +125,7 @@ data ClusterConfig = ClusterConfig
   , clusterMaxRetries              :: Int -- ^ Maximum retry attempts on MOVED\/ASK\/transient errors (default: 3).
   , clusterRetryDelay              :: Int -- ^ Initial retry delay in microseconds; doubled on each retry (default: 100000 = 100ms).
   , clusterTopologyRefreshInterval :: Int -- ^ Seconds between automatic background topology refreshes (default: 600 = 10 min).
-  , clusterUseMultiplexing         :: Bool -- ^ Enable multiplexed pipelining (default: False). When True, commands share connections via batched writes and response demultiplexing.
-  , clusterMuxPerNode              :: Int -- ^ Number of multiplexed connections per node (default: 2). Only used when clusterUseMultiplexing is True.
+  , clusterUseMultiplexing         :: Bool -- ^ Enable multiplexed pipelining (default: False). When True, commands share a single multiplexed connection per node via batched writes and response demultiplexing.
   }
   deriving (Show)
 
@@ -226,7 +224,7 @@ createClusterClient config connector = do
       topology <- newTVarIO initialTopology
       refreshLock <- newMVar ()
       muxPool <- if clusterUseMultiplexing config
-        then Just <$> createMultiplexPool connector (MultiplexPoolConfig (clusterMuxPerNode config))
+        then Just <$> createMultiplexPool connector
         else return Nothing
       return $ ClusterClient topology pool config connector refreshLock muxPool
 

@@ -64,7 +64,6 @@ defaultTestConfig = ClusterConfig
   , clusterRetryDelay              = 100000  -- 100ms
   , clusterTopologyRefreshInterval = 600     -- 10 minutes
   , clusterUseMultiplexing         = False
-  , clusterMuxPerNode              = 2
   }
 
 -- | Plaintext connector for tests

@@ -37,7 +37,7 @@ import           AppConfig                  (RunState (..),
                                              runCommandsAgainstTLSHost)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
-                                             RedisCommands (flushAll),
+                                             RedisCommands (..),
                                              parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
@@ -86,7 +86,8 @@ options =
           then ioError (userError "Pipeline batch size must be at least 1")
           else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)",
     Option ['P'] ["processes"] (ReqArg (\arg opt -> return $ opt {numProcesses = Just . read $ arg}) "NUM") "Number of parallel processes to spawn (default: 1)",
-    Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)"
+    Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)",
+    Option [] ["mux"] (NoArg (\opt -> return $ opt {useMux = True})) "Enable multiplexed pipelining for cluster commands"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -119,8 +120,8 @@ main = do
       exitFailure
     (mode : args) -> do
       (state, _) <- handleArgs args
-      unless (mode `elem` ["cli", "fill", "tunn"]) $ do
-        printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', and 'tunn'\n" mode
+      unless (mode `elem` ["cli", "fill", "tunn", "bench"]) $ do
+        printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', 'tunn', and 'bench'\n" mode
         putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
         exitFailure
       when (null (host state)) $ do
@@ -130,6 +131,7 @@ main = do
       when (mode == "tunn") $ tunn state
       when (mode == "cli") $ cli state
       when (mode == "fill") $ fill state
+      when (mode == "bench") $ bench state
 
 
 tunn :: RunState -> IO ()
@@ -470,4 +472,50 @@ encodeBytesForCLI bs = concatMap encodeByte (BS.unpack bs)
       | isPrintableAscii b = [toEnum (fromEnum b)]
       | otherwise          = "\\x" ++ padHex b
     padHex b = let h = showHex b "" in if length h == 1 then '0':h else h
+
+-- | Benchmark mode: sends N individual SET+GET commands through ClusterCommandClient
+-- to exercise the multiplexer path. Use with --mux to enable multiplexing.
+bench :: RunState -> IO ()
+bench state = do
+  unless (useCluster state) $ do
+    putStrLn "Bench mode requires -c (cluster) flag"
+    exitFailure
+
+  let numOps = dataGBs state * 1024  -- reuse -d flag: -d 1 = 1024 ops, -d 10 = 10240 ops
+      nThreads = fromMaybe 2 (numConnections state)
+
+  when (numOps <= 0) $ do
+    putStrLn "Use -d to specify number of K operations (e.g. -d 1 = 1024 ops)"
+    exitFailure
+
+  printf "Bench: %d ops across %d threads (mux=%s)\n"
+         numOps nThreads (if useMux state then "on" else "off" :: String)
+
+  clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+
+  -- Flush first
+  when (flush state) $ do
+    flushAllClusterNodes clusterClient (createPlaintextConnector state)
+
+  -- Run SET+GET pairs in parallel threads
+  let opsPerThread = numOps `div` nThreads
+  mvars <- mapM (\tid -> do
+    mvar <- newEmptyMVar
+    _ <- forkIO $ do
+      runClusterCommandClient clusterClient $ do
+        let offset = tid * opsPerThread
+        mapM_ (\i -> do
+          let key = BS8.pack $ "bench:" ++ show (offset + i)
+              val = BS8.pack $ "value:" ++ show (offset + i)
+          _ <- set key val
+          _ <- get key
+          return ()
+          ) [0 .. opsPerThread - 1]
+      putMVar mvar ()
+    return mvar
+    ) [0 .. nThreads - 1]
+
+  mapM_ takeMVar mvars
+  closeClusterClient clusterClient
+  printf "Bench complete: %d SET+GET pairs\n" numOps
 
