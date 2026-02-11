@@ -52,7 +52,8 @@ import           AppConfig                  (RunState (..),
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
                                              RedisCommands (..),
-                                             encodeCommandBuilder,
+                                             encodeSetBuilder,
+                                             encodeGetBuilder,
                                              parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
@@ -588,7 +589,7 @@ benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
     _  -> mapM_ (\i -> do
       let key = benchKey kSize i
           val = benchValue vSize i
-          cmd = encodeCommandBuilder ["SET", key, val]
+          cmd = encodeSetBuilder key val
       slot <- calculateSlot key
       case findNodeForSlot topology slot of
         Just nodeId -> case Map.lookup nodeId (topologyNodes topology) of
@@ -617,22 +618,22 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
             Just node -> do
               case op of
                 "set" -> do
-                  let cmd = encodeCommandBuilder ["SET", key, val]
+                  let cmd = encodeSetBuilder key val
                   _ <- submitToNode muxPool (nodeAddress node) cmd
                   atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
                 "get" -> do
-                  let cmd = encodeCommandBuilder ["GET", key]
+                  let cmd = encodeGetBuilder key
                   _ <- submitToNode muxPool (nodeAddress node) cmd
                   atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
                 "mixed" -> do
                   -- 80% GET, 20% SET based on counter
                   if counter `mod` 5 == 0
                     then do
-                      let cmd = encodeCommandBuilder ["SET", key, val]
+                      let cmd = encodeSetBuilder key val
                       _ <- submitToNode muxPool (nodeAddress node) cmd
                       atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
                     else do
-                      let cmd = encodeCommandBuilder ["GET", key]
+                      let cmd = encodeGetBuilder key
                       _ <- submitToNode muxPool (nodeAddress node) cmd
                       atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
                 _ -> return ()

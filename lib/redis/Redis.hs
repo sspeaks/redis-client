@@ -37,7 +37,7 @@ module Redis
 import Data.ByteString (ByteString)
 import Resp (RespData (..), Encodable (..), parseRespData, parseStrict)
 import Client (Client (..), PlainTextClient (..), TLSClient (..), ConnectionStatus (..))
-import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), showBS, encodeCommand, encodeCommandBuilder, parseWith, parseManyWith)
+import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), showBS, encodeCommand, encodeCommandBuilder, encodeSetBuilder, encodeGetBuilder, encodeBulkArg, parseWith, parseManyWith)
 import Cluster (NodeAddress (..), ClusterNode (..), SlotRange (..), ClusterTopology (..), NodeRole (..))
 import ClusterCommandClient (ClusterClient (..), ClusterConfig (..), ClusterError (..), ClusterCommandClient, createClusterClient, closeClusterClient, refreshTopology, runClusterCommandClient)
 import ConnectionPool (ConnectionPool (..), PoolConfig (..), withConnection, createPool, closePool)
