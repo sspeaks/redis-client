@@ -12,6 +12,8 @@ Started: Wed Feb 11 17:51:37 PST 2026
 - Test with `make test` (requires nix-build, runs full E2E suite)
 - Trailing commas before closing `}` in Haskell record syntax cause parse errors in nix-build GHC
 - ClusterConfig has a `clusterUseMultiplexing` field that must be set explicitly
+- For dynamic per-request data in autocannon benchmarks, use programmatic API with `setupRequest` callback (not CLI `-b` flag which is static)
+- SQLite `email` field has UNIQUE constraint — benchmark POST requests must generate unique emails
 
 ## 2026-02-12 - US-001
 - Created branch `ralph/fair-rest-benchmark` from `ralph/cluster-performance-parity`
@@ -43,4 +45,18 @@ Started: Wed Feb 11 17:51:37 PST 2026
   - The `RedisCommands` typeclass can't be used directly with Multiplexer - need to manually encode commands
   - Use `finally` to ensure `destroyMultiplexer` is called on app shutdown
   - All 19 E2E tests pass after these changes
+---
+
+## 2026-02-12 - US-003
+- Fixed POST benchmark to generate unique emails per request using autocannon's programmatic API
+- Created `benchmarks/scripts/post-bench.js` — uses `setupRequest` callback to generate unique email per request (`bench_${Date.now()}_${counter}@test.com`)
+- Updated `benchmarks/scripts/run-benchmarks.sh` — replaced static autocannon CLI POST call with `node post-bench.js` invocation
+- The old approach used a static body with `bench_RAND@test.com` (RAND was never replaced), causing SQLite UNIQUE constraint violations on the email field after the first request
+- Files changed: benchmarks/scripts/post-bench.js (new), benchmarks/scripts/run-benchmarks.sh
+- **Learnings for future iterations:**
+  - autocannon CLI (`-b` flag) sends the same body for every request — cannot generate unique values
+  - autocannon programmatic API supports `setupRequest` callback per request in the `requests` array, which allows dynamic body generation
+  - The `setupRequest` function receives `(req, context)` and must return the modified `req` object
+  - SQLite `email` field has a UNIQUE constraint — all benchmark POST requests must have unique emails
+  - Pattern for programmatic autocannon scripts: see `post-bench.js` and `mixed-bench.js` for examples
 ---
