@@ -96,8 +96,8 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added INLINE pragmas to PendingQueue operations (pendingEnqueueSeq, pendingDequeue, pendingDequeueUpTo) and failSlot in Multiplexer.hs. Increased batch dequeue from 64 to 128 slots. Added INLINE to RESP parser hot path (parseRespData, parseBulkString, parseSimpleString, parseError, parseInteger). parseRespData fully inlined into createMultiplexer (3.2%→0%). Profiled: 217k ops/sec (baseline 211k → +2.8%). Non-profiled: 235k ops/sec (stable vs 234k baseline). Attempted pinned recv buffer optimization but it caused regression due to memcpy overhead; reverted."
     },
     {
       "id": "US-007",

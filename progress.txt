@@ -6,6 +6,9 @@ Started: Thu Feb 12 10:38:42 PST 2026
 - Profiling build: `nix-shell --run "cabal build --enable-profiling redis-client"`
 - INLINE pragmas on hot-path functions eliminate them from profiling cost centers entirely — GHC inlines them into callers, removing function call overhead and enabling further cross-function optimizations
 - Don't replace capability-based striping with a shared atomic counter — it causes severe contention regression (35k → 20k ops/sec). Thread-local striping via myThreadId + threadCapability is already optimal
+- Don't try to reuse recv buffers (ForeignPtr + memcpy) — the copy overhead exceeds allocation savings. Network.Socket.ByteString.recv + createAndTrim is already efficient
+- Don't bypass the `timeout` wrapper in `receive` for reader loops — the changed GHC RTS blocking behavior causes 40% regression
+- Don't increase recv buffer beyond 16KB — larger buffers allocate more per-call, overwhelming any benefit from fewer syscalls
 - Per-node round-robin counters are critical — a shared counter across all cluster nodes causes severe CAS contention (6.6x perf difference with 16 threads × 5 nodes)
 - `calculateSlot` is now pure (returns `Word16`, not `IO Word16`) — use `let !slot = calculateSlot key` not `slot <- calculateSlot key`
 - `findNodeAddressForSlot` gives O(1) slot→NodeAddress (no Map lookup) — use on hot paths instead of `findNodeForSlot` + `Map.lookup`
@@ -152,4 +155,36 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - The `sendAll` from `Network.Socket.ByteString.Lazy` already calls `sendMany` internally on the lazy ByteString chunks, so the perf gain here is primarily from: (1) larger Builder buffers reducing chunk count, (2) eliminating the lazy ByteString wrapper overhead, (3) making vectored I/O explicit and type-safe
   - Adding default methods to the Client typeclass is safe — all existing instances get the fallback without changes, and only PlainTextClient needs the override
   - At 239k ops/sec, the writer loop is no longer a significant bottleneck — socket I/O (writev) at 14% is the dominant remaining cost
+---
+
+## 2026-02-12T20:30:00Z - US-006
+- Optimized reader loop parsing with INLINE pragmas on queue operations and RESP parser:
+  - Added INLINE pragmas to `pendingEnqueueSeq`, `pendingDequeue`, `pendingDequeueUpTo` (PendingQueue operations)
+  - Added INLINE pragma to `failSlot` (error path)
+  - Increased batch dequeue size from 64 to 128 in `drainBuffer` for fewer queue operations
+  - Added INLINE pragmas to RESP parser hot path: `parseRespData`, `parseBulkString`, `parseSimpleString`, `parseError`, `parseInteger`
+  - `parseRespData` fully inlined into `createMultiplexer` — eliminated from profiling cost centers (was 3.2% inherited time, 2.5% alloc)
+- Files changed:
+  - lib/cluster/Multiplexer.hs (INLINE on queue operations, batch size 128, INLINE on failSlot)
+  - lib/resp/Resp.hs (INLINE on parseRespData, parseBulkString, parseSimpleString, parseError, parseInteger)
+- Performance results:
+  - Profiled: 217k ops/sec (baseline: 211k → +2.8% improvement)
+  - Non-profiled: 235k ops/sec (baseline: 234k → stable, no regression)
+  - parseRespData: 3.2% inherited time → 0% (fully inlined)
+  - pendingDequeue/pendingDequeueUpTo/pendingEnqueueSeq: fully inlined (0% overhead)
+  - recv: 5.6% alloc (unchanged — buffer allocation is per-syscall, not per-parse)
+  - throwSocketErrorWaitRead: 1.6% (unchanged)
+  - decimal (Attoparsec): 1.9% inherited (unchanged — internal to Attoparsec, cannot inline)
+- Also attempted:
+  - Pinned recv buffer (ForeignPtr + memcpy): caused 37% regression due to memcpy overhead. Reverted.
+  - Larger recv buffer (64KB): caused 45% regression due to 4x more alloc per recv. Reverted.
+  - mkRecvAction (bypass timeout wrapper): caused 40% regression — possibly due to different GHC RTS blocking behavior or lost specialization. Reverted.
+- All 27 unit tests + 19 cluster e2e tests + 19 library e2e tests pass
+- **Learnings for future iterations:**
+  - INLINE on Attoparsec parser combinators works well — GHC inlines the continuation-passing-style parser dispatch directly into call sites
+  - Don't try to reuse recv buffers via ForeignPtr + memcpy — the copy overhead exceeds the allocation savings. The `recv` + `createAndTrim` pattern in Network.Socket.ByteString is already efficient
+  - Don't increase recv buffer beyond 16KB — larger buffers allocate more per-call, overwhelming any benefit from fewer syscalls
+  - Don't bypass the `timeout` wrapper in `receive` for the reader loop — the changed blocking behavior causes significant regression (possibly GHC RTS scheduler interaction)
+  - At this point, socket I/O (write 14% + read 1.6%) dominates the profile. Further reader loop optimizations would need to change the fundamentals (e.g., io_uring, zero-copy recv)
+  - The batch dequeue size (128) is a good balance — it reduces queue contention without holding too many slots
 ---
