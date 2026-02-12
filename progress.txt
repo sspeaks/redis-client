@@ -104,3 +104,21 @@ Started: Wed Feb 11 17:51:37 PST 2026
   - executescript() in Python sqlite3 module resets journal_mode — set PRAGMA after executescript
   - Reseed between benchmark targets to ensure fair starting conditions
 ---
+
+## 2026-02-12 - US-006
+- Rewrote `benchmarks/results/COMPARISON.md` with actual benchmark data from JSON files (no placeholders)
+- Includes complete test setup: 12th Gen i7-12700K, 32GB RAM, WSL2, Docker 29.2.0, GHC 9.8.4, .NET 8, Redis standalone
+- Results tables with req/s, p50/p95/p99/p99.9 latency, and status code breakdown for all 4 scenarios
+- Throughput ratios: GET single 1.39×, GET list 1.42×, POST 1.49×, Mixed 1.24× (.NET over Haskell)
+- No scenario exceeds 3× — no Fairness Audit needed
+- Detailed analysis covering: multiplexing architecture, serialization, GHC vs CLR runtime, GC behavior, HTTP framework, SQLite access patterns
+- Conclusions highlight that multiplexing was the key fairness fix and remaining gap is distributed across the full stack
+- Recommendations for redis-client library: make Multiplexer the default, consider connection pooling, provide RTS tuning guide
+- Files changed: benchmarks/results/COMPARISON.md
+- **Learnings for future iterations:**
+  - All benchmark JSON data is in `benchmarks/results/standalone/` with keys: `requests.average`, `latency.p50/p97_5/p99/p99_9`, `statusCodeStats`
+  - autocannon reports p97.5 (not p95) — use `p97_5` key for "p95" equivalent
+  - The old COMPARISON.md had stale data from pre-multiplexing runs (1668 rps GET single vs actual 95624)
+  - Mixed scenario 404s are expected (DELETE removes users that GET then can't find)
+  - The `generate-comparison.sh` script exists but produces less detailed output than a manual document
+---
