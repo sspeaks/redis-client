@@ -159,6 +159,7 @@ pendingEnqueueSeq pq newSlots = do
   atomicModifyIORef' (pqSlots pq) $ \s ->
     (s <> newSlots, ())
   void $ tryPutMVar (pqSignal pq) ()
+{-# INLINE pendingEnqueueSeq #-}
 
 -- | Dequeue one response slot (reader thread only — single consumer).
 -- Blocks if empty.
@@ -173,6 +174,7 @@ pendingDequeue pq = do
     Nothing -> do
       takeMVar (pqSignal pq)
       pendingDequeue pq
+{-# INLINE pendingDequeue #-}
 
 -- | Non-blocking dequeue of up to N response slots.
 -- Returns empty Seq if none available.
@@ -181,6 +183,7 @@ pendingDequeueUpTo pq n = do
   atomicModifyIORef' (pqSlots pq) $ \s ->
     let (taken, rest) = Seq.splitAt n s
     in (rest, taken)
+{-# INLINE pendingDequeueUpTo #-}
 
 -- | Drain all pending slots (for error propagation).
 pendingDrainAll :: PendingQueue -> IO [ResponseSlot]
@@ -449,7 +452,7 @@ readerLoop pendingQueue recv alive = go BS.empty
       if not isAlive
         then return ()
         else do
-          extraSlots <- pendingDequeueUpTo pendingQueue 64
+          extraSlots <- pendingDequeueUpTo pendingQueue 128
           case Seq.viewl extraSlots of
             Seq.EmptyL -> go buffer  -- no slots ready, back to outer loop
             firstSlot Seq.:< restSlots ->
@@ -504,4 +507,5 @@ failSlot :: ResponseSlot -> SomeException -> IO ()
 failSlot slot e = do
   writeIORef (slotResult slot) (Just (Left e))
   void $ tryPutMVar (slotSignal slot) ()
+{-# INLINE failSlot #-}
 

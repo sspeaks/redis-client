@@ -81,24 +81,28 @@ parseRespData =
       rest <- Char8.takeByteString
       let catted = BS8.cons v rest
       fail ("Invalid RESP data type: Remaining string " <> BS8.unpack catted)
+{-# INLINE parseRespData #-}
 
 parseSimpleString :: Char8.Parser RespData
 parseSimpleString = do
   !s <- Char8.takeTill (== '\r')
   _ <- Char8.take 2
   return $ RespSimpleString s
+{-# INLINE parseSimpleString #-}
 
 parseError :: Char8.Parser RespData
 parseError = do
   !s <- Char8.takeTill (== '\r')
   _ <- Char8.take 2
   return $ RespError s
+{-# INLINE parseError #-}
 
 parseInteger :: Char8.Parser RespData
 parseInteger = do
   !i <- Char8.signed Char8.decimal
   _ <- Char8.endOfLine
   return $ RespInteger i
+{-# INLINE parseInteger #-}
 
 parseBulkString :: Char8.Parser RespData
 parseBulkString = do
@@ -107,6 +111,7 @@ parseBulkString = do
   !s <- Char8.take len
   _ <- Char8.endOfLine
   return $ RespBulkString s
+{-# INLINE parseBulkString #-}
 
 parseNullBulkString :: Char8.Parser RespData
 parseNullBulkString = do
