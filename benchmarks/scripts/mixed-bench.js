@@ -119,6 +119,7 @@ const instance = autocannon({
   connections,
   pipelining,
   duration,
+  timeout: 30,
   requests
 }, (err, result) => {
   if (err) {

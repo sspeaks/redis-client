@@ -25,6 +25,7 @@ const instance = autocannon({
   connections,
   pipelining,
   duration,
+  timeout: 30,
   requests: [
     {
       method: 'POST',

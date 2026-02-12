@@ -21,7 +21,27 @@ var redis = ConnectionMultiplexer.Connect(redisConfig);
 var cache = redis.GetDatabase();
 
 // SQLite connection string
-var sqliteConnStr = $"Data Source={sqliteDb}";
+var sqliteConnStr = $"Data Source={sqliteDb};Mode=ReadWriteCreate;Cache=Shared";
+
+// Initialize SQLite WAL mode (persists per-database-file)
+{
+    using var initConn = new SqliteConnection(sqliteConnStr);
+    initConn.Open();
+    using var walCmd = initConn.CreateCommand();
+    walCmd.CommandText = "PRAGMA journal_mode=WAL;";
+    walCmd.ExecuteNonQuery();
+}
+
+// Helper: open SQLite connection with busy_timeout set
+async Task<SqliteConnection> OpenSqliteAsync()
+{
+    var conn = new SqliteConnection(sqliteConnStr);
+    await conn.OpenAsync();
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = "PRAGMA busy_timeout=5000;";
+    cmd.ExecuteNonQuery();
+    return conn;
+}
 
 var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -38,8 +58,7 @@ app.MapGet("/users/{id:int}", async (int id) =>
     }
 
     // Fall back to SQLite
-    using var conn = new SqliteConnection(sqliteConnStr);
-    await conn.OpenAsync();
+    using var conn = await OpenSqliteAsync();
     using var cmd = conn.CreateCommand();
     cmd.CommandText = "SELECT id, name, email, bio, created_at FROM users WHERE id = @id";
     cmd.Parameters.AddWithValue("@id", id);
@@ -74,8 +93,7 @@ app.MapGet("/users", async (int? page, int? limit) =>
     var l = Math.Min(limit ?? 20, 100);
     var offset = (p - 1) * l;
 
-    using var conn = new SqliteConnection(sqliteConnStr);
-    await conn.OpenAsync();
+    using var conn = await OpenSqliteAsync();
     using var cmd = conn.CreateCommand();
     cmd.CommandText = "SELECT id, name, email, bio, created_at FROM users ORDER BY id LIMIT @limit OFFSET @offset";
     cmd.Parameters.AddWithValue("@limit", l);
@@ -106,8 +124,7 @@ app.MapPost("/users", async (HttpContext ctx) =>
     var email = body.GetProperty("email").GetString()!;
     var bio = body.TryGetProperty("bio", out var bioProp) ? bioProp.GetString() : null;
 
-    using var conn = new SqliteConnection(sqliteConnStr);
-    await conn.OpenAsync();
+    using var conn = await OpenSqliteAsync();
     using var cmd = conn.CreateCommand();
     cmd.CommandText = "INSERT INTO users (name, email, bio) VALUES (@name, @email, @bio) RETURNING id, name, email, bio, created_at";
     cmd.Parameters.AddWithValue("@name", name);
@@ -140,8 +157,7 @@ app.MapPut("/users/{id:int}", async (int id, HttpContext ctx) =>
     var email = body.GetProperty("email").GetString()!;
     var bio = body.TryGetProperty("bio", out var bioProp) ? bioProp.GetString() : null;
 
-    using var conn = new SqliteConnection(sqliteConnStr);
-    await conn.OpenAsync();
+    using var conn = await OpenSqliteAsync();
 
     // Check exists
     using var checkCmd = conn.CreateCommand();
@@ -181,8 +197,7 @@ app.MapPut("/users/{id:int}", async (int id, HttpContext ctx) =>
 // DELETE /users/:id
 app.MapDelete("/users/{id:int}", async (int id) =>
 {
-    using var conn = new SqliteConnection(sqliteConnStr);
-    await conn.OpenAsync();
+    using var conn = await OpenSqliteAsync();
 
     using var cmd = conn.CreateCommand();
     cmd.CommandText = "DELETE FROM users WHERE id = @id";

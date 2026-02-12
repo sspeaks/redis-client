@@ -54,24 +54,28 @@ run_get_list() {
 
 ###############################################################################
 # Scenario 3: POST new user (programmatic API for unique emails)
+#   Lower connections to avoid SQLite write contention (single-writer DB)
 ###############################################################################
 run_post() {
   local url="$1" label="$2"
-  echo ">>> [$label] POST new user — $url/users"
+  local post_conns=10
+  echo ">>> [$label] POST new user — $url/users (${post_conns} connections)"
   node "$SCRIPT_DIR/post-bench.js" \
-    "$url" "$CONNECTIONS" "$PIPELINING" "$DURATION" \
+    "$url" "$post_conns" "1" "$DURATION" \
     "$RESULTS_DIR/${label}_post.json"
 }
 
 ###############################################################################
 # Scenario 4: Mixed workload (via Node.js programmatic API)
 #   70% GET single, 10% GET list, 10% POST, 5% PUT, 5% DELETE
+#   Lower connections to avoid SQLite write contention from concurrent writes
 ###############################################################################
 run_mixed() {
   local url="$1" label="$2"
-  echo ">>> [$label] Mixed workload — $url"
+  local mixed_conns=20
+  echo ">>> [$label] Mixed workload — $url (${mixed_conns} connections)"
   node "$SCRIPT_DIR/mixed-bench.js" \
-    "$url" "$CONNECTIONS" "$PIPELINING" "$DURATION" \
+    "$url" "$mixed_conns" "1" "$DURATION" \
     "$RESULTS_DIR/${label}_mixed.json"
 }
 
@@ -128,7 +132,23 @@ print_summary() {
 echo "=== Autocannon Benchmark Suite ==="
 echo "Mode: $MODE"
 
+SQLITE_DB="${SQLITE_DB:-$SCRIPT_DIR/../shared/bench.db}"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Reseed and flush Redis before each target for fair comparison
+reseed() {
+  echo ""
+  echo ">>> Reseeding SQLite database and flushing Redis..."
+  SQLITE_DB="$SQLITE_DB" python3 "$ROOT_DIR/benchmarks/shared/seed.py" 2>&1 || echo "  Warning: reseed had issues"
+  docker compose -f "$ROOT_DIR/docker/docker-compose.yml" exec -T redis redis-cli FLUSHALL > /dev/null 2>&1 || \
+    redis-cli FLUSHALL > /dev/null 2>&1 || true
+  echo "  Done."
+}
+
+reseed
 run_all "$HASKELL_URL" "haskell"
+
+reseed
 run_all "$DOTNET_URL"  "dotnet"
 
 print_summary

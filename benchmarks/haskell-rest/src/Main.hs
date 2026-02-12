@@ -152,8 +152,17 @@ main = do
             putStrLn "Connected to Redis standalone (multiplexed)"
             runApp appPort sqliteDb (StandaloneConn mux) `finally` destroyMultiplexer mux
 
+-- | Open a SQLite connection with busy_timeout set for concurrent access
+withSqlite :: FilePath -> (SQLite.Connection -> IO a) -> IO a
+withSqlite db action = SQLite.withConnection db $ \conn -> do
+  SQLite.execute_ conn "PRAGMA busy_timeout=5000"
+  action conn
+
 runApp :: Int -> FilePath -> RedisConn -> IO ()
 runApp appPort sqliteDb redisConn = do
+  -- Initialize SQLite WAL mode (persists per-database-file)
+  SQLite.withConnection sqliteDb $ \conn ->
+    SQLite.execute_ conn "PRAGMA journal_mode=WAL"
   scotty appPort $ do
     -- GET /users/:id - cache-aside
     get "/users/:id" $ do
@@ -168,7 +177,7 @@ runApp appPort sqliteDb redisConn = do
           raw (LBS.fromStrict val)
         _ -> do
           -- Fall back to SQLite
-          result <- liftIO $ SQLite.withConnection sqliteDb $ \conn ->
+          result <- liftIO $ withSqlite sqliteDb $ \conn ->
             queryNamed conn
               "SELECT id, name, email, bio, created_at FROM users WHERE id = :id"
               [":id" := uid]
@@ -191,7 +200,7 @@ runApp appPort sqliteDb redisConn = do
           limit = maybe 20 id mLimit
       let l = min limit 100
           offset = (page - 1) * l
-      users <- liftIO $ SQLite.withConnection sqliteDb $ \conn ->
+      users <- liftIO $ withSqlite sqliteDb $ \conn ->
         queryNamed conn
           "SELECT id, name, email, bio, created_at FROM users ORDER BY id LIMIT :limit OFFSET :offset"
           [":limit" := l, ":offset" := offset]
@@ -200,7 +209,7 @@ runApp appPort sqliteDb redisConn = do
     -- POST /users
     post "/users" $ do
       input <- jsonData :: ActionM UserInput
-      user <- liftIO $ SQLite.withConnection sqliteDb $ \conn -> do
+      user <- liftIO $ withSqlite sqliteDb $ \conn -> do
         executeNamed conn
           "INSERT INTO users (name, email, bio) VALUES (:name, :email, :bio)"
           [ ":name" := inputName input
@@ -229,8 +238,7 @@ runApp appPort sqliteDb redisConn = do
       uid <- captureParam "id" :: ActionM Int
       input <- jsonData :: ActionM UserInput
 
-      result <- liftIO $ SQLite.withConnection sqliteDb $ \conn -> do
-        -- Check exists
+      result <- liftIO $ withSqlite sqliteDb $ \conn -> do
         existing <- queryNamed conn
           "SELECT id, name, email, bio, created_at FROM users WHERE id = :id"
           [":id" := uid] :: IO [User]
@@ -265,7 +273,7 @@ runApp appPort sqliteDb redisConn = do
     delete "/users/:id" $ do
       uid <- captureParam "id" :: ActionM Int
 
-      rows <- liftIO $ SQLite.withConnection sqliteDb $ \conn -> do
+      rows <- liftIO $ withSqlite sqliteDb $ \conn -> do
         executeNamed conn "DELETE FROM users WHERE id = :id" [":id" := uid]
         changes conn
 

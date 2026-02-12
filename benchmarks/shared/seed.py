@@ -39,9 +39,14 @@ def main() -> None:
     rng = random.Random(SEED)
 
     with sqlite3.connect(DB_PATH) as conn:
-        # Drop and recreate schema (idempotent)
-        with open(SCHEMA_PATH) as f:
-            conn.executescript(f.read())
+        # Enable WAL mode for better concurrent read/write performance
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+
+        # Clear and recreate: delete all existing data, then re-insert
+        # Using DELETE instead of DROP TABLE to avoid issues with concurrent connections
+        conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, bio TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+        conn.execute("DELETE FROM users")
 
         rows = []
         for i in range(1, NUM_USERS + 1):
@@ -56,7 +61,7 @@ def main() -> None:
             rows.append((i, name, email, bio, created_at))
 
         conn.executemany(
-            "INSERT INTO users (id, name, email, bio, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO users (id, name, email, bio, created_at) VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
