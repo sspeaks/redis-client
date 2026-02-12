@@ -4,6 +4,8 @@ Started: Wed Feb 11 17:51:37 PST 2026
 
 ## Codebase Patterns
 - Build with `nix-shell --run "cabal build <target>"` for Haskell code
+- For standalone Redis multiplexing: use `createMultiplexer client (receive client)` and `submitCommand mux (encodeCommandBuilder [...])`
+- `encodeCommandBuilder` is re-exported from `Redis` module and takes `[ByteString]` of command args
 - Build with `dotnet build` for C# code in benchmarks/dotnet-rest/
 - The `redis-client:redis` library re-exports Multiplexer and MultiplexPool from `lib/redis/Redis.hs`
 - `cabal.project` must include `benchmarks/haskell-rest` as a package
@@ -25,4 +27,20 @@ Started: Wed Feb 11 17:51:37 PST 2026
   - Redis module re-exports everything from Multiplexer and MultiplexPool modules
   - nix-build uses a different GHC than cabal build locally and is stricter about syntax
   - The haskell-rest benchmark depends on `redis-client:redis` sublibrary
+---
+
+## 2026-02-12 - US-002
+- Updated Haskell REST benchmark app to use Multiplexer for standalone Redis mode
+- Replaced `runRedis` (which used `evalStateT` with `ClientState`) with specific command functions: `cacheGet`, `cachePsetex`, `cacheDel`
+- Standalone mode now creates a `Multiplexer` wrapping the `PlainTextClient` connection, enabling concurrent pipelined Redis commands
+- Cluster mode still uses `runClusterCommandClient` (which already has built-in multiplexing via `MultiplexPool`)
+- Removed unused `mtl` dependency from cabal file, removed `Control.Monad.State` and `Data.ByteString` imports
+- Files changed: benchmarks/haskell-rest/src/Main.hs, benchmarks/haskell-rest/haskell-rest-benchmark.cabal
+- **Learnings for future iterations:**
+  - `createMultiplexer` takes a connected client and a receive action: `createMultiplexer client (receive client)`
+  - `submitCommand mux (encodeCommandBuilder ["CMD", arg1, arg2])` is the pattern for sending commands through the multiplexer
+  - `encodeCommandBuilder` takes `[ByteString]` and produces a `Builder.Builder` with RESP encoding
+  - The `RedisCommands` typeclass can't be used directly with Multiplexer - need to manually encode commands
+  - Use `finally` to ensure `destroyMultiplexer` is called on app shutdown
+  - All 19 E2E tests pass after these changes
 ---
