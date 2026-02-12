@@ -22,6 +22,7 @@ Started: Thu Feb 12 10:38:42 PST 2026
 - Hot path flow: calculateSlot → findNodeForSlot → submitToNodeAsync → writerLoop → readerLoop
 - Top cost centers (baseline): createMultiplexer 40.3%, submitToNodeAsync 33.8%, socketWrite 8.3%
 - `sendChunks` uses `Network.Socket.ByteString.sendMany` (writev vectored I/O) for PlainTextClient — prefer over `send` with lazy ByteString for batched sends
+- Avoid `BS8.words` on hot paths — it allocates a list of ByteStrings. Use `BS8.readInt`/`BS8.break`/`BS8.head`/`BS8.tail` for direct zero-allocation parsing
 - Use `Builder.toLazyByteStringWith (untrimmedStrategy 32768 65536)` for network sends — reduces chunk count and avoids final-chunk trimming copy vs default `toLazyByteString`
 - E2E tests (cluster + library) run inside Docker containers via `make test` — don't run `cabal run ClusterEndToEnd` directly from host (redis1.local won't resolve)
 
@@ -187,4 +188,32 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - Don't bypass the `timeout` wrapper in `receive` for the reader loop — the changed blocking behavior causes significant regression (possibly GHC RTS scheduler interaction)
   - At this point, socket I/O (write 14% + read 1.6%) dominates the profile. Further reader loop optimizations would need to change the fundamentals (e.g., io_uring, zero-copy recv)
   - The batch dequeue size (128) is a good balance — it reduces queue contention without holding too many slots
+---
+
+## 2026-02-12T20:47:00Z - US-007
+- Optimized redirection detection with byte-level fast path and zero-allocation parsing:
+  - Added `{-# INLINE detectRedirection #-}` to eliminate function call overhead on hot path
+  - First-byte check (`0x4D` for 'M', `0x41` for 'A') before `BS.isPrefixOf` — non-matching errors skip all parsing
+  - Length guard (`BS.length msg >= 6`) rejects short error messages immediately
+  - Replaced `parseRedirectionError` (used `BS8.words` — allocated list of ByteStrings) with `parseMovedAsk` using direct `BS8.readInt`/`BS8.break` — zero list allocation
+  - Kept `parseRedirectionError` as backward-compatible wrapper for tests
+  - Exported `detectRedirection` for direct unit testing
+  - Added 10 new `detectRedirection` tests covering: non-error responses, non-redirect errors, empty/short errors, MOVED/ASK detection, 'M'/'A'-prefix non-redirect errors
+  - Updated 2 edge case tests to reflect tighter parsing (extra whitespace, trailing data → Nothing, matching real Redis behavior)
+- Files changed:
+  - lib/cluster/ClusterCommandClient.hs (INLINE detectRedirection, byte-level checks, parseMovedAsk, parseRedirectionError wrapper, export detectRedirection)
+  - test/ClusterCommandSpec.hs (10 new detectRedirection tests, updated 2 edge case tests, added Resp import)
+- Performance results:
+  - Profiled: 223,593 ops/sec (baseline: 217k → +3%)
+  - Non-profiled: 235,899 ops/sec (baseline: 235k → stable, no regression)
+  - detectRedirection: fully inlined (0% time, 0% alloc — not visible in profile)
+  - No new cost centers introduced
+- All 127 unit tests pass (40 ClusterCommandSpec + 14 ClusterSpec + 46 RespSpec + 27 FillHelpersSpec)
+- All 120 e2e tests pass (63 cluster + 38 library lifecycle + 19 library resilience)
+- **Learnings for future iterations:**
+  - `detectRedirection` with INLINE is eliminated entirely from the profile — GHC inlines the constructor match + byte check directly into `executeOnSlotMux` and `executeOnNodeWithRedirectionDetection`
+  - `BS8.words` allocates a list of ByteStrings — avoid on hot paths. Use `BS8.readInt`/`BS8.break`/`BS8.head`/`BS8.tail` for direct parsing instead
+  - Single-byte checks (`BS.index msg 0`) before `BS.isPrefixOf` are redundant if `isPrefixOf` is already O(1) for the first byte, but they serve as documentation of the fast-path intent and allow the length check to short-circuit
+  - Real Redis MOVED/ASK messages are strictly formatted (exactly `"MOVED slot host:port"`) — tighter parsing that rejects extra whitespace or trailing data is more correct than the lenient `BS8.words` approach
+  - At 236k ops/sec, redirection detection is not a measurable bottleneck — this optimization is more about code quality and ensuring zero overhead in the common case
 ---

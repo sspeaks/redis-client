@@ -112,8 +112,8 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "detectRedirection optimized with INLINE pragma and single-byte first-character check (0x4D for 'M', 0x41 for 'A') before BS.isPrefixOf. parseMovedAsk replaces BS8.words with direct BS8.readInt/BS8.break parsing — zero list allocation. Common case (non-error response) is constructor match only. Error but non-redirect case is length check + single byte compare. Profiled: 223k ops/sec (baseline 217k → +3%). Non-profiled: 236k ops/sec (stable). detectRedirection fully inlined — 0% in profile. All 127 unit tests + 120 e2e tests pass."
     },
     {
       "id": "US-008",
