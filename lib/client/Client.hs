@@ -46,7 +46,7 @@ import Network.Socket
     tupleToHostAddress,
   )
 import Network.Socket qualified as S
-import Network.Socket.ByteString (recv)
+import Network.Socket.ByteString (recv, sendMany)
 import Network.Socket.ByteString.Lazy (sendAll)
 import Network.TLS (ClientHooks (..), ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
 import Network.TLS.Extra (ciphersuite_strong)
@@ -68,6 +68,11 @@ class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
   close :: (MonadIO m) => client 'Connected -> m ()
   send :: (MonadIO m) => client 'Connected -> LBS.ByteString -> m ()
+  -- | Send multiple strict ByteString chunks via vectored I/O (writev).
+  -- Default implementation falls back to 'send' with lazy concatenation.
+  -- PlainTextClient overrides with sendMany for zero-copy vectored I/O.
+  sendChunks :: (MonadIO m) => client 'Connected -> [BS.ByteString] -> m ()
+  sendChunks conn chunks = send conn (LBS.fromChunks chunks)
   receive :: (MonadIO m, MonadFail m) => client 'Connected -> m BS.ByteString
 
 -- | Plain TCP client. Construct with 'NotConnectedPlainTextClient' providing
@@ -91,6 +96,9 @@ instance Client PlainTextClient where
 
   send :: (MonadIO m) => PlainTextClient 'Connected -> LBS.ByteString -> m ()
   send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
+
+  sendChunks :: (MonadIO m) => PlainTextClient 'Connected -> [BS.ByteString] -> m ()
+  sendChunks (ConnectedPlainTextClient _ _ sock) chunks = liftIO $ sendMany sock chunks
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m BS.ByteString
   receive (ConnectedPlainTextClient _ _ sock) = do

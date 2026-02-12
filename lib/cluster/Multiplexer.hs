@@ -48,6 +48,8 @@ import Control.Monad (forM_, void)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Builder.Extra as Builder (toLazyByteStringWith, untrimmedStrategy)
+import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
 import Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicWriteIORef, atomicModifyIORef')
 import Data.List (foldl')
@@ -368,9 +370,14 @@ writerLoop cmdQueue pendingQueue conn alive = go
           -- Push response slots to pending queue (Seq avoids fromList conversion)
           pendingEnqueueSeq pendingQueue slots
 
-          -- Materialize and send
-          let allBytes = Builder.toLazyByteString builder
-          result <- try $ send conn allBytes
+          -- Materialize with large buffer strategy and send via vectored I/O.
+          -- untrimmedStrategy avoids trimming/copying the final chunk.
+          -- 32KB initial / 64KB growth reduces chunk count vs default 4KB.
+          -- sendChunks uses writev(2) for zero-copy vectored I/O on plain sockets.
+          let !lbs = Builder.toLazyByteStringWith
+                       (Builder.untrimmedStrategy 32768 65536) LBS.empty builder
+              !chunks = LBS.toChunks lbs
+          result <- try $ sendChunks conn chunks
           case result of
             Right () -> go
             Left (e :: SomeException) -> do
