@@ -1,0 +1,135 @@
+{
+  "project": "redis-client Cluster Performance Optimization",
+  "branchName": "ralph/cluster-performance",
+  "description": "Optimize cluster mode performance to close the 3.46x throughput gap vs .NET in the REST benchmark GET single scenario (35k vs 121k req/s)",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Profile Baseline Cluster Performance",
+      "description": "As a developer, I want to capture a profiling baseline of the current cluster GET single path so that I can measure the impact of each subsequent optimization.",
+      "acceptanceCriteria": [
+        "Run REST cluster benchmark (GET single scenario) and record baseline req/s and latency",
+        "Run +RTS -p profiling on the benchmark harness to capture cost center breakdown",
+        "Save baseline results to benchmarks/results/cluster/ with a timestamped filename",
+        "Document the top 5 cost centers by time% in the cluster hot path",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Baseline: 34,671 ops/sec (non-profiled), 33,811 ops/sec (profiled). Top cost centers: createMultiplexer 40.3%, submitToNodeAsync 33.8%, socketWrite 8.3%. Gap vs .NET: 3.51x."
+    },
+    {
+      "id": "US-002",
+      "title": "Optimize Cluster Slot Lookup",
+      "description": "As a developer, I want to reduce the per-command overhead of slot calculation and topology lookup so that cluster routing adds minimal latency per command.",
+      "acceptanceCriteria": [
+        "Topology read (readTVarIO clusterTopology) is verified as lock-free and zero-allocation on the hot path",
+        "CRC16 slot calculation (calculateSlot) is benchmarked; if >1us per call, optimize with unboxed/strict implementation",
+        "Slot-to-node mapping uses O(1) vector indexing (no Map lookups on hot path)",
+        "Profile shows reduced time% in slot lookup vs baseline",
+        "Unit tests pass",
+        "Cluster e2e tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Reduce Per-Command Allocation in submitCommand",
+      "description": "As a developer, I want to reduce allocations in the submitCommand path so that each Redis command doesn't require fresh IORef + MVar allocation.",
+      "acceptanceCriteria": [
+        "submitCommandPooled (using SlotPool) is the default path for cluster commands",
+        "Profile shows reduced alloc% in submitCommand vs baseline",
+        "No functional change to command semantics (responses still correctly matched)",
+        "Unit tests pass",
+        "Cluster e2e tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Optimize MultiplexPool Node Selection",
+      "description": "As a developer, I want the MultiplexPool node selection to be as fast as possible so that picking the right multiplexer for a slot adds near-zero overhead.",
+      "acceptanceCriteria": [
+        "getMultiplexer hot path (node already exists) avoids MVar contention - uses lock-free read",
+        "Round-robin counter uses atomicModifyIORef' or fetchAddInt for minimal overhead",
+        "Profile shows reduced time% in submitToNode / getMultiplexer vs baseline",
+        "Unit tests pass",
+        "Cluster e2e tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Optimize Writer Loop Batching",
+      "description": "As a developer, I want the multiplexer writer loop to minimize syscalls and intermediate allocations when sending batched commands.",
+      "acceptanceCriteria": [
+        "Writer loop uses sendMany or vectored I/O instead of materializing full lazy ByteString",
+        "Builder.toLazyByteString intermediate copies are eliminated or reduced",
+        "Profile shows reduced time% in writer loop / send path vs baseline",
+        "Unit tests pass",
+        "Cluster e2e tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-006",
+      "title": "Optimize Reader Loop Parsing",
+      "description": "As a developer, I want the multiplexer reader loop to parse multiple responses from a single recv buffer in a tight loop, reducing per-response overhead.",
+      "acceptanceCriteria": [
+        "When recv buffer contains multiple complete RESP responses, they are parsed in a tight inner loop without per-response queue operations",
+        "Batch slot dequeue is used (existing pendingDequeue up to 64)",
+        "Profile shows reduced time% in reader loop / recv path vs baseline",
+        "Unit tests pass",
+        "Cluster e2e tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Reduce Redirection Detection Overhead",
+      "description": "As a developer, I want MOVED/ASK redirection detection to be as cheap as possible in the common case (no redirect).",
+      "acceptanceCriteria": [
+        "Common case (no redirect) is a single byte check (check first byte is not '-') rather than full pattern match",
+        "No allocation in the no-redirect path",
+        "MOVED/ASK redirects still handled correctly when they occur",
+        "Unit tests pass",
+        "Cluster e2e tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Run Final Benchmark Comparison",
+      "description": "As a developer, I want to run the full REST cluster benchmark suite after all optimizations to measure the total improvement.",
+      "acceptanceCriteria": [
+        "Run full REST cluster benchmark (all 4 scenarios: GET single, GET list, POST, Mixed)",
+        "Compare results against baseline from US-001",
+        "Document improvement in req/s and latency for each scenario",
+        "Run .NET benchmark for comparison (same methodology)",
+        "Save final results to benchmarks/results/cluster/",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

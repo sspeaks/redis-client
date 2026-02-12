@@ -62,8 +62,8 @@ spec = describe "Basic cluster operations" $ do
             key2 = "{user:123}:settings"
 
         -- Both keys should hash to the same slot
-        slot1 <- calculateSlot key1
-        slot2 <- calculateSlot key2
+        let slot1 = calculateSlot key1
+            slot2 = calculateSlot key2
         slot1 `shouldBe` slot2
 
         -- Set both keys

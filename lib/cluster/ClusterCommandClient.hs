@@ -63,6 +63,7 @@ import           Cluster                     (ClusterNode (..),
                                               ClusterTopology (..),
                                               NodeAddress (..), NodeRole (..),
                                               calculateSlot, findNodeForSlot,
+                                              findNodeAddressForSlot,
                                               parseClusterSlots)
 import           Connector                   (Connector)
 import           ConnectionPool              (ConnectionPool, PoolConfig (..),
@@ -305,7 +306,7 @@ executeClusterCommand client key action = do
   refreshTopologyIfStale client
   
   let connector = clusterConnector client
-  slot <- calculateSlot key
+      !slot = calculateSlot key
   withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ do
     executeOnSlot client slot action connector
 
@@ -489,11 +490,12 @@ executeClusterCommandMux ::
 executeClusterCommandMux client muxPool key cmdArgs = do
   refreshTopologyIfStale client
   let cmdBuilder = encodeCommandBuilder cmdArgs
-  slot <- calculateSlot key
+      !slot = calculateSlot key
   withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ do
     executeOnSlotMux client muxPool slot cmdBuilder
 
 -- | Execute a pre-encoded command via multiplexer on the node for a given slot.
+-- Uses findNodeAddressForSlot for O(1) direct address lookup (no Map needed).
 executeOnSlotMux ::
   (Client client) =>
   ClusterClient client ->
@@ -503,21 +505,18 @@ executeOnSlotMux ::
   IO (Either ClusterError RespData)
 executeOnSlotMux client muxPool slot cmdBuilder = do
   topology <- readTVarIO (clusterTopology client)
-  case findNodeForSlot topology slot of
+  case findNodeAddressForSlot topology slot of
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
-    Just nodeId -> do
-      case Map.lookup nodeId (topologyNodes topology) of
-        Nothing -> return $ Left $ TopologyError $ "Node ID " ++ BS8.unpack nodeId ++ " not found in topology"
-        Just node -> do
-          result <- try $ submitToNode muxPool (nodeAddress node) cmdBuilder
-          case result of
-            Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
-            Right respData -> case detectRedirection respData of
-              Just (Left (RedirectionInfo s host port)) ->
-                return $ Left $ MovedError s (NodeAddress host port)
-              Just (Right (RedirectionInfo s host port)) ->
-                return $ Left $ AskError s (NodeAddress host port)
-              Nothing -> return $ Right respData
+    Just addr -> do
+      result <- try $ submitToNode muxPool addr cmdBuilder
+      case result of
+        Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
+        Right respData -> case detectRedirection respData of
+          Just (Left (RedirectionInfo s host port)) ->
+            return $ Left $ MovedError s (NodeAddress host port)
+          Just (Right (RedirectionInfo s host port)) ->
+            return $ Left $ AskError s (NodeAddress host port)
+          Nothing -> return $ Right respData
 
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
   auth username password = executeKeyless (RedisCommandClient.auth username password)

@@ -1,0 +1,38 @@
+# Ralph Progress Log
+Started: Thu Feb 12 10:38:42 PST 2026
+
+## Codebase Patterns
+- Build with `nix-shell --run "cabal build"` (no network issues on this machine)
+- Profiling build: `nix-shell --run "cabal build --enable-profiling redis-client"`
+- Profiling run: `cabal run --enable-profiling redis-client -- bench ... +RTS -p -RTS`
+- Cluster bench command: `cabal run redis-client -- bench -c -h 127.0.0.1 -p 7000 --operation get --duration 10 --mux-count 4 -n 16`
+- Docker cluster with host networking: `cd docker-cluster-host && bash make_cluster.sh` (ports 7000-7004)
+- The bridge-mode cluster (docker-cluster/) uses container hostnames (redis1.local etc.) that aren't resolvable from the host - use docker-cluster-host/ instead
+- `.prof` files are in .gitignore - save profiling data in JSON/markdown instead
+- Typecheck everything: `nix-shell --run "cabal build -fe2e"`
+- Hot path flow: calculateSlot → findNodeForSlot → submitToNodeAsync → writerLoop → readerLoop
+- Top cost centers (baseline): createMultiplexer 40.3%, submitToNodeAsync 33.8%, socketWrite 8.3%
+
+---
+
+## 2026-02-12T18:43:00Z - US-001
+- Profiled baseline cluster GET single performance
+- Baseline: 34,671 ops/sec (non-profiled), 33,811 ops/sec (profiled)
+- .NET comparison: 121,726 req/s → 3.51x gap
+- Top 5 cost centers by time%:
+  1. createMultiplexer (Multiplexer) - 40.3% time, 24.8% alloc
+  2. submitToNodeAsync (MultiplexPool) - 33.8% time, 1.6% alloc
+  3. throwSocketErrorWaitWrite (Network.Socket.Internal) - 8.3% time, 0.2% alloc
+  4. submitCommandPooled (Multiplexer) - 1.8% time, 0.5% alloc
+  5. crc16 (Crc16) - 1.3% time, 2.1% alloc
+- Files changed:
+  - benchmarks/results/cluster/baseline-2026-02-12.json (new)
+  - benchmarks/results/cluster/baseline-analysis-2026-02-12.md (new)
+- **Learnings for future iterations:**
+  - The createMultiplexer cost center captures ALL work in the multiplexer threads (writer+reader loops), not just creation
+  - submitToNodeAsync is the main hot path entry point for the benchmark's async pipelining
+  - recv allocations (33.5%) dominate memory - buffer reuse could help
+  - parseClusterSlots allocates heavily (16.9%) but is NOT on hot path (setup-only)
+  - benchKey generates 8% of alloc - could optimize key generation but it's benchmark harness, not library code
+  - Socket I/O (write 8.3% + read 1.9%) is ~10% combined - vectored I/O could reduce syscalls
+---

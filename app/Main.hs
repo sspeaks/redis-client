@@ -42,7 +42,7 @@ import           Connector                  (Connector)
 import           Cluster                    (ClusterNode (..),
                                              ClusterTopology (..),
                                              NodeRole (..),
-                                             calculateSlot, findNodeForSlot)
+                                             calculateSlot, findNodeAddressForSlot)
 import           Numeric                    (showHex)
 import           Control.Concurrent.STM     (readTVarIO)
 import qualified Data.Map.Strict            as Map
@@ -597,11 +597,9 @@ benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
       let key = benchKey kSize i
           val = benchValue vSize i
           cmd = encodeSetBuilder key val
-      slot <- calculateSlot key
-      case findNodeForSlot topology slot of
-        Just nodeId -> case Map.lookup nodeId (topologyNodes topology) of
-          Just node -> void $ submitToNode muxPool (nodeAddress node) cmd
-          Nothing   -> return ()
+          !slot = calculateSlot key
+      case findNodeAddressForSlot topology slot of
+        Just addr -> void $ submitToNode muxPool addr cmd
         Nothing -> return ()
       ) [0 .. numKeys - 1]
 
@@ -632,20 +630,18 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
     fireBatch topology !counter !remaining acc = do
       let key = benchKey kSize counter
           val = benchValue vSize counter
-      slot <- calculateSlot key
-      case findNodeForSlot topology slot of
-        Just nodeId -> case Map.lookup nodeId (topologyNodes topology) of
-          Just node -> do
-            let cmd = case op of
-                  "set" -> encodeSetBuilder key val
-                  "get" -> encodeGetBuilder key
-                  "mixed" ->
-                    if counter `mod` 5 == 0
-                      then encodeSetBuilder key val
-                      else encodeGetBuilder key
-                  _ -> encodeSetBuilder key val
-            s <- submitToNodeAsync muxPool (nodeAddress node) cmd
-            fireBatch topology (counter + 1) (remaining - 1) (s : acc)
-          Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
+          !slot = calculateSlot key
+      case findNodeAddressForSlot topology slot of
+        Just addr -> do
+          let cmd = case op of
+                "set" -> encodeSetBuilder key val
+                "get" -> encodeGetBuilder key
+                "mixed" ->
+                  if counter `mod` 5 == 0
+                    then encodeSetBuilder key val
+                    else encodeGetBuilder key
+                _ -> encodeSetBuilder key val
+          s <- submitToNodeAsync muxPool addr cmd
+          fireBatch topology (counter + 1) (remaining - 1) (s : acc)
         Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
 
