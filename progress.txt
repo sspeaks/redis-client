@@ -4,6 +4,8 @@ Started: Wed Feb 11 14:27:03 PST 2026
 ## Codebase Patterns
 - Build C# benchmarks with `dotnet build` in `benchmarks/dotnet/RedisBenchmark/`
 - The redis-client executable uses `AppConfig.RunState` for all CLI options, parsed via `System.Console.GetOpt`
+- `MultiplexPool.createMultiplexPool` takes a `Connector` and `Int` (mux count per node); use 1 for default, higher values only help with high thread counts on real network latency
+- Optimal bench config on localhost: 16 threads, 1 mux per node; above 16 threads, contention degrades throughput
 - Existing bench mode in Main.hs reuses `-d` flag for ops count and `-n` for thread count
 - Always add `.gitignore` with `bin/` and `obj/` for dotnet projects to avoid committing build artifacts
 - TLS vs Plaintext connectors are different types — can't mix in `if-then-else`; use separate code branches
@@ -201,4 +203,30 @@ Started: Wed Feb 11 14:27:03 PST 2026
   - `encodeCommandBuilder` was only 2.9% of time — serialization is not a major bottleneck on localhost; the improvement is more significant with real network latency where CPU cycles matter more relative to I/O
   - Pre-computing fixed RESP protocol overhead as ByteString constants (`"*3\r\n$3\r\nSET\r\n"`) is more efficient than building char-by-char with Builder.char8 and Builder.intDec
   - MIXED workload benefits most because it alternates encoders and the specialized paths avoid list allocation overhead
+---
+
+## 2026-02-11T23:30 - US-009
+- Implemented concurrency tuning: added `--mux-count` CLI flag and multi-mux support in MultiplexPool
+- Ran full benchmark matrix: 7 thread counts (1,2,4,8,16,32,64) × 3 mux counts (1,2,4) × 3 operations (set,get,mixed)
+- Results recorded in benchmarks/results/concurrency-tuning.json
+- Key findings:
+  - **Optimal: 16 threads, 1 mux per node** — peak across all operations (47K-51K ops/sec)
+  - 1 mux per node outperforms 2 or 4 muxes on localhost (round-robin overhead > benefit without network latency)
+  - Throughput scales linearly 1→16 threads, then drops at 32/64 due to contention
+  - mux_count=4 with 64 threads (~40K ops/sec) approaches mux_count=1 with 16 threads (~51K ops/sec) — more muxes helps spread contention at very high thread counts
+- Updated bench default from 1 to 16 submitter threads (fromMaybe 16)
+- Files changed:
+  - `app/AppConfig.hs` — Added `muxCount` field to RunState
+  - `app/Main.hs` — Added `--mux-count` CLI option, updated bench default threads to 16, log muxCount
+  - `lib/cluster/MultiplexPool.hs` — Rewrote to support N multiplexers per node (Vector Multiplexer), round-robin via atomic counter, createMuxes helper
+  - `lib/cluster/ClusterCommandClient.hs` — Updated createMultiplexPool call to pass mux count of 1
+  - `benchmarks/run-concurrency-tuning.sh` (new) — Automated concurrency tuning benchmark script
+  - `benchmarks/results/concurrency-tuning.json` (new) — Full results matrix
+- **Learnings for future iterations:**
+  - MultiplexPool now stores `Vector Multiplexer` per node instead of single `Multiplexer` — round-robin via atomicModifyIORef' counter
+  - On localhost, 1 mux per node is optimal because the bottleneck is CPU contention, not I/O parallelism
+  - With real network latency, multiple muxes per node may help by parallelizing I/O wait across connections
+  - `atomicModifyIORef'` for round-robin counter is cheap (~1ns) — negligible vs MVar signaling in submit path
+  - Thread scaling is roughly linear up to the number of GHC capabilities (-N RTS flag), then drops
+  - The `Data.Vector` import is already in the cluster library cabal deps — no need to add it
 ---
