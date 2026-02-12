@@ -14,6 +14,8 @@ Started: Wed Feb 11 17:51:37 PST 2026
 - ClusterConfig has a `clusterUseMultiplexing` field that must be set explicitly
 - For dynamic per-request data in autocannon benchmarks, use programmatic API with `setupRequest` callback (not CLI `-b` flag which is static)
 - SQLite `email` field has UNIQUE constraint — benchmark POST requests must generate unique emails
+- In autocannon `requests` array, each element can have a `setupRequest` callback that runs per invocation, allowing dynamic paths and bodies
+- For mixed workloads, use `setupRequest` on every request type that needs per-request variation (POST unique emails, PUT unique emails + random IDs, GET/DELETE random IDs)
 
 ## 2026-02-12 - US-001
 - Created branch `ralph/fair-rest-benchmark` from `ralph/cluster-performance-parity`
@@ -59,4 +61,20 @@ Started: Wed Feb 11 17:51:37 PST 2026
   - The `setupRequest` function receives `(req, context)` and must return the modified `req` object
   - SQLite `email` field has a UNIQUE constraint — all benchmark POST requests must have unique emails
   - Pattern for programmatic autocannon scripts: see `post-bench.js` and `mixed-bench.js` for examples
+---
+
+## 2026-02-12 - US-004
+- Fixed mixed-bench.js to generate unique data per request using autocannon's `setupRequest` callbacks
+- POST requests now generate unique emails via `mix_${Date.now()}_${id}@test.com` (counter-based, unique per request)
+- PUT requests now generate unique emails and target random user IDs per request
+- GET single requests now randomize the target user ID per request (previously fixed at array-creation time)
+- DELETE requests now target random user IDs per request
+- Maintained the 70% GET single, 10% GET list, 10% POST, 5% PUT, 5% DELETE distribution (20-element request array)
+- Files changed: benchmarks/scripts/mixed-bench.js
+- **Learnings for future iterations:**
+  - The original mixed-bench.js had three bugs: (1) POST emails were static (set once at startup), causing UNIQUE constraint failures after first cycle, (2) PUT email was also static, (3) GET/DELETE paths were computed once at array creation, not per-request
+  - autocannon's `setupRequest` callback can modify `req.path`, `req.body`, and any other properties per invocation
+  - Each entry in the `requests` array can independently have a `setupRequest` callback
+  - The low throughput (7-46 req/s) was likely caused by 500 errors from SQLite UNIQUE constraint violations on repeated POST/PUT emails, which are much slower than successful 2xx responses
+  - All 19 E2E tests pass after changes
 ---
