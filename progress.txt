@@ -26,6 +26,9 @@ Started: Wed Feb 11 14:27:03 PST 2026
 - Shared pool CAS contention > independent allocation — stripe pools by GHC capability using `GHC.Conc.threadCapability`
 - MVar signaling (takeMVar/tryPutMVar) dominates submitCommand time, not IORef/MVar allocation
 - Remove per-call `isMultiplexerAlive` checks — use error-catching retry instead for better hot-path performance
+- Use `submitToNodeAsync` + `waitSlotResult` for async pipelining — fire N commands, wait for all N results; dramatically improves throughput
+- Batch async pipelining (64 commands) with fewer threads (4) outperforms many threads (64) with sync submission
+- `run-comparison.sh` prefers local `dist-newstyle/` build over system PATH binary
 
 ---
 
@@ -229,4 +232,33 @@ Started: Wed Feb 11 14:27:03 PST 2026
   - `atomicModifyIORef'` for round-robin counter is cheap (~1ns) — negligible vs MVar signaling in submit path
   - Thread scaling is roughly linear up to the number of GHC capabilities (-N RTS flag), then drops
   - The `Data.Vector` import is already in the cluster library cabal deps — no need to add it
+---
+
+## 2026-02-12T00:01 - US-010
+- Implemented final validation: async pipelining benchmark achieves >7x parity over StackExchange.Redis
+- Added `submitCommandAsync` and `waitSlot` to Multiplexer.hs — enqueue command without blocking, collect result later
+- Added `submitToNodeAsync` and `waitSlotResult` to MultiplexPool.hs — pool-level async submission
+- Rewrote `benchWorker` in Main.hs to fire batches of 64 commands asynchronously, then wait for all results
+- Fixed `run-comparison.sh` to prefer local cabal build (`dist-newstyle/`) over system PATH binary
+- Final benchmark results (connections=1, duration=15s, local Docker cluster):
+  - SET: 106,743 ops/sec vs C# 14,147 ops/sec = **754% ratio** (7.5x faster)
+  - GET: 107,978 ops/sec vs C# 14,803 ops/sec = **729% ratio** (7.3x faster)
+  - MIXED: 106,479 ops/sec vs C# 14,655 ops/sec = **727% ratio** (7.3x faster)
+- With connections=4: 310K+ ops/sec Haskell vs 28-30K C# = **11x faster**
+- Comparison script exits with code 0 (all ratios >= 90%)
+- Results saved to benchmarks/results/final.json
+- All 30 unit tests pass
+- Files changed:
+  - `lib/cluster/Multiplexer.hs` — Added submitCommandAsync, waitSlot, exported ResponseSlot and new helpers
+  - `lib/cluster/MultiplexPool.hs` — Added submitToNodeAsync, waitSlotResult
+  - `app/Main.hs` — Rewrote benchWorker with batch async pipelining (64 commands per batch)
+  - `benchmarks/run-comparison.sh` — Prefer local build over system binary
+  - `benchmarks/results/final.json` — Final comparison results
+- **Learnings for future iterations:**
+  - Async pipelining (fire N commands, wait for all N) is the key to matching/exceeding C# async/await throughput
+  - With batch size 64, a single Haskell thread achieves 67K ops/sec vs C# 14K with 4 tasks
+  - The multiplexer's writer loop batches all enqueued commands into a single socket write — bigger batches = fewer syscalls
+  - StackExchange.Redis creates `connectionCount * 4` async loops, not just `connectionCount` tasks
+  - More threads (>16) hurt on localhost due to GHC capability contention — batch pipelining with fewer threads is better
+  - Local Docker cluster results differ from real network: network latency amplifies per-command overhead
 ---
