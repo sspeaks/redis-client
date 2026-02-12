@@ -55,6 +55,7 @@ module ClusterCommandClient
     -- * Internal (exported for testing)
     RedirectionInfo (..),
     parseRedirectionError,
+    detectRedirection,
   )
 where
 
@@ -83,6 +84,7 @@ import           Control.Monad               (when)
 import           Control.Monad.IO.Class      (MonadIO (..))
 import qualified Control.Monad.State         as State
 import           Data.ByteString             (ByteString)
+import qualified Data.ByteString             as BS
 import qualified Data.ByteString.Builder     as Builder
 import qualified Data.ByteString.Char8       as BS8
 import qualified Data.Map.Strict             as Map
@@ -279,14 +281,28 @@ refreshTopologyIfStale client = do
   when (timeSinceUpdate >= refreshInterval) $ do
     refreshTopology client
 
--- | Detect MOVED or ASK errors from RespData
+-- | Detect MOVED or ASK errors from RespData.
+-- Common case (no redirect) is a constructor check plus at most a single byte
+-- comparison, with zero allocation.
+{-# INLINE detectRedirection #-}
 detectRedirection :: RespData -> Maybe (Either RedirectionInfo RedirectionInfo)
-detectRedirection (RespError msg) =
-  case parseRedirectionError "MOVED" msg of
-       Just redir -> Just (Left redir)  -- Left for MOVED
-       Nothing -> case parseRedirectionError "ASK" msg of
-         Just redir -> Just (Right redir)  -- Right for ASK
-         Nothing -> Nothing
+detectRedirection (RespError msg)
+  | BS.length msg >= 6  -- shortest redirect: "ASK x y" needs >= 7 chars
+  , let w = BS.index msg 0
+  = if w == 0x4D  -- 'M'
+    then if BS.isPrefixOf "MOVED " msg
+         then case parseMovedAsk (BS.drop 6 msg) of
+                Just redir -> Just (Left redir)
+                Nothing    -> Nothing
+         else Nothing
+    else if w == 0x41  -- 'A'
+    then if BS.isPrefixOf "ASK " msg
+         then case parseMovedAsk (BS.drop 4 msg) of
+                Just redir -> Just (Right redir)
+                Nothing    -> Nothing
+         else Nothing
+    else Nothing
+  | otherwise = Nothing
 detectRedirection _ = Nothing
 
 -- | Low-level one-shot command execution with explicit routing key.
@@ -421,24 +437,37 @@ withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay
             Left err -> return $ Left err
             Right value -> return $ Right value
 
--- | Parse redirection error messages
+-- | Parse the payload after "MOVED " or "ASK " prefix.
+-- Input format: "3999 127.0.0.1:6381" (slot, space, host:port)
+-- Avoids BS8.words allocation by using break/drop directly.
+{-# INLINE parseMovedAsk #-}
+parseMovedAsk :: ByteString -> Maybe RedirectionInfo
+parseMovedAsk rest =
+  case BS8.readInt rest of
+    Just (slot, afterSlot)
+      | not (BS8.null afterSlot)
+      , BS8.head afterSlot == ' '
+      -> let hostPort = BS8.tail afterSlot
+         in case BS8.break (== ':') hostPort of
+              (host, portPart)
+                | not (BS8.null portPart)
+                -> case BS8.readInt (BS8.tail portPart) of
+                     Just (port, rest')
+                       | BS8.null rest'
+                       -> Just $ RedirectionInfo (fromIntegral slot) (BS8.unpack host) port
+                     _ -> Nothing
+              _ -> Nothing
+    _ -> Nothing
+
+-- | Parse redirection error messages (backward-compatible wrapper).
 -- Format: "MOVED 3999 127.0.0.1:6381" or "ASK 3999 127.0.0.1:6381"
 parseRedirectionError :: ByteString -> ByteString -> Maybe RedirectionInfo
-parseRedirectionError errorType msg =
-  case BS8.words msg of
-    (prefix : slotStr : hostPort : _)
-      | prefix == errorType ->
-          case BS8.readInt slotStr of
-            Just (slot, rest) | BS8.null rest ->
-              case BS8.break (== ':') hostPort of
-                (host, portPart) | not (BS8.null portPart) ->
-                  case BS8.readInt (BS8.tail portPart) of
-                    Just (port, rest') | BS8.null rest' ->
-                      Just $ RedirectionInfo (fromIntegral slot) (BS8.unpack host) port
-                    _ -> Nothing
-                _ -> Nothing
-            _ -> Nothing
-    _ -> Nothing
+parseRedirectionError errorType msg
+  | BS.isPrefixOf errorType msg
+  , BS.length msg > BS.length errorType
+  , BS.index msg (BS.length errorType) == 0x20  -- ' '
+  = parseMovedAsk (BS.drop (BS.length errorType + 1) msg)
+  | otherwise = Nothing
 
 -- | Internal helper to execute a keyless command within ClusterCommandClient monad
 executeKeylessCommand ::
