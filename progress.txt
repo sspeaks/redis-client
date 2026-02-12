@@ -217,3 +217,36 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - Real Redis MOVED/ASK messages are strictly formatted (exactly `"MOVED slot host:port"`) — tighter parsing that rejects extra whitespace or trailing data is more correct than the lenient `BS8.words` approach
   - At 236k ops/sec, redirection detection is not a measurable bottleneck — this optimization is more about code quality and ensuring zero overhead in the common case
 ---
+
+## 2026-02-12T21:00:00Z - US-008
+- Ran full cluster benchmark suite (GET, SET, Mixed) with optimized code
+- Captured profiling data for final profile comparison
+- Created final results JSON and analysis markdown
+- Files changed:
+  - benchmarks/results/cluster/final-2026-02-12.json (new)
+  - benchmarks/results/cluster/final-analysis-2026-02-12.md (new)
+- Final benchmark results (non-profiled, 10s, 16 connections, 4 mux, 5 nodes):
+  - GET: 238,867 ops/sec (baseline: 34,671 → **6.89x improvement**)
+  - SET: 204,260 ops/sec
+  - Mixed: 223,009 ops/sec
+- Final benchmark results (profiled):
+  - GET: 209,697 ops/sec (baseline: 33,811 → **6.20x improvement**)
+  - SET: 209,684 ops/sec
+  - Mixed: 210,218 ops/sec
+- Profile comparison (GET profiled):
+  - submitToNodeAsync: 33.8% → 0% (fully inlined into benchWorker)
+  - submitCommandPooled: 1.8% → 0% (fully inlined)
+  - crc16: 1.3% → 0% (pure + inlined)
+  - benchWorker: 0% → 28.9% (all library functions inlined here)
+  - Socket I/O: 10.2% → 15.3% (larger share since overhead removed)
+  - createMultiplexer: 40.3% → 38.1% (reduced overhead)
+- .NET REST comparison: 121,726 req/s (REST) vs 238,867 ops/sec (direct) — different measurement methods
+- All 147 tests pass (27 unit + 63 cluster e2e + 38 library lifecycle + 19 library resilience)
+- Typecheck passes
+- **Learnings for future iterations:**
+  - The 6.89x improvement was dominated by a single optimization: per-node round-robin counters (US-004) gave 6.6x alone by eliminating cross-node CAS contention
+  - The remaining optimizations (CRC16, INLINE pragmas, vectored I/O, parser inlining, redirection detection) contributed incremental 2-5% gains each
+  - After optimization, the profile is dominated by irreducible costs: socket I/O (15.3%), benchmark harness (28.9%), and multiplexer loop steady-state (38.1%)
+  - Further gains would require architectural changes: io_uring, zero-copy networking, or custom RESP parser bypassing Attoparsec
+  - Direct bench mode (238k ops/sec) and REST benchmark (35k req/s baseline) measure fundamentally different things — don't compare them directly
+---

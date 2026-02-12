@@ -128,8 +128,8 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Final benchmark: GET 238,867 ops/sec (6.89x vs 34,671 baseline), SET 204,260 ops/sec, Mixed 223,009 ops/sec. Profiled GET: 209,697 ops/sec (6.20x vs 33,811 baseline). Profile now dominated by socket I/O (15.3%) and benchmark harness (28.9%) — all library functions fully inlined. All 147 tests pass (27 unit + 63 cluster e2e + 38 library lifecycle + 19 library resilience)."
     }
   ]
 }
