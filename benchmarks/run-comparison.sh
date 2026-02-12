@@ -53,11 +53,9 @@ DOTNET_DIR="${SCRIPT_DIR}/dotnet/RedisBenchmark"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 mkdir -p "${RESULTS_DIR}"
 
-# Locate the Haskell redis-client binary
+# Locate the Haskell redis-client binary (prefer local build over system)
 REDIS_CLIENT=""
-if command -v redis-client &>/dev/null; then
-  REDIS_CLIENT="redis-client"
-elif [[ -x "${SCRIPT_DIR}/../dist-newstyle/build/x86_64-linux/ghc-9.8.4/redis-client-0.5.0.0/x/redis-client/build/redis-client/redis-client" ]]; then
+if [[ -x "${SCRIPT_DIR}/../dist-newstyle/build/x86_64-linux/ghc-9.8.4/redis-client-0.5.0.0/x/redis-client/build/redis-client/redis-client" ]]; then
   REDIS_CLIENT="${SCRIPT_DIR}/../dist-newstyle/build/x86_64-linux/ghc-9.8.4/redis-client-0.5.0.0/x/redis-client/build/redis-client/redis-client"
 else
   # Try to find any nix result link
@@ -67,6 +65,10 @@ else
       break
     fi
   done
+  # Fall back to system PATH
+  if [[ -z "${REDIS_CLIENT}" ]] && command -v redis-client &>/dev/null; then
+    REDIS_CLIENT="redis-client"
+  fi
 fi
 
 if [[ -z "${REDIS_CLIENT}" ]]; then

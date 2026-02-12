@@ -1,0 +1,20 @@
+[
+  {
+    "operation": "set",
+    "se_redis_ops_per_sec": 14146.76,
+    "redis_client_ops_per_sec": 106743,
+    "ratio_pct": 754.54
+  },
+  {
+    "operation": "get",
+    "se_redis_ops_per_sec": 14802.53,
+    "redis_client_ops_per_sec": 107978,
+    "ratio_pct": 729.45
+  },
+  {
+    "operation": "mixed",
+    "se_redis_ops_per_sec": 14654.52,
+    "redis_client_ops_per_sec": 106479,
+    "ratio_pct": 726.59
+  }
+]

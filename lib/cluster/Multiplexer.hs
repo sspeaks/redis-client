@@ -19,10 +19,15 @@ module Multiplexer
   ( Multiplexer
   , MultiplexerException (..)
   , SlotPool
+  , ResponseSlot
   , createSlotPool
   , createMultiplexer
   , submitCommand
   , submitCommandPooled
+  , submitCommandAsync
+  , waitSlot
+  , acquireSlot
+  , releaseSlot
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where
@@ -286,6 +291,32 @@ submitCommandPooled pool mux cmdBuilder = do
         Just (Right resp) -> return resp
         Just (Left e)     -> throwIO e
         Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+
+-- | Submit a command asynchronously: enqueue it and return the ResponseSlot.
+-- The caller must later call 'waitSlot' to get the result, then 'releaseSlot'.
+submitCommandAsync :: SlotPool -> Multiplexer -> Builder.Builder -> IO ResponseSlot
+submitCommandAsync pool mux cmdBuilder = do
+  isAlive <- readIORef (muxAlive mux)
+  if not isAlive
+    then throwIO $ MultiplexerDead "Multiplexer is not alive"
+    else do
+      slot <- acquireSlot pool
+      let pending = PendingCommand cmdBuilder slot
+      commandEnqueue (muxCommandQueue mux) pending
+      return slot
+{-# INLINE submitCommandAsync #-}
+
+-- | Wait for an async submission's result and release the slot back to the pool.
+waitSlot :: SlotPool -> ResponseSlot -> IO RespData
+waitSlot pool slot = do
+  takeMVar (slotSignal slot)
+  mResult <- readIORef (slotResult slot)
+  releaseSlot pool slot
+  case mResult of
+    Just (Right resp) -> return resp
+    Just (Left e)     -> throwIO e
+    Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+{-# INLINE waitSlot #-}
 
 -- | Tear down the multiplexer: kill both threads and fail all pending commands.
 destroyMultiplexer :: Multiplexer -> IO ()

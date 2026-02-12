@@ -36,7 +36,8 @@ import           Filler                     (fillCacheWithData,
                                              initRandomNoise)
 import           MultiplexPool              (MultiplexPool,
                                              createMultiplexPool,
-                                             closeMultiplexPool, submitToNode)
+                                             closeMultiplexPool, submitToNode,
+                                             submitToNodeAsync, waitSlotResult)
 import           Connector                  (Connector)
 import           Cluster                    (ClusterNode (..),
                                              ClusterTopology (..),
@@ -605,45 +606,46 @@ benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
       ) [0 .. numKeys - 1]
 
 -- | Worker thread that submits commands for the specified duration
+-- Uses async pipelining: fires a batch of commands, then waits for all results.
 benchWorker :: (Client client) => MultiplexPool client -> ClusterClient client -> String -> Int -> Int -> Int -> Int -> IORef Int -> IO ()
 benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
   topology <- readTVarIO (clusterTopology clusterClient)
   let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+      batchSize = 64 -- fire 64 commands per batch before waiting
   startTime <- getCurrentTime
-  go topology masters startTime (tid * 10000000)
+  go topology masters startTime (tid * 10000000) batchSize
   where
-    go topology masters startTime !counter = do
+    go topology masters startTime !counter !batchSz = do
       now <- getCurrentTime
       let elapsed = realToFrac (diffUTCTime now startTime) :: Double
       when (elapsed < fromIntegral duration) $ do
-        let key = benchKey kSize counter
-            val = benchValue vSize counter
-        slot <- calculateSlot key
-        case findNodeForSlot topology slot of
-          Just nodeId -> case Map.lookup nodeId (topologyNodes topology) of
-            Just node -> do
-              case op of
-                "set" -> do
-                  let cmd = encodeSetBuilder key val
-                  _ <- submitToNode muxPool (nodeAddress node) cmd
-                  atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
-                "get" -> do
-                  let cmd = encodeGetBuilder key
-                  _ <- submitToNode muxPool (nodeAddress node) cmd
-                  atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
-                "mixed" -> do
-                  -- 80% GET, 20% SET based on counter
-                  if counter `mod` 5 == 0
-                    then do
-                      let cmd = encodeSetBuilder key val
-                      _ <- submitToNode muxPool (nodeAddress node) cmd
-                      atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
-                    else do
-                      let cmd = encodeGetBuilder key
-                      _ <- submitToNode muxPool (nodeAddress node) cmd
-                      atomicModifyIORef' opsCounter (\n -> (n + 1, ()))
-                _ -> return ()
-              go topology masters startTime (counter + 1)
-            Nothing -> go topology masters startTime (counter + 1)
-          Nothing -> go topology masters startTime (counter + 1)
+        -- Fire a batch of commands asynchronously
+        slots <- fireBatch topology counter batchSz []
+        let completedCount = length slots
+        -- Wait for all results
+        mapM_ (\slot -> waitSlotResult muxPool slot) slots
+        -- Count completed ops
+        atomicModifyIORef' opsCounter (\n -> (n + completedCount, ()))
+        go topology masters startTime (counter + batchSz) batchSz
+
+    fireBatch _ _ 0 acc = return (reverse acc)
+    fireBatch topology !counter !remaining acc = do
+      let key = benchKey kSize counter
+          val = benchValue vSize counter
+      slot <- calculateSlot key
+      case findNodeForSlot topology slot of
+        Just nodeId -> case Map.lookup nodeId (topologyNodes topology) of
+          Just node -> do
+            let cmd = case op of
+                  "set" -> encodeSetBuilder key val
+                  "get" -> encodeGetBuilder key
+                  "mixed" ->
+                    if counter `mod` 5 == 0
+                      then encodeSetBuilder key val
+                      else encodeGetBuilder key
+                  _ -> encodeSetBuilder key val
+            s <- submitToNodeAsync muxPool (nodeAddress node) cmd
+            fireBatch topology (counter + 1) (remaining - 1) (s : acc)
+          Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
+        Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
 

@@ -15,6 +15,8 @@ module MultiplexPool
   ( MultiplexPool
   , createMultiplexPool
   , submitToNode
+  , submitToNodeAsync
+  , waitSlotResult
   , closeMultiplexPool
   ) where
 
@@ -31,11 +33,14 @@ import qualified Data.Vector as V
 import Multiplexer
   ( Multiplexer
   , SlotPool
+  , ResponseSlot
   , createSlotPool
   , createMultiplexer
   , destroyMultiplexer
   , isMultiplexerAlive
   , submitCommandPooled
+  , submitCommandAsync
+  , waitSlot
   )
 import Resp (RespData)
 import qualified Data.ByteString.Builder as Builder
@@ -88,6 +93,22 @@ submitToNode pool addr cmdBuilder = do
         else do
           newMux <- replaceMux pool addr mux
           submitCommandPooled (poolSlotPool pool) newMux cmdBuilder
+
+-- | Async version of submitToNode: enqueue the command and return a ResponseSlot.
+-- Caller must later call 'waitSlotResult' to get the response.
+submitToNodeAsync
+  :: (Client client)
+  => MultiplexPool client
+  -> NodeAddress
+  -> Builder.Builder
+  -> IO ResponseSlot
+submitToNodeAsync pool addr cmdBuilder = do
+  mux <- getMultiplexer pool addr
+  submitCommandAsync (poolSlotPool pool) mux cmdBuilder
+
+-- | Wait for an async submission's result and release the slot.
+waitSlotResult :: MultiplexPool client -> ResponseSlot -> IO RespData
+waitSlotResult pool slot = waitSlot (poolSlotPool pool) slot
 
 -- | Get or create a multiplexer for a node, round-robin among N muxes.
 -- Uses readIORef for the common path (lock-free, no MVar overhead).
