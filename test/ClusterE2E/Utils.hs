@@ -64,7 +64,7 @@ createTestClusterClient = do
           clusterMaxRetries = 3,
           clusterRetryDelay = 100000,
           clusterTopologyRefreshInterval = 600,  -- 10 minutes
-          clusterUseMultiplexing = False,
+          clusterUseMultiplexing = False
         }
   createClusterClient config connector
   where
