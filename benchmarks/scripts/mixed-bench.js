@@ -3,6 +3,10 @@
 
 // mixed-bench.js — Run a mixed workload benchmark via autocannon programmatic API
 // Usage: node mixed-bench.js <url> <connections> <pipelining> <duration> <output_file>
+//
+// Distribution: 70% GET single, 10% GET list, 10% POST, 5% PUT, 5% DELETE
+// All POST/PUT bodies use unique emails per request via setupRequest callbacks.
+// GET single and DELETE target random IDs in the seeded 1-10000 range per request.
 
 const autocannon = require('autocannon')
 const fs = require('fs')
@@ -19,26 +23,95 @@ if (!url || !outputFile) {
 }
 
 const rid = () => Math.floor(Math.random() * 10000) + 1
-const ts = Date.now()
+let postCounter = 0
+let putCounter = 0
+
+// Build a GET-single request with a random path per invocation
+function getSingleRequest () {
+  return {
+    method: 'GET',
+    path: '/users/' + rid(),
+    setupRequest: (req) => {
+      req.path = '/users/' + rid()
+      return req
+    }
+  }
+}
+
+// Build a GET-list request (pages 1-10, randomly chosen per request)
+function getListRequest (page) {
+  return {
+    method: 'GET',
+    path: '/users?page=' + page + '&limit=20'
+  }
+}
+
+// Build a POST request with unique email per invocation
+function postRequest () {
+  return {
+    method: 'POST',
+    path: '/users',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Mix User', email: 'placeholder@test.com', bio: 'mixed bench' }),
+    setupRequest: (req) => {
+      const id = ++postCounter
+      req.body = JSON.stringify({
+        name: 'Mix User',
+        email: `mix_${Date.now()}_${id}@test.com`,
+        bio: 'mixed bench'
+      })
+      return req
+    }
+  }
+}
+
+// Build a PUT request with random target ID and unique email per invocation
+function putRequest () {
+  return {
+    method: 'PUT',
+    path: '/users/' + rid(),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Updated User', email: 'placeholder@test.com', bio: 'updated' }),
+    setupRequest: (req) => {
+      const id = ++putCounter
+      req.path = '/users/' + rid()
+      req.body = JSON.stringify({
+        name: 'Updated User',
+        email: `updated_${Date.now()}_${id}@test.com`,
+        bio: 'updated'
+      })
+      return req
+    }
+  }
+}
+
+// Build a DELETE request with random target ID per invocation
+function deleteRequest () {
+  return {
+    method: 'DELETE',
+    path: '/users/' + rid(),
+    setupRequest: (req) => {
+      req.path = '/users/' + rid()
+      return req
+    }
+  }
+}
 
 // 20-element request array: 14 GET-single (70%), 2 GET-list (10%),
 // 2 POST (10%), 1 PUT (5%), 1 DELETE (5%)
 const requests = [
   // 14x GET single (70%)
-  ...Array.from({ length: 14 }, () => ({ method: 'GET', path: '/users/' + rid() })),
+  ...Array.from({ length: 14 }, () => getSingleRequest()),
   // 2x GET list (10%)
-  { method: 'GET', path: '/users?page=1&limit=20' },
-  { method: 'GET', path: '/users?page=2&limit=20' },
+  getListRequest(1),
+  getListRequest(2),
   // 2x POST (10%)
-  { method: 'POST', path: '/users', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Mix User', email: 'mix_' + ts + '_1@test.com', bio: 'mixed bench' }) },
-  { method: 'POST', path: '/users', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Mix User', email: 'mix_' + ts + '_2@test.com', bio: 'mixed bench' }) },
+  postRequest(),
+  postRequest(),
   // 1x PUT (5%)
-  { method: 'PUT', path: '/users/' + rid(), headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Updated User', email: 'updated_' + ts + '@test.com', bio: 'updated' }) },
+  putRequest(),
   // 1x DELETE (5%)
-  { method: 'DELETE', path: '/users/' + rid() }
+  deleteRequest()
 ]
 
 const instance = autocannon({
