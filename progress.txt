@@ -4,6 +4,9 @@ Started: Thu Feb 12 10:38:42 PST 2026
 ## Codebase Patterns
 - Build with `nix-shell --run "cabal build"` (no network issues on this machine)
 - Profiling build: `nix-shell --run "cabal build --enable-profiling redis-client"`
+- `calculateSlot` is now pure (returns `Word16`, not `IO Word16`) — use `let !slot = calculateSlot key` not `slot <- calculateSlot key`
+- `findNodeAddressForSlot` gives O(1) slot→NodeAddress (no Map lookup) — use on hot paths instead of `findNodeForSlot` + `Map.lookup`
+- `crc16` is pure via `unsafeDupablePerformIO` + `unsafe` FFI — safe because C crc16 is deterministic with no side effects
 - Profiling run: `cabal run --enable-profiling redis-client -- bench ... +RTS -p -RTS`
 - Cluster bench command: `cabal run redis-client -- bench -c -h 127.0.0.1 -p 7000 --operation get --duration 10 --mux-count 4 -n 16`
 - Docker cluster with host networking: `cd docker-cluster-host && bash make_cluster.sh` (ports 7000-7004)
@@ -35,4 +38,35 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - parseClusterSlots allocates heavily (16.9%) but is NOT on hot path (setup-only)
   - benchKey generates 8% of alloc - could optimize key generation but it's benchmark harness, not library code
   - Socket I/O (write 8.3% + read 1.9%) is ~10% combined - vectored I/O could reduce syscalls
+---
+
+## 2026-02-12T18:54:00Z - US-002
+- Optimized cluster slot lookup hot path:
+  - Made `crc16` pure: `unsafeDupablePerformIO`, `unsafe` FFI ccall, bitwise AND (`.&. 0x3FFF`) instead of `mod (2^14)`
+  - Made `calculateSlot` pure (`ByteString -> Word16` instead of `ByteString -> IO Word16`)
+  - Added `topologyAddresses :: Vector NodeAddress` to `ClusterTopology` for direct O(1) slot→address lookup
+  - Added `findNodeAddressForSlot` with INLINE pragma — eliminates `Map.lookup nodeId (topologyNodes topology)` on hot path
+  - Updated `executeOnSlotMux` to use `findNodeAddressForSlot` (single vector index, no Map)
+  - Updated benchmark `fireBatch` and `benchPrePopulate` to use `findNodeAddressForSlot`
+- Files changed:
+  - lib/crc16/Crc16.hs (pure crc16 with unsafe FFI)
+  - lib/cluster/Cluster.hs (topologyAddresses field, findNodeAddressForSlot, pure calculateSlot)
+  - lib/cluster/ClusterCommandClient.hs (use findNodeAddressForSlot, pure calculateSlot)
+  - app/Main.hs (benchmark hot path uses findNodeAddressForSlot)
+  - test/ClusterSpec.hs (adapt to pure calculateSlot)
+  - test/ClusterE2E/Basic.hs (adapt to pure calculateSlot)
+  - test/ClusterE2E/Cli.hs (adapt to pure calculateSlot)
+- Performance results:
+  - Non-profiled: 36,404 ops/sec (baseline: 34,671 → +5.0%)
+  - Profiled: 35,435 ops/sec (baseline: 33,811 → +4.8%)
+  - crc16 fully inlined (was 1.3% time → 0%)
+  - extractHashTag: 0.3% time (negligible)
+  - topologyAddresses access: 0.0% time
+  - Map.lookup eliminated from hot path entirely
+- **Learnings for future iterations:**
+  - `unsafe` FFI ccall avoids GC safety overhead — use for short pure C functions
+  - `unsafeDupablePerformIO` is safe for deterministic no-side-effect FFI — avoids IO on hot path
+  - Adding a denormalized Vector field (topologyAddresses) alongside Map (topologyNodes) is a good pattern for O(1) hot-path access while keeping Map for admin/setup paths
+  - Bitwise AND (`.&. 0x3FFF`) is faster than `mod 16384` — compiler may or may not optimize power-of-2 mod
+  - The 5% improvement validates that slot lookup was measurable overhead, but the biggest gains remain in the multiplexer paths (createMultiplexer 41%, submitToNodeAsync 35%)
 ---

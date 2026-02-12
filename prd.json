@@ -32,8 +32,8 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "CRC16 made pure (unsafeDupablePerformIO + unsafe ccall + bitwise AND). Added topologyAddresses Vector for O(1) slot→NodeAddress lookup, eliminating Map.lookup on hot path. Profiled: crc16 fully inlined, slot lookup 0% time. Benchmark: 36,404 ops/sec non-profiled (+5%), 35,435 profiled (+4.8%)."
     },
     {
       "id": "US-003",
