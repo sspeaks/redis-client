@@ -80,8 +80,8 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Added sendChunks to Client typeclass using Network.Socket.ByteString.sendMany (writev vectored I/O). PlainTextClient overrides with direct sendMany, TLSClient falls back to lazy send. Writer loop now uses Builder.toLazyByteStringWith with untrimmedStrategy (32KB/64KB buffers) to reduce chunk count and avoid trimming copies. sendMany visible in profile at 1.2% time. Non-profiled: 239k ops/sec (baseline 238k, stable). Profiled: 220k ops/sec. All unit tests + e2e tests pass."
     },
     {
       "id": "US-006",

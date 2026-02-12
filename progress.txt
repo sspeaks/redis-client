@@ -18,6 +18,9 @@ Started: Thu Feb 12 10:38:42 PST 2026
 - Typecheck everything: `nix-shell --run "cabal build -fe2e"`
 - Hot path flow: calculateSlot → findNodeForSlot → submitToNodeAsync → writerLoop → readerLoop
 - Top cost centers (baseline): createMultiplexer 40.3%, submitToNodeAsync 33.8%, socketWrite 8.3%
+- `sendChunks` uses `Network.Socket.ByteString.sendMany` (writev vectored I/O) for PlainTextClient — prefer over `send` with lazy ByteString for batched sends
+- Use `Builder.toLazyByteStringWith (untrimmedStrategy 32768 65536)` for network sends — reduces chunk count and avoids final-chunk trimming copy vs default `toLazyByteString`
+- E2E tests (cluster + library) run inside Docker containers via `make test` — don't run `cabal run ClusterEndToEnd` directly from host (redis1.local won't resolve)
 
 ---
 
@@ -120,4 +123,33 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - `V.unsafeHead` and `V.unsafeIndex` are safe when bounds are guaranteed (single mux case, mod arithmetic) and avoid bounds check overhead
   - The `INLINE` pragma on `getMultiplexer` lets GHC inline the Map.lookup + pickMux directly into submitToNodeAsync, eliminating an indirect call
   - After this optimization, socket I/O (write 14% + read 1.4%) is the primary remaining bottleneck
+---
+
+## 2026-02-12T19:50:00Z - US-005
+- Optimized writer loop batching with vectored I/O and reduced Builder intermediate copies:
+  - Added `sendChunks` method to Client typeclass with default impl via `LBS.fromChunks`
+  - PlainTextClient overrides with `Network.Socket.ByteString.sendMany` (uses writev(2) vectored I/O)
+  - TLSClient uses default fallback (TLS doesn't support writev)
+  - Writer loop now uses `Builder.toLazyByteStringWith` with `untrimmedStrategy 32768 65536`:
+    - 32KB initial buffer (vs default 4KB) reduces chunk count
+    - 64KB growth factor reduces allocations for large batches
+    - `untrimmedStrategy` avoids copying/trimming the final chunk
+  - Chunks sent directly via `sendChunks` (writev) instead of `send` (sendAll over lazy BS)
+- Files changed:
+  - lib/client/Client.hs (sendChunks in Client typeclass, PlainTextClient sendMany override)
+  - lib/cluster/Multiplexer.hs (toLazyByteStringWith + untrimmedStrategy + sendChunks in writerLoop)
+- Performance results:
+  - Non-profiled: 239,109 ops/sec (baseline: 238,893 → stable, no regression)
+  - Profiled: 219,986 ops/sec (baseline: 235,321 → within run-to-run variance)
+  - `sendMany` visible in profile at 1.2% time, 0.5% alloc (vectored I/O working)
+  - `throwSocketErrorWaitWrite` at 14.4% (writev syscall, same as baseline)
+  - No new cost centers introduced
+- All 4 unit test suites pass (RespSpec, ClusterSpec, ClusterCommandSpec, FillHelpersSpec)
+- All 19 library e2e tests pass, all 19 cluster e2e tests pass
+- **Learnings for future iterations:**
+  - `Network.Socket.ByteString.sendMany` uses writev(2) for zero-copy vectored I/O — avoids copying chunks into a single buffer before the syscall
+  - `Builder.toLazyByteStringWith (untrimmedStrategy first growth)` is the optimal materialization for network sends — untrimmedStrategy avoids a final memcpy to trim the buffer, and larger initial/growth sizes reduce chunk count
+  - The `sendAll` from `Network.Socket.ByteString.Lazy` already calls `sendMany` internally on the lazy ByteString chunks, so the perf gain here is primarily from: (1) larger Builder buffers reducing chunk count, (2) eliminating the lazy ByteString wrapper overhead, (3) making vectored I/O explicit and type-safe
+  - Adding default methods to the Client typeclass is safe — all existing instances get the fallback without changes, and only PlainTextClient needs the override
+  - At 239k ops/sec, the writer loop is no longer a significant bottleneck — socket I/O (writev) at 14% is the dominant remaining cost
 ---
