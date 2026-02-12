@@ -93,6 +93,7 @@ submitToNode pool addr cmdBuilder = do
         else do
           newMux <- replaceMux pool addr mux
           submitCommandPooled (poolSlotPool pool) newMux cmdBuilder
+{-# INLINE submitToNode #-}
 
 -- | Async version of submitToNode: enqueue the command and return a ResponseSlot.
 -- Caller must later call 'waitSlotResult' to get the response.
@@ -105,10 +106,12 @@ submitToNodeAsync
 submitToNodeAsync pool addr cmdBuilder = do
   mux <- getMultiplexer pool addr
   submitCommandAsync (poolSlotPool pool) mux cmdBuilder
+{-# INLINE submitToNodeAsync #-}
 
 -- | Wait for an async submission's result and release the slot.
 waitSlotResult :: MultiplexPool client -> ResponseSlot -> IO RespData
 waitSlotResult pool slot = waitSlot (poolSlotPool pool) slot
+{-# INLINE waitSlotResult #-}
 
 -- | Get or create a multiplexer for a node, round-robin among N muxes.
 -- Uses readIORef for the common path (lock-free, no MVar overhead).

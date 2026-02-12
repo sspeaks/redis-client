@@ -122,12 +122,14 @@ acquireSlot sp = do
       r <- newIORef Nothing
       s <- newEmptyMVar
       return $ ResponseSlot r s
+{-# INLINE acquireSlot #-}
 
 -- | Return a ResponseSlot to the pool for reuse.
 releaseSlot :: SlotPool -> ResponseSlot -> IO ()
 releaseSlot sp slot = do
   ref <- getStripe sp
   atomicModifyIORef' ref $ \xs -> (slot : xs, ())
+{-# INLINE releaseSlot #-}
 
 -- | A command waiting to be sent, paired with a response slot.
 data PendingCommand = PendingCommand
@@ -203,6 +205,7 @@ commandEnqueue :: CommandQueue -> PendingCommand -> IO ()
 commandEnqueue cq pc = do
   atomicModifyIORef' (cqItems cq) $ \xs -> (pc : xs, ())
   void $ tryPutMVar (cqSignal cq) ()
+{-# INLINE commandEnqueue #-}
 
 -- | Drain all commands (writer thread only — single consumer).
 -- Blocks if empty. Returns commands in submission order.
@@ -291,6 +294,7 @@ submitCommandPooled pool mux cmdBuilder = do
         Just (Right resp) -> return resp
         Just (Left e)     -> throwIO e
         Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+{-# INLINE submitCommandPooled #-}
 
 -- | Submit a command asynchronously: enqueue it and return the ResponseSlot.
 -- The caller must later call 'waitSlot' to get the result, then 'releaseSlot'.
