@@ -45,17 +45,24 @@ import Multiplexer
 import Resp (RespData)
 import qualified Data.ByteString.Builder as Builder
 
+-- | Per-node multiplexer group with its own round-robin counter.
+-- Keeping the counter per-node eliminates cross-node CAS contention
+-- on the shared counter that existed before.
+data NodeMuxes = NodeMuxes
+  { nmMuxes   :: !(Vector Multiplexer)
+  , nmCounter :: !(IORef Int)
+  }
+
 -- | A pool of multiplexers, N per node address (round-robin selected).
 -- Uses IORef for fast lock-free reads on the hot path,
 -- with MVar protecting creation/replacement (exclusive writes).
 -- Includes a per-pool SlotPool for ResponseSlot reuse.
 data MultiplexPool client = MultiplexPool
-  { poolNodesRef   :: !(IORef (Map NodeAddress (Vector Multiplexer)))  -- fast reads
+  { poolNodesRef   :: !(IORef (Map NodeAddress NodeMuxes))    -- fast reads
   , poolNodesLock  :: !(MVar ())                              -- protects writes
   , poolConnector  :: !(Connector client)
   , poolSlotPool   :: !SlotPool                               -- reusable ResponseSlots
   , poolMuxCount   :: !Int                                    -- multiplexers per node
-  , poolCounter    :: !(IORef Int)                             -- round-robin counter
   }
 
 -- | Create a new empty multiplexer pool.
@@ -70,8 +77,7 @@ createMultiplexPool connector muxCnt = do
   nodesRef <- newIORef Map.empty
   nodesLock <- newMVar ()
   slotPool <- createSlotPool 256
-  counter <- newIORef 0
-  return $ MultiplexPool nodesRef nodesLock connector slotPool (max 1 muxCnt) counter
+  return $ MultiplexPool nodesRef nodesLock connector slotPool (max 1 muxCnt)
 
 -- | Submit a pre-encoded RESP command (as a Builder) to the multiplexer for a given node.
 -- Creates the multiplexer on demand if the node hasn't been seen before.
@@ -115,6 +121,8 @@ waitSlotResult pool slot = waitSlot (poolSlotPool pool) slot
 
 -- | Get or create a multiplexer for a node, round-robin among N muxes.
 -- Uses readIORef for the common path (lock-free, no MVar overhead).
+-- Per-node counter eliminates cross-node CAS contention.
+-- When only 1 mux per node, skips the counter entirely.
 getMultiplexer
   :: (Client client)
   => MultiplexPool client
@@ -123,32 +131,43 @@ getMultiplexer
 getMultiplexer pool addr = do
   m <- readIORef (poolNodesRef pool)
   case Map.lookup addr m of
-    Just muxes -> do
-      idx <- atomicModifyIORef' (poolCounter pool) (\n -> (n + 1, n))
-      return $! muxes V.! (idx `mod` V.length muxes)
+    Just nm -> pickMux nm
     Nothing -> modifyMVar (poolNodesLock pool) $ \() -> do
       -- Double-check after acquiring lock
       m' <- readIORef (poolNodesRef pool)
       case Map.lookup addr m' of
-        Just muxes -> do
-          idx <- atomicModifyIORef' (poolCounter pool) (\n -> (n + 1, n))
-          return ((), muxes V.! (idx `mod` V.length muxes))
+        Just nm -> do
+          mux <- pickMux nm
+          return ((), mux)
         Nothing -> do
-          muxes <- createMuxes (poolConnector pool) addr (poolMuxCount pool)
-          atomicWriteIORef (poolNodesRef pool) (Map.insert addr muxes m')
-          return ((), V.head muxes)
+          nm <- createNodeMuxes (poolConnector pool) addr (poolMuxCount pool)
+          atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm m')
+          return ((), V.head (nmMuxes nm))
+{-# INLINE getMultiplexer #-}
 
--- | Create N multiplexers for a node address.
-createMuxes
+-- | Pick a multiplexer from a NodeMuxes using round-robin.
+-- Fast path: single mux skips atomic counter entirely.
+pickMux :: NodeMuxes -> IO Multiplexer
+pickMux nm
+  | V.length (nmMuxes nm) == 1 = return $! V.unsafeHead (nmMuxes nm)
+  | otherwise = do
+      idx <- atomicModifyIORef' (nmCounter nm) (\n -> (n + 1, n))
+      return $! nmMuxes nm `V.unsafeIndex` (idx `mod` V.length (nmMuxes nm))
+{-# INLINE pickMux #-}
+
+-- | Create N multiplexers for a node address, bundled with a per-node counter.
+createNodeMuxes
   :: (Client client)
   => Connector client
   -> NodeAddress
   -> Int
-  -> IO (Vector Multiplexer)
-createMuxes connector addr count =
-  V.generateM count $ \_ -> do
+  -> IO NodeMuxes
+createNodeMuxes connector addr count = do
+  muxes <- V.generateM count $ \_ -> do
     conn <- connector addr
     createMultiplexer conn (receive conn)
+  counter <- newIORef 0
+  return $ NodeMuxes muxes counter
 
 -- | Replace a dead multiplexer for a node.
 replaceMux
@@ -162,7 +181,7 @@ replaceMux pool addr oldMux = do
   modifyMVar (poolNodesLock pool) $ \() -> do
     m <- readIORef (poolNodesRef pool)
     case Map.lookup addr m of
-      Just muxes -> do
+      Just nm -> do
         -- Find and replace the dead mux in the vector
         newMuxes <- V.mapM (\mux -> do
           alive <- isMultiplexerAlive mux
@@ -171,15 +190,16 @@ replaceMux pool addr oldMux = do
             else do
               conn <- (poolConnector pool) addr
               createMultiplexer conn (receive conn)
-          ) muxes
-        atomicWriteIORef (poolNodesRef pool) (Map.insert addr newMuxes m)
+          ) (nmMuxes nm)
+        let nm' = nm { nmMuxes = newMuxes }
+        atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm' m)
         -- Return the first alive one
-        idx <- atomicModifyIORef' (poolCounter pool) (\n -> (n + 1, n))
-        return ((), newMuxes V.! (idx `mod` V.length newMuxes))
+        mux <- pickMux nm'
+        return ((), mux)
       Nothing -> do
-        muxes <- createMuxes (poolConnector pool) addr (poolMuxCount pool)
-        atomicWriteIORef (poolNodesRef pool) (Map.insert addr muxes m)
-        return ((), V.head muxes)
+        nm <- createNodeMuxes (poolConnector pool) addr (poolMuxCount pool)
+        atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm m)
+        return ((), V.head (nmMuxes nm))
 
 -- | Tear down all multiplexers across all nodes.
 closeMultiplexPool
@@ -188,7 +208,7 @@ closeMultiplexPool
 closeMultiplexPool pool = do
   modifyMVar (poolNodesLock pool) $ \() -> do
     m <- readIORef (poolNodesRef pool)
-    mapM_ (\muxes -> V.mapM_ (\mux -> destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()) muxes)
+    mapM_ (\nm -> V.mapM_ (\mux -> destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()) (nmMuxes nm))
           (Map.elems m)
     atomicWriteIORef (poolNodesRef pool) Map.empty
     return ((), ())
