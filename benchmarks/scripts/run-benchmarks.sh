@@ -140,8 +140,15 @@ reseed() {
   echo ""
   echo ">>> Reseeding SQLite database and flushing Redis..."
   SQLITE_DB="$SQLITE_DB" python3 "$ROOT_DIR/benchmarks/shared/seed.py" 2>&1 || echo "  Warning: reseed had issues"
-  docker compose -f "$ROOT_DIR/docker/docker-compose.yml" exec -T redis redis-cli FLUSHALL > /dev/null 2>&1 || \
-    redis-cli FLUSHALL > /dev/null 2>&1 || true
+  if [ "$MODE" = "cluster" ]; then
+    # Flush all cluster nodes
+    for p in 7000 7001 7002 7003 7004; do
+      redis-cli -p "$p" FLUSHALL > /dev/null 2>&1 || true
+    done
+  else
+    docker compose -f "$ROOT_DIR/docker/docker-compose.yml" exec -T redis redis-cli FLUSHALL > /dev/null 2>&1 || \
+      redis-cli FLUSHALL > /dev/null 2>&1 || true
+  fi
   echo "  Done."
 }
 

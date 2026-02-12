@@ -13,6 +13,8 @@ apples-to-apples comparison.
 - [Test Setup](#test-setup)
 - [Methodology](#methodology)
 - [Standalone Redis Results](#standalone-redis-results)
+- [Cluster Redis Results](#cluster-redis-results)
+- [Standalone vs Cluster Comparison](#standalone-vs-cluster-comparison)
 - [Analysis](#analysis)
 - [Conclusions and Recommendations](#conclusions-and-recommendations)
 
@@ -60,6 +62,7 @@ apples-to-apples comparison.
 | Mode | Details |
 |------|---------|
 | Standalone | Single node, port 6379, Docker container, default config |
+| Cluster | 5 master nodes, ports 7000–7004, Docker with host networking, 16384 hash slots evenly distributed |
 
 ### Database
 
@@ -149,15 +152,105 @@ with 10x pipelining to stress the HTTP→Redis→HTTP path.
 
 ---
 
+## Cluster Redis Results
+
+5-node Redis cluster (all masters, ports 7000–7004) with host networking to
+eliminate Docker NAT overhead. Haskell uses `ClusterClient` with `MultiplexPool`
+(multiplexing enabled). .NET uses StackExchange.Redis `ConnectionMultiplexer`
+which auto-discovers cluster topology from a single seed node.
+
+### Throughput (requests/second)
+
+| Scenario | Haskell | .NET | Ratio (.NET / Haskell) |
+|----------|--------:|-----:|:----------------------:|
+| GET single | 35,202 | 121,726 | **3.46×** |
+| GET list | 8,255 | 11,688 | **1.42×** |
+| POST | 122 | 183 | **1.50×** |
+| Mixed | 562 | 704 | **1.25×** |
+
+### Latency (milliseconds)
+
+| Scenario | Target | p50 | p97.5 | p99 |
+|----------|--------|----:|------:|----:|
+| GET single | Haskell | 28 | 30 | 31 |
+| GET single | .NET | 7 | 15 | 17 |
+| GET list | Haskell | 117 | 175 | 188 |
+| GET list | .NET | 83 | 139 | 155 |
+| POST | Haskell | 10 | 841 | 1,542 |
+| POST | .NET | 5 | 312 | 464 |
+| Mixed | Haskell | <1 | 238 | 1,039 |
+| Mixed | .NET | <1 | 309 | 464 |
+
+### Response Status Codes
+
+| Scenario | Target | Total Requests | 2xx | 404 | 500 | 2xx % |
+|----------|--------|---------------:|----:|----:|----:|------:|
+| GET single | Haskell | 1,056,109 | 1,056,109 | 0 | 0 | 100.0% |
+| GET single | .NET | 3,651,817 | 3,651,817 | 0 | 0 | 100.0% |
+| GET list | Haskell | 247,664 | 247,664 | 0 | 0 | 100.0% |
+| GET list | .NET | 350,638 | 350,638 | 0 | 0 | 100.0% |
+| POST | Haskell | 3,651 | 3,651 | 0 | 0 | 100.0% |
+| POST | .NET | 5,498 | 5,498 | 0 | 0 | 100.0% |
+| Mixed | Haskell | 16,866 | 16,343 | 521 | 2 | 96.9% |
+| Mixed | .NET | 21,106 | 20,271 | 835 | 0 | 96.0% |
+
+---
+
+## Standalone vs Cluster Comparison
+
+### Haskell: Throughput Change (Standalone → Cluster)
+
+| Scenario | Standalone | Cluster | Change |
+|----------|--------:|--------:|:------:|
+| GET single | 95,625 | 35,202 | **0.37×** (−63%) |
+| GET list | 8,766 | 8,255 | **0.94×** (−6%) |
+| POST | 123 | 122 | **0.99×** (−1%) |
+| Mixed | 595 | 562 | **0.94×** (−6%) |
+
+### .NET: Throughput Change (Standalone → Cluster)
+
+| Scenario | Standalone | Cluster | Change |
+|----------|--------:|--------:|:------:|
+| GET single | 132,587 | 121,726 | **0.92×** (−8%) |
+| GET list | 12,431 | 11,688 | **0.94×** (−6%) |
+| POST | 183 | 183 | **1.00×** (0%) |
+| Mixed | 737 | 704 | **0.96×** (−4%) |
+
+### Cluster Overhead Analysis
+
+The most striking result is the **GET single** scenario, where Haskell drops
+63% while .NET drops only 8%. This reveals a significant difference in how
+the two Redis clients handle cluster routing:
+
+- **StackExchange.Redis** maintains a hash slot → node mapping and routes
+  commands directly to the correct node on the first attempt. Cluster mode
+  adds minimal overhead (one extra lookup) to its existing multiplexing path.
+
+- **Haskell `ClusterClient`** incurs more overhead per command: hash slot
+  computation, node selection from `MultiplexPool`, and potentially
+  MOVED/ASK redirect handling. The 2.7× throughput drop (from 95k to 35k)
+  suggests the cluster routing layer is doing significant per-command work
+  relative to the fast cache-hit path.
+
+For scenarios dominated by SQLite (GET list, POST, Mixed), cluster overhead
+is negligible for both implementations because SQLite is the bottleneck,
+not Redis.
+
+---
+
 ## Analysis
 
-### Overall Performance Gap: 1.24×–1.49×
+### Overall Performance Gap: 1.24×–1.49× (Standalone), 1.25×–3.46× (Cluster)
 
-The .NET app outperforms Haskell by **1.24× to 1.49×** across all scenarios.
-This is a remarkably narrow gap, and notably **no scenario exceeds 3×**. The
-Haskell `redis-client` with multiplexing enabled is competitive with
-StackExchange.Redis, one of the most mature and optimized Redis clients in the
-ecosystem.
+The .NET app outperforms Haskell by **1.24× to 1.49×** across all standalone
+scenarios — a remarkably narrow gap. In cluster mode, the gap widens to
+**3.46×** for GET single due to Haskell's cluster routing overhead, while
+SQLite-bound scenarios (POST, Mixed) remain nearly identical.
+
+No standalone scenario exceeds 1.5×. The Haskell `redis-client` with
+multiplexing enabled is competitive with StackExchange.Redis in standalone
+mode. The cluster GET single result (3.46×) identifies cluster routing as
+the primary area for optimization.
 
 ### Scenario-by-Scenario Breakdown
 
@@ -311,10 +404,16 @@ portion of the POST scenario gap (1.49×).
 
 ### Key Takeaways
 
-1. **The Haskell redis-client with Multiplexer is competitive**: The 1.24×–1.49×
-   gap vs StackExchange.Redis is impressive, especially given that SE.Redis is
-   one of the most battle-tested Redis clients in production. No scenario exceeds
-   1.5× — there is no glaring inefficiency in the Haskell stack.
+1. **The Haskell redis-client with Multiplexer is competitive in standalone mode**:
+   The 1.24×–1.49× gap vs StackExchange.Redis is impressive, especially given
+   that SE.Redis is one of the most battle-tested Redis clients in production.
+   No standalone scenario exceeds 1.5×.
+
+2. **Cluster mode reveals routing overhead**: The GET single scenario drops from
+   95k to 35k req/s in cluster mode (−63%), while .NET drops only 8%. This
+   identifies `ClusterClient`'s per-command routing (hash slot computation,
+   node selection, redirect handling) as the primary optimization target for
+   cluster workloads.
 
 2. **Multiplexing was the key fairness fix**: The previous benchmark (without
    Haskell multiplexing) showed 70×+ gaps because the Haskell app serialized
@@ -363,27 +462,27 @@ portion of the POST scenario gap (1.49×).
 
 ### How to Reproduce
 
+#### Standalone
+
 ```bash
-# Start Redis (standalone)
-docker run -d --name redis -p 6379:6379 redis
-
-# Seed the database
-cd benchmarks/shared && python3 seed.py && cd ../..
-
-# Build and run Haskell app
-nix-shell --run "cabal build haskell-rest-benchmark"
-nix-shell --run "cabal run haskell-rest-benchmark"
-
-# Build and run .NET app (in another terminal)
-cd benchmarks/dotnet-rest/RedisBenchmark && dotnet run -c Release
-
-# Run benchmarks
-bash benchmarks/scripts/run-benchmarks.sh
+# Run the full standalone benchmark (starts Redis, seeds DB, builds apps, runs benchmarks)
+nix-shell --run "bash benchmarks/scripts/run-standalone.sh"
 
 # Results will be in benchmarks/results/standalone/
 ```
 
+#### Cluster
+
+```bash
+# Run the full cluster benchmark (starts 5-node cluster, seeds DB, builds apps, runs benchmarks)
+# Requires redis-cli to be available on PATH for cluster creation
+nix-shell --run "bash benchmarks/scripts/run-cluster.sh"
+
+# Results will be in benchmarks/results/cluster/
+```
+
 ---
 
-*Data sourced from actual benchmark JSON files in `benchmarks/results/standalone/`.
-Benchmarks run on 2026-02-12 with multiplexing enabled for both apps.*
+*Data sourced from actual benchmark JSON files in `benchmarks/results/standalone/`
+and `benchmarks/results/cluster/`. Benchmarks run on 2026-02-12 with multiplexing
+enabled for both apps.*
