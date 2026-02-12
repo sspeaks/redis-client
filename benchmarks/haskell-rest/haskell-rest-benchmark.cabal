@@ -15,7 +15,6 @@ executable haskell-rest-benchmark
       , aeson
       , bytestring
       , http-types
-      , mtl
       , redis-client:redis
       , scotty
       , sqlite-simple

@@ -6,17 +6,17 @@ module Main where
 
 import Redis (ByteString, ClusterClient, ClusterConfig (..),
               NodeAddress (..), PlainTextClient,
-              ConnectionStatus (..), PoolConfig (..), RespData (..),
-              ClientState (..), RedisCommandClient (..), RedisCommands,
+              PoolConfig (..), RespData (..),
+              RedisCommands,
               Client (..), showBS, psetex, del,
               clusterPlaintextConnector, connectPlaintext,
-              createClusterClient, closeClusterClient, runClusterCommandClient)
+              createClusterClient, closeClusterClient, runClusterCommandClient,
+              Multiplexer, createMultiplexer, submitCommand, destroyMultiplexer,
+              encodeCommandBuilder)
 import qualified Redis
 
-import Control.Exception (bracket, SomeException, try)
-import qualified Control.Monad.State as State
+import Control.Exception (bracket, SomeException, finally, try)
 import Data.Aeson (ToJSON (..), FromJSON (..), object, (.=), (.:), (.:?), withObject, encode)
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -77,15 +77,29 @@ instance ToJSON PaginatedResponse where
 
 -- | Abstract Redis operations so we can use either standalone or cluster mode
 data RedisConn
-  = StandaloneConn (PlainTextClient 'Connected)
+  = StandaloneConn Multiplexer
   | ClusterConn (ClusterClient PlainTextClient)
 
--- | Execute a Redis command that returns RespData
-runRedis :: RedisConn -> (forall m. RedisCommands m => m RespData) -> IO RespData
-runRedis (StandaloneConn client) action =
-  State.evalStateT (runRedisCommandClient action) (ClientState client BS.empty)
-runRedis (ClusterConn client) action =
-  runClusterCommandClient client action
+-- | Execute a GET command
+cacheGet :: RedisConn -> ByteString -> IO RespData
+cacheGet (StandaloneConn mux) key =
+  submitCommand mux (encodeCommandBuilder ["GET", key])
+cacheGet (ClusterConn client) key =
+  runClusterCommandClient client (redisGet key)
+
+-- | Execute a PSETEX command
+cachePsetex :: RedisConn -> ByteString -> Int -> ByteString -> IO RespData
+cachePsetex (StandaloneConn mux) key ms val =
+  submitCommand mux (encodeCommandBuilder ["PSETEX", key, showBS ms, val])
+cachePsetex (ClusterConn client) key ms val =
+  runClusterCommandClient client (psetex key ms val)
+
+-- | Execute a DEL command
+cacheDel :: RedisConn -> [ByteString] -> IO RespData
+cacheDel (StandaloneConn mux) keys =
+  submitCommand mux (encodeCommandBuilder ("DEL" : keys))
+cacheDel (ClusterConn client) keys =
+  runClusterCommandClient client (del keys)
 
 -- | Wrappers for Redis commands that clash with Scotty names
 redisGet :: (RedisCommands m) => ByteString -> m RespData
@@ -134,8 +148,9 @@ main = do
         (connectPlaintext redisHost redisPort)
         close
         $ \client -> do
-            putStrLn "Connected to Redis standalone"
-            runApp appPort sqliteDb (StandaloneConn client)
+            mux <- createMultiplexer client (receive client)
+            putStrLn "Connected to Redis standalone (multiplexed)"
+            runApp appPort sqliteDb (StandaloneConn mux) `finally` destroyMultiplexer mux
 
 runApp :: Int -> FilePath -> RedisConn -> IO ()
 runApp appPort sqliteDb redisConn = do
@@ -146,7 +161,7 @@ runApp appPort sqliteDb redisConn = do
       let cacheKey = "user:" <> showBS uid
 
       -- Check Redis cache first
-      cached <- liftIO $ (try $ runRedis redisConn (redisGet cacheKey) :: IO (Either SomeException RespData))
+      cached <- liftIO $ (try $ cacheGet redisConn cacheKey :: IO (Either SomeException RespData))
       case cached of
         Right (RespBulkString val) -> do
           setHeader "Content-Type" "application/json"
@@ -164,7 +179,7 @@ runApp appPort sqliteDb redisConn = do
             (user:_) -> do
               let jsonBs = LBS.toStrict (encode user)
               -- Populate cache with TTL 60s
-              _ <- liftIO $ try $ runRedis redisConn (psetex cacheKey cacheTTLMs jsonBs) :: ActionM (Either SomeException RespData)
+              _ <- liftIO $ try $ cachePsetex redisConn cacheKey cacheTTLMs jsonBs :: ActionM (Either SomeException RespData)
               setHeader "Content-Type" "application/json"
               raw (LBS.fromStrict jsonBs)
 
@@ -203,7 +218,7 @@ runApp appPort sqliteDb redisConn = do
 
       -- Invalidate cache
       let cacheKey = "user:" <> showBS (userId user)
-      _ <- liftIO $ try $ runRedis redisConn (del [cacheKey]) :: ActionM (Either SomeException RespData)
+      _ <- liftIO $ try $ cacheDel redisConn [cacheKey] :: ActionM (Either SomeException RespData)
 
       status status201
       setHeader "Location" (TL.pack $ "/users/" ++ show (userId user))
@@ -243,7 +258,7 @@ runApp appPort sqliteDb redisConn = do
         Just user -> do
           -- Invalidate cache
           let cacheKey = "user:" <> showBS uid
-          _ <- liftIO $ try $ runRedis redisConn (del [cacheKey]) :: ActionM (Either SomeException RespData)
+          _ <- liftIO $ try $ cacheDel redisConn [cacheKey] :: ActionM (Either SomeException RespData)
           json user
 
     -- DELETE /users/:id
@@ -261,5 +276,5 @@ runApp appPort sqliteDb redisConn = do
         else do
           -- Remove from cache
           let cacheKey = "user:" <> showBS uid
-          _ <- liftIO $ try $ runRedis redisConn (del [cacheKey]) :: ActionM (Either SomeException RespData)
+          _ <- liftIO $ try $ cacheDel redisConn [cacheKey] :: ActionM (Either SomeException RespData)
           json $ object ["message" .= ("User deleted" :: Text)]
