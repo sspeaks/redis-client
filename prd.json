@@ -64,8 +64,8 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Per-node round-robin counters eliminate cross-node CAS contention on shared poolCounter. Added NodeMuxes type bundling Vector Multiplexer + IORef Int counter per node. Added INLINE on getMultiplexer and pickMux. Fast-path for single-mux nodes (V.unsafeHead, no counter). Used V.unsafeIndex for bounds-checked-once access. Profiled: 235k ops/sec (baseline: 35.7k profiled → +6.6x). Non-profiled: 238k (baseline: 37-38k → +6.3x). All 19 e2e tests + 27 unit tests pass."
     },
     {
       "id": "US-005",

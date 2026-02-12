@@ -6,6 +6,7 @@ Started: Thu Feb 12 10:38:42 PST 2026
 - Profiling build: `nix-shell --run "cabal build --enable-profiling redis-client"`
 - INLINE pragmas on hot-path functions eliminate them from profiling cost centers entirely — GHC inlines them into callers, removing function call overhead and enabling further cross-function optimizations
 - Don't replace capability-based striping with a shared atomic counter — it causes severe contention regression (35k → 20k ops/sec). Thread-local striping via myThreadId + threadCapability is already optimal
+- Per-node round-robin counters are critical — a shared counter across all cluster nodes causes severe CAS contention (6.6x perf difference with 16 threads × 5 nodes)
 - `calculateSlot` is now pure (returns `Word16`, not `IO Word16`) — use `let !slot = calculateSlot key` not `slot <- calculateSlot key`
 - `findNodeAddressForSlot` gives O(1) slot→NodeAddress (no Map lookup) — use on hot paths instead of `findNodeForSlot` + `Map.lookup`
 - `crc16` is pure via `unsafeDupablePerformIO` + `unsafe` FFI — safe because C crc16 is deterministic with no side effects
@@ -95,4 +96,28 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - The 35% time in submitToNodeAsync is dominated by MVar blocking (takeMVar on command queue signal), not by any allocatable overhead — the actual per-command allocations were already near-zero with SlotPool
   - The submitCommandPooled path was already the default for all cluster commands (via submitToNode and submitToNodeAsync in MultiplexPool.hs)
   - Non-pooled submitCommand is only exported for external consumers; it is NOT used in any cluster code path
+---
+
+## 2026-02-12T19:35:00Z - US-004
+- Optimized MultiplexPool node selection by eliminating shared counter contention:
+  - Added `NodeMuxes` type bundling `Vector Multiplexer` + per-node `IORef Int` counter
+  - Replaced shared `poolCounter` (single IORef for all nodes) with per-node counters
+  - Added `INLINE` pragmas on `getMultiplexer` and `pickMux`
+  - Fast-path for single-mux nodes: `V.unsafeHead`, no atomic counter needed
+  - Used `V.unsafeIndex` instead of `V.!` (bounds already guaranteed by mod)
+- Files changed:
+  - lib/cluster/MultiplexPool.hs (NodeMuxes, per-node counters, INLINE getMultiplexer/pickMux)
+- Performance results:
+  - Profiled: 235,321 ops/sec (baseline: 35,725 → +6.6x improvement)
+  - Non-profiled: 238,893 ops/sec (baseline: 37-38k → +6.3x improvement)
+  - getMultiplexer/pickMux: fully inlined (0% time, not visible in profile)
+  - Profile now dominated by createMultiplexer (34.3%) and benchWorker (33.5%)
+  - Socket I/O is now 14% time (throwSocketErrorWaitWrite) — becoming the bottleneck
+- All 19 e2e tests pass, all 27 unit tests pass
+- **Learnings for future iterations:**
+  - Shared atomic counters across cluster nodes are a SEVERE contention bottleneck — per-node counters gave 6.6x improvement because 16 threads × 5 nodes were all CASing the same IORef
+  - `atomicModifyIORef'` allocates a closure per call; with high contention, CAS retries compound the overhead. Per-node counters reduce contention to at most (threads / nodes) concurrent CASes
+  - `V.unsafeHead` and `V.unsafeIndex` are safe when bounds are guaranteed (single mux case, mod arithmetic) and avoid bounds check overhead
+  - The `INLINE` pragma on `getMultiplexer` lets GHC inline the Map.lookup + pickMux directly into submitToNodeAsync, eliminating an indirect call
+  - After this optimization, socket I/O (write 14% + read 1.4%) is the primary remaining bottleneck
 ---
