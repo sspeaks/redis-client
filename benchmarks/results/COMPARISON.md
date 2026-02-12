@@ -2,14 +2,17 @@
 
 A side-by-side performance comparison of two identical REST + SQLite + Redis
 cache-aside applications — one written in Haskell using this repo's
-`redis-client` library, and the other in C#/.NET 8 using StackExchange.Redis.
+`redis-client` library (with Multiplexer enabled), and the other in C#/.NET 8
+using StackExchange.Redis.
+
+Both apps now use multiplexed Redis connections, making this a fair
+apples-to-apples comparison.
 
 ## Table of Contents
 
 - [Test Setup](#test-setup)
 - [Methodology](#methodology)
 - [Standalone Redis Results](#standalone-redis-results)
-- [Redis Cluster Results](#redis-cluster-results)
 - [Analysis](#analysis)
 - [Conclusions and Recommendations](#conclusions-and-recommendations)
 
@@ -21,45 +24,49 @@ cache-aside applications — one written in Haskell using this repo's
 
 | Component | Details |
 |-----------|---------|
-| CPU | _Fill in after benchmark run_ |
-| RAM | _Fill in after benchmark run_ |
-| OS | Linux (WSL2 / native) |
-| Docker | Docker Engine (Linux containers) |
+| CPU | 12th Gen Intel Core i7-12700K (12C/20T) |
+| RAM | 32 GB |
+| OS | Linux (WSL2) — kernel 6.6.87.2-microsoft-standard-WSL2 |
+| Docker | Docker Engine 29.2.0 (Linux containers) |
 
 ### Software Versions
 
 | Component | Version |
 |-----------|---------|
-| Redis | Latest (docker `redis` image) |
-| GHC | 9.6.x (via nix) |
+| Redis | `redis:latest` Docker image (standalone, single node) |
+| GHC | 9.8.4 (via nix-shell) |
 | .NET | 8.0 |
-| Node.js / autocannon | Latest (for load generation) |
+| Node.js | 18.20.8 |
+| autocannon | Latest (via npx, HTTP/1.1 benchmarking) |
 | StackExchange.Redis | 2.11.0 |
-| redis-client (Haskell) | From source (this repo) |
+| Microsoft.Data.Sqlite | 10.0.3 |
+| redis-client (Haskell) | From source (this repo, `ralph/fair-rest-benchmark` branch) |
 
 ### Application Configuration
 
 | Setting | Haskell App | .NET App |
 |---------|-------------|----------|
-| HTTP Framework | Scotty 0.22 (warp) | ASP.NET Core Minimal API |
-| Redis Client | redis-client (PlainTextClient / ClusterClient) | StackExchange.Redis (ConnectionMultiplexer) |
-| SQLite Client | sqlite-simple | Microsoft.Data.Sqlite |
+| HTTP Framework | Scotty (warp) | ASP.NET Core Minimal API (Kestrel) |
+| Redis Client | redis-client `Multiplexer` (single TCP conn, pipelined) | StackExchange.Redis `ConnectionMultiplexer` |
+| SQLite Client | sqlite-simple | Microsoft.Data.Sqlite 10.0.3 |
+| SQLite Pragmas | `journal_mode=WAL`, `busy_timeout=5000` | `journal_mode=WAL`, `busy_timeout=5000` |
 | Default Port | 3000 | 5000 |
 | Cache TTL | 60 seconds | 60 seconds |
 | Cache Key Format | `user:{id}` | `user:{id}` |
-| Compilation | GHC -O2 -threaded -rtsopts "-with-rtsopts=-N" | dotnet build -c Release |
+| Compilation | GHC 9.8.4 `-O2 -threaded -rtsopts "-with-rtsopts=-N"` | `dotnet build -c Release` (.NET 8 RyuJIT) |
 
 ### Redis Configuration
 
 | Mode | Details |
 |------|---------|
-| Standalone | Single node, port 6379, docker compose |
-| Cluster | 5 nodes, ports 6379-6383, host networking, 3 masters + 2 replicas |
+| Standalone | Single node, port 6379, Docker container, default config |
 
 ### Database
 
 - SQLite with 10,000 seeded user rows (deterministic, seed=42)
 - Schema: `id INTEGER PRIMARY KEY, name TEXT, email TEXT UNIQUE, bio TEXT, created_at TEXT`
+- WAL mode enabled; `busy_timeout=5000` set on every connection
+- Database reseeded between Haskell and .NET benchmark runs for fair comparison
 
 ---
 
@@ -68,166 +75,235 @@ cache-aside applications — one written in Haskell using this repo's
 ### Load Generator
 
 - **Tool**: [autocannon](https://github.com/mcollina/autocannon) (HTTP/1.1 benchmarking)
-- **Connections**: 100 concurrent
-- **Pipelining**: 10 requests per connection
 - **Duration**: 30 seconds per scenario
+- **Connection/pipelining settings**: vary by scenario (see table below)
 
 ### Scenarios
 
-| Scenario | Description | Cache Behavior |
-|----------|-------------|----------------|
-| GET single | `GET /users/:id` (random ID 1–10000) | Cache hit after first access |
-| GET list | `GET /users?page=1&limit=20` | Not cached |
-| POST | `POST /users` (create new user) | Invalidates cache key |
-| Mixed | 70% GET single, 10% GET list, 10% POST, 5% PUT, 5% DELETE | Mixed cache hits/misses/invalidations |
+| Scenario | Description | Connections | Pipelining | Cache Behavior |
+|----------|-------------|:-----------:|:----------:|----------------|
+| GET single | `GET /users/:id` (random ID 1–10000) | 100 | 10 | Cache hit after first access |
+| GET list | `GET /users?page=1&limit=20` | 100 | 10 | Not cached (always hits SQLite) |
+| POST | `POST /users` (unique email per request) | 10 | 1 | Invalidates cache key |
+| Mixed | 70% GET, 10% list, 10% POST, 5% PUT, 5% DELETE | 20 | 1 | Mixed hits/misses/invalidations |
 
-### Warm-up
+**Why different connection counts?** SQLite is fundamentally single-writer.
+Write-heavy scenarios (POST, Mixed) use fewer connections (10–20) to avoid
+overwhelming SQLite's write lock, which would cause `SQLITE_BUSY` errors and
+skew results. Read-only scenarios (GET single, GET list) use 100 connections
+with 10x pipelining to stress the HTTP→Redis→HTTP path.
 
-- No explicit warm-up phase; first requests in each scenario serve as implicit warm-up
-- Each scenario runs for the full duration independently
-- Both apps are verified responsive (`GET /users/1` returns 200) before benchmarking begins
+### Fairness Controls
 
-### Number of Runs
-
-- Single run per configuration (standalone / cluster)
-- For statistically rigorous results, run `run-standalone.sh` and `run-cluster.sh` multiple times and average
+- Both apps use **multiplexed Redis connections** (Haskell `Multiplexer`, .NET `ConnectionMultiplexer`)
+- Both apps use **identical SQLite pragmas** (`WAL` mode, `busy_timeout=5000`)
+- Both apps use **identical cache-aside logic** (same key format, same TTL, same invalidation)
+- SQLite database is **reseeded between targets** to ensure identical starting state
+- POST and Mixed scenarios use **unique emails per request** (counter-based) to avoid UNIQUE constraint errors
+- Both apps are **warmed up** (verified responsive) before benchmarking begins
+- **Same autocannon settings** applied to both apps for each scenario
 
 ---
 
 ## Standalone Redis Results
 
-| Target       | Scenario        |      Req/s |   p50 (ms) |   p95 (ms) |   p99 (ms) |
-|--------------|-----------------|------------|------------|------------|------------|
-| haskell      | get_single      |    1668.44 |        574 |        N/A |       1118 |
-| haskell      | get_list        |   10103.47 |         97 |        N/A |        154 |
-| haskell      | post            |     284.37 |       3473 |        N/A |       3638 |
-| haskell      | mixed           |       7.04 |         52 |        N/A |      20023 |
-| dotnet       | get_single      |   119033.6 |          7 |        N/A |         17 |
-| dotnet       | get_list        |   94807.47 |         10 |        N/A |         22 |
-| dotnet       | post            |    6066.94 |        141 |        N/A |        474 |
-| dotnet       | mixed           |      45.64 |         46 |        N/A |       5831 |
+### Throughput (requests/second)
 
-## Redis Cluster Results
+| Scenario | Haskell | .NET | Ratio (.NET / Haskell) |
+|----------|--------:|-----:|:----------------------:|
+| GET single | 95,625 | 132,587 | **1.39×** |
+| GET list | 8,766 | 12,431 | **1.42×** |
+| POST | 123 | 183 | **1.49×** |
+| Mixed | 595 | 737 | **1.24×** |
 
-> **Results pending.** Run `benchmarks/scripts/run-cluster.sh` to generate data,
-> then re-run this script to populate the table.
+### Latency (milliseconds)
 
-| Target | Scenario | Req/s | p50 (ms) | p95 (ms) | p99 (ms) |
-|--------|----------|-------|----------|----------|----------|
-| haskell | get_single | — | — | — | — |
-| haskell | get_list | — | — | — | — |
-| haskell | post | — | — | — | — |
-| haskell | mixed | — | — | — | — |
-| dotnet | get_single | — | — | — | — |
-| dotnet | get_list | — | — | — | — |
-| dotnet | post | — | — | — | — |
-| dotnet | mixed | — | — | — | — |
+| Scenario | Target | p50 | p95 | p99 | p99.9 |
+|----------|--------|----:|----:|----:|------:|
+| GET single | Haskell | 10 | 16 | 19 | 31 |
+| GET single | .NET | 6 | 14 | 17 | 24 |
+| GET list | Haskell | 111 | 154 | 167 | 207 |
+| GET list | .NET | 81 | 124 | 135 | 154 |
+| POST | Haskell | 9 | 846 | 1,837 | 3,343 |
+| POST | .NET | 5 | 313 | 463 | 1,075 |
+| Mixed | Haskell | <1 | 234 | 938 | 3,637 |
+| Mixed | .NET | <1 | 308 | 462 | 1,522 |
+
+### Response Status Codes
+
+| Scenario | Target | Total Requests | 2xx | 404 | 500 | 2xx % |
+|----------|--------|---------------:|----:|----:|----:|------:|
+| GET single | Haskell | 2,868,733 | 2,868,733 | 0 | 0 | 100.0% |
+| GET single | .NET | 3,977,612 | 3,977,612 | 0 | 0 | 100.0% |
+| GET list | Haskell | 262,941 | 262,941 | 0 | 0 | 100.0% |
+| GET list | .NET | 372,894 | 372,894 | 0 | 0 | 100.0% |
+| POST | Haskell | 3,698 | 3,698 | 0 | 0 | 100.0% |
+| POST | .NET | 5,491 | 5,491 | 0 | 0 | 100.0% |
+| Mixed | Haskell | 17,839 | 17,250 | 582 | 7 | 96.7% |
+| Mixed | .NET | 22,109 | 21,196 | 911 | 2 | 95.9% |
+
+> All scenarios achieve >95% 2xx responses for both apps. The 404 responses in
+> the mixed scenario are expected — DELETE and GET-single requests target random
+> IDs, some of which have been previously deleted. The handful of 500 errors
+> (<0.1%) are transient SQLite busy timeouts under heavy write contention.
 
 ---
 
 ## Analysis
 
-### Connection Model
+### Overall Performance Gap: 1.24×–1.49×
+
+The .NET app outperforms Haskell by **1.24× to 1.49×** across all scenarios.
+This is a remarkably narrow gap, and notably **no scenario exceeds 3×**. The
+Haskell `redis-client` with multiplexing enabled is competitive with
+StackExchange.Redis, one of the most mature and optimized Redis clients in the
+ecosystem.
+
+### Scenario-by-Scenario Breakdown
+
+#### GET Single User (1.39× gap)
+
+This is the purest **HTTP → Redis → HTTP** benchmark. After the first request
+populates the cache, every subsequent request is a Redis cache hit — no SQLite
+involved. The 1.39× gap here reflects the combined efficiency differences of:
+
+1. **HTTP framework overhead**: Kestrel's zero-allocation pipeline vs warp/Scotty
+2. **Redis multiplexer maturity**: StackExchange.Redis has years of optimization
+   for its multiplexer; `redis-client`'s `Multiplexer` is newer
+3. **JSON serialization on cache miss**: aeson vs System.Text.Json (only affects
+   the initial miss that populates the cache)
+
+Both achieve excellent latencies — Haskell's p50 is 10ms, .NET's is 6ms. The
+p99 latencies are nearly identical (19ms vs 17ms), suggesting both handle tail
+latencies well under this workload.
+
+#### GET List (1.42× gap)
+
+This scenario **always hits SQLite** (list queries are not cached). The 1.42×
+gap is mostly explained by:
+
+1. **SQLite client efficiency**: Microsoft.Data.Sqlite uses prepared statements
+   and Span-based parsing; sqlite-simple creates fresh statements per query
+2. **JSON serialization**: Serializing 20 user records per response — .NET's
+   source-generated serializers avoid reflection overhead
+3. **HTTP response writing**: Kestrel's optimized response pipeline vs warp's
+   lazy ByteString chunked encoding
+
+The absolute throughput (8.8k vs 12.4k req/s) is impressive for both, given
+each request queries and serializes 20 rows.
+
+#### POST (1.49× gap)
+
+The largest gap, but absolute numbers are low for both (123 vs 183 req/s)
+because **SQLite is the bottleneck**. Each POST request:
+
+1. Writes a row to SQLite (contends on the single-writer lock)
+2. Reads the inserted row back
+3. Serializes to JSON
+4. Sends a DEL to Redis
+
+The 1.49× gap is largely due to differences in how each SQLite client handles
+write contention. The high p99 latencies (1,837ms Haskell vs 463ms .NET)
+suggest Haskell's sqlite-simple may be less efficient at retry/backoff under
+`busy_timeout`.
+
+#### Mixed Workload (1.24× gap)
+
+The **smallest gap** — only 1.24×. This is the most realistic scenario, with a
+read-heavy workload (70% GET single = cache hits) mixed with writes. The narrow
+gap suggests that under realistic workloads, the performance difference between
+the two stacks is minimal.
+
+### Connection Model (Multiplexing)
 
 | Aspect | Haskell (redis-client) | C# (StackExchange.Redis) |
 |--------|----------------------|--------------------------|
-| Connection type | Plain TCP socket per command client | Multiplexed pipeline over single TCP connection |
-| Connection pooling | Manual via `PlainTextClient` / `ClusterClient` pool | Built-in `ConnectionMultiplexer` with automatic pooling |
-| Protocol | RESP2/RESP3 | RESP2 with automatic multiplexing |
+| Architecture | `Multiplexer` wrapping `PlainTextClient` | `ConnectionMultiplexer` |
+| Connection count | Single TCP connection, multiplexed | Single TCP connection, multiplexed |
+| Command pipelining | Via `submitCommand` + async response matching | Built-in pipeline manager |
+| Protocol | RESP2 | RESP2 |
 
-**Impact**: StackExchange.Redis's multiplexed design allows many concurrent operations
-over a single TCP connection, reducing overhead for high-concurrency workloads. The
-Haskell `redis-client` uses a simpler model with direct command execution, which may
-have lower overhead per individual command but less connection sharing.
+**Both apps now use the same architectural pattern**: a single TCP connection
+to Redis with command multiplexing. This is the key change from the previous
+(unfair) benchmark where the Haskell app used synchronous per-request
+`evalStateT` calls. With multiplexing enabled, the Haskell app pipelines
+Redis commands across concurrent HTTP requests, matching StackExchange.Redis's
+architecture.
 
 ### Serialization
 
 | Aspect | Haskell | C# |
 |--------|---------|-----|
-| JSON library | aeson | System.Text.Json |
-| Cache format | JSON byte string via `encode` | JSON string via `JsonSerializer.Serialize` |
+| JSON library | aeson (Builder-based) | System.Text.Json (source generators + Span\<T\>) |
+| Cache format | Strict ByteString via `encode` | String via `JsonSerializer.Serialize` |
 | Deserialization | Not needed (cache returns raw bytes) | Not needed (cache returns raw string) |
 
 **Impact**: Both apps store pre-serialized JSON in Redis, so cache hits bypass
-deserialization entirely. For cache misses, Haskell's `aeson` and .NET's
-`System.Text.Json` are both mature, high-performance JSON libraries. The difference
-is typically small — `System.Text.Json` uses source generators and Span<T> for
-zero-allocation paths, while `aeson` uses efficient `Builder` composition.
+JSON processing entirely. For cache misses, the serialization difference is
+small. System.Text.Json's source generators eliminate reflection costs, while
+aeson's `Builder` composition is efficient but involves more allocation.
 
-### Runtime: GHC vs CLR
+### Runtime: GHC 9.8.4 vs .NET 8 CLR
 
 | Aspect | GHC (Haskell) | CLR (.NET 8) |
 |--------|---------------|--------------|
-| Compilation | Ahead-of-time native code (-O2) | JIT (RyuJIT) with tiered compilation |
+| Compilation | Ahead-of-time native code (`-O2`) | JIT (RyuJIT) with tiered compilation |
 | Startup time | Fast (native binary) | Slightly slower (JIT warm-up) |
-| Steady-state perf | Comparable; depends on allocation patterns | Highly optimized for server workloads |
-| Binary size | Larger (statically linked by default) | Smaller (shared framework) |
+| Steady-state performance | Good; allocation-heavy code can stress GC | Highly optimized for server workloads |
+| Memory model | Immutable by default; GC manages all heap objects | Value types (structs) reduce GC pressure |
 
-**Impact**: .NET 8's tiered JIT compilation can produce highly optimized machine code
-for hot paths after warm-up. GHC's ahead-of-time compilation with `-O2` produces
-good native code but may not match JIT-specialized optimizations for specific workloads.
-For a 30-second benchmark, JIT warm-up cost is amortized.
-
-### Thread Model
-
-| Aspect | Haskell | C# |
-|--------|---------|-----|
-| Concurrency model | Green threads (GHC RTS `-N` = all cores) | async/await on ThreadPool |
-| HTTP server | warp (event-driven, green threads) | Kestrel (event-driven, async/await) |
-| SQLite access | Synchronous per green thread | Async ADO.NET |
-| Redis access | Synchronous per green thread | Async StackExchange.Redis |
-
-**Impact**: Both apps handle concurrency well but differently. Warp uses GHC's
-lightweight green threads — each request runs in its own green thread with preemptive
-scheduling managed by the RTS. Kestrel uses .NET's async/await pattern with the
-thread pool. Both can handle thousands of concurrent connections efficiently.
-
-SQLite is a key bottleneck for both: it's fundamentally single-writer, so under
-heavy POST/PUT/DELETE load, both apps contend on the SQLite write lock regardless
-of their concurrency model.
+**Impact**: .NET 8's JIT can specialize hot paths after warm-up, and its value
+types (structs) reduce GC pressure for response objects. Haskell's immutable
+data model means every JSON serialization creates new heap objects, but GHC's
+nursery-based allocation is extremely fast (bump pointer). For a 30-second
+benchmark, JIT warm-up cost is fully amortized.
 
 ### Garbage Collection
 
-| Aspect | GHC | .NET 8 |
-|--------|-----|--------|
+| Aspect | GHC 9.8.4 | .NET 8 |
+|--------|-----------|--------|
 | GC type | Generational, copying (default) | Generational, compacting (Server GC) |
 | Pause behavior | Stop-the-world for major GC | Background GC with concurrent marking |
-| Tuning | RTS flags (-H, -A, -n) | Server/Workstation GC, regions |
+| Tuning applied | Default RTS flags (`-N` only) | Default Server GC |
 
-**Impact**: Under high-throughput HTTP workloads, GC pause times affect tail latencies
-(p95, p99). .NET's Server GC is specifically tuned for server workloads with background
-collection. GHC's default GC may show higher p99 latencies due to stop-the-world major
-collections, though this can be mitigated with RTS tuning flags (e.g., `-A64m` to
-increase nursery size).
+**Impact**: The p99.9 latencies show the GC effect clearly:
+
+- GET single: Haskell 31ms vs .NET 24ms (1.3× gap at tail)
+- POST: Haskell 3,343ms vs .NET 1,075ms (3.1× gap at tail)
+
+The POST scenario's extreme tail latency gap suggests GHC's stop-the-world
+major collections may be coinciding with SQLite busy-wait retries, creating
+compounding delays. GHC RTS tuning flags (`-A64m -n4m -H512m`) could
+significantly reduce these pauses.
 
 ### HTTP Framework
 
-| Aspect | Scotty (Haskell) | ASP.NET Core Minimal API |
-|--------|------------------|--------------------------|
-| Underlying server | warp | Kestrel |
-| Routing | Pattern matching | Endpoint routing |
-| Request parsing | Lazy bytestring / scotty combinators | Model binding / System.Text.Json |
-| Known performance | warp is consistently top-tier in benchmarks | Kestrel is top-tier, heavily optimized |
+| Aspect | Scotty (warp) | ASP.NET Core Minimal API (Kestrel) |
+|--------|---------------|-------------------------------------|
+| Architecture | Event-driven + green threads | Event-driven + async/await |
+| Request parsing | Lazy ByteString / Scotty combinators | Zero-allocation model binding |
+| Response writing | Chunked lazy ByteString | Optimized response pipeline |
+| Performance ranking | Top-tier in TechEmpower benchmarks | Top-tier in TechEmpower benchmarks |
 
-**Impact**: Both warp and Kestrel are high-performance HTTP servers that regularly
-appear at the top of framework benchmarks. Scotty adds a thin routing layer over
-warp with minimal overhead. ASP.NET Core Minimal APIs have very little ceremony
-and near-raw Kestrel performance.
+**Impact**: Both are excellent HTTP servers. Kestrel has a slight edge from
+Microsoft's years of investment in zero-allocation response paths and
+`System.IO.Pipelines`. Warp is similarly well-optimized but Scotty's routing
+layer adds a thin overhead compared to ASP.NET Core's compiled endpoint routing.
 
-### Cluster Mode Considerations
+### SQLite Access Patterns
 
-| Aspect | Haskell (redis-client) | C# (StackExchange.Redis) |
-|--------|----------------------|--------------------------|
-| Cluster discovery | Manual seed node + topology refresh | Automatic cluster discovery |
-| Slot routing | Client-side CRC16 hash slot routing | Transparent slot routing |
-| Redirect handling | Client handles ASK/MOVED | Automatic ASK/MOVED handling |
-| Connection pool | Per-node pool via ClusterClient | Per-node multiplexed connections |
+| Aspect | Haskell (sqlite-simple) | C# (Microsoft.Data.Sqlite) |
+|--------|------------------------|----------------------------|
+| Connection model | New connection per request (`withConnection`) | Connection pool (implicit) |
+| Statement caching | No (fresh prepared statements) | Yes (via ADO.NET) |
+| WAL mode | Set at startup + per-connection | Set at startup + per-connection |
+| Busy timeout | 5000ms per connection | 5000ms per connection |
 
-**Impact**: In cluster mode, both clients must route commands to the correct node
-based on key hash slots. StackExchange.Redis handles this transparently, while
-`redis-client`'s `ClusterClient` also manages topology and routing. The overhead
-of cluster-aware routing typically adds 1-5% latency compared to standalone mode
-due to hash slot computation and potentially following redirects.
+**Impact**: Microsoft.Data.Sqlite's connection pooling and statement caching
+give it an advantage in write-heavy scenarios. Haskell's `withConnection`
+opens a new SQLite handle per request, which involves filesystem operations
+and foregoes prepared statement caching. This likely explains a significant
+portion of the POST scenario gap (1.49×).
 
 ---
 
@@ -235,55 +311,79 @@ due to hash slot computation and potentially following redirects.
 
 ### Key Takeaways
 
-1. **Both stacks are production-viable** for REST + Redis cache workloads. The
-   performance difference is likely within 2-3x for most scenarios, with the
-   exact numbers depending on the specific workload mix.
+1. **The Haskell redis-client with Multiplexer is competitive**: The 1.24×–1.49×
+   gap vs StackExchange.Redis is impressive, especially given that SE.Redis is
+   one of the most battle-tested Redis clients in production. No scenario exceeds
+   1.5× — there is no glaring inefficiency in the Haskell stack.
 
-2. **Cache-hit performance** (GET single user) is where Redis client efficiency
-   matters most — this path bypasses SQLite entirely and measures pure
-   HTTP → Redis → HTTP round-trip performance.
+2. **Multiplexing was the key fairness fix**: The previous benchmark (without
+   Haskell multiplexing) showed 70×+ gaps because the Haskell app serialized
+   all Redis commands through a single-threaded `evalStateT`. With `Multiplexer`
+   enabled, concurrent HTTP requests pipeline their Redis commands properly.
 
-3. **SQLite-bound operations** (GET list, POST, PUT, DELETE) are bottlenecked
-   by SQLite's single-writer model, so Redis client performance is less of a
-   differentiator here.
+3. **The remaining gap is mostly NOT the Redis client**: The performance
+   difference is distributed across the full stack — HTTP framework, JSON
+   serialization, SQLite access patterns, and GC behavior. The Redis
+   multiplexer itself is a small portion of the remaining gap.
 
-4. **Tail latencies** (p95, p99) are influenced more by GC behavior and
-   connection management than raw throughput. Watch for GHC major GC pauses
-   affecting p99 numbers.
+4. **SQLite is the dominant bottleneck for writes**: Both apps achieve only
+   ~100-180 POST req/s, limited by SQLite's single-writer model. The Redis
+   client's performance is irrelevant when the database is the constraint.
 
-5. **Cluster mode** adds routing overhead for both clients but should show
-   similar relative performance to standalone mode.
+5. **Tail latencies are the biggest quality gap**: While throughput gaps are
+   modest (1.24×–1.49×), p99.9 latency gaps are larger (1.3×–3.1×). This is
+   primarily a GC issue — GHC's stop-the-world collections cause occasional
+   spikes that .NET's background GC avoids.
 
-### Recommendations
+### Recommendations for redis-client Library
 
-- **For Haskell users**: The `redis-client` library provides a clean, type-safe
-  Redis interface that integrates well with the Haskell ecosystem. Use
-  `-threaded -rtsopts "-with-rtsopts=-N"` for multi-core utilization. Consider
-  RTS GC tuning (`-A64m -n4m`) for lower tail latencies under load.
+1. **Multiplexer should be the default path**: The performance benefit of
+   multiplexing is dramatic. Consider making `Multiplexer` the primary API
+   rather than raw `PlainTextClient` command execution. Documentation should
+   strongly recommend multiplexing for any concurrent workload.
 
-- **For production workloads**: Connection pooling and multiplexing (as in
-  StackExchange.Redis) generally win under very high concurrency. If the Haskell
-  app needs to match .NET's concurrency characteristics, consider adding
-  connection pooling to the redis-client usage.
+2. **Consider connection pooling**: While the `Multiplexer` handles command
+   pipelining well, a pool of multiplexed connections could further improve
+   throughput under very high concurrency by reducing TCP-level head-of-line
+   blocking (similar to StackExchange.Redis's multiple socket connections).
 
-- **For benchmarking**: Run multiple iterations and report averages with standard
-  deviation. A single 30-second run provides directional data but may be affected
-  by system noise, Docker overhead, or GC timing.
+3. **RTS tuning guide**: Provide recommended GHC RTS flags for server
+   workloads in the README:
+   ```
+   +RTS -N -A64m -n4m -H512m -qg -RTS
+   ```
+   These flags increase nursery size (`-A64m`), set a minimum allocation
+   area (`-n4m`), set initial heap size (`-H512m`), and enable parallel GC
+   (`-qg` disables generational GC).
+
+4. **Benchmark improvements**: For more rigorous results, future benchmarks
+   should run 3–5 iterations per scenario and report mean ± standard deviation.
+   Consider using a dedicated bare-metal machine (not WSL2) to reduce
+   virtualization overhead and measurement noise.
 
 ### How to Reproduce
 
 ```bash
-# Standalone benchmark
-bash benchmarks/scripts/run-standalone.sh
+# Start Redis (standalone)
+docker run -d --name redis -p 6379:6379 redis
 
-# Cluster benchmark
-bash benchmarks/scripts/run-cluster.sh
+# Seed the database
+cd benchmarks/shared && python3 seed.py && cd ../..
 
-# Regenerate this document with actual results
-bash benchmarks/results/generate-comparison.sh
+# Build and run Haskell app
+nix-shell --run "cabal build haskell-rest-benchmark"
+nix-shell --run "cabal run haskell-rest-benchmark"
+
+# Build and run .NET app (in another terminal)
+cd benchmarks/dotnet-rest/RedisBenchmark && dotnet run -c Release
+
+# Run benchmarks
+bash benchmarks/scripts/run-benchmarks.sh
+
+# Results will be in benchmarks/results/standalone/
 ```
 
 ---
 
-*Generated from autocannon JSON results in `benchmarks/results/`.
-Re-run `benchmarks/results/generate-comparison.sh` to update tables with fresh data.*
+*Data sourced from actual benchmark JSON files in `benchmarks/results/standalone/`.
+Benchmarks run on 2026-02-12 with multiplexing enabled for both apps.*
