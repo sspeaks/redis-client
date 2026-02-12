@@ -224,7 +224,7 @@ createClusterClient config connector = do
       topology <- newTVarIO initialTopology
       refreshLock <- newMVar ()
       muxPool <- if clusterUseMultiplexing config
-        then Just <$> createMultiplexPool connector
+        then Just <$> createMultiplexPool connector 1
         else return Nothing
       return $ ClusterClient topology pool config connector refreshLock muxPool
 

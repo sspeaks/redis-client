@@ -36,7 +36,8 @@ data RunState = RunState
     processIndex :: Maybe Int,
     useMux :: Bool,
     benchOperation :: String,
-    benchDuration :: Int
+    benchDuration :: Int,
+    muxCount :: Int
   }
   deriving (Show)
 
@@ -61,6 +62,7 @@ defaultRunState = RunState
   , useMux = False
   , benchOperation = "set"
   , benchDuration = 30
+  , muxCount = 1
   }
 
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData

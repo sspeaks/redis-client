@@ -3,11 +3,11 @@
 
 -- | Pool of 'Multiplexer's for cluster-mode usage.
 --
--- Manages a single multiplexed connection per node, matching the
+-- Manages one or more multiplexed connections per node, matching the
 -- StackExchange.Redis architecture. Automatically reconnects dead multiplexers.
 --
 -- @
--- pool <- createMultiplexPool connector
+-- pool <- createMultiplexPool connector 1
 -- resp <- submitToNode pool nodeAddr cmdBytes
 -- closeMultiplexPool pool
 -- @
@@ -23,9 +23,11 @@ import Cluster (NodeAddress (..))
 import Connector (Connector)
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar)
 import Control.Exception (SomeException, catch, throwIO)
-import Data.IORef (IORef, newIORef, readIORef, atomicWriteIORef)
+import Data.IORef (IORef, newIORef, readIORef, atomicWriteIORef, atomicModifyIORef')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Vector (Vector)
+import qualified Data.Vector as V
 import Multiplexer
   ( Multiplexer
   , SlotPool
@@ -38,28 +40,33 @@ import Multiplexer
 import Resp (RespData)
 import qualified Data.ByteString.Builder as Builder
 
--- | A pool of multiplexers, one per node address.
+-- | A pool of multiplexers, N per node address (round-robin selected).
 -- Uses IORef for fast lock-free reads on the hot path,
 -- with MVar protecting creation/replacement (exclusive writes).
 -- Includes a per-pool SlotPool for ResponseSlot reuse.
 data MultiplexPool client = MultiplexPool
-  { poolNodesRef   :: !(IORef (Map NodeAddress Multiplexer))  -- fast reads
+  { poolNodesRef   :: !(IORef (Map NodeAddress (Vector Multiplexer)))  -- fast reads
   , poolNodesLock  :: !(MVar ())                              -- protects writes
   , poolConnector  :: !(Connector client)
   , poolSlotPool   :: !SlotPool                               -- reusable ResponseSlots
+  , poolMuxCount   :: !Int                                    -- multiplexers per node
+  , poolCounter    :: !(IORef Int)                             -- round-robin counter
   }
 
 -- | Create a new empty multiplexer pool.
 -- Multiplexers are created lazily when a node is first accessed.
+-- @muxCount@ controls how many multiplexers are created per node.
 createMultiplexPool
   :: (Client client)
   => Connector client
+  -> Int
   -> IO (MultiplexPool client)
-createMultiplexPool connector = do
+createMultiplexPool connector muxCnt = do
   nodesRef <- newIORef Map.empty
   nodesLock <- newMVar ()
   slotPool <- createSlotPool 256
-  return $ MultiplexPool nodesRef nodesLock connector slotPool
+  counter <- newIORef 0
+  return $ MultiplexPool nodesRef nodesLock connector slotPool (max 1 muxCnt) counter
 
 -- | Submit a pre-encoded RESP command (as a Builder) to the multiplexer for a given node.
 -- Creates the multiplexer on demand if the node hasn't been seen before.
@@ -82,10 +89,8 @@ submitToNode pool addr cmdBuilder = do
           newMux <- replaceMux pool addr mux
           submitCommandPooled (poolSlotPool pool) newMux cmdBuilder
 
--- | Get or create the single multiplexer for a node.
+-- | Get or create a multiplexer for a node, round-robin among N muxes.
 -- Uses readIORef for the common path (lock-free, no MVar overhead).
--- Skips isMultiplexerAlive check on the hot path — errors are caught
--- by the caller (submitToNode) which triggers replacement on failure.
 getMultiplexer
   :: (Client client)
   => MultiplexPool client
@@ -94,26 +99,32 @@ getMultiplexer
 getMultiplexer pool addr = do
   m <- readIORef (poolNodesRef pool)
   case Map.lookup addr m of
-    Just mux -> return mux
+    Just muxes -> do
+      idx <- atomicModifyIORef' (poolCounter pool) (\n -> (n + 1, n))
+      return $! muxes V.! (idx `mod` V.length muxes)
     Nothing -> modifyMVar (poolNodesLock pool) $ \() -> do
       -- Double-check after acquiring lock
       m' <- readIORef (poolNodesRef pool)
       case Map.lookup addr m' of
-        Just mux -> return ((), mux)
+        Just muxes -> do
+          idx <- atomicModifyIORef' (poolCounter pool) (\n -> (n + 1, n))
+          return ((), muxes V.! (idx `mod` V.length muxes))
         Nothing -> do
-          mux <- createOneMux (poolConnector pool) addr
-          atomicWriteIORef (poolNodesRef pool) (Map.insert addr mux m')
-          return ((), mux)
+          muxes <- createMuxes (poolConnector pool) addr (poolMuxCount pool)
+          atomicWriteIORef (poolNodesRef pool) (Map.insert addr muxes m')
+          return ((), V.head muxes)
 
--- | Create a single multiplexer for a node address.
-createOneMux
+-- | Create N multiplexers for a node address.
+createMuxes
   :: (Client client)
   => Connector client
   -> NodeAddress
-  -> IO Multiplexer
-createOneMux connector addr = do
-  conn <- connector addr
-  createMultiplexer conn (receive conn)
+  -> Int
+  -> IO (Vector Multiplexer)
+createMuxes connector addr count =
+  V.generateM count $ \_ -> do
+    conn <- connector addr
+    createMultiplexer conn (receive conn)
 
 -- | Replace a dead multiplexer for a node.
 replaceMux
@@ -126,20 +137,25 @@ replaceMux pool addr oldMux = do
   destroyMultiplexer oldMux `catch` \(_ :: SomeException) -> return ()
   modifyMVar (poolNodesLock pool) $ \() -> do
     m <- readIORef (poolNodesRef pool)
-    -- Double-check: another thread may have already replaced it
     case Map.lookup addr m of
-      Just current -> do
-        alive <- isMultiplexerAlive current
-        if alive
-          then return ((), current)
-          else do
-            newMux <- createOneMux (poolConnector pool) addr
-            atomicWriteIORef (poolNodesRef pool) (Map.insert addr newMux m)
-            return ((), newMux)
+      Just muxes -> do
+        -- Find and replace the dead mux in the vector
+        newMuxes <- V.mapM (\mux -> do
+          alive <- isMultiplexerAlive mux
+          if alive
+            then return mux
+            else do
+              conn <- (poolConnector pool) addr
+              createMultiplexer conn (receive conn)
+          ) muxes
+        atomicWriteIORef (poolNodesRef pool) (Map.insert addr newMuxes m)
+        -- Return the first alive one
+        idx <- atomicModifyIORef' (poolCounter pool) (\n -> (n + 1, n))
+        return ((), newMuxes V.! (idx `mod` V.length newMuxes))
       Nothing -> do
-        newMux <- createOneMux (poolConnector pool) addr
-        atomicWriteIORef (poolNodesRef pool) (Map.insert addr newMux m)
-        return ((), newMux)
+        muxes <- createMuxes (poolConnector pool) addr (poolMuxCount pool)
+        atomicWriteIORef (poolNodesRef pool) (Map.insert addr muxes m)
+        return ((), V.head muxes)
 
 -- | Tear down all multiplexers across all nodes.
 closeMultiplexPool
@@ -148,7 +164,7 @@ closeMultiplexPool
 closeMultiplexPool pool = do
   modifyMVar (poolNodesLock pool) $ \() -> do
     m <- readIORef (poolNodesRef pool)
-    mapM_ (\mux -> destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ())
+    mapM_ (\muxes -> V.mapM_ (\mux -> destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()) muxes)
           (Map.elems m)
     atomicWriteIORef (poolNodesRef pool) Map.empty
     return ((), ())

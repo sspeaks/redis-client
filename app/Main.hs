@@ -113,7 +113,12 @@ options =
         let dur = read arg :: Int
         if dur < 1
           then ioError (userError "Duration must be at least 1 second")
-          else return $ opt {benchDuration = dur}) "SECS") "Benchmark duration in seconds (default: 30)"
+          else return $ opt {benchDuration = dur}) "SECS") "Benchmark duration in seconds (default: 30)",
+    Option [] ["mux-count"] (ReqArg (\arg opt -> do
+        let cnt = read arg :: Int
+        if cnt < 1
+          then ioError (userError "Mux count must be at least 1")
+          else return $ opt {muxCount = cnt}) "NUM") "Number of multiplexers per cluster node (default: 1)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -524,13 +529,14 @@ bench state = do
 
   let op = benchOperation state
       duration = benchDuration state
-      nConns = fromMaybe 1 (numConnections state)
+      nConns = fromMaybe 16 (numConnections state)
       kSize = keySize state
       vSize = valueSize state
+      muxCnt = muxCount state
 
   hPutStrLn stderr $ "Bench: operation=" ++ op ++ " duration=" ++ show duration
     ++ "s key-size=" ++ show kSize ++ " value-size=" ++ show vSize
-    ++ " connections=" ++ show nConns
+    ++ " connections=" ++ show nConns ++ " mux-count=" ++ show muxCnt
 
   if useTLS state
     then benchWithConnector state (createTLSConnector state) op duration nConns kSize vSize
@@ -540,7 +546,7 @@ bench state = do
 benchWithConnector :: (Client client) => RunState -> Connector client -> String -> Int -> Int -> Int -> Int -> IO ()
 benchWithConnector state connector op duration nConns kSize vSize = do
   clusterClient <- createClusterClientFromState state connector
-  muxPool <- createMultiplexPool connector
+  muxPool <- createMultiplexPool connector (muxCount state)
 
   -- Pre-populate keys for GET and mixed workloads
   when (op `elem` ["get", "mixed"]) $ do
