@@ -53,19 +53,14 @@ run_get_list() {
 }
 
 ###############################################################################
-# Scenario 3: POST new user
+# Scenario 3: POST new user (programmatic API for unique emails)
 ###############################################################################
 run_post() {
   local url="$1" label="$2"
   echo ">>> [$label] POST new user — $url/users"
-  $AUTOCANNON \
-    -c "$CONNECTIONS" -p "$PIPELINING" -d "$DURATION" -j \
-    -m POST \
-    -H "Content-Type=application/json" \
-    -b '{"name":"Bench User","email":"bench_RAND@test.com","bio":"created by benchmark"}' \
-    --renderStatusCodes \
-    "$url/users" \
-    > "$RESULTS_DIR/${label}_post.json"
+  node "$SCRIPT_DIR/post-bench.js" \
+    "$url" "$CONNECTIONS" "$PIPELINING" "$DURATION" \
+    "$RESULTS_DIR/${label}_post.json"
 }
 
 ###############################################################################
