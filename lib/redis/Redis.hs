@@ -45,5 +45,5 @@ import ClusterCommandClient (ClusterClient (..), ClusterConfig (..), ClusterErro
 import ConnectionPool (ConnectionPool (..), PoolConfig (..), withConnection, createPool, closePool)
 import Multiplexer (Multiplexer, MultiplexerException (..), createMultiplexer, submitCommand, destroyMultiplexer, isMultiplexerAlive)
 import MultiplexPool (MultiplexPool, createMultiplexPool, submitToNode, closeMultiplexPool)
-import StandaloneClient (StandaloneClient, StandaloneCommandClient, createStandaloneClient, closeStandaloneClient, runStandaloneClient)
+import StandaloneClient (StandaloneConfig (..), StandaloneClient, StandaloneCommandClient, createStandaloneClient, createStandaloneClientFromConfig, closeStandaloneClient, runStandaloneClient)
 import Connector (Connector, connectPlaintext, connectTLS, clusterPlaintextConnector, clusterTLSConnector)
