@@ -1,0 +1,33 @@
+# Ralph Progress Log
+Started: Fri Feb 13 09:17:00 PST 2026
+
+## Codebase Patterns
+- Cabal does NOT support two .cabal files in the same directory — use subdirectories for multi-package repos
+- `hask-redis-mux` library package is in `hask-redis-mux/` subdirectory; `hask-redis-mux/data` is a symlink to `../data`
+- `embedFile` paths are relative to the package directory, not the repo root
+- Typecheck via `nix-shell --run "cabal build all"` since `cabal` is not on PATH outside nix-shell
+- `callCabal2nix` fails with two .cabal files — need source filtering or separate directories for nix
+- Branch for this work: `ralph/separate-library-package` (created from main)
+
+---
+
+## 2026-02-13 - US-001 (separate-library-package)
+- Created `hask-redis-mux/hask-redis-mux.cabal` with all 6 internal libraries (resp, client, crc16, redis-command-client, cluster, redis)
+- redis library has visibility: public; includes GHC2021 defaults, Hackage metadata, source-repository stanza
+- No CLI-only dependencies (readline, process, random, directory, filepath)
+- Package lives in `hask-redis-mux/` subdirectory because cabal doesn't support two .cabal files in the same directory
+- Created `hask-redis-mux/data` symlink to `../data` for file-embed `embedFile` at compile time
+- Updated `cabal.project` to include `hask-redis-mux/` as a package
+- Typecheck passes: `nix-shell --run 'cabal build hask-redis-mux'`
+- All existing unit tests still pass
+- Files changed:
+  - `hask-redis-mux/hask-redis-mux.cabal` (new)
+  - `hask-redis-mux/data` (symlink, new)
+  - `cabal.project` (modified)
+- **Learnings for future iterations:**
+  - Cabal does NOT support two .cabal files in the same directory — must use subdirectories
+  - `callCabal2nix` also fails with two .cabal files — need source filtering or separate directories
+  - `embedFile` paths are relative to the package directory, not the repo root — symlinks solve this
+  - `hs-source-dirs: ../lib/...` works for building but generates warnings about sdist — will need addressing for Hackage (US-007)
+  - `packages:` in cabal.project can reference specific .cabal files or directories
+---
