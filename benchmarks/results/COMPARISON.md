@@ -217,6 +217,48 @@ cluster-specific overhead has been largely eliminated.
 
 ---
 
+## GC/HTTP/JSON Optimization Results (2026-02-13)
+
+Following the cluster performance work (US-001–US-008), a gap analysis was
+conducted to quantify the contributions of GC behavior, HTTP framework
+overhead, and JSON serialization to the remaining 1.58× throughput gap on
+GET single. See `benchmarks/results/gc-http-json/summary.md` for the full
+analysis.
+
+### Optimization Applied
+
+GHC RTS flags `-H1024M -A128m -n8m -qb -N` (via `-with-rtsopts` in
+`haskell-rest-benchmark.cabal`). No code changes were made. HTTP framework
+(Scotty) and JSON serialization (Aeson) were measured but not replaced, as
+neither exceeded the 5% improvement threshold.
+
+### Updated Cluster Throughput (requests/second)
+
+| Scenario | Before | After GC Tuning | Improvement | .NET | Gap Before | Gap After |
+|----------|-------:|----------------:|:-----------:|-----:|:----------:|:---------:|
+| GET single | 87,492 | 105,901 | **+21.0%** | 138,479 | **1.58×** | **1.31×** |
+| GET list | 8,549 | 10,132 | **+18.5%** | 12,192 | **1.43×** | **1.20×** |
+| POST | 131 | 126 | −3.8%¹ | 186 | 1.42× | 1.48×¹ |
+| Mixed | 598 | 578 | −3.3%¹ | 774 | 1.29× | 1.34×¹ |
+
+¹ Within normal run-to-run variance for SQLite-bottlenecked workloads
+
+### Per-Factor Contribution
+
+| Factor | Impact | Threshold | Applied? |
+|--------|--------|:---------:|:--------:|
+| GC tuning (RTS flags) | +21.0% throughput, gap 1.58×→1.31× | — | ✅ Yes |
+| HTTP framework (Scotty→Warp) | +1.4% throughput | >5% | ❌ No |
+| JSON serialization (Aeson→Builder) | +0.2% cache-hit, +5.0% cache-miss | >5% | ❌ No |
+
+### Conclusion
+
+GC tuning was the dominant factor — closing ~76% of the achievable gap with
+zero code changes. The remaining 1.31× gap is attributable to fundamental
+runtime differences (GHC vs .NET CLR), not framework or serialization overhead.
+
+---
+
 ## Standalone vs Cluster Comparison
 
 ### Haskell: Throughput Change (Standalone → Cluster)
