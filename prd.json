@@ -91,8 +91,8 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Neither optimization warranted. Scotty→Warp: +1.4% (below >5% threshold). Aeson→Builder: +0.2% cache-hit / +5.0% cache-miss (at threshold, not above; steady-state is cache-hit). Documented decisions in benchmarks/results/gc-http-json/optimization-decisions.md."
     },
     {
       "id": "US-007",

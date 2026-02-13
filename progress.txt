@@ -138,3 +138,19 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - GET list also benefits significantly from GC tuning (+18.5%), confirming GC is a general bottleneck, not just GET single
   - p99.9 latency may increase slightly with large nursery (20→26ms on GET single) due to longer individual GC pauses
 ---
+
+## 2026-02-13 - US-006
+- Evaluated HTTP framework and JSON serialization optimizations against >5% threshold
+- Created `benchmarks/results/gc-http-json/optimization-decisions.md` documenting why neither was applied
+- Scotty→Warp: +1.4% throughput — well below >5% threshold, not worth the ergonomic loss
+- Aeson→Builder: +0.2% in steady-state (cache-hit), +5.0% in cache-miss — at threshold, not above it; cache-miss is transient
+- Neither optimization would meaningfully close the .NET gap (1.31× remains after GC tuning)
+- Files changed:
+  - `benchmarks/results/gc-http-json/optimization-decisions.md` (new)
+  - `prd.json` (updated US-006 to passes: true)
+- **Learnings for future iterations:**
+  - Cache-hit is the benchmark steady state — optimizations that only help cache-miss have near-zero impact
+  - The >5% threshold is a good filter; both optimizations were correctly identified as not worth the complexity
+  - The remaining 1.31× gap is likely runtime-level (GHC vs CoreCLR), not framework/serialization overhead
+  - Scotty's thin WAI wrapper pattern means HTTP framework is rarely the bottleneck for I/O-bound apps
+---
