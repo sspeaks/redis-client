@@ -1,0 +1,40 @@
+services:
+  redis1:
+    image: redis
+    container_name: redis-host-node1
+    network_mode: host
+    volumes:
+      - ./redis1.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+
+  redis2:
+    image: redis
+    container_name: redis-host-node2
+    network_mode: host
+    volumes:
+      - ./redis2.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+
+  redis3:
+    image: redis
+    container_name: redis-host-node3
+    network_mode: host
+    volumes:
+      - ./redis3.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+
+  redis4:
+    image: redis
+    container_name: redis-host-node4
+    network_mode: host
+    volumes:
+      - ./redis4.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+
+  redis5:
+    image: redis
+    container_name: redis-host-node5
+    network_mode: host
+    volumes:
+      - ./redis5.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]

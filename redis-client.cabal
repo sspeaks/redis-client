@@ -145,4 +145,5 @@ executable redis-client
                     , random
                     , readline
                     , stm
+                    , time
                     , vector

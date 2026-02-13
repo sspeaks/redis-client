@@ -41,28 +41,28 @@ spec = do
 
   describe "Slot calculation" $ do
     it "calculates slot within valid range" $ do
-      slot <- calculateSlot "test-key"
+      let slot = calculateSlot "test-key"
       slot `shouldSatisfy` (< 16384)
 
     it "calculates same slot for keys with same hash tag" $ do
-      slot1 <- calculateSlot "{user}:profile"
-      slot2 <- calculateSlot "{user}:settings"
+      let slot1 = calculateSlot "{user}:profile"
+          slot2 = calculateSlot "{user}:settings"
       slot1 `shouldBe` slot2
 
     it "calculates different slots for different keys (usually)" $ do
-      slot1 <- calculateSlot "key1"
-      slot2 <- calculateSlot "key2"
+      let slot1 = calculateSlot "key1"
+          slot2 = calculateSlot "key2"
       -- Note: This could theoretically fail if both keys hash to same slot,
       -- but probability is very low
       slot1 `shouldNotBe` slot2
 
     it "handles empty key" $ do
-      slot <- calculateSlot ""
+      let slot = calculateSlot ""
       slot `shouldSatisfy` (< 16384)
 
     it "handles very long keys" $ do
       let longKey = BS8.replicate 1000 'x'
-      slot <- calculateSlot longKey
+          slot = calculateSlot longKey
       slot `shouldSatisfy` (< 16384)
 
   describe "Topology parsing" $ do

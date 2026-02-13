@@ -5,7 +5,7 @@ module Main (main) where
 import ClusterCommandClient
 import Cluster (NodeAddress (..))
 import ConnectionPool (PoolConfig (..))
-import Data.Maybe (isJust)
+import Resp (RespData (..))
 import Test.Hspec
 
 main :: IO ()
@@ -79,18 +79,52 @@ spec = do
         let result = parseRedirectionError "MOVED" "MOVED 3999 redis-node-1:6379"
         result `shouldBe` Just (RedirectionInfo 3999 "redis-node-1" 6379)
 
-      it "handles extra whitespace" $ do
+      it "returns Nothing for extra whitespace" $ do
         let result = parseRedirectionError "MOVED" "MOVED  3999  127.0.0.1:6381  "
-        -- Current implementation splits on whitespace, so this might still work
-        result `shouldSatisfy` isJust
+        -- Tighter parsing rejects non-standard formatting (Redis never produces this)
+        result `shouldBe` Nothing
 
       it "handles port 0" $ do
         let result = parseRedirectionError "MOVED" "MOVED 3999 127.0.0.1:0"
         result `shouldBe` Just (RedirectionInfo 3999 "127.0.0.1" 0)
 
-      it "handles extra fields after host:port" $ do
+      it "returns Nothing for extra fields after host:port" $ do
         let result = parseRedirectionError "MOVED" "MOVED 3999 127.0.0.1:6381 extra-data"
-        result `shouldBe` Just (RedirectionInfo 3999 "127.0.0.1" 6381)
+        -- Tighter parsing rejects trailing data (Redis never produces this)
+        result `shouldBe` Nothing
+
+  describe "detectRedirection (byte-level fast path)" $ do
+    it "returns Nothing for non-error responses (RespBulkString)" $ do
+      detectRedirection (RespBulkString "OK") `shouldBe` Nothing
+
+    it "returns Nothing for non-error responses (RespSimpleString)" $ do
+      detectRedirection (RespSimpleString "OK") `shouldBe` Nothing
+
+    it "returns Nothing for non-error responses (RespInteger)" $ do
+      detectRedirection (RespInteger 42) `shouldBe` Nothing
+
+    it "returns Nothing for non-redirect errors" $ do
+      detectRedirection (RespError "ERR unknown command") `shouldBe` Nothing
+
+    it "returns Nothing for short error messages" $ do
+      detectRedirection (RespError "ERR") `shouldBe` Nothing
+
+    it "returns Nothing for empty error message" $ do
+      detectRedirection (RespError "") `shouldBe` Nothing
+
+    it "detects MOVED redirect" $ do
+      detectRedirection (RespError "MOVED 3999 127.0.0.1:6381")
+        `shouldBe` Just (Left (RedirectionInfo 3999 "127.0.0.1" 6381))
+
+    it "detects ASK redirect" $ do
+      detectRedirection (RespError "ASK 3999 127.0.0.1:6381")
+        `shouldBe` Just (Right (RedirectionInfo 3999 "127.0.0.1" 6381))
+
+    it "returns Nothing for errors starting with M but not MOVED" $ do
+      detectRedirection (RespError "MASTERDOWN Link with MASTER is down") `shouldBe` Nothing
+
+    it "returns Nothing for errors starting with A but not ASK" $ do
+      detectRedirection (RespError "AUTH required") `shouldBe` Nothing
 
   describe "ClusterError types" $ do
     it "creates MovedError correctly" $ do
@@ -142,7 +176,8 @@ spec = do
               clusterPoolConfig = poolConfig,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 600
+              clusterTopologyRefreshInterval = 600,
+              clusterUseMultiplexing = False
             }
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000

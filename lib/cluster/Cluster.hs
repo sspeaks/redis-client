@@ -15,6 +15,7 @@ module Cluster
     extractHashTag,
     parseClusterSlots,
     findNodeForSlot,
+    findNodeAddressForSlot,
   )
 where
 
@@ -63,7 +64,8 @@ data SlotRange = SlotRange
 -- | Full snapshot of the cluster topology: a fast O(1) slot-to-node vector,
 -- a map of all known nodes, and the time the snapshot was taken.
 data ClusterTopology = ClusterTopology
-  { topologySlots      :: Vector ByteString, -- 16384 slots, each mapped to node ID
+  { topologySlots      :: Vector ByteString,     -- 16384 slots, each mapped to node ID
+    topologyAddresses  :: Vector NodeAddress,     -- 16384 slots, each mapped directly to NodeAddress (hot path)
     topologyNodes      :: Map ByteString ClusterNode, -- Node ID -> full node details
     topologyUpdateTime :: UTCTime
   }
@@ -71,10 +73,11 @@ data ClusterTopology = ClusterTopology
 
 -- | Calculate the hash slot (0–16383) for a Redis key.
 -- Respects hash tags: if the key starts with @{tag}@, only @tag@ is hashed.
-calculateSlot :: ByteString -> IO Word16
-calculateSlot key = do
-  let hashKey = extractHashTag key
-  crc16 hashKey
+calculateSlot :: ByteString -> Word16
+calculateSlot key =
+  let !hashKey = extractHashTag key
+  in crc16 hashKey
+{-# INLINE calculateSlot #-}
 
 -- | Extract hash tag from a key if present
 -- Pattern: {tag} - returns the content within the first valid {} pair
@@ -105,7 +108,8 @@ parseClusterSlots :: RespData -> UTCTime -> Either String ClusterTopology
 parseClusterSlots (RespArray slots) currentTime = do
   ranges <- mapM parseSlotRange slots
   let (slotMap, nodeMap) = buildTopology ranges
-  return $ ClusterTopology slotMap nodeMap currentTime
+      addrMap = buildAddressVector slotMap nodeMap
+  return $ ClusterTopology slotMap addrMap nodeMap currentTime
   where
     parseSlotRange :: RespData -> Either String (SlotRange, [(ByteString, NodeAddress)])
     parseSlotRange (RespArray (RespInteger start : RespInteger end : masterInfo : replicaInfos)) = do
@@ -159,9 +163,26 @@ parseClusterSlots (RespArray slots) currentTime = do
             else Map.insert nodeId (ClusterNode nodeId addr role [range] []) nm
 parseClusterSlots other _ = Left $ "Expected array of slot ranges, got: " ++ show other
 
+-- | Build a slot-to-NodeAddress vector from the slot-to-nodeId vector and node map.
+-- Used for O(1) hot path lookups that skip the Map entirely.
+buildAddressVector :: Vector ByteString -> Map ByteString ClusterNode -> Vector NodeAddress
+buildAddressVector slotVec nodeMap =
+  V.map (\nid -> case Map.lookup nid nodeMap of
+    Just node -> nodeAddress node
+    Nothing   -> NodeAddress "" 0  -- placeholder for unassigned slots
+  ) slotVec
+
 -- | Look up the master node ID responsible for a given slot.
 -- Returns 'Nothing' if the slot is out of range (≥ 16384).
 findNodeForSlot :: ClusterTopology -> Word16 -> Maybe ByteString
 findNodeForSlot topology slot
   | slot < 16384 = Just $ topologySlots topology V.! fromIntegral slot
   | otherwise = Nothing
+
+-- | Look up the 'NodeAddress' responsible for a given slot directly (O(1), no Map lookup).
+-- Returns 'Nothing' if the slot is out of range (≥ 16384).
+findNodeAddressForSlot :: ClusterTopology -> Word16 -> Maybe NodeAddress
+findNodeAddressForSlot topology slot
+  | slot < 16384 = Just $! topologyAddresses topology V.! fromIntegral slot
+  | otherwise = Nothing
+{-# INLINE findNodeAddressForSlot #-}

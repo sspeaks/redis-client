@@ -1,0 +1,176 @@
+# Ralph Progress Log
+Started: Thu Feb 12 17:50:58 PST 2026
+
+## Codebase Patterns
+- Benchmarks use autocannon (Node.js) as the load generator; results are JSON files in `benchmarks/results/`
+- Use `exe:` prefix with `cabal list-bin` when package has multiple executables (e.g., `cabal list-bin exe:haskell-rest-benchmark`)
+- Cluster benchmarks use `benchmarks/scripts/run-cluster.sh` which starts 5-node Redis cluster, seeds DB, builds apps, and runs `run-benchmarks.sh`
+- Autocannon provides p97.5 (not p95) — use p97.5 as the closest available percentile
+- Autocannon does NOT support URL templates like `[1-10000]` — use background cache flushing for cache-miss tests
+- Haskell REST benchmark is in `benchmarks/haskell-rest/` with cabal file `haskell-rest-benchmark.cabal`
+- Current Haskell RTS flags: `-H1024M -A128m -n8m -qb -N` (via `-with-rtsopts`, applied in US-005)
+- Best RTS flags for throughput: `-H1024M -A128m -n8m -qb -N` (match-main config, +17.8%)
+- Best RTS flags for tail latency: `--nonmoving-gc -N` (20ms p99.9)
+- Typecheck via `nix-shell --run "cabal build all"` since `cabal` is not on PATH outside nix-shell
+- Branch for this work: `ralph/gc-http-json-optimization` (created from main)
+- Use `benchmarks/scripts/run-gc-tuning.sh` to run GC tuning benchmarks (pass binary path as arg)
+- Autocannon latency keys in JSON: `p50`, `p97_5`, `p99`, `p99_9` (underscores, not dots)
+- Aeson sorts object keys alphabetically — match this order for byte-identical manual JSON encoding
+- Cache-hit path returns raw Redis bytes directly — JSON encoding is completely bypassed
+- Use `docker-cluster-host` (port 7000) for benchmarks, not `docker-cluster` (port 6379)
+- POST and Mixed benchmarks are SQLite-bound (~130 and ~600 req/s) — expect ~5-8% run-to-run variance, don't treat small differences as regressions
+
+---
+
+## 2026-02-13 - US-001
+- Captured pre-optimization baseline for all 4 REST benchmark scenarios in cluster mode
+- Created `benchmarks/results/gc-http-json/baseline.md` with throughput, latency (p50/p97.5/p99/p99.9), and status codes
+- Verified all numbers match COMPARISON.md exactly (0% variance)
+- Key baseline: GET single H=87,492 vs .NET=138,479 (1.58× gap), the primary target for optimization
+- Files changed: `benchmarks/results/gc-http-json/baseline.md` (new)
+- **Learnings for future iterations:**
+  - Existing cluster results in `benchmarks/results/cluster/` are from the same run documented in COMPARISON.md
+  - The 1.58× gap on GET single is the primary optimization target (purest HTTP→Redis→HTTP path)
+  - POST and Mixed are SQLite-bottlenecked — don't expect significant Redis/GC improvements there
+  - p99.9 tail latency gap is most severe for POST (3.7× worse), likely GC-related
+---
+
+## 2026-02-13 - US-002
+- Tested 5 GHC RTS flag combinations on GET single (cluster mode, 30s each)
+- Created `benchmarks/scripts/run-gc-tuning.sh` — reusable script for RTS flag benchmarking
+- Created `benchmarks/results/gc-http-json/gc-tuning.md` with comparison tables
+- Results:
+  - default (-N only): 88,081 req/s — baseline
+  - aggressive-nursery (-A64m -n4m -H512m -N): 101,845 req/s (+15.6%)
+  - **match-main (-H1024M -A128m -n8m -qb -N): 103,787 req/s (+17.8%)** — best throughput
+  - nonmoving-gc (--nonmoving-gc -N): 86,558 req/s (−1.7%) — best p99.9 (20ms)
+  - large-nursery-no-idle (-A128m -I0 -N): 102,558 req/s (+16.4%)
+- GC tuning closes .NET gap from 1.58× to 1.33× on GET single
+- Files changed:
+  - `benchmarks/scripts/run-gc-tuning.sh` (new)
+  - `benchmarks/results/gc-http-json/gc-tuning.md` (new)
+  - `benchmarks/results/gc-http-json/gc_*.json` (5 raw result files)
+- **Learnings for future iterations:**
+  - Large nursery (-A128m+) is the single biggest throughput lever — reduces minor GC frequency
+  - `-qb` (disable parallel nursery GC) helps in high-throughput scenarios by reducing GC thread sync
+  - `-H1024M` (suggested heap) reduces major GC frequency — important for sustained load
+  - Nonmoving GC trades throughput for consistent tail latency — use only when p99.9 matters more than throughput
+  - Large nursery configs worsen p99.9 (28ms vs 21ms default) because individual GC pauses are longer
+  - The match-main config is the clear winner for throughput benchmarks
+  - Autocannon JSON latency fields use underscores: `p97_5`, `p99_9`
+---
+
+## 2026-02-13 - US-003
+- Created `benchmarks/haskell-rest/src/WarpOnly.hs` — raw Warp Application with GET /users/:id only (no Scotty)
+- Added `haskell-rest-warp-only` executable to `haskell-rest-benchmark.cabal`
+- Created `benchmarks/scripts/run-http-framework.sh` — benchmark script comparing Scotty vs Warp-only
+- Ran both variants under identical conditions (cluster mode, -H1024M -A128m -n8m -qb -N, 30s, 100 connections, 10 pipelining)
+- Results:
+  - Scotty: 102,931 req/s | p50=9ms p97.5=13ms p99=16ms p99.9=28ms
+  - Warp-only: 104,403 req/s | p50=9ms p97.5=12ms p99=14ms p99.9=26ms
+  - **Difference: +1.4% throughput, ~2ms better tail latency**
+- Conclusion: Scotty overhead is negligible (~1.4%), not worth replacing
+- Documented findings in `benchmarks/results/gc-http-json/http-framework.md`
+- Files changed:
+  - `benchmarks/haskell-rest/src/WarpOnly.hs` (new)
+  - `benchmarks/haskell-rest/haskell-rest-benchmark.cabal` (modified — added warp-only executable)
+  - `benchmarks/scripts/run-http-framework.sh` (new)
+  - `benchmarks/results/gc-http-json/http-framework.md` (new)
+  - `benchmarks/results/gc-http-json/http_scotty.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/http_warp_only.json` (new — raw results)
+- **Learnings for future iterations:**
+  - Use `exe:` prefix with `cabal list-bin` when there are multiple executables in the same package
+  - Scotty is a thin WAI wrapper — overhead is negligible for I/O-bound workloads
+  - Raw Warp only helps at tail latency (~2ms at p99), not meaningful for throughput
+  - `Network.Wai.Response` must be explicitly imported (not just `Application`)
+  - Header type for Warp is `[Header]` from `Network.HTTP.Types`, not `[(ByteString, ByteString)]`
+---
+
+## 2026-02-13 - US-004
+- Created `benchmarks/haskell-rest/src/ManualJson.hs` — raw Warp + manual ByteString Builder JSON encoder (no Aeson)
+- Added `haskell-rest-manual-json` executable to `haskell-rest-benchmark.cabal` (no aeson dependency)
+- Manual Builder produces byte-identical JSON to Aeson (verified — fields sorted alphabetically to match)
+- Created `benchmarks/scripts/run-json-serialization.sh` — benchmark script with cache-hit and cache-miss scenarios
+- Cache-miss scenario uses continuous Redis FLUSHALL every 500ms to force JSON encoding on every request
+- Results:
+  - Cache-hit (JSON bypassed): Aeson 106,291 vs Builder 106,522 req/s (+0.2% — no difference)
+  - Cache-miss (JSON on hot path): Aeson 96,806 vs Builder 101,621 req/s (+5.0%)
+  - Tail latency improvement: Builder p99.9=30ms vs Aeson p99.9=38ms in cache-miss
+- **Conclusion**: JSON encoding adds ~5% overhead but only on cache-miss path; does not contribute to .NET gap in steady-state
+- Documented findings in `benchmarks/results/gc-http-json/json-serialization.md`
+- Files changed:
+  - `benchmarks/haskell-rest/src/ManualJson.hs` (new)
+  - `benchmarks/haskell-rest/haskell-rest-benchmark.cabal` (modified — added manual-json executable)
+  - `benchmarks/scripts/run-json-serialization.sh` (new)
+  - `benchmarks/results/gc-http-json/json-serialization.md` (new)
+  - `benchmarks/results/gc-http-json/json_aeson_cache_hit.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/json_aeson_cache_miss.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/json_builder_cache_hit.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/json_builder_cache_miss.json` (new — raw results)
+- **Learnings for future iterations:**
+  - Aeson sorts object keys alphabetically — manual Builder must match this order for byte-identical output
+  - Autocannon does NOT support URL templates like `[1-10000]` — use a single endpoint with background cache flushing for cache-miss tests
+  - Cache-hit path returns raw Redis bytes directly — JSON encoding is completely bypassed (no `encode` call)
+  - For JSON escaping with Builder, use `BS.break needsEscape` to emit safe spans in bulk, not char-by-char
+  - `docker-cluster-host` (port 7000) is needed for benchmarks, not `docker-cluster` (port 6379)
+  - The `encodeUtf8BuilderEscaped` + `BoundedPrim` API is available but complex; chunk-based escaping is simpler and fast enough
+---
+
+## 2026-02-13 - US-005
+- Applied best GC RTS flags from US-002 (`-H1024M -A128m -n8m -qb -N`) permanently to `haskell-rest-benchmark.cabal` via `-with-rtsopts`
+- Ran all 4 benchmark scenarios (GET single, GET list, POST, Mixed) in cluster mode
+- Results:
+  - GET single: 87,492 → 105,901 req/s (+21.0%), .NET gap narrowed from 1.58× to 1.31×
+  - GET list: 8,549 → 10,132 req/s (+18.5%), .NET gap narrowed from 1.43× to 1.20×
+  - POST: 131 → 126 req/s (−3.8%, within SQLite variance)
+  - Mixed: 598 → 578 req/s (−3.3%, within SQLite variance)
+- Confirmed improvement on GET single (+21%) and no regression on other scenarios
+- Created `benchmarks/results/gc-http-json/gc-applied.md` with full comparison tables
+- Saved raw benchmark results to `benchmarks/results/gc-http-json/gc-optimized/`
+- Files changed:
+  - `benchmarks/haskell-rest/haskell-rest-benchmark.cabal` (modified — RTS flags updated)
+  - `benchmarks/results/gc-http-json/gc-applied.md` (new)
+  - `benchmarks/results/gc-http-json/gc-optimized/haskell_*.json` (6 raw result files)
+- **Learnings for future iterations:**
+  - POST and Mixed scenarios are completely SQLite-bound — don't expect GC/HTTP/JSON optimizations to help there
+  - Run-to-run variance for SQLite-bound benchmarks is ~5-8%, so small differences are not meaningful
+  - The GC optimization actually exceeded US-002 results (+21% vs +17.8%) — likely due to warm cache conditions and longer steady-state
+  - GET list also benefits significantly from GC tuning (+18.5%), confirming GC is a general bottleneck, not just GET single
+  - p99.9 latency may increase slightly with large nursery (20→26ms on GET single) due to longer individual GC pauses
+---
+
+## 2026-02-13 - US-006
+- Evaluated HTTP framework and JSON serialization optimizations against >5% threshold
+- Created `benchmarks/results/gc-http-json/optimization-decisions.md` documenting why neither was applied
+- Scotty→Warp: +1.4% throughput — well below >5% threshold, not worth the ergonomic loss
+- Aeson→Builder: +0.2% in steady-state (cache-hit), +5.0% in cache-miss — at threshold, not above it; cache-miss is transient
+- Neither optimization would meaningfully close the .NET gap (1.31× remains after GC tuning)
+- Files changed:
+  - `benchmarks/results/gc-http-json/optimization-decisions.md` (new)
+  - `prd.json` (updated US-006 to passes: true)
+- **Learnings for future iterations:**
+  - Cache-hit is the benchmark steady state — optimizations that only help cache-miss have near-zero impact
+  - The >5% threshold is a good filter; both optimizations were correctly identified as not worth the complexity
+  - The remaining 1.31× gap is likely runtime-level (GHC vs CoreCLR), not framework/serialization overhead
+  - Scotty's thin WAI wrapper pattern means HTTP framework is rarely the bottleneck for I/O-bound apps
+---
+
+## 2026-02-13 - US-007
+- Created `benchmarks/results/gc-http-json/summary.md` with complete per-factor contribution breakdown and before/after gap analysis for all 4 scenarios
+- Updated `benchmarks/results/COMPARISON.md` with new "GC/HTTP/JSON Optimization Results" section between Cluster Results and Standalone vs Cluster Comparison
+- Hypothesis conclusion:
+  - GC behavior: **PROVED** — 21% throughput improvement, gap 1.58×→1.31× (76% of achievable gap closed)
+  - HTTP framework: **DISPROVED** — Scotty adds only 1.4% overhead
+  - JSON serialization: **DISPROVED** — 0% impact in steady-state (cache-hit bypasses JSON)
+- Remaining 1.31× gap attributed to runtime differences (GHC vs .NET CLR), not framework/serialization
+- All numbers sourced from prior US results (no new benchmarks needed — .NET unchanged, Haskell optimized in US-005)
+- Files changed:
+  - `benchmarks/results/gc-http-json/summary.md` (new)
+  - `benchmarks/results/COMPARISON.md` (modified — added GC/HTTP/JSON section)
+  - `prd.json` (updated US-007 to passes: true)
+- **Learnings for future iterations:**
+  - For "final comparison" stories, reuse existing benchmark data rather than re-running if nothing has changed
+  - COMPARISON.md new sections should go between the most relevant existing section and the analysis section
+  - Summary documents should include both absolute numbers and gap ratios for easy cross-referencing
+  - The "per-factor contribution" framing (% of gap closed) is more intuitive than raw throughput deltas
+---

@@ -5,7 +5,8 @@ module Main where
 
 import           Client                     (Client (receive, send),
                                              TLSClient (..), serve)
-import           ClusterCommandClient       (ClusterCommandClient,
+import           ClusterCommandClient       (ClusterClient (..),
+                                             ClusterCommandClient,
                                              closeClusterClient,
                                              runClusterCommandClient)
 import           ClusterFiller              (fillClusterWithData)
@@ -25,19 +26,35 @@ import qualified Control.Monad.State        as State
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
+import           Data.IORef                 (IORef, atomicModifyIORef',
+                                             newIORef, readIORef)
 import           Data.Maybe                 (fromMaybe, isNothing)
+import           Data.Time.Clock            (diffUTCTime, getCurrentTime)
 import           Data.Word                  (Word64, Word8)
 import           Filler                     (fillCacheWithData,
                                              fillCacheWithDataMB,
                                              initRandomNoise)
+import           MultiplexPool              (MultiplexPool,
+                                             createMultiplexPool,
+                                             closeMultiplexPool, submitToNode,
+                                             submitToNodeAsync, waitSlotResult)
+import           Connector                  (Connector)
+import           Cluster                    (ClusterNode (..),
+                                             ClusterTopology (..),
+                                             NodeRole (..),
+                                             calculateSlot, findNodeAddressForSlot)
 import           Numeric                    (showHex)
+import           Control.Concurrent.STM     (readTVarIO)
+import qualified Data.Map.Strict            as Map
 import           AppConfig                  (RunState (..),
                                              defaultRunState,
                                              runCommandsAgainstPlaintextHost,
                                              runCommandsAgainstTLSHost)
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient,
-                                             RedisCommands (flushAll),
+                                             RedisCommands (..),
+                                             encodeSetBuilder,
+                                             encodeGetBuilder,
                                              parseWith)
 import           Resp                       (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
@@ -47,7 +64,8 @@ import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
 import           System.Console.Readline    (addHistory, readline)
 import           System.Environment         (getArgs, getExecutablePath)
 import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hIsTerminalDevice, isEOF, stdin)
+import           System.IO                  (hIsTerminalDevice, hPutStrLn,
+                                             isEOF, stderr, stdin)
 import           System.Process             (ProcessHandle, createProcess, proc,
                                              waitForProcess)
 import           System.Random              (randomIO)
@@ -86,7 +104,22 @@ options =
           then ioError (userError "Pipeline batch size must be at least 1")
           else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)",
     Option ['P'] ["processes"] (ReqArg (\arg opt -> return $ opt {numProcesses = Just . read $ arg}) "NUM") "Number of parallel processes to spawn (default: 1)",
-    Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)"
+    Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)",
+    Option [] ["mux"] (NoArg (\opt -> return $ opt {useMux = True})) "Enable multiplexed pipelining for cluster commands",
+    Option [] ["operation"] (ReqArg (\arg opt -> do
+        if arg `elem` ["set", "get", "mixed"]
+          then return $ opt {benchOperation = arg}
+          else ioError (userError "Operation must be 'set', 'get', or 'mixed'")) "OP") "Benchmark operation: set, get, or mixed (default: set)",
+    Option [] ["duration"] (ReqArg (\arg opt -> do
+        let dur = read arg :: Int
+        if dur < 1
+          then ioError (userError "Duration must be at least 1 second")
+          else return $ opt {benchDuration = dur}) "SECS") "Benchmark duration in seconds (default: 30)",
+    Option [] ["mux-count"] (ReqArg (\arg opt -> do
+        let cnt = read arg :: Int
+        if cnt < 1
+          then ioError (userError "Mux count must be at least 1")
+          else return $ opt {muxCount = cnt}) "NUM") "Number of multiplexers per cluster node (default: 1)"
   ]
 
 handleArgs :: [String] -> IO (RunState, [String])
@@ -106,6 +139,7 @@ main = do
       putStrLn "  cli     Interactive Redis command-line interface"
       putStrLn "  fill    Fill Redis cache with random data for testing"
       putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
+      putStrLn "  bench   Benchmark cluster throughput (requires -c flag)"
       putStrLn ""
       putStrLn "Cluster Mode:"
       putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
@@ -119,8 +153,8 @@ main = do
       exitFailure
     (mode : args) -> do
       (state, _) <- handleArgs args
-      unless (mode `elem` ["cli", "fill", "tunn"]) $ do
-        printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', and 'tunn'\n" mode
+      unless (mode `elem` ["cli", "fill", "tunn", "bench"]) $ do
+        printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', 'tunn', and 'bench'\n" mode
         putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
         exitFailure
       when (null (host state)) $ do
@@ -130,6 +164,7 @@ main = do
       when (mode == "tunn") $ tunn state
       when (mode == "cli") $ cli state
       when (mode == "fill") $ fill state
+      when (mode == "bench") $ bench state
 
 
 tunn :: RunState -> IO ()
@@ -470,4 +505,143 @@ encodeBytesForCLI bs = concatMap encodeByte (BS.unpack bs)
       | isPrintableAscii b = [toEnum (fromEnum b)]
       | otherwise          = "\\x" ++ padHex b
     padHex b = let h = showHex b "" in if length h == 1 then '0':h else h
+
+-- | Generate a benchmark key of the specified size
+benchKey :: Int -> Int -> BS.ByteString
+benchKey size idx =
+  let prefix = BS8.pack $ "bench:" ++ show idx ++ ":"
+      padLen = max 0 (size - BS.length prefix)
+  in BS.take size (prefix <> BS.replicate padLen 0x30) -- pad with '0'
+
+-- | Generate a benchmark value of the specified size
+benchValue :: Int -> Int -> BS.ByteString
+benchValue size idx =
+  let prefix = BS8.pack $ "val:" ++ show idx ++ ":"
+      padLen = max 0 (size - BS.length prefix)
+  in BS.take size (prefix <> BS.replicate padLen 0x58) -- pad with 'X'
+
+-- | Benchmark mode: measures throughput of SET, GET, or mixed workloads
+-- through the MultiplexPool/submitToNode code path.
+bench :: RunState -> IO ()
+bench state = do
+  unless (useCluster state) $ do
+    putStrLn "Bench mode requires -c (cluster) flag"
+    exitFailure
+
+  let op = benchOperation state
+      duration = benchDuration state
+      nConns = fromMaybe 16 (numConnections state)
+      kSize = keySize state
+      vSize = valueSize state
+      muxCnt = muxCount state
+
+  hPutStrLn stderr $ "Bench: operation=" ++ op ++ " duration=" ++ show duration
+    ++ "s key-size=" ++ show kSize ++ " value-size=" ++ show vSize
+    ++ " connections=" ++ show nConns ++ " mux-count=" ++ show muxCnt
+
+  if useTLS state
+    then benchWithConnector state (createTLSConnector state) op duration nConns kSize vSize
+    else benchWithConnector state (createPlaintextConnector state) op duration nConns kSize vSize
+
+-- | Run the benchmark with a specific connector type
+benchWithConnector :: (Client client) => RunState -> Connector client -> String -> Int -> Int -> Int -> Int -> IO ()
+benchWithConnector state connector op duration nConns kSize vSize = do
+  clusterClient <- createClusterClientFromState state connector
+  muxPool <- createMultiplexPool connector (muxCount state)
+
+  -- Pre-populate keys for GET and mixed workloads
+  when (op `elem` ["get", "mixed"]) $ do
+    hPutStrLn stderr "Pre-populating keys for GET workload..."
+    let numKeys = 100000
+    benchPrePopulate muxPool clusterClient numKeys kSize vSize
+    hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
+
+  -- Run the benchmark
+  opsCounter <- newIORef (0 :: Int)
+  startTime <- getCurrentTime
+
+  mvars <- mapM (\tid -> do
+    mvar <- newEmptyMVar
+    _ <- forkIO $ do
+      benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
+      putMVar mvar ()
+    return mvar
+    ) [0 .. nConns - 1]
+
+  mapM_ takeMVar mvars
+  endTime <- getCurrentTime
+
+  totalOps <- readIORef opsCounter
+  let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
+      opsPerSec = fromIntegral totalOps / elapsed
+
+  -- Output JSON to stdout
+  putStrLn $ "{\"operation\":\"" ++ op
+    ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
+    ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
+    ++ ",\"total_ops\":" ++ show totalOps
+    ++ "}"
+
+  closeMultiplexPool muxPool
+  closeClusterClient clusterClient
+  exitSuccess
+
+-- | Pre-populate keys for GET workload
+benchPrePopulate :: (Client client) => MultiplexPool client -> ClusterClient client -> Int -> Int -> Int -> IO ()
+benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
+  topology <- readTVarIO (clusterTopology clusterClient)
+  let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  case masters of
+    [] -> error "No master nodes found"
+    _  -> mapM_ (\i -> do
+      let key = benchKey kSize i
+          val = benchValue vSize i
+          cmd = encodeSetBuilder key val
+          !slot = calculateSlot key
+      case findNodeAddressForSlot topology slot of
+        Just addr -> void $ submitToNode muxPool addr cmd
+        Nothing -> return ()
+      ) [0 .. numKeys - 1]
+
+-- | Worker thread that submits commands for the specified duration
+-- Uses async pipelining: fires a batch of commands, then waits for all results.
+benchWorker :: (Client client) => MultiplexPool client -> ClusterClient client -> String -> Int -> Int -> Int -> Int -> IORef Int -> IO ()
+benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
+  topology <- readTVarIO (clusterTopology clusterClient)
+  let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+      batchSize = 64 -- fire 64 commands per batch before waiting
+  startTime <- getCurrentTime
+  go topology masters startTime (tid * 10000000) batchSize
+  where
+    go topology masters startTime !counter !batchSz = do
+      now <- getCurrentTime
+      let elapsed = realToFrac (diffUTCTime now startTime) :: Double
+      when (elapsed < fromIntegral duration) $ do
+        -- Fire a batch of commands asynchronously
+        slots <- fireBatch topology counter batchSz []
+        let completedCount = length slots
+        -- Wait for all results
+        mapM_ (\slot -> waitSlotResult muxPool slot) slots
+        -- Count completed ops
+        atomicModifyIORef' opsCounter (\n -> (n + completedCount, ()))
+        go topology masters startTime (counter + batchSz) batchSz
+
+    fireBatch _ _ 0 acc = return (reverse acc)
+    fireBatch topology !counter !remaining acc = do
+      let key = benchKey kSize counter
+          val = benchValue vSize counter
+          !slot = calculateSlot key
+      case findNodeAddressForSlot topology slot of
+        Just addr -> do
+          let cmd = case op of
+                "set" -> encodeSetBuilder key val
+                "get" -> encodeGetBuilder key
+                "mixed" ->
+                  if counter `mod` 5 == 0
+                    then encodeSetBuilder key val
+                    else encodeGetBuilder key
+                _ -> encodeSetBuilder key val
+          s <- submitToNodeAsync muxPool addr cmd
+          fireBatch topology (counter + 1) (remaining - 1) (s : acc)
+        Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
 
