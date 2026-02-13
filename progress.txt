@@ -346,3 +346,20 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - The `try` pattern is essential for submit-after-destroy tests — it proves the operation completed (didn't hang)
   - Standalone Redis container (`redis-standalone.local:6390`) is sufficient for all MultiplexPool tests since MultiplexPool is node-agnostic
 ---
+
+## 2026-02-13 - US-008 (multiplexer-default branch)
+- Updated README.md with Library Usage section containing standalone multiplexed client and cluster client usage examples
+- Updated README.md project structure to mention multiplexer and standalone client in lib/cluster/
+- Updated README.md unit test section to include MultiplexerSpec and MultiplexPoolSpec
+- Added CHANGELOG.md v0.6.0.0 entry documenting: multiplexing-by-default, standalone client, new test suites
+- Verified all cabal exports (exposed-modules, reexported-modules) and Redis.hs re-exports already in place from US-001/US-002
+- Typecheck passes, all unit tests pass (RespSpec, ClusterSpec, ClusterCommandSpec, MultiplexerSpec, MultiplexPoolSpec)
+- Files changed:
+  - `README.md` (modified — added Library Usage section, updated project structure, updated test commands)
+  - `CHANGELOG.md` (modified — added v0.6.0.0 entry)
+  - `prd.json` (updated US-008 to passes: true)
+- **Learnings for future iterations:**
+  - Documentation stories are quick when prior stories already set up exports/re-exports correctly
+  - CHANGELOG version bump should reflect the scope of all stories in the PRD, not just the doc story
+  - README examples should match the haddock examples in the module source for consistency
+---
