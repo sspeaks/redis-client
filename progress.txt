@@ -223,3 +223,47 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - `wrapInRay` from RedisCommandClient encodes args as RESP array (same as `encode` for commands)
   - Keep the old `createStandaloneClient` API when adding config-based creation for backwards compatibility
 ---
+
+## 2026-02-13 - US-003 (multiplexer-default branch)
+- Flipped cluster multiplexing default from False to True
+- Updated `clusterUseMultiplexing` haddock comment in ClusterCommandClient.hs to document `(default: True)`
+- Changed `defaultTestConfig` in `test/LibraryE2E/Utils.hs` to `clusterUseMultiplexing = True`
+- Existing opt-out (`clusterUseMultiplexing = False`) in ClusterE2E/TopologyRefresh.hs and ClusterCommandSpec.hs left untouched — verified they still work
+- All 19 LibraryE2E tests pass with multiplexing enabled by default
+- All unit tests (ClusterCommandSpec, ClusterSpec, RespSpec, FillHelpersSpec) pass
+- Files changed:
+  - `lib/cluster/ClusterCommandClient.hs` (modified — haddock comment updated)
+  - `test/LibraryE2E/Utils.hs` (modified — defaultTestConfig flipped to True)
+- **Learnings for future iterations:**
+  - ClusterConfig has no programmatic default (no Default instance) — the "default" is documented in haddock and set in test helpers
+  - Tests in ClusterE2E/ create their own ClusterConfig directly (don't use defaultTestConfig) — they are independent of the flip
+  - The `make test` target runs the full LibraryE2E suite against a Docker cluster — takes ~4 minutes
+  - Multiplexing-enabled tests exercise the MultiplexPool path (batched writes + response demux)
+---
+
+## 2026-02-13 - US-004 (multiplexer-default branch)
+- Created `test/MultiplexerSpec.hs` — 14 unit tests for Multiplexer internals using a MockClient
+- MockClient uses IORef-based send buffer and receive queue to simulate Redis connection without a live server
+- Tests cover all acceptance criteria:
+  - SlotPool: allocation returns valid slot, return-and-reuse works, striped distribution across cores
+  - ResponseSlot: write-then-read returns correct value, waitSlot blocks until filled (async submit)
+  - Command queue batching: multiple enqueued commands are drained together via concurrent threads
+  - Multiplexer lifecycle: create, submit, destroy, submit-after-destroy throws MultiplexerDead (both submitCommand and submitCommandPooled)
+  - isMultiplexerAlive: returns True when alive, False after destroy
+- Additional tests: sequential multi-command correctness, RespArray responses, RespError responses
+- Added `MultiplexerSpec` test suite to `hask-redis-mux.cabal`
+- All 14 tests pass (`cabal test MultiplexerSpec` in 0.10s)
+- All existing tests (RespSpec, ClusterSpec, ClusterCommandSpec, FillHelpersSpec) still pass
+- `nix-build` passes
+- Files changed:
+  - `test/MultiplexerSpec.hs` (new — 234 lines)
+  - `hask-redis-mux/hask-redis-mux.cabal` (modified — added MultiplexerSpec test suite)
+- **Learnings for future iterations:**
+  - MockClient pattern: use IORef ByteString for sendBuf, IORef [ByteString] for recvQueue, with polling retry in receive
+  - Client typeclass methods have MonadIO m constraint — use liftIO when implementing, then extract IO helper for self-recursion
+  - GADTs with DataKinds need explicit LambdaCase pragma or case expression (not \case without pragma)
+  - RespInteger takes Integer not Int — use fromIntegral when bridging
+  - createMultiplexer takes `client 'Connected` + `IO ByteString` recv action — the recv action is what the reader thread polls
+  - The Multiplexer module exports SlotPool, ResponseSlot, createSlotPool etc. — all needed for pooled submit tests
+  - Feed all N responses as a single ByteString to test batching — the reader loop handles partial parsing
+---
