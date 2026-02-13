@@ -218,6 +218,33 @@ Started: Thu Feb 12 10:38:42 PST 2026
   - At 236k ops/sec, redirection detection is not a measurable bottleneck — this optimization is more about code quality and ensuring zero overhead in the common case
 ---
 
+## 2026-02-12T21:20:00Z - US-009
+- Re-ran full REST cluster benchmark (4 scenarios × 2 targets) after all optimizations (US-001 through US-008)
+- Compared to pre-optimization baseline to measure real REST API throughput improvement
+- Updated COMPARISON.md with new cluster results
+- Results (Haskell cluster REST, before → after):
+  - GET single: 35,202 → 87,492 req/s (**2.49× improvement**, +149%)
+  - GET list: 8,255 → 8,549 req/s (1.04×, +4% — SQLite-bound, as expected)
+  - POST: 122 → 131 req/s (1.07×, +7% — SQLite-bound)
+  - Mixed: 562 → 598 req/s (1.06×, +6%)
+- .NET/.Haskell gap comparison (old → new):
+  - GET single: 3.46× → **1.58×** (cluster overhead eliminated)
+  - GET list: 1.42× → 1.43× (unchanged)
+  - POST: 1.50× → 1.42× (slightly improved)
+  - Mixed: 1.25× → 1.29× (within variance)
+- Haskell standalone → cluster overhead: was −63%, now **−9%** (comparable to .NET's −4% to +4%)
+- Latency improvements (GET single):
+  - p50: 28ms → 11ms (2.5× faster)
+  - p99: 31ms → 16ms (1.9× faster)
+  - p99.9: now 20ms (previously not measured)
+- **Learnings for future iterations:**
+  - The 6.89× direct benchmark improvement (238k vs 35k ops/sec) translates to 2.49× in REST context — HTTP framework, JSON serialization, and SQLite overhead dampen the raw Redis improvement
+  - GET single is the purest Redis-bound scenario and shows the largest improvement; SQLite-bound scenarios (POST, GET list) are unchanged as expected
+  - The remaining 1.58× gap vs .NET in cluster GET single is consistent with the standalone gap (1.39×), confirming cluster-specific overhead has been eliminated
+  - The gap is now dominated by: HTTP framework (Kestrel vs Scotty/warp), JSON serialization (System.Text.Json vs aeson), and runtime GC differences (background GC vs stop-the-world)
+  - No further cluster-specific optimizations needed — improvements must come from HTTP layer, serialization, or GC tuning
+---
+
 ## 2026-02-12T21:00:00Z - US-008
 - Ran full cluster benchmark suite (GET, SET, Mixed) with optimized code
 - Captured profiling data for final profile comparison

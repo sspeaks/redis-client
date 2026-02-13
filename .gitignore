@@ -19,3 +19,5 @@ result-*
 __pycache__
 *.pyc
 *.pyonode_modules
+node_modules
+bench.db
