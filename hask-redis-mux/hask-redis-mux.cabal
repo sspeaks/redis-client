@@ -28,6 +28,11 @@ common defaults
     ghc-options:      -Wall
     build-depends:    base >=4.19 && <5
 
+common test-defaults
+    import:           defaults
+    build-depends:    hspec
+    hs-source-dirs:   ../test
+
 -- ---------------------------------------------------------------------------
 -- Libraries
 -- ---------------------------------------------------------------------------
@@ -100,3 +105,35 @@ library redis
                     , cluster
                     , redis-command-client
                     , resp
+
+-- ---------------------------------------------------------------------------
+-- Test suites
+-- ---------------------------------------------------------------------------
+
+test-suite RespSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    build-depends:    attoparsec
+                    , bytestring
+                    , containers
+                    , redis-command-client
+                    , resp
+
+test-suite ClusterSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterSpec.hs
+    build-depends:    bytestring
+                    , cluster
+                    , resp
+                    , time
+
+test-suite ClusterCommandSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterCommandSpec.hs
+    build-depends:    bytestring
+                    , cluster
+                    , resp
+                    , time
