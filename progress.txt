@@ -267,3 +267,26 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - The Multiplexer module exports SlotPool, ResponseSlot, createSlotPool etc. — all needed for pooled submit tests
   - Feed all N responses as a single ByteString to test batching — the reader loop handles partial parsing
 ---
+
+## 2026-02-13 - US-005 (multiplexer-default branch)
+- Verified and committed MultiplexPoolSpec — 8 unit tests for MultiplexPool internals using MockClient pattern
+- Tests cover all acceptance criteria:
+  - Round-robin: sequential submits to same node rotate across multiplexers (count=3, verifies wrap-around)
+  - Single multiplexer: skips round-robin counter optimization path
+  - Lazy creation: node muxes created on first access (0 connections at pool creation), reuses on second access
+  - Multi-node routing: different nodes get independent multiplexer groups (verified with 1-mux and 2-mux configs, 3 nodes)
+  - Pool closure: destroys all multiplexers, empty pool close is idempotent
+- Fixed `createNodeMuxes` counter initialization from 0 to 1 — because `getMultiplexer` returns the first mux directly on initial creation (bypassing counter), the counter must start at 1 so the next round-robin pick goes to mux index 1
+- All 8 MultiplexPoolSpec tests pass in 0.59s
+- All existing tests (RespSpec 46, MultiplexerSpec 14, ClusterSpec 14, ClusterCommandSpec 40, FillHelpersSpec 27) still pass
+- Files changed:
+  - `test/MultiplexPoolSpec.hs` (new — 386 lines)
+  - `hask-redis-mux/hask-redis-mux.cabal` (modified — added MultiplexPoolSpec test suite)
+  - `lib/cluster/MultiplexPool.hs` (modified — counter init 0→1)
+- **Learnings for future iterations:**
+  - MockConnector pattern: use `IORef [(NodeAddress, ByteString -> IO ())]` to track per-node addRecv functions created by the connector
+  - `feedAll` helper: feeds response bytes to all multiplexers for a given node — useful for multi-mux tests
+  - Counter starts at 1 not 0 because getMultiplexer returns V.head on initial creation without incrementing
+  - Pool closure clears the map but doesn't prevent re-creation — submitting after close creates fresh muxes
+  - Test timing: 50ms delay is enough for lazy mux creation, 10ms for subsequent submits
+---
