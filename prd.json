@@ -131,7 +131,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "The split is purely build-system-level so there should be zero runtime impact. This story verifies that assumption. Start Redis with docker if not running locally. Always use -f flag when running fill mode in docker."
     }
   ]

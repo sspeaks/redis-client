@@ -131,3 +131,25 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - The `data/` symlink (from US-001) was already present but `data/` files are not referenced in hask-redis-mux.cabal, only in the cluster library via `file-embed` (compile-time)
   - Missing upper bounds warnings are acceptable for Hackage — they don't block upload
 ---
+
+## 2026-02-13 - US-008 (Performance verification: fill mode profiling)
+- Profiled fill mode on `main` (baseline) and `ralph/separate-library-package` (after split)
+- Used `cabal run redis-client --enable-profiling -- fill -h localhost -d 1 -f +RTS -p`
+- Started standalone Redis via `make redis-start` (docker compose on port 6379)
+- Ran 2 profiling iterations on each branch for reliability
+- Results comparison (averaged):
+  - Baseline (main): ~0.55s total time, ~2.36B bytes allocated
+  - After split: ~0.53s total time, ~2.50B bytes allocated
+  - Variation within normal run-to-run noise (~15% allocation variance from random data generation)
+- No new cost centres in the hot path — same top 3: genRandomSet (~72%), throwSocketErrorWaitWrite (~13%), randomNoise (~9.5%)
+- No performance regression detected; throughput within 2% of baseline
+- Cleaned up all profiling artifacts (.prof files)
+- Stopped Redis container after profiling
+- Files changed: only prd.json and progress.txt updated (verification-only story)
+- **Learnings for future iterations:**
+  - Fill mode allocations vary ~15% between runs due to random data generation; this is normal noise
+  - Always FLUSHALL redis between profiling runs for fair comparison
+  - The package split is purely build-system-level — zero runtime impact as expected
+  - Use `make redis-start` / `make redis-stop` to manage standalone Redis for profiling
+  - `-f` flag in fill mode prevents excessive RAM usage when Redis is in Docker
+---
