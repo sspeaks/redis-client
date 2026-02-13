@@ -112,6 +112,7 @@ executable LibraryE2E
                     , LibraryE2E.ConcurrencyTests
                     , LibraryE2E.ApiTests
                     , LibraryE2E.StandaloneTests
+                    , LibraryE2E.StandaloneConcurrencyTests
     build-depends:    async
                     , bytestring
                     , containers
