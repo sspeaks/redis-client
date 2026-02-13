@@ -174,3 +174,12 @@ test-suite MultiplexerSpec
                     , client
                     , cluster
                     , resp
+
+test-suite MultiplexPoolSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          MultiplexPoolSpec.hs
+    build-depends:    bytestring
+                    , client
+                    , cluster
+                    , resp

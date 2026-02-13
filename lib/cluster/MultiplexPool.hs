@@ -166,7 +166,7 @@ createNodeMuxes connector addr count = do
   muxes <- V.generateM count $ \_ -> do
     conn <- connector addr
     createMultiplexer conn (receive conn)
-  counter <- newIORef 0
+  counter <- newIORef 1
   return $ NodeMuxes muxes counter
 
 -- | Replace a dead multiplexer for a node.
