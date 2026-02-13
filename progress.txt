@@ -15,6 +15,8 @@ Started: Fri Feb 13 09:17:00 PST 2026
 - Both `default.nix` and `flake.nix` overlay must build `hask-redis-mux` before `redis-client` using `callCabal2nixWithOptions --subpath`
 - `shell.nix` delegates to `default.nix` — no separate updates needed
 - Use `cabal build all` / `cabal test all` in Makefile targets to cover both packages in the multi-package setup
+- For Hackage readiness: `../` paths in cabal files fail `cabal check` and `cabal sdist` — use symlinks in the subdirectory to make paths local
+- `hask-redis-mux/` has symlinks: `lib -> ../lib`, `test -> ../test`, `LICENSE -> ../LICENSE`, `CHANGELOG.md -> ../CHANGELOG.md`, `data -> ../data`
 
 ---
 
@@ -107,4 +109,25 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - `cabal test all` runs test suites from all packages — simpler than listing individual test suite names
   - The `-fe2e` flag only applies to redis-client's e2e flag; hask-redis-mux has no flags, so it's harmless in `build all -fe2e`
   - `rm -rf dist-newstyle` in the clean target is the most reliable way to clean all packages since they share the same build directory
+---
+
+## 2026-02-13 - US-007 (Validate Hackage readiness of hask-redis-mux)
+- Fixed all `../` relative paths in `hask-redis-mux/hask-redis-mux.cabal` to use local paths
+- Created symlinks in `hask-redis-mux/`: `lib -> ../lib`, `test -> ../test`, `LICENSE -> ../LICENSE`, `CHANGELOG.md -> ../CHANGELOG.md`
+- `cabal check` now passes with no errors (only missing-upper-bounds warnings, which are acceptable)
+- `cabal sdist` produces valid tarball at `dist-newstyle/sdist/hask-redis-mux-0.1.0.0.tar.gz`
+- Tarball contains: all lib/ source modules, lib/crc16/crc16.c, test/ sources, LICENSE, CHANGELOG.md, hask-redis-mux.cabal
+- No CLI-only files (app/, data/) included in tarball
+- `cabal build all`, `cabal test all`, and `nix-build` all verified passing
+- Files changed:
+  - `hask-redis-mux/hask-redis-mux.cabal` (all `../` paths replaced with local paths)
+  - `hask-redis-mux/lib` (new symlink)
+  - `hask-redis-mux/test` (new symlink)
+  - `hask-redis-mux/LICENSE` (new symlink)
+  - `hask-redis-mux/CHANGELOG.md` (new symlink)
+- **Learnings for future iterations:**
+  - `cabal check` and `cabal sdist` reject `../` relative paths — they must be within the package source tree
+  - Symlinks are followed by `cabal sdist`, so placing symlinks in the package subdirectory makes paths local while keeping a single copy of source files
+  - The `data/` symlink (from US-001) was already present but `data/` files are not referenced in hask-redis-mux.cabal, only in the cluster library via `file-embed` (compile-time)
+  - Missing upper bounds warnings are acceptable for Hackage — they don't block upload
 ---

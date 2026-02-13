@@ -115,7 +115,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Run nix-shell --run 'cabal check' and nix-shell --run 'cabal sdist' in the project root."
     },
     {
