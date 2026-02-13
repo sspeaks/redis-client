@@ -107,8 +107,8 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Created summary.md with per-factor contribution breakdown and before/after gap for all 4 scenarios. Updated COMPARISON.md with GC/HTTP/JSON optimization section. Hypothesis: GC proved (1.58×→1.31×, +21% throughput), HTTP framework disproved (1.4%), JSON serialization disproved (0% steady-state). Remaining 1.31× gap is runtime-level (GHC vs CLR)."
     }
   ]
 }

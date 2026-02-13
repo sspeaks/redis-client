@@ -154,3 +154,23 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - The remaining 1.31× gap is likely runtime-level (GHC vs CoreCLR), not framework/serialization overhead
   - Scotty's thin WAI wrapper pattern means HTTP framework is rarely the bottleneck for I/O-bound apps
 ---
+
+## 2026-02-13 - US-007
+- Created `benchmarks/results/gc-http-json/summary.md` with complete per-factor contribution breakdown and before/after gap analysis for all 4 scenarios
+- Updated `benchmarks/results/COMPARISON.md` with new "GC/HTTP/JSON Optimization Results" section between Cluster Results and Standalone vs Cluster Comparison
+- Hypothesis conclusion:
+  - GC behavior: **PROVED** — 21% throughput improvement, gap 1.58×→1.31× (76% of achievable gap closed)
+  - HTTP framework: **DISPROVED** — Scotty adds only 1.4% overhead
+  - JSON serialization: **DISPROVED** — 0% impact in steady-state (cache-hit bypasses JSON)
+- Remaining 1.31× gap attributed to runtime differences (GHC vs .NET CLR), not framework/serialization
+- All numbers sourced from prior US results (no new benchmarks needed — .NET unchanged, Haskell optimized in US-005)
+- Files changed:
+  - `benchmarks/results/gc-http-json/summary.md` (new)
+  - `benchmarks/results/COMPARISON.md` (modified — added GC/HTTP/JSON section)
+  - `prd.json` (updated US-007 to passes: true)
+- **Learnings for future iterations:**
+  - For "final comparison" stories, reuse existing benchmark data rather than re-running if nothing has changed
+  - COMPARISON.md new sections should go between the most relevant existing section and the analysis section
+  - Summary documents should include both absolute numbers and gap ratios for easy cross-referencing
+  - The "per-factor contribution" framing (% of gap closed) is more intuitive than raw throughput deltas
+---
