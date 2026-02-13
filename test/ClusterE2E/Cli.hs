@@ -100,9 +100,9 @@ spec = describe "Cluster CLI Mode" $ do
         key2 = "route:key2"
         key3 = "route:key3"
 
-    slot1 <- calculateSlot (BS8.pack key1)
-    slot2 <- calculateSlot (BS8.pack key2)
-    slot3 <- calculateSlot (BS8.pack key3)
+    let slot1 = calculateSlot (BS8.pack key1)
+        slot2 = calculateSlot (BS8.pack key2)
+        slot3 = calculateSlot (BS8.pack key3)
 
     bracket createTestClusterClient closeClusterClient $ \client -> do
       topology <- readTVarIO (clusterTopology client)

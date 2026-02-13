@@ -25,6 +25,9 @@ module Redis
   , module Cluster
   , module ClusterCommandClient
   , module ConnectionPool
+    -- * Multiplexing
+  , module Multiplexer
+  , module MultiplexPool
     -- * Connection Helpers
   , module Connector
     -- * ByteString (re-exported for convenience)
@@ -34,8 +37,10 @@ module Redis
 import Data.ByteString (ByteString)
 import Resp (RespData (..), Encodable (..), parseRespData, parseStrict)
 import Client (Client (..), PlainTextClient (..), TLSClient (..), ConnectionStatus (..))
-import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), showBS, parseWith, parseManyWith)
+import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), showBS, encodeCommand, encodeCommandBuilder, encodeSetBuilder, encodeGetBuilder, encodeBulkArg, parseWith, parseManyWith)
 import Cluster (NodeAddress (..), ClusterNode (..), SlotRange (..), ClusterTopology (..), NodeRole (..))
 import ClusterCommandClient (ClusterClient (..), ClusterConfig (..), ClusterError (..), ClusterCommandClient, createClusterClient, closeClusterClient, refreshTopology, runClusterCommandClient)
 import ConnectionPool (ConnectionPool (..), PoolConfig (..), withConnection, createPool, closePool)
+import Multiplexer (Multiplexer, MultiplexerException (..), createMultiplexer, submitCommand, destroyMultiplexer, isMultiplexerAlive)
+import MultiplexPool (MultiplexPool, createMultiplexPool, submitToNode, closeMultiplexPool)
 import Connector (Connector, connectPlaintext, connectTLS, clusterPlaintextConnector, clusterTLSConnector)

@@ -23,6 +23,11 @@ module RedisCommandClient
   , GeoSearchOption (..)
     -- * Helpers
   , wrapInRay
+  , encodeCommand
+  , encodeCommandBuilder
+  , encodeSetBuilder
+  , encodeGetBuilder
+  , encodeBulkArg
   , showBS
   , geoUnitKeyword
   , geoRadiusFlagToList
@@ -45,6 +50,7 @@ import Data.Attoparsec.ByteString.Char8 qualified as StrictParse
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy qualified as LBS
 import Data.Kind (Type)
 import Data.Typeable (Typeable)
 import Resp (Encodable (encode), RespData (..), parseRespData)
@@ -161,6 +167,44 @@ wrapInRay :: [ByteString] -> RespData
 wrapInRay inp =
   let !res = RespArray . map RespBulkString $ inp
    in res
+
+-- | Encode a Redis command (list of arguments) into a Builder for efficient batching.
+-- Used by the multiplexer to defer materialization until the writer batches commands.
+encodeCommandBuilder :: [ByteString] -> Builder.Builder
+encodeCommandBuilder args =
+  Builder.char8 '*' <> Builder.intDec (length args) <> Builder.byteString "\r\n" <>
+  foldMap encodeBulkArg args
+
+-- | Encode a single bulk string argument: $LEN\r\nDATA\r\n
+{-# INLINE encodeBulkArg #-}
+encodeBulkArg :: ByteString -> Builder.Builder
+encodeBulkArg a = Builder.char8 '$' <> Builder.intDec (BS8.length a) <> Builder.byteString "\r\n"
+               <> Builder.byteString a <> Builder.byteString "\r\n"
+
+-- | Pre-computed RESP preamble for SET: *3\r\n$3\r\nSET\r\n
+setPreamble :: Builder.Builder
+setPreamble = Builder.byteString "*3\r\n$3\r\nSET\r\n"
+{-# NOINLINE setPreamble #-}
+
+-- | Pre-computed RESP preamble for GET: *2\r\n$3\r\nGET\r\n
+getPreamble :: Builder.Builder
+getPreamble = Builder.byteString "*2\r\n$3\r\nGET\r\n"
+{-# NOINLINE getPreamble #-}
+
+-- | Specialized SET encoder: avoids list construction, length, and foldMap.
+{-# INLINE encodeSetBuilder #-}
+encodeSetBuilder :: ByteString -> ByteString -> Builder.Builder
+encodeSetBuilder key val = setPreamble <> encodeBulkArg key <> encodeBulkArg val
+
+-- | Specialized GET encoder: avoids list construction, length, and foldMap.
+{-# INLINE encodeGetBuilder #-}
+encodeGetBuilder :: ByteString -> Builder.Builder
+encodeGetBuilder key = getPreamble <> encodeBulkArg key
+
+-- | Encode a Redis command (list of arguments) into its RESP wire format as a strict ByteString.
+-- Used by the multiplexer to pre-encode commands before queuing.
+encodeCommand :: [ByteString] -> ByteString
+encodeCommand args = LBS.toStrict $ Builder.toLazyByteString $ encodeCommandBuilder args
 
 -- | Send a command and parse the response.
 executeCommand :: (Client client) => [ByteString] -> RedisCommandClient client RespData

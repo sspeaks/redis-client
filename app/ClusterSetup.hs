@@ -77,6 +77,7 @@ createClusterClientFromState state connector = do
         , clusterMaxRetries = 3
         , clusterRetryDelay = 100000  -- 100ms
         , clusterTopologyRefreshInterval = 600  -- 10 minutes
+        , clusterUseMultiplexing = useMux state
         }
   createClusterClient clusterCfg connector
 

@@ -16,7 +16,6 @@ module ConnectionPool
     PoolConfig (..),
     createPool,
     withConnection,
-    getOrCreateConnection,
     closePool,
   )
 where
@@ -29,7 +28,6 @@ import           Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
 import           Control.Exception      (SomeException, catch, throwIO, try,
                                           toException)
 import           Control.Monad          (forM_)
-import           Control.Monad.IO.Class (MonadIO (..))
 import           Data.Map.Strict        (Map)
 import qualified Data.Map.Strict        as Map
 
@@ -200,38 +198,6 @@ discardConnection pool addr conn connector = do
             let m' = Map.adjust (\np -> np { totalConns = totalConns np - 1 }) addr m
             return (m', ())
           putMVar waiter (Left e)
-
--- | Get an existing idle connection or create a new one.
--- Unlike 'withConnection', the returned connection is not exclusively checked out—
--- prefer 'withConnection' for thread-safe usage.
--- Connection creation happens outside the MVar lock to prevent deadlocks.
-getOrCreateConnection ::
-  (Client client, MonadIO m) =>
-  ConnectionPool client ->
-  NodeAddress ->
-  Connector client ->
-  m (client 'Connected)
-getOrCreateConnection pool addr connector = liftIO $ do
-  maybeConn <- modifyMVar (poolConnections pool) $ \m -> do
-    let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
-    case availableConns nodePool of
-      (conn : rest) -> do
-        let updated = nodePool { availableConns = rest }
-        return (Map.insert addr updated m, Just conn)
-      [] -> do
-        let updated = nodePool { totalConns = totalConns nodePool + 1 }
-        return (Map.insert addr updated m, Nothing)
-  case maybeConn of
-    Just conn -> return conn
-    Nothing -> do
-      connResult <- try (connector addr)
-      case connResult of
-        Right conn -> return conn
-        Left (e :: SomeException) -> do
-          modifyMVar (poolConnections pool) $ \m -> do
-            let m' = Map.adjust (\np -> np { totalConns = totalConns np - 1 }) addr m
-            return (m', ())
-          throwIO e
 
 -- | Close all connections in the pool and wake any blocked waiters.
 -- Exceptions during close are caught and ignored.

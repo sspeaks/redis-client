@@ -55,6 +55,7 @@ module ClusterCommandClient
     -- * Internal (exported for testing)
     RedirectionInfo (..),
     parseRedirectionError,
+    detectRedirection,
   )
 where
 
@@ -63,12 +64,15 @@ import           Cluster                     (ClusterNode (..),
                                               ClusterTopology (..),
                                               NodeAddress (..), NodeRole (..),
                                               calculateSlot, findNodeForSlot,
+                                              findNodeAddressForSlot,
                                               parseClusterSlots)
 import           Connector                   (Connector)
 import           ConnectionPool              (ConnectionPool, PoolConfig (..),
                                               closePool, createPool,
-                                              getOrCreateConnection,
                                               withConnection)
+import           MultiplexPool               (MultiplexPool,
+                                              createMultiplexPool, submitToNode,
+                                              closeMultiplexPool)
 import           Control.Concurrent          (threadDelay)
 import           Control.Concurrent.MVar     (MVar, newMVar, tryTakeMVar,
                                               putMVar)
@@ -80,15 +84,22 @@ import           Control.Monad               (when)
 import           Control.Monad.IO.Class      (MonadIO (..))
 import qualified Control.Monad.State         as State
 import           Data.ByteString             (ByteString)
+import qualified Data.ByteString             as BS
+import qualified Data.ByteString.Builder     as Builder
 import qualified Data.ByteString.Char8       as BS8
 import qualified Data.Map.Strict             as Map
 import           Data.Time.Clock             (NominalDiffTime, diffUTCTime, getCurrentTime)
 import           Data.Word                   (Word16)
 import           RedisCommandClient          (ClientState (..),
                                               RedisCommandClient (..),
-                                              RedisCommands (..), parseWith,
-                                              runRedisCommandClient)
-import           Resp                        (RespData (..))
+                                              RedisCommands (..), encodeCommand,
+                                              encodeCommandBuilder,
+                                              parseWith, runRedisCommandClient,
+                                              showBS, wrapInRay,
+                                              geoUnitKeyword, geoRadiusFlagToList,
+                                              geoSearchFromToList, geoSearchByToList,
+                                              geoSearchOptionToList)
+import           Resp                        (Encodable (..), RespData (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError
@@ -117,17 +128,20 @@ data ClusterConfig = ClusterConfig
   , clusterMaxRetries              :: Int -- ^ Maximum retry attempts on MOVED\/ASK\/transient errors (default: 3).
   , clusterRetryDelay              :: Int -- ^ Initial retry delay in microseconds; doubled on each retry (default: 100000 = 100ms).
   , clusterTopologyRefreshInterval :: Int -- ^ Seconds between automatic background topology refreshes (default: 600 = 10 min).
+  , clusterUseMultiplexing         :: Bool -- ^ Enable multiplexed pipelining (default: False). When True, commands share a single multiplexed connection per node via batched writes and response demultiplexing.
   }
   deriving (Show)
 
 -- | A cluster client that manages topology discovery and a per-node connection pool.
 -- Created via 'createClusterClient' and closed with 'closeClusterClient'.
+-- When multiplexing is enabled, also holds a 'MultiplexPool' for pipelined command execution.
 data ClusterClient client = ClusterClient
   { clusterTopology       :: TVar ClusterTopology,
     clusterConnectionPool :: ConnectionPool client,
     clusterConfig         :: ClusterConfig,
     clusterConnector      :: Connector client,   -- ^ Connector factory used for all connections
     clusterRefreshLock    :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
+  , clusterMultiplexPool  :: Maybe (MultiplexPool client) -- ^ Multiplexer pool (when multiplexing is enabled)
   }
 
 -- | Monad for executing Redis commands on a cluster
@@ -212,11 +226,18 @@ createClusterClient config connector = do
     Right initialTopology -> do
       topology <- newTVarIO initialTopology
       refreshLock <- newMVar ()
-      return $ ClusterClient topology pool config connector refreshLock
+      muxPool <- if clusterUseMultiplexing config
+        then Just <$> createMultiplexPool connector 1
+        else return Nothing
+      return $ ClusterClient topology pool config connector refreshLock muxPool
 
 -- | Close all pooled connections across every node.
 closeClusterClient :: (Client client) => ClusterClient client -> IO ()
-closeClusterClient client = closePool (clusterConnectionPool client)
+closeClusterClient client = do
+  closePool (clusterConnectionPool client)
+  case clusterMultiplexPool client of
+    Just muxPool -> closeMultiplexPool muxPool
+    Nothing      -> return ()
 
 -- | Refresh cluster topology by querying CLUSTER SLOTS.
 -- Uses a lock to prevent thundering herd: if another thread is already
@@ -260,14 +281,28 @@ refreshTopologyIfStale client = do
   when (timeSinceUpdate >= refreshInterval) $ do
     refreshTopology client
 
--- | Detect MOVED or ASK errors from RespData
+-- | Detect MOVED or ASK errors from RespData.
+-- Common case (no redirect) is a constructor check plus at most a single byte
+-- comparison, with zero allocation.
+{-# INLINE detectRedirection #-}
 detectRedirection :: RespData -> Maybe (Either RedirectionInfo RedirectionInfo)
-detectRedirection (RespError msg) =
-  case parseRedirectionError "MOVED" msg of
-       Just redir -> Just (Left redir)  -- Left for MOVED
-       Nothing -> case parseRedirectionError "ASK" msg of
-         Just redir -> Just (Right redir)  -- Right for ASK
-         Nothing -> Nothing
+detectRedirection (RespError msg)
+  | BS.length msg >= 6  -- shortest redirect: "ASK x y" needs >= 7 chars
+  , let w = BS.index msg 0
+  = if w == 0x4D  -- 'M'
+    then if BS.isPrefixOf "MOVED " msg
+         then case parseMovedAsk (BS.drop 6 msg) of
+                Just redir -> Just (Left redir)
+                Nothing    -> Nothing
+         else Nothing
+    else if w == 0x41  -- 'A'
+    then if BS.isPrefixOf "ASK " msg
+         then case parseMovedAsk (BS.drop 4 msg) of
+                Just redir -> Just (Right redir)
+                Nothing    -> Nothing
+         else Nothing
+    else Nothing
+  | otherwise = Nothing
 detectRedirection _ = Nothing
 
 -- | Low-level one-shot command execution with explicit routing key.
@@ -287,7 +322,7 @@ executeClusterCommand client key action = do
   refreshTopologyIfStale client
   
   let connector = clusterConnector client
-  slot <- calculateSlot key
+      !slot = calculateSlot key
   withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ do
     executeOnSlot client slot action connector
 
@@ -402,34 +437,37 @@ withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay
             Left err -> return $ Left err
             Right value -> return $ Right value
 
--- | Parse redirection error messages
--- Format: "MOVED 3999 127.0.0.1:6381" or "ASK 3999 127.0.0.1:6381"
-parseRedirectionError :: ByteString -> ByteString -> Maybe RedirectionInfo
-parseRedirectionError errorType msg =
-  case BS8.words msg of
-    (prefix : slotStr : hostPort : _)
-      | prefix == errorType ->
-          case BS8.readInt slotStr of
-            Just (slot, rest) | BS8.null rest ->
-              case BS8.break (== ':') hostPort of
-                (host, portPart) | not (BS8.null portPart) ->
-                  case BS8.readInt (BS8.tail portPart) of
-                    Just (port, rest') | BS8.null rest' ->
-                      Just $ RedirectionInfo (fromIntegral slot) (BS8.unpack host) port
-                    _ -> Nothing
-                _ -> Nothing
-            _ -> Nothing
+-- | Parse the payload after "MOVED " or "ASK " prefix.
+-- Input format: "3999 127.0.0.1:6381" (slot, space, host:port)
+-- Avoids BS8.words allocation by using break/drop directly.
+{-# INLINE parseMovedAsk #-}
+parseMovedAsk :: ByteString -> Maybe RedirectionInfo
+parseMovedAsk rest =
+  case BS8.readInt rest of
+    Just (slot, afterSlot)
+      | not (BS8.null afterSlot)
+      , BS8.head afterSlot == ' '
+      -> let hostPort = BS8.tail afterSlot
+         in case BS8.break (== ':') hostPort of
+              (host, portPart)
+                | not (BS8.null portPart)
+                -> case BS8.readInt (BS8.tail portPart) of
+                     Just (port, rest')
+                       | BS8.null rest'
+                       -> Just $ RedirectionInfo (fromIntegral slot) (BS8.unpack host) port
+                     _ -> Nothing
+              _ -> Nothing
     _ -> Nothing
 
--- | Internal helper to execute a keyed command within ClusterCommandClient monad
-executeKeyedCommand ::
-  (Client client) =>
-  ByteString ->
-  RedisCommandClient client RespData ->
-  ClusterCommandClient client (Either ClusterError RespData)
-executeKeyedCommand key action = do
-  client <- State.get
-  liftIO $ executeClusterCommand client key action
+-- | Parse redirection error messages (backward-compatible wrapper).
+-- Format: "MOVED 3999 127.0.0.1:6381" or "ASK 3999 127.0.0.1:6381"
+parseRedirectionError :: ByteString -> ByteString -> Maybe RedirectionInfo
+parseRedirectionError errorType msg
+  | BS.isPrefixOf errorType msg
+  , BS.length msg > BS.length errorType
+  , BS.index msg (BS.length errorType) == 0x20  -- ' '
+  = parseMovedAsk (BS.drop (BS.length errorType + 1) msg)
+  | otherwise = Nothing
 
 -- | Internal helper to execute a keyless command within ClusterCommandClient monad
 executeKeylessCommand ::
@@ -445,10 +483,15 @@ unwrapClusterResult :: (Client client) => Either ClusterError a -> ClusterComman
 unwrapClusterResult (Right a)  = pure a
 unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
 
--- | Execute a keyed command and unwrap the result
-executeKeyed :: (Client client) => ByteString -> RedisCommandClient client RespData -> ClusterCommandClient client RespData
-executeKeyed key action = do
-  result <- executeKeyedCommand key action
+-- | Execute a keyed command and unwrap the result.
+-- When multiplexing is enabled, uses the multiplexer pool for pipelined execution.
+-- Falls back to the connection pool path otherwise.
+executeKeyed :: (Client client) => ByteString -> [ByteString] -> ClusterCommandClient client RespData
+executeKeyed key cmdArgs = do
+  client <- State.get
+  result <- liftIO $ case clusterMultiplexPool client of
+    Just muxPool -> executeClusterCommandMux client muxPool key cmdArgs
+    Nothing      -> executeClusterCommand client key (executeCommandFromArgs cmdArgs)
   unwrapClusterResult result
 
 -- | Execute a keyless command and unwrap the result
@@ -457,61 +500,135 @@ executeKeyless action = do
   result <- executeKeylessCommand action
   unwrapClusterResult result
 
+-- | Build a RedisCommandClient action from raw command args.
+executeCommandFromArgs :: (Client client) => [ByteString] -> RedisCommandClient client RespData
+executeCommandFromArgs args = do
+  ClientState !conn _ <- State.get
+  liftIO $ send conn (Builder.toLazyByteString $ encode $ wrapInRay args)
+  parseWith (receive conn)
+
+-- | Execute a keyed command via the multiplexer pool.
+-- Pre-encodes the command to a Builder, routes by slot, and handles MOVED/ASK redirection.
+executeClusterCommandMux ::
+  (Client client) =>
+  ClusterClient client ->
+  MultiplexPool client ->
+  ByteString ->           -- key for routing
+  [ByteString] ->         -- command args
+  IO (Either ClusterError RespData)
+executeClusterCommandMux client muxPool key cmdArgs = do
+  refreshTopologyIfStale client
+  let cmdBuilder = encodeCommandBuilder cmdArgs
+      !slot = calculateSlot key
+  withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ do
+    executeOnSlotMux client muxPool slot cmdBuilder
+
+-- | Execute a pre-encoded command via multiplexer on the node for a given slot.
+-- Uses findNodeAddressForSlot for O(1) direct address lookup (no Map needed).
+executeOnSlotMux ::
+  (Client client) =>
+  ClusterClient client ->
+  MultiplexPool client ->
+  Word16 ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeOnSlotMux client muxPool slot cmdBuilder = do
+  topology <- readTVarIO (clusterTopology client)
+  case findNodeAddressForSlot topology slot of
+    Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
+    Just addr -> do
+      result <- try $ submitToNode muxPool addr cmdBuilder
+      case result of
+        Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
+        Right respData -> case detectRedirection respData of
+          Just (Left (RedirectionInfo s host port)) ->
+            return $ Left $ MovedError s (NodeAddress host port)
+          Just (Right (RedirectionInfo s host port)) ->
+            return $ Left $ AskError s (NodeAddress host port)
+          Nothing -> return $ Right respData
+
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
   auth username password = executeKeyless (RedisCommandClient.auth username password)
   ping = executeKeyless RedisCommandClient.ping
-  set k v = executeKeyed k (RedisCommandClient.set k v)
-  get k = executeKeyed k (RedisCommandClient.get k)
+  set k v = executeKeyed k ["SET", k, v]
+  get k = executeKeyed k ["GET", k]
   mget keys = case keys of
     []    -> executeKeyless (RedisCommandClient.mget [])
-    (k:_) -> executeKeyed k (RedisCommandClient.mget keys)
-  setnx k v = executeKeyed k (RedisCommandClient.setnx k v)
-  decr k = executeKeyed k (RedisCommandClient.decr k)
-  psetex k ms v = executeKeyed k (RedisCommandClient.psetex k ms v)
+    (k:_) -> executeKeyed k ("MGET" : keys)
+  setnx k v = executeKeyed k ["SETNX", k, v]
+  decr k = executeKeyed k ["DECR", k]
+  psetex k ms v = executeKeyed k ["PSETEX", k, showBS ms, v]
   bulkSet kvs = case kvs of
     []         -> executeKeyless (RedisCommandClient.bulkSet [])
-    ((k, _):_) -> executeKeyed k (RedisCommandClient.bulkSet kvs)
+    ((k, _):_) -> executeKeyed k (["MSET"] <> concatMap (\(k', v') -> [k', v']) kvs)
   flushAll = executeKeyless RedisCommandClient.flushAll
   dbsize = executeKeyless RedisCommandClient.dbsize
   del keys = case keys of
     []    -> executeKeyless (RedisCommandClient.del [])
-    (k:_) -> executeKeyed k (RedisCommandClient.del keys)
+    (k:_) -> executeKeyed k ("DEL" : keys)
   exists keys = case keys of
     []    -> executeKeyless (RedisCommandClient.exists [])
-    (k:_) -> executeKeyed k (RedisCommandClient.exists keys)
-  incr k = executeKeyed k (RedisCommandClient.incr k)
-  hset k f v = executeKeyed k (RedisCommandClient.hset k f v)
-  hget k f = executeKeyed k (RedisCommandClient.hget k f)
-  hmget k fs = executeKeyed k (RedisCommandClient.hmget k fs)
-  hexists k f = executeKeyed k (RedisCommandClient.hexists k f)
-  lpush k vs = executeKeyed k (RedisCommandClient.lpush k vs)
-  lrange k start stop = executeKeyed k (RedisCommandClient.lrange k start stop)
-  expire k secs = executeKeyed k (RedisCommandClient.expire k secs)
-  ttl k = executeKeyed k (RedisCommandClient.ttl k)
-  rpush k vs = executeKeyed k (RedisCommandClient.rpush k vs)
-  lpop k = executeKeyed k (RedisCommandClient.lpop k)
-  rpop k = executeKeyed k (RedisCommandClient.rpop k)
-  sadd k vs = executeKeyed k (RedisCommandClient.sadd k vs)
-  smembers k = executeKeyed k (RedisCommandClient.smembers k)
-  scard k = executeKeyed k (RedisCommandClient.scard k)
-  sismember k v = executeKeyed k (RedisCommandClient.sismember k v)
-  hdel k fs = executeKeyed k (RedisCommandClient.hdel k fs)
-  hkeys k = executeKeyed k (RedisCommandClient.hkeys k)
-  hvals k = executeKeyed k (RedisCommandClient.hvals k)
-  llen k = executeKeyed k (RedisCommandClient.llen k)
-  lindex k idx = executeKeyed k (RedisCommandClient.lindex k idx)
+    (k:_) -> executeKeyed k ("EXISTS" : keys)
+  incr k = executeKeyed k ["INCR", k]
+  hset k f v = executeKeyed k ["HSET", k, f, v]
+  hget k f = executeKeyed k ["HGET", k, f]
+  hmget k fs = executeKeyed k ("HMGET" : k : fs)
+  hexists k f = executeKeyed k ["HEXISTS", k, f]
+  lpush k vs = executeKeyed k ("LPUSH" : k : vs)
+  lrange k start stop = executeKeyed k ["LRANGE", k, showBS start, showBS stop]
+  expire k secs = executeKeyed k ["EXPIRE", k, showBS secs]
+  ttl k = executeKeyed k ["TTL", k]
+  rpush k vs = executeKeyed k ("RPUSH" : k : vs)
+  lpop k = executeKeyed k ["LPOP", k]
+  rpop k = executeKeyed k ["RPOP", k]
+  sadd k vs = executeKeyed k ("SADD" : k : vs)
+  smembers k = executeKeyed k ["SMEMBERS", k]
+  scard k = executeKeyed k ["SCARD", k]
+  sismember k v = executeKeyed k ["SISMEMBER", k, v]
+  hdel k fs = executeKeyed k ("HDEL" : k : fs)
+  hkeys k = executeKeyed k ["HKEYS", k]
+  hvals k = executeKeyed k ["HVALS", k]
+  llen k = executeKeyed k ["LLEN", k]
+  lindex k idx = executeKeyed k ["LINDEX", k, showBS idx]
   clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
   clientReply val = executeKeyless (RedisCommandClient.clientReply val)
-  zadd k scores = executeKeyed k (RedisCommandClient.zadd k scores)
-  zrange k start stop withScores = executeKeyed k (RedisCommandClient.zrange k start stop withScores)
-  geoadd k members = executeKeyed k (RedisCommandClient.geoadd k members)
-  geodist k m1 m2 unit = executeKeyed k (RedisCommandClient.geodist k m1 m2 unit)
-  geohash k members = executeKeyed k (RedisCommandClient.geohash k members)
-  geopos k members = executeKeyed k (RedisCommandClient.geopos k members)
-  georadius k lon lat radius unit flags = executeKeyed k (RedisCommandClient.georadius k lon lat radius unit flags)
-  georadiusRo k lon lat radius unit flags = executeKeyed k (RedisCommandClient.georadiusRo k lon lat radius unit flags)
-  georadiusByMember k member radius unit flags = executeKeyed k (RedisCommandClient.georadiusByMember k member radius unit flags)
-  georadiusByMemberRo k member radius unit flags = executeKeyed k (RedisCommandClient.georadiusByMemberRo k member radius unit flags)
-  geosearch k from by opts = executeKeyed k (RedisCommandClient.geosearch k from by opts)
-  geosearchstore dest src from by opts storeDist = executeKeyed dest (RedisCommandClient.geosearchstore dest src from by opts storeDist)
+  zadd k members =
+    let payload = concatMap (\(score, member) -> [showBS score, member]) members
+    in executeKeyed k ("ZADD" : k : payload)
+  zrange k start stop withScores =
+    let base = ["ZRANGE", k, showBS start, showBS stop]
+        command = if withScores then base ++ ["WITHSCORES"] else base
+    in executeKeyed k command
+  geoadd k entries =
+    let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
+    in executeKeyed k ("GEOADD" : k : payload)
+  geodist k m1 m2 unit =
+    let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
+    in executeKeyed k (["GEODIST", k, m1, m2] ++ unitPart)
+  geohash k members = executeKeyed k ("GEOHASH" : k : members)
+  geopos k members = executeKeyed k ("GEOPOS" : k : members)
+  georadius k lon lat radius unit flags =
+    let base = ["GEORADIUS", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
+    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+  georadiusRo k lon lat radius unit flags =
+    let base = ["GEORADIUS_RO", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
+    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+  georadiusByMember k member radius unit flags =
+    let base = ["GEORADIUSBYMEMBER", k, member, showBS radius, geoUnitKeyword unit]
+    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+  georadiusByMemberRo k member radius unit flags =
+    let base = ["GEORADIUSBYMEMBER_RO", k, member, showBS radius, geoUnitKeyword unit]
+    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+  geosearch k fromSpec bySpec options =
+    executeKeyed k (["GEOSEARCH", k]
+      ++ geoSearchFromToList fromSpec
+      ++ geoSearchByToList bySpec
+      ++ concatMap geoSearchOptionToList options)
+  geosearchstore dest src fromSpec bySpec options storeDist =
+    let base = ["GEOSEARCHSTORE", dest, src]
+            ++ geoSearchFromToList fromSpec
+            ++ geoSearchByToList bySpec
+            ++ concatMap geoSearchOptionToList options
+        command = if storeDist then base ++ ["STOREDIST"] else base
+    in executeKeyed dest command
   clusterSlots = executeKeyless RedisCommandClient.clusterSlots
