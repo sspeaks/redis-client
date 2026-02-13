@@ -1,279 +1,55 @@
 # Ralph Progress Log
-Started: Thu Feb 12 10:38:42 PST 2026
+Started: Thu Feb 12 17:50:58 PST 2026
 
 ## Codebase Patterns
-- Build with `nix-shell --run "cabal build"` (no network issues on this machine)
-- Profiling build: `nix-shell --run "cabal build --enable-profiling redis-client"`
-- INLINE pragmas on hot-path functions eliminate them from profiling cost centers entirely — GHC inlines them into callers, removing function call overhead and enabling further cross-function optimizations
-- Don't replace capability-based striping with a shared atomic counter — it causes severe contention regression (35k → 20k ops/sec). Thread-local striping via myThreadId + threadCapability is already optimal
-- Don't try to reuse recv buffers (ForeignPtr + memcpy) — the copy overhead exceeds allocation savings. Network.Socket.ByteString.recv + createAndTrim is already efficient
-- Don't bypass the `timeout` wrapper in `receive` for reader loops — the changed GHC RTS blocking behavior causes 40% regression
-- Don't increase recv buffer beyond 16KB — larger buffers allocate more per-call, overwhelming any benefit from fewer syscalls
-- Per-node round-robin counters are critical — a shared counter across all cluster nodes causes severe CAS contention (6.6x perf difference with 16 threads × 5 nodes)
-- `calculateSlot` is now pure (returns `Word16`, not `IO Word16`) — use `let !slot = calculateSlot key` not `slot <- calculateSlot key`
-- `findNodeAddressForSlot` gives O(1) slot→NodeAddress (no Map lookup) — use on hot paths instead of `findNodeForSlot` + `Map.lookup`
-- `crc16` is pure via `unsafeDupablePerformIO` + `unsafe` FFI — safe because C crc16 is deterministic with no side effects
-- Profiling run: `cabal run --enable-profiling redis-client -- bench ... +RTS -p -RTS`
-- Cluster bench command: `cabal run redis-client -- bench -c -h 127.0.0.1 -p 7000 --operation get --duration 10 --mux-count 4 -n 16`
-- Docker cluster with host networking: `cd docker-cluster-host && bash make_cluster.sh` (ports 7000-7004)
-- The bridge-mode cluster (docker-cluster/) uses container hostnames (redis1.local etc.) that aren't resolvable from the host - use docker-cluster-host/ instead
-- `.prof` files are in .gitignore - save profiling data in JSON/markdown instead
-- Typecheck everything: `nix-shell --run "cabal build -fe2e"`
-- Hot path flow: calculateSlot → findNodeForSlot → submitToNodeAsync → writerLoop → readerLoop
-- Top cost centers (baseline): createMultiplexer 40.3%, submitToNodeAsync 33.8%, socketWrite 8.3%
-- `sendChunks` uses `Network.Socket.ByteString.sendMany` (writev vectored I/O) for PlainTextClient — prefer over `send` with lazy ByteString for batched sends
-- Avoid `BS8.words` on hot paths — it allocates a list of ByteStrings. Use `BS8.readInt`/`BS8.break`/`BS8.head`/`BS8.tail` for direct zero-allocation parsing
-- Use `Builder.toLazyByteStringWith (untrimmedStrategy 32768 65536)` for network sends — reduces chunk count and avoids final-chunk trimming copy vs default `toLazyByteString`
-- E2E tests (cluster + library) run inside Docker containers via `make test` — don't run `cabal run ClusterEndToEnd` directly from host (redis1.local won't resolve)
+- Benchmarks use autocannon (Node.js) as the load generator; results are JSON files in `benchmarks/results/`
+- Cluster benchmarks use `benchmarks/scripts/run-cluster.sh` which starts 5-node Redis cluster, seeds DB, builds apps, and runs `run-benchmarks.sh`
+- Autocannon provides p97.5 (not p95) — use p97.5 as the closest available percentile
+- Haskell REST benchmark is in `benchmarks/haskell-rest/` with cabal file `haskell-rest-benchmark.cabal`
+- Current Haskell RTS flags: `-N` only (via `-with-rtsopts=-N`)
+- Best RTS flags for throughput: `-H1024M -A128m -n8m -qb -N` (match-main config, +17.8%)
+- Best RTS flags for tail latency: `--nonmoving-gc -N` (20ms p99.9)
+- Typecheck via `nix-shell --run "cabal build all"` since `cabal` is not on PATH outside nix-shell
+- Branch for this work: `ralph/gc-http-json-optimization` (created from main)
+- Use `benchmarks/scripts/run-gc-tuning.sh` to run GC tuning benchmarks (pass binary path as arg)
+- Autocannon latency keys in JSON: `p50`, `p97_5`, `p99`, `p99_9` (underscores, not dots)
 
 ---
 
-## 2026-02-12T18:43:00Z - US-001
-- Profiled baseline cluster GET single performance
-- Baseline: 34,671 ops/sec (non-profiled), 33,811 ops/sec (profiled)
-- .NET comparison: 121,726 req/s → 3.51x gap
-- Top 5 cost centers by time%:
-  1. createMultiplexer (Multiplexer) - 40.3% time, 24.8% alloc
-  2. submitToNodeAsync (MultiplexPool) - 33.8% time, 1.6% alloc
-  3. throwSocketErrorWaitWrite (Network.Socket.Internal) - 8.3% time, 0.2% alloc
-  4. submitCommandPooled (Multiplexer) - 1.8% time, 0.5% alloc
-  5. crc16 (Crc16) - 1.3% time, 2.1% alloc
+## 2026-02-13 - US-001
+- Captured pre-optimization baseline for all 4 REST benchmark scenarios in cluster mode
+- Created `benchmarks/results/gc-http-json/baseline.md` with throughput, latency (p50/p97.5/p99/p99.9), and status codes
+- Verified all numbers match COMPARISON.md exactly (0% variance)
+- Key baseline: GET single H=87,492 vs .NET=138,479 (1.58× gap), the primary target for optimization
+- Files changed: `benchmarks/results/gc-http-json/baseline.md` (new)
+- **Learnings for future iterations:**
+  - Existing cluster results in `benchmarks/results/cluster/` are from the same run documented in COMPARISON.md
+  - The 1.58× gap on GET single is the primary optimization target (purest HTTP→Redis→HTTP path)
+  - POST and Mixed are SQLite-bottlenecked — don't expect significant Redis/GC improvements there
+  - p99.9 tail latency gap is most severe for POST (3.7× worse), likely GC-related
+---
+
+## 2026-02-13 - US-002
+- Tested 5 GHC RTS flag combinations on GET single (cluster mode, 30s each)
+- Created `benchmarks/scripts/run-gc-tuning.sh` — reusable script for RTS flag benchmarking
+- Created `benchmarks/results/gc-http-json/gc-tuning.md` with comparison tables
+- Results:
+  - default (-N only): 88,081 req/s — baseline
+  - aggressive-nursery (-A64m -n4m -H512m -N): 101,845 req/s (+15.6%)
+  - **match-main (-H1024M -A128m -n8m -qb -N): 103,787 req/s (+17.8%)** — best throughput
+  - nonmoving-gc (--nonmoving-gc -N): 86,558 req/s (−1.7%) — best p99.9 (20ms)
+  - large-nursery-no-idle (-A128m -I0 -N): 102,558 req/s (+16.4%)
+- GC tuning closes .NET gap from 1.58× to 1.33× on GET single
 - Files changed:
-  - benchmarks/results/cluster/baseline-2026-02-12.json (new)
-  - benchmarks/results/cluster/baseline-analysis-2026-02-12.md (new)
+  - `benchmarks/scripts/run-gc-tuning.sh` (new)
+  - `benchmarks/results/gc-http-json/gc-tuning.md` (new)
+  - `benchmarks/results/gc-http-json/gc_*.json` (5 raw result files)
 - **Learnings for future iterations:**
-  - The createMultiplexer cost center captures ALL work in the multiplexer threads (writer+reader loops), not just creation
-  - submitToNodeAsync is the main hot path entry point for the benchmark's async pipelining
-  - recv allocations (33.5%) dominate memory - buffer reuse could help
-  - parseClusterSlots allocates heavily (16.9%) but is NOT on hot path (setup-only)
-  - benchKey generates 8% of alloc - could optimize key generation but it's benchmark harness, not library code
-  - Socket I/O (write 8.3% + read 1.9%) is ~10% combined - vectored I/O could reduce syscalls
----
-
-## 2026-02-12T18:54:00Z - US-002
-- Optimized cluster slot lookup hot path:
-  - Made `crc16` pure: `unsafeDupablePerformIO`, `unsafe` FFI ccall, bitwise AND (`.&. 0x3FFF`) instead of `mod (2^14)`
-  - Made `calculateSlot` pure (`ByteString -> Word16` instead of `ByteString -> IO Word16`)
-  - Added `topologyAddresses :: Vector NodeAddress` to `ClusterTopology` for direct O(1) slot→address lookup
-  - Added `findNodeAddressForSlot` with INLINE pragma — eliminates `Map.lookup nodeId (topologyNodes topology)` on hot path
-  - Updated `executeOnSlotMux` to use `findNodeAddressForSlot` (single vector index, no Map)
-  - Updated benchmark `fireBatch` and `benchPrePopulate` to use `findNodeAddressForSlot`
-- Files changed:
-  - lib/crc16/Crc16.hs (pure crc16 with unsafe FFI)
-  - lib/cluster/Cluster.hs (topologyAddresses field, findNodeAddressForSlot, pure calculateSlot)
-  - lib/cluster/ClusterCommandClient.hs (use findNodeAddressForSlot, pure calculateSlot)
-  - app/Main.hs (benchmark hot path uses findNodeAddressForSlot)
-  - test/ClusterSpec.hs (adapt to pure calculateSlot)
-  - test/ClusterE2E/Basic.hs (adapt to pure calculateSlot)
-  - test/ClusterE2E/Cli.hs (adapt to pure calculateSlot)
-- Performance results:
-  - Non-profiled: 36,404 ops/sec (baseline: 34,671 → +5.0%)
-  - Profiled: 35,435 ops/sec (baseline: 33,811 → +4.8%)
-  - crc16 fully inlined (was 1.3% time → 0%)
-  - extractHashTag: 0.3% time (negligible)
-  - topologyAddresses access: 0.0% time
-  - Map.lookup eliminated from hot path entirely
-- **Learnings for future iterations:**
-  - `unsafe` FFI ccall avoids GC safety overhead — use for short pure C functions
-  - `unsafeDupablePerformIO` is safe for deterministic no-side-effect FFI — avoids IO on hot path
-  - Adding a denormalized Vector field (topologyAddresses) alongside Map (topologyNodes) is a good pattern for O(1) hot-path access while keeping Map for admin/setup paths
-  - Bitwise AND (`.&. 0x3FFF`) is faster than `mod 16384` — compiler may or may not optimize power-of-2 mod
-  - The 5% improvement validates that slot lookup was measurable overhead, but the biggest gains remain in the multiplexer paths (createMultiplexer 41%, submitToNodeAsync 35%)
----
-
-## 2026-02-12T19:15:00Z - US-003
-- Reduced per-command allocation in submitCommand path by adding INLINE pragmas to all hot-path functions
-- Functions inlined: submitCommandPooled, acquireSlot, releaseSlot, commandEnqueue (Multiplexer.hs), submitToNode, submitToNodeAsync, waitSlotResult (MultiplexPool.hs)
-- All 7 functions eliminated from profiling cost centers (fully inlined into callers)
-- Files changed:
-  - lib/cluster/Multiplexer.hs (INLINE pragmas on submitCommandPooled, acquireSlot, releaseSlot, commandEnqueue)
-  - lib/cluster/MultiplexPool.hs (INLINE pragmas on submitToNode, submitToNodeAsync, waitSlotResult)
-- Performance results:
-  - Profiled: 35,969 ops/sec (baseline: 35,631 → +0.9%)
-  - Non-profiled: 37-38k ops/sec (baseline: 36,404 → +2-5%)
-  - submitCommandPooled: 1.7% time, 0.4% alloc → 0% (inlined)
-  - acquireSlot: 0.5% time, 0.3% alloc → 0% (inlined)
-  - releaseSlot: 0.1% time, 0.3% alloc → 0% (inlined)
-  - submitToNodeAsync: 35.5% time → inlined into benchWorker
-  - Total per-command overhead from submit path: 2.3% → 0% (function call overhead eliminated)
-- Also attempted: Replacing capability-based striping with atomic round-robin counter — caused severe regression (20k ops/sec) due to cross-core contention. Reverted.
-- **Learnings for future iterations:**
-  - INLINE pragmas are the most impactful low-effort optimization in this codebase — they eliminate function call overhead and enable GHC to optimize across function boundaries
-  - Capability-based striping (myThreadId + threadCapability) is already optimal for the SlotPool — don't try to "improve" it with shared counters
-  - The 35% time in submitToNodeAsync is dominated by MVar blocking (takeMVar on command queue signal), not by any allocatable overhead — the actual per-command allocations were already near-zero with SlotPool
-  - The submitCommandPooled path was already the default for all cluster commands (via submitToNode and submitToNodeAsync in MultiplexPool.hs)
-  - Non-pooled submitCommand is only exported for external consumers; it is NOT used in any cluster code path
----
-
-## 2026-02-12T19:35:00Z - US-004
-- Optimized MultiplexPool node selection by eliminating shared counter contention:
-  - Added `NodeMuxes` type bundling `Vector Multiplexer` + per-node `IORef Int` counter
-  - Replaced shared `poolCounter` (single IORef for all nodes) with per-node counters
-  - Added `INLINE` pragmas on `getMultiplexer` and `pickMux`
-  - Fast-path for single-mux nodes: `V.unsafeHead`, no atomic counter needed
-  - Used `V.unsafeIndex` instead of `V.!` (bounds already guaranteed by mod)
-- Files changed:
-  - lib/cluster/MultiplexPool.hs (NodeMuxes, per-node counters, INLINE getMultiplexer/pickMux)
-- Performance results:
-  - Profiled: 235,321 ops/sec (baseline: 35,725 → +6.6x improvement)
-  - Non-profiled: 238,893 ops/sec (baseline: 37-38k → +6.3x improvement)
-  - getMultiplexer/pickMux: fully inlined (0% time, not visible in profile)
-  - Profile now dominated by createMultiplexer (34.3%) and benchWorker (33.5%)
-  - Socket I/O is now 14% time (throwSocketErrorWaitWrite) — becoming the bottleneck
-- All 19 e2e tests pass, all 27 unit tests pass
-- **Learnings for future iterations:**
-  - Shared atomic counters across cluster nodes are a SEVERE contention bottleneck — per-node counters gave 6.6x improvement because 16 threads × 5 nodes were all CASing the same IORef
-  - `atomicModifyIORef'` allocates a closure per call; with high contention, CAS retries compound the overhead. Per-node counters reduce contention to at most (threads / nodes) concurrent CASes
-  - `V.unsafeHead` and `V.unsafeIndex` are safe when bounds are guaranteed (single mux case, mod arithmetic) and avoid bounds check overhead
-  - The `INLINE` pragma on `getMultiplexer` lets GHC inline the Map.lookup + pickMux directly into submitToNodeAsync, eliminating an indirect call
-  - After this optimization, socket I/O (write 14% + read 1.4%) is the primary remaining bottleneck
----
-
-## 2026-02-12T19:50:00Z - US-005
-- Optimized writer loop batching with vectored I/O and reduced Builder intermediate copies:
-  - Added `sendChunks` method to Client typeclass with default impl via `LBS.fromChunks`
-  - PlainTextClient overrides with `Network.Socket.ByteString.sendMany` (uses writev(2) vectored I/O)
-  - TLSClient uses default fallback (TLS doesn't support writev)
-  - Writer loop now uses `Builder.toLazyByteStringWith` with `untrimmedStrategy 32768 65536`:
-    - 32KB initial buffer (vs default 4KB) reduces chunk count
-    - 64KB growth factor reduces allocations for large batches
-    - `untrimmedStrategy` avoids copying/trimming the final chunk
-  - Chunks sent directly via `sendChunks` (writev) instead of `send` (sendAll over lazy BS)
-- Files changed:
-  - lib/client/Client.hs (sendChunks in Client typeclass, PlainTextClient sendMany override)
-  - lib/cluster/Multiplexer.hs (toLazyByteStringWith + untrimmedStrategy + sendChunks in writerLoop)
-- Performance results:
-  - Non-profiled: 239,109 ops/sec (baseline: 238,893 → stable, no regression)
-  - Profiled: 219,986 ops/sec (baseline: 235,321 → within run-to-run variance)
-  - `sendMany` visible in profile at 1.2% time, 0.5% alloc (vectored I/O working)
-  - `throwSocketErrorWaitWrite` at 14.4% (writev syscall, same as baseline)
-  - No new cost centers introduced
-- All 4 unit test suites pass (RespSpec, ClusterSpec, ClusterCommandSpec, FillHelpersSpec)
-- All 19 library e2e tests pass, all 19 cluster e2e tests pass
-- **Learnings for future iterations:**
-  - `Network.Socket.ByteString.sendMany` uses writev(2) for zero-copy vectored I/O — avoids copying chunks into a single buffer before the syscall
-  - `Builder.toLazyByteStringWith (untrimmedStrategy first growth)` is the optimal materialization for network sends — untrimmedStrategy avoids a final memcpy to trim the buffer, and larger initial/growth sizes reduce chunk count
-  - The `sendAll` from `Network.Socket.ByteString.Lazy` already calls `sendMany` internally on the lazy ByteString chunks, so the perf gain here is primarily from: (1) larger Builder buffers reducing chunk count, (2) eliminating the lazy ByteString wrapper overhead, (3) making vectored I/O explicit and type-safe
-  - Adding default methods to the Client typeclass is safe — all existing instances get the fallback without changes, and only PlainTextClient needs the override
-  - At 239k ops/sec, the writer loop is no longer a significant bottleneck — socket I/O (writev) at 14% is the dominant remaining cost
----
-
-## 2026-02-12T20:30:00Z - US-006
-- Optimized reader loop parsing with INLINE pragmas on queue operations and RESP parser:
-  - Added INLINE pragmas to `pendingEnqueueSeq`, `pendingDequeue`, `pendingDequeueUpTo` (PendingQueue operations)
-  - Added INLINE pragma to `failSlot` (error path)
-  - Increased batch dequeue size from 64 to 128 in `drainBuffer` for fewer queue operations
-  - Added INLINE pragmas to RESP parser hot path: `parseRespData`, `parseBulkString`, `parseSimpleString`, `parseError`, `parseInteger`
-  - `parseRespData` fully inlined into `createMultiplexer` — eliminated from profiling cost centers (was 3.2% inherited time, 2.5% alloc)
-- Files changed:
-  - lib/cluster/Multiplexer.hs (INLINE on queue operations, batch size 128, INLINE on failSlot)
-  - lib/resp/Resp.hs (INLINE on parseRespData, parseBulkString, parseSimpleString, parseError, parseInteger)
-- Performance results:
-  - Profiled: 217k ops/sec (baseline: 211k → +2.8% improvement)
-  - Non-profiled: 235k ops/sec (baseline: 234k → stable, no regression)
-  - parseRespData: 3.2% inherited time → 0% (fully inlined)
-  - pendingDequeue/pendingDequeueUpTo/pendingEnqueueSeq: fully inlined (0% overhead)
-  - recv: 5.6% alloc (unchanged — buffer allocation is per-syscall, not per-parse)
-  - throwSocketErrorWaitRead: 1.6% (unchanged)
-  - decimal (Attoparsec): 1.9% inherited (unchanged — internal to Attoparsec, cannot inline)
-- Also attempted:
-  - Pinned recv buffer (ForeignPtr + memcpy): caused 37% regression due to memcpy overhead. Reverted.
-  - Larger recv buffer (64KB): caused 45% regression due to 4x more alloc per recv. Reverted.
-  - mkRecvAction (bypass timeout wrapper): caused 40% regression — possibly due to different GHC RTS blocking behavior or lost specialization. Reverted.
-- All 27 unit tests + 19 cluster e2e tests + 19 library e2e tests pass
-- **Learnings for future iterations:**
-  - INLINE on Attoparsec parser combinators works well — GHC inlines the continuation-passing-style parser dispatch directly into call sites
-  - Don't try to reuse recv buffers via ForeignPtr + memcpy — the copy overhead exceeds the allocation savings. The `recv` + `createAndTrim` pattern in Network.Socket.ByteString is already efficient
-  - Don't increase recv buffer beyond 16KB — larger buffers allocate more per-call, overwhelming any benefit from fewer syscalls
-  - Don't bypass the `timeout` wrapper in `receive` for the reader loop — the changed blocking behavior causes significant regression (possibly GHC RTS scheduler interaction)
-  - At this point, socket I/O (write 14% + read 1.6%) dominates the profile. Further reader loop optimizations would need to change the fundamentals (e.g., io_uring, zero-copy recv)
-  - The batch dequeue size (128) is a good balance — it reduces queue contention without holding too many slots
----
-
-## 2026-02-12T20:47:00Z - US-007
-- Optimized redirection detection with byte-level fast path and zero-allocation parsing:
-  - Added `{-# INLINE detectRedirection #-}` to eliminate function call overhead on hot path
-  - First-byte check (`0x4D` for 'M', `0x41` for 'A') before `BS.isPrefixOf` — non-matching errors skip all parsing
-  - Length guard (`BS.length msg >= 6`) rejects short error messages immediately
-  - Replaced `parseRedirectionError` (used `BS8.words` — allocated list of ByteStrings) with `parseMovedAsk` using direct `BS8.readInt`/`BS8.break` — zero list allocation
-  - Kept `parseRedirectionError` as backward-compatible wrapper for tests
-  - Exported `detectRedirection` for direct unit testing
-  - Added 10 new `detectRedirection` tests covering: non-error responses, non-redirect errors, empty/short errors, MOVED/ASK detection, 'M'/'A'-prefix non-redirect errors
-  - Updated 2 edge case tests to reflect tighter parsing (extra whitespace, trailing data → Nothing, matching real Redis behavior)
-- Files changed:
-  - lib/cluster/ClusterCommandClient.hs (INLINE detectRedirection, byte-level checks, parseMovedAsk, parseRedirectionError wrapper, export detectRedirection)
-  - test/ClusterCommandSpec.hs (10 new detectRedirection tests, updated 2 edge case tests, added Resp import)
-- Performance results:
-  - Profiled: 223,593 ops/sec (baseline: 217k → +3%)
-  - Non-profiled: 235,899 ops/sec (baseline: 235k → stable, no regression)
-  - detectRedirection: fully inlined (0% time, 0% alloc — not visible in profile)
-  - No new cost centers introduced
-- All 127 unit tests pass (40 ClusterCommandSpec + 14 ClusterSpec + 46 RespSpec + 27 FillHelpersSpec)
-- All 120 e2e tests pass (63 cluster + 38 library lifecycle + 19 library resilience)
-- **Learnings for future iterations:**
-  - `detectRedirection` with INLINE is eliminated entirely from the profile — GHC inlines the constructor match + byte check directly into `executeOnSlotMux` and `executeOnNodeWithRedirectionDetection`
-  - `BS8.words` allocates a list of ByteStrings — avoid on hot paths. Use `BS8.readInt`/`BS8.break`/`BS8.head`/`BS8.tail` for direct parsing instead
-  - Single-byte checks (`BS.index msg 0`) before `BS.isPrefixOf` are redundant if `isPrefixOf` is already O(1) for the first byte, but they serve as documentation of the fast-path intent and allow the length check to short-circuit
-  - Real Redis MOVED/ASK messages are strictly formatted (exactly `"MOVED slot host:port"`) — tighter parsing that rejects extra whitespace or trailing data is more correct than the lenient `BS8.words` approach
-  - At 236k ops/sec, redirection detection is not a measurable bottleneck — this optimization is more about code quality and ensuring zero overhead in the common case
----
-
-## 2026-02-12T21:20:00Z - US-009
-- Re-ran full REST cluster benchmark (4 scenarios × 2 targets) after all optimizations (US-001 through US-008)
-- Compared to pre-optimization baseline to measure real REST API throughput improvement
-- Updated COMPARISON.md with new cluster results
-- Results (Haskell cluster REST, before → after):
-  - GET single: 35,202 → 87,492 req/s (**2.49× improvement**, +149%)
-  - GET list: 8,255 → 8,549 req/s (1.04×, +4% — SQLite-bound, as expected)
-  - POST: 122 → 131 req/s (1.07×, +7% — SQLite-bound)
-  - Mixed: 562 → 598 req/s (1.06×, +6%)
-- .NET/.Haskell gap comparison (old → new):
-  - GET single: 3.46× → **1.58×** (cluster overhead eliminated)
-  - GET list: 1.42× → 1.43× (unchanged)
-  - POST: 1.50× → 1.42× (slightly improved)
-  - Mixed: 1.25× → 1.29× (within variance)
-- Haskell standalone → cluster overhead: was −63%, now **−9%** (comparable to .NET's −4% to +4%)
-- Latency improvements (GET single):
-  - p50: 28ms → 11ms (2.5× faster)
-  - p99: 31ms → 16ms (1.9× faster)
-  - p99.9: now 20ms (previously not measured)
-- **Learnings for future iterations:**
-  - The 6.89× direct benchmark improvement (238k vs 35k ops/sec) translates to 2.49× in REST context — HTTP framework, JSON serialization, and SQLite overhead dampen the raw Redis improvement
-  - GET single is the purest Redis-bound scenario and shows the largest improvement; SQLite-bound scenarios (POST, GET list) are unchanged as expected
-  - The remaining 1.58× gap vs .NET in cluster GET single is consistent with the standalone gap (1.39×), confirming cluster-specific overhead has been eliminated
-  - The gap is now dominated by: HTTP framework (Kestrel vs Scotty/warp), JSON serialization (System.Text.Json vs aeson), and runtime GC differences (background GC vs stop-the-world)
-  - No further cluster-specific optimizations needed — improvements must come from HTTP layer, serialization, or GC tuning
----
-
-## 2026-02-12T21:00:00Z - US-008
-- Ran full cluster benchmark suite (GET, SET, Mixed) with optimized code
-- Captured profiling data for final profile comparison
-- Created final results JSON and analysis markdown
-- Files changed:
-  - benchmarks/results/cluster/final-2026-02-12.json (new)
-  - benchmarks/results/cluster/final-analysis-2026-02-12.md (new)
-- Final benchmark results (non-profiled, 10s, 16 connections, 4 mux, 5 nodes):
-  - GET: 238,867 ops/sec (baseline: 34,671 → **6.89x improvement**)
-  - SET: 204,260 ops/sec
-  - Mixed: 223,009 ops/sec
-- Final benchmark results (profiled):
-  - GET: 209,697 ops/sec (baseline: 33,811 → **6.20x improvement**)
-  - SET: 209,684 ops/sec
-  - Mixed: 210,218 ops/sec
-- Profile comparison (GET profiled):
-  - submitToNodeAsync: 33.8% → 0% (fully inlined into benchWorker)
-  - submitCommandPooled: 1.8% → 0% (fully inlined)
-  - crc16: 1.3% → 0% (pure + inlined)
-  - benchWorker: 0% → 28.9% (all library functions inlined here)
-  - Socket I/O: 10.2% → 15.3% (larger share since overhead removed)
-  - createMultiplexer: 40.3% → 38.1% (reduced overhead)
-- .NET REST comparison: 121,726 req/s (REST) vs 238,867 ops/sec (direct) — different measurement methods
-- All 147 tests pass (27 unit + 63 cluster e2e + 38 library lifecycle + 19 library resilience)
-- Typecheck passes
-- **Learnings for future iterations:**
-  - The 6.89x improvement was dominated by a single optimization: per-node round-robin counters (US-004) gave 6.6x alone by eliminating cross-node CAS contention
-  - The remaining optimizations (CRC16, INLINE pragmas, vectored I/O, parser inlining, redirection detection) contributed incremental 2-5% gains each
-  - After optimization, the profile is dominated by irreducible costs: socket I/O (15.3%), benchmark harness (28.9%), and multiplexer loop steady-state (38.1%)
-  - Further gains would require architectural changes: io_uring, zero-copy networking, or custom RESP parser bypassing Attoparsec
-  - Direct bench mode (238k ops/sec) and REST benchmark (35k req/s baseline) measure fundamentally different things — don't compare them directly
+  - Large nursery (-A128m+) is the single biggest throughput lever — reduces minor GC frequency
+  - `-qb` (disable parallel nursery GC) helps in high-throughput scenarios by reducing GC thread sync
+  - `-H1024M` (suggested heap) reduces major GC frequency — important for sustained load
+  - Nonmoving GC trades throughput for consistent tail latency — use only when p99.9 matters more than throughput
+  - Large nursery configs worsen p99.9 (28ms vs 21ms default) because individual GC pauses are longer
+  - The match-main config is the clear winner for throughput benchmarks
+  - Autocannon JSON latency fields use underscores: `p97_5`, `p99_9`
 ---

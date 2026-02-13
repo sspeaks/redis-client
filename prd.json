@@ -1,135 +1,114 @@
 {
-  "project": "redis-client Cluster Performance Optimization",
-  "branchName": "ralph/cluster-performance",
-  "description": "Optimize cluster mode performance to close the 3.46x throughput gap vs .NET in the REST benchmark GET single scenario (35k vs 121k req/s)",
+  "project": "redis-client GC/HTTP/JSON Gap Analysis",
+  "branchName": "ralph/gc-http-json-optimization",
+  "description": "Prove the hypothesis that GC, HTTP framework, and JSON serialization account for the remaining 1.58x throughput gap vs .NET, then apply optimizations to narrow it",
   "userStories": [
     {
       "id": "US-001",
-      "title": "Profile Baseline Cluster Performance",
-      "description": "As a developer, I want to capture a profiling baseline of the current cluster GET single path so that I can measure the impact of each subsequent optimization.",
+      "title": "Establish Pre-Optimization Baseline",
+      "description": "As a developer, I want to capture a fresh baseline of all 4 REST benchmark scenarios in cluster mode for both Haskell and .NET so that I have accurate before/after measurements.",
       "acceptanceCriteria": [
-        "Run REST cluster benchmark (GET single scenario) and record baseline req/s and latency",
-        "Run +RTS -p profiling on the benchmark harness to capture cost center breakdown",
-        "Save baseline results to benchmarks/results/cluster/ with a timestamped filename",
-        "Document the top 5 cost centers by time% in the cluster hot path",
+        "Run all 4 REST benchmark scenarios (GET single, GET list, POST, Mixed) in cluster mode for both Haskell and .NET",
+        "Record req/s and latency percentiles (p50, p95, p99, p99.9) for each scenario",
+        "Save results to benchmarks/results/gc-http-json/baseline.md",
+        "Verify results are consistent with previous COMPARISON.md numbers (within ~10% variance)",
         "Typecheck passes"
       ],
       "priority": 1,
       "passes": true,
-      "notes": "Baseline: 34,671 ops/sec (non-profiled), 33,811 ops/sec (profiled). Top cost centers: createMultiplexer 40.3%, submitToNodeAsync 33.8%, socketWrite 8.3%. Gap vs .NET: 3.51x."
+      "notes": "Baseline captured from existing cluster results (2026-02-12). All values match COMPARISON.md exactly."
     },
     {
       "id": "US-002",
-      "title": "Optimize Cluster Slot Lookup",
-      "description": "As a developer, I want to reduce the per-command overhead of slot calculation and topology lookup so that cluster routing adds minimal latency per command.",
+      "title": "Measure GC Impact with RTS Flag Tuning",
+      "description": "As a developer, I want to test multiple GHC RTS flag combinations on the REST benchmark to quantify how much GC behavior affects throughput and tail latency.",
       "acceptanceCriteria": [
-        "Topology read (readTVarIO clusterTopology) is verified as lock-free and zero-allocation on the hot path",
-        "CRC16 slot calculation (calculateSlot) is benchmarked; if >1us per call, optimize with unboxed/strict implementation",
-        "Slot-to-node mapping uses O(1) vector indexing (no Map lookups on hot path)",
-        "Profile shows reduced time% in slot lookup vs baseline",
-        "Unit tests pass",
-        "Cluster e2e tests pass",
+        "Test at least 5 RTS flag combinations: default (-N only), aggressive nursery (-A64m -n4m -H512m -N), match main executable (-H1024M -A128m -n8m -qb -N), non-moving GC (--nonmoving-gc -N), and large nursery + idle GC disabled (-A128m -I0 -N)",
+        "For each combination, run GET single in cluster mode and record req/s and p50/p99/p99.9 latency",
+        "Document results in benchmarks/results/gc-http-json/gc-tuning.md with a comparison table",
+        "Identify the best-performing RTS flag combination for throughput and for tail latency separately",
         "Typecheck passes"
       ],
       "priority": 2,
       "passes": true,
-      "notes": "CRC16 made pure (unsafeDupablePerformIO + unsafe ccall + bitwise AND). Added topologyAddresses Vector for O(1) slot→NodeAddress lookup, eliminating Map.lookup on hot path. Profiled: crc16 fully inlined, slot lookup 0% time. Benchmark: 36,404 ops/sec non-profiled (+5%), 35,435 profiled (+4.8%)."
+      "notes": "Tested 5 RTS configs on GET single cluster mode. Best throughput: match-main (-H1024M -A128m -n8m -qb -N) at 103,787 req/s (+17.8% vs default 88,081). Best tail latency: nonmoving-gc (20ms p99.9). GC tuning closes gap from 1.58x to 1.33x vs .NET."
     },
     {
       "id": "US-003",
-      "title": "Reduce Per-Command Allocation in submitCommand",
-      "description": "As a developer, I want to reduce allocations in the submitCommand path so that each Redis command doesn't require fresh IORef + MVar allocation.",
+      "title": "Measure HTTP Framework Overhead",
+      "description": "As a developer, I want to measure how much overhead Scotty's routing layer adds compared to raw Warp, to quantify the HTTP framework's contribution to the 1.58x gap.",
       "acceptanceCriteria": [
-        "submitCommandPooled (using SlotPool) is the default path for cluster commands",
-        "Profile shows reduced alloc% in submitCommand vs baseline",
-        "No functional change to command semantics (responses still correctly matched)",
-        "Unit tests pass",
-        "Cluster e2e tests pass",
+        "Create a minimal Warp-only variant of the GET single endpoint in benchmarks/haskell-rest/src/WarpOnly.hs using Warp Application type directly (no Scotty)",
+        "The Warp-only variant implements identical cache-aside logic: check Redis cache, fallback to SQLite, populate cache on miss",
+        "Benchmark both Scotty and Warp-only variants under identical conditions (same RTS flags, same cluster, same duration)",
+        "Record the throughput difference (req/s) and latency difference between the two variants",
+        "Document findings in benchmarks/results/gc-http-json/http-framework.md",
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": true,
-      "notes": "Added INLINE pragmas to all hot-path functions: submitCommandPooled, acquireSlot, releaseSlot, commandEnqueue (Multiplexer.hs), submitToNode, submitToNodeAsync, waitSlotResult (MultiplexPool.hs). All 7 functions now fully inlined — eliminated from profiling cost centers entirely. Profiled: submitCommandPooled 1.7%→0%, acquireSlot 0.5%→0%, releaseSlot 0.1%→0%, submitToNodeAsync 35.5%→inlined into benchWorker. Non-profiled: 37-38k ops/sec (baseline 36.4k → +2-5%). All 19 tests pass."
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-004",
-      "title": "Optimize MultiplexPool Node Selection",
-      "description": "As a developer, I want the MultiplexPool node selection to be as fast as possible so that picking the right multiplexer for a slot adds near-zero overhead.",
+      "title": "Measure JSON Serialization Overhead",
+      "description": "As a developer, I want to measure how much Aeson's JSON encoding costs compared to hand-optimized ByteString Builder encoding, to quantify JSON serialization's contribution to the gap.",
       "acceptanceCriteria": [
-        "getMultiplexer hot path (node already exists) avoids MVar contention - uses lock-free read",
-        "Round-robin counter uses atomicModifyIORef' or fetchAddInt for minimal overhead",
-        "Profile shows reduced time% in submitToNode / getMultiplexer vs baseline",
-        "Unit tests pass",
-        "Cluster e2e tests pass",
+        "Create a manual Builder-based JSON encoder for the User type using Data.ByteString.Builder (no Aeson encode, no intermediate Value)",
+        "The manual encoder produces byte-identical JSON output to Aeson's encode for the User type",
+        "Benchmark GET single with both Aeson and manual Builder under identical conditions",
+        "Document that cache-hit scenarios bypass JSON encoding entirely (only cache-miss path is affected)",
+        "Record the throughput difference in req/s for cache-miss-heavy vs cache-hit-heavy scenarios",
+        "Document findings in benchmarks/results/gc-http-json/json-serialization.md",
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": true,
-      "notes": "Per-node round-robin counters eliminate cross-node CAS contention on shared poolCounter. Added NodeMuxes type bundling Vector Multiplexer + IORef Int counter per node. Added INLINE on getMultiplexer and pickMux. Fast-path for single-mux nodes (V.unsafeHead, no counter). Used V.unsafeIndex for bounds-checked-once access. Profiled: 235k ops/sec (baseline: 35.7k profiled → +6.6x). Non-profiled: 238k (baseline: 37-38k → +6.3x). All 19 e2e tests + 27 unit tests pass."
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-005",
-      "title": "Optimize Writer Loop Batching",
-      "description": "As a developer, I want the multiplexer writer loop to minimize syscalls and intermediate allocations when sending batched commands.",
+      "title": "Apply Best GC Configuration Permanently",
+      "description": "As a developer, I want to apply the best-performing RTS flag combination from US-002 to the REST benchmark's cabal file as a permanent improvement.",
       "acceptanceCriteria": [
-        "Writer loop uses sendMany or vectored I/O instead of materializing full lazy ByteString",
-        "Builder.toLazyByteString intermediate copies are eliminated or reduced",
-        "Profile shows reduced time% in writer loop / send path vs baseline",
-        "Unit tests pass",
-        "Cluster e2e tests pass",
+        "Update benchmarks/haskell-rest/haskell-rest-benchmark.cabal ghc-options with the best RTS flags from US-002 via -with-rtsopts",
+        "Run all 4 benchmark scenarios with the new flags and confirm improvement on GET single",
+        "No regression in any of the other 3 scenarios compared to baseline from US-001",
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": true,
-      "notes": "Added sendChunks to Client typeclass using Network.Socket.ByteString.sendMany (writev vectored I/O). PlainTextClient overrides with direct sendMany, TLSClient falls back to lazy send. Writer loop now uses Builder.toLazyByteStringWith with untrimmedStrategy (32KB/64KB buffers) to reduce chunk count and avoid trimming copies. sendMany visible in profile at 1.2% time. Non-profiled: 239k ops/sec (baseline 238k, stable). Profiled: 220k ops/sec. All unit tests + e2e tests pass."
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-006",
-      "title": "Optimize Reader Loop Parsing",
-      "description": "As a developer, I want the multiplexer reader loop to parse multiple responses from a single recv buffer in a tight loop, reducing per-response overhead.",
+      "title": "Apply HTTP and JSON Optimizations If Warranted",
+      "description": "As a developer, I want to apply the HTTP framework and JSON optimizations from US-003 and US-004 if they showed measurable (>5%) improvement.",
       "acceptanceCriteria": [
-        "When recv buffer contains multiple complete RESP responses, they are parsed in a tight inner loop without per-response queue operations",
-        "Batch slot dequeue is used (existing pendingDequeue up to 64)",
-        "Profile shows reduced time% in reader loop / recv path vs baseline",
-        "Unit tests pass",
-        "Cluster e2e tests pass",
+        "If Warp-only showed >5% improvement over Scotty in US-003: replace Scotty with raw Warp in the benchmark app and update cabal dependencies",
+        "If manual Builder showed >5% improvement over Aeson in US-004: add the manual encoder as the default for cache-miss serialization",
+        "If neither showed >5% improvement: document why and mark this story as done with explanatory notes",
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": true,
-      "notes": "Added INLINE pragmas to PendingQueue operations (pendingEnqueueSeq, pendingDequeue, pendingDequeueUpTo) and failSlot in Multiplexer.hs. Increased batch dequeue from 64 to 128 slots. Added INLINE to RESP parser hot path (parseRespData, parseBulkString, parseSimpleString, parseError, parseInteger). parseRespData fully inlined into createMultiplexer (3.2%→0%). Profiled: 217k ops/sec (baseline 211k → +2.8%). Non-profiled: 235k ops/sec (stable vs 234k baseline). Attempted pinned recv buffer optimization but it caused regression due to memcpy overhead; reverted."
+      "passes": false,
+      "notes": ""
     },
     {
       "id": "US-007",
-      "title": "Reduce Redirection Detection Overhead",
-      "description": "As a developer, I want MOVED/ASK redirection detection to be as cheap as possible in the common case (no redirect).",
+      "title": "Run Final Comparison and Document Results",
+      "description": "As a developer, I want to run the full benchmark suite with all optimizations applied and document the final gap vs .NET across all 4 scenarios.",
       "acceptanceCriteria": [
-        "Common case (no redirect) is a single byte check (check first byte is not '-') rather than full pattern match",
-        "No allocation in the no-redirect path",
-        "MOVED/ASK redirects still handled correctly when they occur",
-        "Unit tests pass",
-        "Cluster e2e tests pass",
+        "Run all 4 REST benchmark scenarios in cluster mode for both Haskell and .NET",
+        "Compare against baseline from US-001 and document per-scenario improvement",
+        "Update benchmarks/results/COMPARISON.md with a new section covering GC/HTTP/JSON optimization results",
+        "Create benchmarks/results/gc-http-json/summary.md with per-factor contribution breakdown and before/after gap for each scenario",
+        "State conclusion: was the hypothesis proved or disproved, and by how much did each factor contribute",
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": true,
-      "notes": "detectRedirection optimized with INLINE pragma and single-byte first-character check (0x4D for 'M', 0x41 for 'A') before BS.isPrefixOf. parseMovedAsk replaces BS8.words with direct BS8.readInt/BS8.break parsing — zero list allocation. Common case (non-error response) is constructor match only. Error but non-redirect case is length check + single byte compare. Profiled: 223k ops/sec (baseline 217k → +3%). Non-profiled: 236k ops/sec (stable). detectRedirection fully inlined — 0% in profile. All 127 unit tests + 120 e2e tests pass."
-    },
-    {
-      "id": "US-008",
-      "title": "Run Final Benchmark Comparison",
-      "description": "As a developer, I want to run the full REST cluster benchmark suite after all optimizations to measure the total improvement.",
-      "acceptanceCriteria": [
-        "Run full REST cluster benchmark (all 4 scenarios: GET single, GET list, POST, Mixed)",
-        "Compare results against baseline from US-001",
-        "Document improvement in req/s and latency for each scenario",
-        "Run .NET benchmark for comparison (same methodology)",
-        "Save final results to benchmarks/results/cluster/",
-        "Typecheck passes"
-      ],
-      "priority": 8,
-      "passes": true,
-      "notes": "Final benchmark: GET 238,867 ops/sec (6.89x vs 34,671 baseline), SET 204,260 ops/sec, Mixed 223,009 ops/sec. Profiled GET: 209,697 ops/sec (6.20x vs 33,811 baseline). Profile now dominated by socket I/O (15.3%) and benchmark harness (28.9%) — all library functions fully inlined. All 147 tests pass (27 unit + 63 cluster e2e + 38 library lifecycle + 19 library resilience)."
+      "passes": false,
+      "notes": ""
     }
   ]
 }
