@@ -1,0 +1,102 @@
+cabal-version:      3.0
+name:               hask-redis-mux
+version:            0.1.0.0
+synopsis:           A RESP protocol implementation and multiplexed Redis client library
+description:
+    hask-redis-mux provides a full RESP protocol parser, Redis client with TLS support,
+    CRC16 hash slot computation, and a multiplexed Redis Cluster client with connection
+    pooling and automatic topology discovery.
+license:            MIT
+license-file:       ../LICENSE
+author:             Seth Speaks
+maintainer:         sspeaks610@gmail.com
+category:           Network
+build-type:         Simple
+extra-doc-files:    ../CHANGELOG.md
+extra-source-files: ../lib/crc16/crc16.c
+
+source-repository head
+    type:     git
+    location: https://github.com/sspeaks/redis-client.git
+
+-- ---------------------------------------------------------------------------
+-- Common stanzas
+-- ---------------------------------------------------------------------------
+
+common defaults
+    default-language: GHC2021
+    ghc-options:      -Wall
+    build-depends:    base >=4.19 && <5
+
+-- ---------------------------------------------------------------------------
+-- Libraries
+-- ---------------------------------------------------------------------------
+
+library resp
+    import:           defaults
+    hs-source-dirs:   ../lib/resp
+    exposed-modules:  Resp
+    build-depends:    attoparsec
+                    , bytestring
+                    , containers
+
+library client
+    import:           defaults
+    hs-source-dirs:   ../lib/client
+    exposed-modules:  Client
+    build-depends:    bytestring
+                    , crypton-x509-system
+                    , data-default-class
+                    , dns
+                    , iproute
+                    , network
+                    , tls
+
+library crc16
+    import:           defaults
+    hs-source-dirs:   ../lib/crc16
+    exposed-modules:  Crc16
+    c-sources:        ../lib/crc16/crc16.c
+    build-depends:    bytestring
+
+library redis-command-client
+    import:           defaults
+    hs-source-dirs:   ../lib/redis-command-client
+    exposed-modules:  RedisCommandClient
+    build-depends:    attoparsec
+                    , bytestring
+                    , client
+                    , mtl
+                    , resp
+
+library cluster
+    import:           defaults
+    hs-source-dirs:   ../lib/cluster
+    exposed-modules:  Cluster
+                    , ClusterCommandClient
+                    , ClusterCommands
+                    , ClusterSlotMapping
+                    , ConnectionPool
+                    , Connector
+    build-depends:    bytestring
+                    , client
+                    , containers
+                    , crc16
+                    , file-embed
+                    , mtl
+                    , redis-command-client
+                    , resp
+                    , stm
+                    , time
+                    , vector
+
+library redis
+    import:           defaults
+    visibility:       public
+    hs-source-dirs:   ../lib/redis
+    exposed-modules:  Redis
+    build-depends:    bytestring
+                    , client
+                    , cluster
+                    , redis-command-client
+                    , resp
