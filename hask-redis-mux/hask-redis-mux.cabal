@@ -7,13 +7,13 @@ description:
     CRC16 hash slot computation, and a multiplexed Redis Cluster client with connection
     pooling and automatic topology discovery.
 license:            MIT
-license-file:       ../LICENSE
+license-file:       LICENSE
 author:             Seth Speaks
 maintainer:         sspeaks610@gmail.com
 category:           Network
 build-type:         Simple
-extra-doc-files:    ../CHANGELOG.md
-extra-source-files: ../lib/crc16/crc16.c
+extra-doc-files:    CHANGELOG.md
+extra-source-files: lib/crc16/crc16.c
 
 source-repository head
     type:     git
@@ -31,7 +31,7 @@ common defaults
 common test-defaults
     import:           defaults
     build-depends:    hspec
-    hs-source-dirs:   ../test
+    hs-source-dirs:   test
 
 -- ---------------------------------------------------------------------------
 -- Libraries
@@ -60,7 +60,7 @@ library
 
 library resp
     import:           defaults
-    hs-source-dirs:   ../lib/resp
+    hs-source-dirs:   lib/resp
     exposed-modules:  Resp
     build-depends:    attoparsec
                     , bytestring
@@ -68,7 +68,7 @@ library resp
 
 library client
     import:           defaults
-    hs-source-dirs:   ../lib/client
+    hs-source-dirs:   lib/client
     exposed-modules:  Client
     build-depends:    bytestring
                     , crypton-x509-system
@@ -80,14 +80,14 @@ library client
 
 library crc16
     import:           defaults
-    hs-source-dirs:   ../lib/crc16
+    hs-source-dirs:   lib/crc16
     exposed-modules:  Crc16
-    c-sources:        ../lib/crc16/crc16.c
+    c-sources:        lib/crc16/crc16.c
     build-depends:    bytestring
 
 library redis-command-client
     import:           defaults
-    hs-source-dirs:   ../lib/redis-command-client
+    hs-source-dirs:   lib/redis-command-client
     exposed-modules:  RedisCommandClient
     build-depends:    attoparsec
                     , bytestring
@@ -97,7 +97,7 @@ library redis-command-client
 
 library cluster
     import:           defaults
-    hs-source-dirs:   ../lib/cluster
+    hs-source-dirs:   lib/cluster
     exposed-modules:  Cluster
                     , ClusterCommandClient
                     , ClusterCommands
@@ -119,7 +119,7 @@ library cluster
 library redis
     import:           defaults
     visibility:       public
-    hs-source-dirs:   ../lib/redis
+    hs-source-dirs:   lib/redis
     exposed-modules:  Redis
     build-depends:    bytestring
                     , client
