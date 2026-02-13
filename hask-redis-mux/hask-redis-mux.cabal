@@ -165,3 +165,12 @@ test-suite ClusterCommandSpec
                     , cluster
                     , resp
                     , time
+
+test-suite MultiplexerSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          MultiplexerSpec.hs
+    build-depends:    bytestring
+                    , client
+                    , cluster
+                    , resp
