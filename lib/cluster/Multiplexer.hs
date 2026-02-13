@@ -26,8 +26,6 @@ module Multiplexer
   , submitCommandPooled
   , submitCommandAsync
   , waitSlot
-  , acquireSlot
-  , releaseSlot
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where

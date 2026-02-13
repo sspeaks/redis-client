@@ -14,7 +14,6 @@ module Client
   , PlainTextClient (NotConnectedPlainTextClient)
   , TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname, TLSTunnel)
   , ConnectionStatus (..)
-  , resolve
   ) where
 
 import Control.Exception (IOException, bracket, catch, finally, throwIO)
