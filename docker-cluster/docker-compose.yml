@@ -64,6 +64,18 @@ services:
     networks:
       - redis-cluster-net
 
+  redis-standalone:
+    image: redis
+    hostname: redis-standalone.local
+    container_name: redis-standalone
+    ports:
+      - "6390:6390"
+    volumes:
+      - ./redis-standalone.conf:/usr/local/etc/redis/redis.conf
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - redis-cluster-net
+
 networks:
   redis-cluster-net:
     driver: bridge

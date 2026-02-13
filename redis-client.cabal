@@ -111,6 +111,7 @@ executable LibraryE2E
                     , LibraryE2E.ResilienceTests
                     , LibraryE2E.ConcurrencyTests
                     , LibraryE2E.ApiTests
+                    , LibraryE2E.StandaloneTests
     build-depends:    async
                     , bytestring
                     , containers
