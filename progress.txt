@@ -8,6 +8,7 @@ Started: Fri Feb 13 09:17:00 PST 2026
 - Typecheck via `nix-shell --run "cabal build all"` since `cabal` is not on PATH outside nix-shell
 - `callCabal2nix` fails with two .cabal files — need source filtering or separate directories for nix
 - Branch for this work: `ralph/separate-library-package` (created from main)
+- When both packages define test suites with the same name, use `package:TestName` syntax (e.g., `cabal test hask-redis-mux:RespSpec`)
 
 ---
 
@@ -30,4 +31,16 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - `embedFile` paths are relative to the package directory, not the repo root — symlinks solve this
   - `hs-source-dirs: ../lib/...` works for building but generates warnings about sdist — will need addressing for Hackage (US-007)
   - `packages:` in cabal.project can reference specific .cabal files or directories
+---
+
+## 2026-02-13 - US-002 (Move unit test suites to hask-redis-mux)
+- Added RespSpec, ClusterSpec, and ClusterCommandSpec test suites to `hask-redis-mux/hask-redis-mux.cabal`
+- Added `common test-defaults` stanza with `hspec` dependency and `hs-source-dirs: ../test`
+- All three test suites pass via `nix-shell --run 'cabal test hask-redis-mux:RespSpec hask-redis-mux:ClusterSpec hask-redis-mux:ClusterCommandSpec'`
+- Files changed:
+  - `hask-redis-mux/hask-redis-mux.cabal` (modified)
+- **Learnings for future iterations:**
+  - Test suites in hask-redis-mux use `hs-source-dirs: ../test` to reference test files at repo root
+  - When both packages define test suites with the same name, use `package:TestName` syntax to disambiguate (e.g., `cabal test hask-redis-mux:RespSpec`)
+  - The `test-defaults` common stanza pattern mirrors the one in `redis-client.cabal` for consistency
 ---
