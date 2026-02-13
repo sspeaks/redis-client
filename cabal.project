@@ -1,4 +1,4 @@
-packages: .
-         benchmarks/haskell-rest
+packages: redis-client.cabal
+         hask-redis-mux/
 
 constraints: crypton-asn1-types == 0.3.4, asn1-types == 0.3.4

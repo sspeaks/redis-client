@@ -32,23 +32,23 @@ else
 	fi
 endif
 
-# Build the project
+# Build the project (both hask-redis-mux and redis-client)
 build:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal build -fe2e"
+	nix-shell --run "cabal build all -fe2e"
 else
-	cabal build
+	cabal build all
 endif
 
 # Run all tests
 test: test-unit test-e2e test-cluster-e2e test-library-e2e
 
-# Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec, and FillHelpersSpec)
+# Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec from hask-redis-mux; FillHelpersSpec from redis-client)
 test-unit:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal build RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec && cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec"
+	nix-shell --run "cabal build all && cabal test all"
 else
-	cabal build RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec && cabal test RespSpec ClusterSpec ClusterCommandSpec FillHelpersSpec
+	cabal build all && cabal test all
 endif
 
 # Run end-to-end tests with Docker
@@ -101,12 +101,12 @@ redis-stop:
 redis-cluster-stop:
 	@cd docker-cluster && docker compose down
 
-# Build with profiling enabled
+# Build with profiling enabled (both packages)
 profile:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal build --enable-profiling"
+	nix-shell --run "cabal build all --enable-profiling"
 else
-	cabal build --enable-profiling
+	cabal build all --enable-profiling
 endif
 
 # Clean build artifacts
