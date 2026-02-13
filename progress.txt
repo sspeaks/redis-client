@@ -12,6 +12,8 @@ Started: Fri Feb 13 09:17:00 PST 2026
 - A package with only named internal libraries needs a default library with `reexported-modules` for external consumers
 - `callCabal2nixWithOptions "name" src "--subpath dir" {}` builds a subdirectory package with access to the full source tree
 - Single `hask-redis-mux` dependency replaces all internal library refs (resp, client, cluster, etc.)
+- Both `default.nix` and `flake.nix` overlay must build `hask-redis-mux` before `redis-client` using `callCabal2nixWithOptions --subpath`
+- `shell.nix` delegates to `default.nix` — no separate updates needed
 
 ---
 
@@ -76,4 +78,17 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - `cabal build all` and `cabal test all` handle multi-package projects seamlessly
   - The nix-shell builds hask-redis-mux via nix first (as a dependency), then cabal only directly builds/tests redis-client components
   - If a story's work was already done as part of a prior story, just verify and mark it complete
+---
+
+## 2026-02-13 - US-005 (Update Nix build files for two-package structure)
+- Updated `flake.nix` overlay to build `hask-redis-mux` via `callCabal2nixWithOptions --subpath` and pass it to `redis-client`
+- `default.nix` and `shell.nix` already correct from US-003 — no changes needed
+- Verified: `nix-build` succeeds, `nix build` (flake) succeeds, `nix-shell --run 'cabal build all'` succeeds
+- Files changed:
+  - `flake.nix` (updated overlay to include hask-redis-mux)
+- **Learnings for future iterations:**
+  - `default.nix` was already updated in US-003 when the dependency was first introduced — only `flake.nix` overlay needed updating
+  - The flake overlay pattern mirrors `default.nix`: build `hask-redis-mux` first with `--subpath`, then pass via `inherit` to `redis-client`
+  - `nix build` (flake) builds both `cabal2nix` derivations (hask-redis-mux and redis-client) before the final package
+  - `shell.nix` delegates to `default.nix` so it automatically picks up multi-package changes
 ---

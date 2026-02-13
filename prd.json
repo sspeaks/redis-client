@@ -85,7 +85,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Check default.nix, flake.nix, and shell.nix for hardcoded references to redis-client.cabal."
     },
     {
