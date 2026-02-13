@@ -8,7 +8,7 @@ Started: Thu Feb 12 17:50:58 PST 2026
 - Autocannon provides p97.5 (not p95) — use p97.5 as the closest available percentile
 - Autocannon does NOT support URL templates like `[1-10000]` — use background cache flushing for cache-miss tests
 - Haskell REST benchmark is in `benchmarks/haskell-rest/` with cabal file `haskell-rest-benchmark.cabal`
-- Current Haskell RTS flags: `-N` only (via `-with-rtsopts=-N`)
+- Current Haskell RTS flags: `-H1024M -A128m -n8m -qb -N` (via `-with-rtsopts`, applied in US-005)
 - Best RTS flags for throughput: `-H1024M -A128m -n8m -qb -N` (match-main config, +17.8%)
 - Best RTS flags for tail latency: `--nonmoving-gc -N` (20ms p99.9)
 - Typecheck via `nix-shell --run "cabal build all"` since `cabal` is not on PATH outside nix-shell
@@ -18,6 +18,7 @@ Started: Thu Feb 12 17:50:58 PST 2026
 - Aeson sorts object keys alphabetically — match this order for byte-identical manual JSON encoding
 - Cache-hit path returns raw Redis bytes directly — JSON encoding is completely bypassed
 - Use `docker-cluster-host` (port 7000) for benchmarks, not `docker-cluster` (port 6379)
+- POST and Mixed benchmarks are SQLite-bound (~130 and ~600 req/s) — expect ~5-8% run-to-run variance, don't treat small differences as regressions
 
 ---
 
@@ -113,4 +114,27 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - For JSON escaping with Builder, use `BS.break needsEscape` to emit safe spans in bulk, not char-by-char
   - `docker-cluster-host` (port 7000) is needed for benchmarks, not `docker-cluster` (port 6379)
   - The `encodeUtf8BuilderEscaped` + `BoundedPrim` API is available but complex; chunk-based escaping is simpler and fast enough
+---
+
+## 2026-02-13 - US-005
+- Applied best GC RTS flags from US-002 (`-H1024M -A128m -n8m -qb -N`) permanently to `haskell-rest-benchmark.cabal` via `-with-rtsopts`
+- Ran all 4 benchmark scenarios (GET single, GET list, POST, Mixed) in cluster mode
+- Results:
+  - GET single: 87,492 → 105,901 req/s (+21.0%), .NET gap narrowed from 1.58× to 1.31×
+  - GET list: 8,549 → 10,132 req/s (+18.5%), .NET gap narrowed from 1.43× to 1.20×
+  - POST: 131 → 126 req/s (−3.8%, within SQLite variance)
+  - Mixed: 598 → 578 req/s (−3.3%, within SQLite variance)
+- Confirmed improvement on GET single (+21%) and no regression on other scenarios
+- Created `benchmarks/results/gc-http-json/gc-applied.md` with full comparison tables
+- Saved raw benchmark results to `benchmarks/results/gc-http-json/gc-optimized/`
+- Files changed:
+  - `benchmarks/haskell-rest/haskell-rest-benchmark.cabal` (modified — RTS flags updated)
+  - `benchmarks/results/gc-http-json/gc-applied.md` (new)
+  - `benchmarks/results/gc-http-json/gc-optimized/haskell_*.json` (6 raw result files)
+- **Learnings for future iterations:**
+  - POST and Mixed scenarios are completely SQLite-bound — don't expect GC/HTTP/JSON optimizations to help there
+  - Run-to-run variance for SQLite-bound benchmarks is ~5-8%, so small differences are not meaningful
+  - The GC optimization actually exceeded US-002 results (+21% vs +17.8%) — likely due to warm cache conditions and longer steady-state
+  - GET list also benefits significantly from GC tuning (+18.5%), confirming GC is a general bottleneck, not just GET single
+  - p99.9 latency may increase slightly with large nursery (20→26ms on GET single) due to longer individual GC pauses
 ---

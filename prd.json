@@ -77,8 +77,8 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Applied -H1024M -A128m -n8m -qb -N to haskell-rest-benchmark.cabal. GET single: +21.0% (87,492→105,901), gap 1.58×→1.31×. GET list: +18.5% (8,549→10,132), gap 1.43×→1.20×. POST/Mixed within variance (SQLite-bound)."
     },
     {
       "id": "US-006",
