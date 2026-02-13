@@ -322,3 +322,27 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - The library E2E Docker image is built via `nix/library-e2e-docker.nix` — the standalone container is automatically available on the same Docker network
   - SMEMBERS returns elements in arbitrary order — use `shouldSatisfy` with `elem` checks, not exact `shouldBe` on the array
 ---
+
+## 2026-02-13 - US-007 (multiplexer-default branch)
+- Created `test/LibraryE2E/StandaloneConcurrencyTests.hs` — 6 concurrency/stress E2E tests
+- Tests cover all acceptance criteria:
+  - Standalone concurrency storm: 50 threads × 100 ops concurrent SET/GET through single multiplexer, verified zero data corruption errors
+  - MultiplexPool with count > 1: distribution across 3 multiplexers with 100 concurrent reads, all successful
+  - MultiplexPool with count > 1: 30 threads × 50 ops concurrent writes, zero corruption errors
+  - Submit-after-destroy (standalone client): throws exception, does not hang
+  - Submit-after-destroy (MultiplexPool): handles gracefully (auto-reconnect or throw), does not hang
+  - Rapid submit-after-destroy: 20 concurrent submits after destroy all throw, none hang
+- Existing cluster ConcurrencyTests (50 threads SET/GET storm, topology refresh, node failure) pass with multiplexing enabled by default (verified via make test)
+- Registered `StandaloneConcurrencyTests` in `redis-client.cabal` and `test/LibraryE2E.hs`
+- All 45 E2E tests pass (39 existing + 6 new) in 324s
+- All unit tests pass (RespSpec 46, MultiplexerSpec 14, MultiplexPoolSpec 8, ClusterSpec 14, ClusterCommandSpec 40, FillHelpersSpec 27)
+- Files changed:
+  - `test/LibraryE2E/StandaloneConcurrencyTests.hs` (new — 203 lines)
+  - `test/LibraryE2E.hs` (modified — added StandaloneConcurrencyTests import and spec call)
+  - `redis-client.cabal` (modified — added StandaloneConcurrencyTests to other-modules)
+- **Learnings for future iterations:**
+  - MultiplexPool auto-reconnects dead multiplexers — closeMultiplexPool + submitToNode may succeed (new mux created), not necessarily throw
+  - For standalone concurrency tests, use a single shared client across all threads (tests the multiplexer's thread safety)
+  - The `try` pattern is essential for submit-after-destroy tests — it proves the operation completed (didn't hang)
+  - Standalone Redis container (`redis-standalone.local:6390`) is sufficient for all MultiplexPool tests since MultiplexPool is node-agnostic
+---
