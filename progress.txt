@@ -63,3 +63,17 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - `callCabal2nixWithOptions "name" src "--subpath dir" {}` lets nix build a package from a subdirectory while keeping access to the full source tree
   - When replacing internal library deps, a single `hask-redis-mux` dependency replaces all of `resp`, `client`, `crc16`, `redis-command-client`, `cluster`, `redis`
 ---
+
+## 2026-02-13 - US-004 (Update cabal.project for multi-package build)
+- Verified `cabal.project` already lists both packages (`redis-client.cabal` and `hask-redis-mux/`)
+- This was set up correctly in US-001 when the hask-redis-mux subdirectory was created
+- Verified `nix-shell --run 'cabal build all'` succeeds — builds both hask-redis-mux library and redis-client executable
+- Verified `nix-shell --run 'cabal test all'` succeeds — runs 3 hask-redis-mux test suites (RespSpec, ClusterSpec, ClusterCommandSpec) and 1 redis-client test suite (FillHelpersSpec)
+- No file changes needed — all acceptance criteria already met
+- Files changed: none (only prd.json and progress.txt updated)
+- **Learnings for future iterations:**
+  - cabal.project with `packages: redis-client.cabal hask-redis-mux/` correctly resolves both packages
+  - `cabal build all` and `cabal test all` handle multi-package projects seamlessly
+  - The nix-shell builds hask-redis-mux via nix first (as a dependency), then cabal only directly builds/tests redis-client components
+  - If a story's work was already done as part of a prior story, just verify and mark it complete
+---

@@ -69,7 +69,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "May need to add 'packages: hask-redis-mux.cabal redis-client.cabal' or use glob patterns."
     },
     {
