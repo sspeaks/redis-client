@@ -1,5 +1,23 @@
 # Revision history for redis-client
 
+## 0.6.0.0 -- 2026-02-13
+
+*   **Multiplexing Now Default**
+    *   Cluster mode (`ClusterConfig`) now uses multiplexing by default (`clusterUseMultiplexing = True`).
+      Set `clusterUseMultiplexing = False` to opt out.
+*   **New: Standalone Multiplexed Client**
+    *   Added `StandaloneClient` module for pipelined throughput on a single (non-cluster) Redis server.
+    *   Provides `createStandaloneClient`, `createStandaloneClientFromConfig`, `closeStandaloneClient`,
+      and `runStandaloneClient` lifecycle functions.
+    *   `StandaloneConfig` allows tuning multiplexer count and toggling multiplexing on/off.
+    *   Implements `RedisCommands` typeclass — all existing commands work transparently.
+    *   Re-exported from the top-level `Redis` module.
+*   **Testing**
+    *   Added `MultiplexerSpec` — 14 unit tests for multiplexer internals (slot pool, response slot, lifecycle).
+    *   Added `MultiplexPoolSpec` — 8 unit tests for per-node multiplexer management and round-robin routing.
+    *   Added standalone E2E tests for all command families (string, hash, list, set, sorted set).
+    *   Added concurrency stress tests (50+ threads, submit-after-destroy, multi-multiplexer distribution).
+
 ## 0.5.0.0 -- 2026-02-05
 
 *   **Major Feature: Redis Cluster Support**
