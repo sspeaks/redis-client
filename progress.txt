@@ -25,6 +25,9 @@ Started: Thu Feb 12 17:50:58 PST 2026
 - POST and Mixed benchmarks are SQLite-bound (~130 and ~600 req/s) — expect ~5-8% run-to-run variance, don't treat small differences as regressions
 - Existential GADTs (e.g., `DirectBackend :: (Client client) => ...`) hide client type parameters while preserving constraints for dispatch
 - `parseWith` from RedisCommandClient requires `MonadState (ClientState client) m` — use `State.runStateT` to run from IO and capture buffer updates
+- RespData uses `RespNullBulkString` for nil values — there is no `RespNull` constructor
+- `zadd` score type is `Int`, not `Double` — use integer literals for scores
+- Standalone Redis for E2E tests uses `redis-standalone.local:6390` in docker-cluster network
 
 ---
 
@@ -289,4 +292,33 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - Counter starts at 1 not 0 because getMultiplexer returns V.head on initial creation without incrementing
   - Pool closure clears the map but doesn't prevent re-creation — submitting after close creates fresh muxes
   - Test timing: 50ms delay is enough for lazy mux creation, 10ms for subsequent submits
+---
+
+## 2026-02-13 - US-006 (multiplexer-default branch)
+- Created `test/LibraryE2E/StandaloneTests.hs` — 20 E2E tests for the standalone multiplexed client
+- Tests cover all acceptance criteria:
+  - Basic operations: SET, GET, DEL, MGET (5 tests)
+  - Hash commands: HSET, HGET, HDEL, HMGET, HEXISTS (3 tests)
+  - List commands: LPUSH, RPUSH, LRANGE, LLEN, LPOP, RPOP (3 tests)
+  - Set commands: SADD, SMEMBERS, SCARD, SISMEMBER (3 tests)
+  - Sorted set commands: ZADD, ZRANGE, ZRANGE WITHSCORES (2 tests)
+  - Miscellaneous: PING, EXISTS, INCR, DECR, DBSIZE (4 tests)
+- All tests verify correct RESP responses (RespSimpleString, RespBulkString, RespInteger, RespArray, RespNullBulkString)
+- Added standalone Redis container (`redis-standalone.local:6390`) to `docker-cluster/docker-compose.yml`
+- Created `docker-cluster/redis-standalone.conf` (standalone mode, port 6390)
+- Registered `LibraryE2E.StandaloneTests` in `redis-client.cabal` and `test/LibraryE2E.hs`
+- All 39 tests pass (19 existing cluster + 20 new standalone) in 225s
+- All unit tests pass (RespSpec 46, MultiplexerSpec 14, MultiplexPoolSpec 8, ClusterSpec 14, ClusterCommandSpec 40, FillHelpersSpec 27)
+- Files changed:
+  - `test/LibraryE2E/StandaloneTests.hs` (new — 252 lines)
+  - `test/LibraryE2E.hs` (modified — added StandaloneTests import and spec call)
+  - `redis-client.cabal` (modified — added StandaloneTests to other-modules)
+  - `docker-cluster/docker-compose.yml` (modified — added redis-standalone service)
+  - `docker-cluster/redis-standalone.conf` (new — standalone Redis config)
+- **Learnings for future iterations:**
+  - RespData uses `RespNullBulkString` not `RespNull` for nil values
+  - `zadd` score type is `Int`, not `Double` — use integer literals
+  - Standalone Redis needs its own container in docker-cluster (cluster nodes have cluster mode enabled, which can cause MOVED errors for standalone commands)
+  - The library E2E Docker image is built via `nix/library-e2e-docker.nix` — the standalone container is automatically available on the same Docker network
+  - SMEMBERS returns elements in arbitrary order — use `shouldSatisfy` with `elem` checks, not exact `shouldBe` on the array
 ---
