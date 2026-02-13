@@ -50,6 +50,8 @@ library
       , ClusterSlotMapping
       , ConnectionPool
       , Connector
+      , MultiplexPool
+      , Multiplexer
       , Redis
     build-depends:    resp
                     , client
@@ -104,7 +106,10 @@ library cluster
                     , ClusterSlotMapping
                     , ConnectionPool
                     , Connector
-    build-depends:    bytestring
+                    , MultiplexPool
+                    , Multiplexer
+    build-depends:    attoparsec
+                    , bytestring
                     , client
                     , containers
                     , crc16
