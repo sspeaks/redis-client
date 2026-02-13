@@ -7,7 +7,7 @@ build-type:    Simple
 
 executable haskell-rest-benchmark
     default-language: GHC2021
-    ghc-options:      -Wall -O2 -threaded -rtsopts "-with-rtsopts=-N"
+    ghc-options:      -Wall -O2 -threaded -rtsopts "-with-rtsopts=-H1024M -A128m -n8m -qb -N"
     hs-source-dirs:   src
     main-is:          Main.hs
     build-depends:
