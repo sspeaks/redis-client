@@ -37,3 +37,18 @@ executable haskell-rest-warp-only
       , text
       , wai
       , warp
+
+executable haskell-rest-manual-json
+    default-language: GHC2021
+    ghc-options:      -Wall -O2 -threaded -rtsopts "-with-rtsopts=-N"
+    hs-source-dirs:   src
+    main-is:          ManualJson.hs
+    build-depends:
+        base >=4.19 && <5
+      , bytestring
+      , http-types
+      , redis-client:redis
+      , sqlite-simple
+      , text
+      , wai
+      , warp

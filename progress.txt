@@ -3,8 +3,10 @@ Started: Thu Feb 12 17:50:58 PST 2026
 
 ## Codebase Patterns
 - Benchmarks use autocannon (Node.js) as the load generator; results are JSON files in `benchmarks/results/`
+- Use `exe:` prefix with `cabal list-bin` when package has multiple executables (e.g., `cabal list-bin exe:haskell-rest-benchmark`)
 - Cluster benchmarks use `benchmarks/scripts/run-cluster.sh` which starts 5-node Redis cluster, seeds DB, builds apps, and runs `run-benchmarks.sh`
 - Autocannon provides p97.5 (not p95) — use p97.5 as the closest available percentile
+- Autocannon does NOT support URL templates like `[1-10000]` — use background cache flushing for cache-miss tests
 - Haskell REST benchmark is in `benchmarks/haskell-rest/` with cabal file `haskell-rest-benchmark.cabal`
 - Current Haskell RTS flags: `-N` only (via `-with-rtsopts=-N`)
 - Best RTS flags for throughput: `-H1024M -A128m -n8m -qb -N` (match-main config, +17.8%)
@@ -13,6 +15,9 @@ Started: Thu Feb 12 17:50:58 PST 2026
 - Branch for this work: `ralph/gc-http-json-optimization` (created from main)
 - Use `benchmarks/scripts/run-gc-tuning.sh` to run GC tuning benchmarks (pass binary path as arg)
 - Autocannon latency keys in JSON: `p50`, `p97_5`, `p99`, `p99_9` (underscores, not dots)
+- Aeson sorts object keys alphabetically — match this order for byte-identical manual JSON encoding
+- Cache-hit path returns raw Redis bytes directly — JSON encoding is completely bypassed
+- Use `docker-cluster-host` (port 7000) for benchmarks, not `docker-cluster` (port 6379)
 
 ---
 
@@ -52,4 +57,60 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - Large nursery configs worsen p99.9 (28ms vs 21ms default) because individual GC pauses are longer
   - The match-main config is the clear winner for throughput benchmarks
   - Autocannon JSON latency fields use underscores: `p97_5`, `p99_9`
+---
+
+## 2026-02-13 - US-003
+- Created `benchmarks/haskell-rest/src/WarpOnly.hs` — raw Warp Application with GET /users/:id only (no Scotty)
+- Added `haskell-rest-warp-only` executable to `haskell-rest-benchmark.cabal`
+- Created `benchmarks/scripts/run-http-framework.sh` — benchmark script comparing Scotty vs Warp-only
+- Ran both variants under identical conditions (cluster mode, -H1024M -A128m -n8m -qb -N, 30s, 100 connections, 10 pipelining)
+- Results:
+  - Scotty: 102,931 req/s | p50=9ms p97.5=13ms p99=16ms p99.9=28ms
+  - Warp-only: 104,403 req/s | p50=9ms p97.5=12ms p99=14ms p99.9=26ms
+  - **Difference: +1.4% throughput, ~2ms better tail latency**
+- Conclusion: Scotty overhead is negligible (~1.4%), not worth replacing
+- Documented findings in `benchmarks/results/gc-http-json/http-framework.md`
+- Files changed:
+  - `benchmarks/haskell-rest/src/WarpOnly.hs` (new)
+  - `benchmarks/haskell-rest/haskell-rest-benchmark.cabal` (modified — added warp-only executable)
+  - `benchmarks/scripts/run-http-framework.sh` (new)
+  - `benchmarks/results/gc-http-json/http-framework.md` (new)
+  - `benchmarks/results/gc-http-json/http_scotty.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/http_warp_only.json` (new — raw results)
+- **Learnings for future iterations:**
+  - Use `exe:` prefix with `cabal list-bin` when there are multiple executables in the same package
+  - Scotty is a thin WAI wrapper — overhead is negligible for I/O-bound workloads
+  - Raw Warp only helps at tail latency (~2ms at p99), not meaningful for throughput
+  - `Network.Wai.Response` must be explicitly imported (not just `Application`)
+  - Header type for Warp is `[Header]` from `Network.HTTP.Types`, not `[(ByteString, ByteString)]`
+---
+
+## 2026-02-13 - US-004
+- Created `benchmarks/haskell-rest/src/ManualJson.hs` — raw Warp + manual ByteString Builder JSON encoder (no Aeson)
+- Added `haskell-rest-manual-json` executable to `haskell-rest-benchmark.cabal` (no aeson dependency)
+- Manual Builder produces byte-identical JSON to Aeson (verified — fields sorted alphabetically to match)
+- Created `benchmarks/scripts/run-json-serialization.sh` — benchmark script with cache-hit and cache-miss scenarios
+- Cache-miss scenario uses continuous Redis FLUSHALL every 500ms to force JSON encoding on every request
+- Results:
+  - Cache-hit (JSON bypassed): Aeson 106,291 vs Builder 106,522 req/s (+0.2% — no difference)
+  - Cache-miss (JSON on hot path): Aeson 96,806 vs Builder 101,621 req/s (+5.0%)
+  - Tail latency improvement: Builder p99.9=30ms vs Aeson p99.9=38ms in cache-miss
+- **Conclusion**: JSON encoding adds ~5% overhead but only on cache-miss path; does not contribute to .NET gap in steady-state
+- Documented findings in `benchmarks/results/gc-http-json/json-serialization.md`
+- Files changed:
+  - `benchmarks/haskell-rest/src/ManualJson.hs` (new)
+  - `benchmarks/haskell-rest/haskell-rest-benchmark.cabal` (modified — added manual-json executable)
+  - `benchmarks/scripts/run-json-serialization.sh` (new)
+  - `benchmarks/results/gc-http-json/json-serialization.md` (new)
+  - `benchmarks/results/gc-http-json/json_aeson_cache_hit.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/json_aeson_cache_miss.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/json_builder_cache_hit.json` (new — raw results)
+  - `benchmarks/results/gc-http-json/json_builder_cache_miss.json` (new — raw results)
+- **Learnings for future iterations:**
+  - Aeson sorts object keys alphabetically — manual Builder must match this order for byte-identical output
+  - Autocannon does NOT support URL templates like `[1-10000]` — use a single endpoint with background cache flushing for cache-miss tests
+  - Cache-hit path returns raw Redis bytes directly — JSON encoding is completely bypassed (no `encode` call)
+  - For JSON escaping with Builder, use `BS.break needsEscape` to emit safe spans in bulk, not char-by-char
+  - `docker-cluster-host` (port 7000) is needed for benchmarks, not `docker-cluster` (port 6379)
+  - The `encodeUtf8BuilderEscaped` + `BoundedPrim` API is available but complex; chunk-based escaping is simpler and fast enough
 ---

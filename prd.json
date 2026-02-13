@@ -46,8 +46,8 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Scotty adds only ~1.4% overhead vs raw Warp (102,931 vs 104,403 req/s). Negligible contribution to .NET gap. Tail latency ~2ms better with Warp at p99/p99.9. Not worth replacing Scotty."
     },
     {
       "id": "US-004",
@@ -63,8 +63,8 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": ""
+      "passes": true,
+      "notes": "Manual Builder produces byte-identical JSON to Aeson. Cache-hit: +0.2% (no difference, JSON bypassed). Cache-miss: +5.0% throughput and -8ms p99.9 with Builder. JSON encoding does not meaningfully contribute to .NET gap since steady-state is cache-hit."
     },
     {
       "id": "US-005",
