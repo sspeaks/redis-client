@@ -14,6 +14,7 @@ Started: Fri Feb 13 09:17:00 PST 2026
 - Single `hask-redis-mux` dependency replaces all internal library refs (resp, client, cluster, etc.)
 - Both `default.nix` and `flake.nix` overlay must build `hask-redis-mux` before `redis-client` using `callCabal2nixWithOptions --subpath`
 - `shell.nix` delegates to `default.nix` — no separate updates needed
+- Use `cabal build all` / `cabal test all` in Makefile targets to cover both packages in the multi-package setup
 
 ---
 
@@ -91,4 +92,19 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - The flake overlay pattern mirrors `default.nix`: build `hask-redis-mux` first with `--subpath`, then pass via `inherit` to `redis-client`
   - `nix build` (flake) builds both `cabal2nix` derivations (hask-redis-mux and redis-client) before the final package
   - `shell.nix` delegates to `default.nix` so it automatically picks up multi-package changes
+---
+
+## 2026-02-13 - US-006 (Update Makefile for two-package structure)
+- Updated `build` target: `cabal build all -fe2e` to explicitly build both hask-redis-mux and redis-client
+- Updated `test-unit` target: `cabal build all && cabal test all` to run all 4 test suites across both packages (RespSpec, ClusterSpec, ClusterCommandSpec from hask-redis-mux; FillHelpersSpec from redis-client)
+- Updated `profile` target: `cabal build all --enable-profiling` to profile both packages
+- `clean` target unchanged — `rm -rf dist-newstyle` already covers both packages
+- Verified: `make build`, `make test-unit`, `make clean`, `nix-build` all succeed
+- Files changed:
+  - `Makefile` (updated build, test-unit, profile targets to use `cabal build/test all`)
+- **Learnings for future iterations:**
+  - `cabal build all` explicitly builds all packages in a multi-package project; without `all`, only the "current" package is built (though dependencies are resolved transitively)
+  - `cabal test all` runs test suites from all packages — simpler than listing individual test suite names
+  - The `-fe2e` flag only applies to redis-client's e2e flag; hask-redis-mux has no flags, so it's harmless in `build all -fe2e`
+  - `rm -rf dist-newstyle` in the clean target is the most reliable way to clean all packages since they share the same build directory
 ---

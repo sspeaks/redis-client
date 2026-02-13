@@ -100,7 +100,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "The Makefile may need minimal changes since it uses cabal commands that should work with the multi-package setup."
     },
     {
