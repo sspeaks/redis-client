@@ -128,7 +128,7 @@ data ClusterConfig = ClusterConfig
   , clusterMaxRetries              :: Int -- ^ Maximum retry attempts on MOVED\/ASK\/transient errors (default: 3).
   , clusterRetryDelay              :: Int -- ^ Initial retry delay in microseconds; doubled on each retry (default: 100000 = 100ms).
   , clusterTopologyRefreshInterval :: Int -- ^ Seconds between automatic background topology refreshes (default: 600 = 10 min).
-  , clusterUseMultiplexing         :: Bool -- ^ Enable multiplexed pipelining (default: False). When True, commands share a single multiplexed connection per node via batched writes and response demultiplexing.
+  , clusterUseMultiplexing         :: Bool -- ^ Enable multiplexed pipelining (default: True). When True, commands share a single multiplexed connection per node via batched writes and response demultiplexing. Set to False to use the traditional connection-pool path.
   }
   deriving (Show)
 
