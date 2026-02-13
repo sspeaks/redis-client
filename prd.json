@@ -54,7 +54,7 @@
         "FillHelpersSpec passes: nix-shell --run 'cabal test FillHelpersSpec'"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "Replace internal library references (resp, client, cluster, etc.) with hask-redis-mux in build-depends. The executable and E2E tests import the same modules but via the hask-redis-mux package."
     },
     {

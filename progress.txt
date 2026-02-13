@@ -9,6 +9,9 @@ Started: Fri Feb 13 09:17:00 PST 2026
 - `callCabal2nix` fails with two .cabal files — need source filtering or separate directories for nix
 - Branch for this work: `ralph/separate-library-package` (created from main)
 - When both packages define test suites with the same name, use `package:TestName` syntax (e.g., `cabal test hask-redis-mux:RespSpec`)
+- A package with only named internal libraries needs a default library with `reexported-modules` for external consumers
+- `callCabal2nixWithOptions "name" src "--subpath dir" {}` builds a subdirectory package with access to the full source tree
+- Single `hask-redis-mux` dependency replaces all internal library refs (resp, client, cluster, etc.)
 
 ---
 
@@ -43,4 +46,20 @@ Started: Fri Feb 13 09:17:00 PST 2026
   - Test suites in hask-redis-mux use `hs-source-dirs: ../test` to reference test files at repo root
   - When both packages define test suites with the same name, use `package:TestName` syntax to disambiguate (e.g., `cabal test hask-redis-mux:RespSpec`)
   - The `test-defaults` common stanza pattern mirrors the one in `redis-client.cabal` for consistency
+---
+
+## 2026-02-13 - US-003 (Update redis-client.cabal to depend on hask-redis-mux)
+- Removed all 6 library stanzas (resp, client, crc16, redis-command-client, cluster, redis) from redis-client.cabal
+- Removed RespSpec, ClusterSpec, ClusterCommandSpec test suites (already in hask-redis-mux)
+- Replaced internal library deps with `hask-redis-mux` in redis-client executable, FillHelpersSpec, and all E2E executables
+- Added default (unnamed) library to hask-redis-mux.cabal with `reexported-modules` for all public modules
+- Updated default.nix to build hask-redis-mux as a dependency using `callCabal2nixWithOptions --subpath`
+- Files changed:
+  - `redis-client.cabal` (major rewrite — libraries and 3 test suites removed)
+  - `hask-redis-mux/hask-redis-mux.cabal` (added default library with reexported-modules)
+  - `default.nix` (added hask-redis-mux dependency resolution)
+- **Learnings for future iterations:**
+  - A package with only named internal libraries (no default library) cannot be used as a simple `build-depends` — add a default library with `reexported-modules`
+  - `callCabal2nixWithOptions "name" src "--subpath dir" {}` lets nix build a package from a subdirectory while keeping access to the full source tree
+  - When replacing internal library deps, a single `hask-redis-mux` dependency replaces all of `resp`, `client`, `crc16`, `redis-command-client`, `cluster`, `redis`
 ---
