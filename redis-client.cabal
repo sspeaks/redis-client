@@ -25,109 +25,8 @@ common test-defaults
     hs-source-dirs:   test
 
 -- ---------------------------------------------------------------------------
--- Libraries
--- ---------------------------------------------------------------------------
-
-library resp
-    import:           defaults
-    hs-source-dirs:   lib/resp
-    exposed-modules:  Resp
-    build-depends:    attoparsec
-                    , bytestring
-                    , containers
-
-library client
-    import:           defaults
-    hs-source-dirs:   lib/client
-    exposed-modules:  Client
-    build-depends:    bytestring
-                    , crypton-x509-system
-                    , data-default-class
-                    , dns
-                    , iproute
-                    , network
-                    , tls
-
-library crc16
-    import:           defaults
-    hs-source-dirs:   lib/crc16
-    exposed-modules:  Crc16
-    c-sources:        lib/crc16/crc16.c
-    build-depends:    bytestring
-
-library redis-command-client
-    import:           defaults
-    hs-source-dirs:   lib/redis-command-client
-    exposed-modules:  RedisCommandClient
-    build-depends:    attoparsec
-                    , bytestring
-                    , client
-                    , mtl
-                    , resp
-
-library cluster
-    import:           defaults
-    hs-source-dirs:   lib/cluster
-    exposed-modules:  Cluster
-                    , ClusterCommandClient
-                    , ClusterCommands
-                    , ClusterSlotMapping
-                    , ConnectionPool
-                    , Connector
-    build-depends:    bytestring
-                    , client
-                    , containers
-                    , crc16
-                    , file-embed
-                    , mtl
-                    , redis-command-client
-                    , resp
-                    , stm
-                    , time
-                    , vector
-
-library redis
-    import:           defaults
-    visibility:       public
-    hs-source-dirs:   lib/redis
-    exposed-modules:  Redis
-    build-depends:    bytestring
-                    , client
-                    , cluster
-                    , redis-command-client
-                    , resp
-
--- ---------------------------------------------------------------------------
 -- Test suites
 -- ---------------------------------------------------------------------------
-
-test-suite RespSpec
-    import:           test-defaults
-    type:             exitcode-stdio-1.0
-    main-is:          Spec.hs
-    build-depends:    attoparsec
-                    , bytestring
-                    , containers
-                    , redis-command-client
-                    , resp
-
-test-suite ClusterSpec
-    import:           test-defaults
-    type:             exitcode-stdio-1.0
-    main-is:          ClusterSpec.hs
-    build-depends:    bytestring
-                    , cluster
-                    , resp
-                    , time
-
-test-suite ClusterCommandSpec
-    import:           test-defaults
-    type:             exitcode-stdio-1.0
-    main-is:          ClusterCommandSpec.hs
-    build-depends:    bytestring
-                    , cluster
-                    , resp
-                    , time
 
 test-suite FillHelpersSpec
     import:           test-defaults
@@ -137,9 +36,8 @@ test-suite FillHelpersSpec
                     , Filler
     hs-source-dirs:   app
     build-depends:    bytestring
-                    , client
+                    , hask-redis-mux
                     , mtl
-                    , redis-command-client
 
 -- ---------------------------------------------------------------------------
 -- Flags
@@ -165,14 +63,12 @@ executable EndToEnd
                     , AppConfig
     build-depends:    attoparsec
                     , bytestring
-                    , client
                     , directory
                     , filepath
+                    , hask-redis-mux
                     , hspec
                     , mtl
                     , process
-                    , redis-command-client
-                    , resp
 
 executable ClusterEndToEnd
     import:           defaults
@@ -191,16 +87,13 @@ executable ClusterEndToEnd
                     , SlotMappingHelpers
     build-depends:    async
                     , bytestring
-                    , client
-                    , cluster
                     , containers
                     , directory
                     , filepath
+                    , hask-redis-mux
                     , hspec
                     , mtl
                     , process
-                    , redis-command-client
-                    , resp
                     , stm
                     , time
                     , vector
@@ -220,14 +113,11 @@ executable LibraryE2E
                     , LibraryE2E.ApiTests
     build-depends:    async
                     , bytestring
-                    , client
-                    , cluster
                     , containers
+                    , hask-redis-mux
                     , hspec
                     , mtl
                     , process
-                    , redis-command-client
-                    , resp
                     , stm
                     , time
                     , vector
@@ -247,15 +137,12 @@ executable redis-client
                     , SlotMappingHelpers
     build-depends:    attoparsec
                     , bytestring
-                    , client
-                    , cluster
                     , containers
+                    , hask-redis-mux
                     , mtl
                     , network
                     , process
                     , random
                     , readline
-                    , redis-command-client
-                    , resp
                     , stm
                     , vector

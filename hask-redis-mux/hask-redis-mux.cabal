@@ -37,6 +37,27 @@ common test-defaults
 -- Libraries
 -- ---------------------------------------------------------------------------
 
+library
+    import:           defaults
+    reexported-modules:
+        Resp
+      , Client
+      , Crc16
+      , RedisCommandClient
+      , Cluster
+      , ClusterCommandClient
+      , ClusterCommands
+      , ClusterSlotMapping
+      , ConnectionPool
+      , Connector
+      , Redis
+    build-depends:    resp
+                    , client
+                    , crc16
+                    , redis-command-client
+                    , cluster
+                    , redis
+
 library resp
     import:           defaults
     hs-source-dirs:   ../lib/resp
