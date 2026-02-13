@@ -3,6 +3,10 @@ Started: Thu Feb 12 17:50:58 PST 2026
 
 ## Codebase Patterns
 - Benchmarks use autocannon (Node.js) as the load generator; results are JSON files in `benchmarks/results/`
+- Standalone and cluster clients follow the same GADT+StateT monad transformer pattern for `RedisCommands`
+- `createMultiplexer` takes `client 'Connected` and `IO ByteString` (recv action), not just a client
+- `CLIENT REPLY OFF/SKIP` is incompatible with multiplexed pipelining (no response = desync) — silently ignore
+- New modules must be added in 3 places: cluster library exposed-modules, top-level reexported-modules, and Redis.hs re-exports
 - Use `exe:` prefix with `cabal list-bin` when package has multiple executables (e.g., `cabal list-bin exe:haskell-rest-benchmark`)
 - Cluster benchmarks use `benchmarks/scripts/run-cluster.sh` which starts 5-node Redis cluster, seeds DB, builds apps, and runs `run-benchmarks.sh`
 - Autocannon provides p97.5 (not p95) — use p97.5 as the closest available percentile
@@ -173,4 +177,26 @@ Started: Thu Feb 12 17:50:58 PST 2026
   - COMPARISON.md new sections should go between the most relevant existing section and the analysis section
   - Summary documents should include both absolute numbers and gap ratios for easy cross-referencing
   - The "per-factor contribution" framing (% of gap closed) is more intuitive than raw throughput deltas
+---
+
+## 2026-02-13 - US-001 (multiplexer-default branch)
+- Created `lib/cluster/StandaloneClient.hs` — standalone multiplexed Redis client wrapping a single Multiplexer
+  - `StandaloneClient` data type holding Multiplexer + SlotPool
+  - `StandaloneCommandClient` GADT monad implementing `RedisCommands`
+  - `createStandaloneClient`, `closeStandaloneClient`, `runStandaloneClient` lifecycle functions
+  - All 40+ RedisCommands methods implemented via `submitMux` helper
+  - `CLIENT REPLY OFF/SKIP` silently ignored (incompatible with multiplexer pipelining)
+- Registered in `hask-redis-mux.cabal`: cluster exposed-modules + reexported-modules
+- Re-exported from `lib/redis/Redis.hs` with haddock section
+- Typecheck passes (cabal build all), all existing tests pass
+- Files changed:
+  - `lib/cluster/StandaloneClient.hs` (new — 208 lines)
+  - `hask-redis-mux/hask-redis-mux.cabal` (modified — added StandaloneClient to exposed+reexported)
+  - `lib/redis/Redis.hs` (modified — added StandaloneClient re-export)
+- **Learnings for future iterations:**
+  - Standalone and cluster clients follow same GADT+StateT monad pattern for RedisCommands
+  - New modules need 3 registration points: cluster exposed-modules, reexported-modules, Redis.hs
+  - `createMultiplexer` takes `client 'Connected` + `IO ByteString` (recv action), not just a client
+  - CLIENT REPLY OFF/SKIP sends command with no Redis response — breaks multiplexer desync; must be handled specially
+  - The `Connector` type is `NodeAddress -> IO (client 'Connected)` — works for both plaintext and TLS
 ---
