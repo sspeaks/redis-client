@@ -242,7 +242,7 @@
         "Typecheck passes"
       ],
       "priority": 16,
-      "passes": false,
+      "passes": true,
       "notes": "Uses clusterPlaintextConnector from Database.Redis.Connector. NodeAddress is from Database.Redis.Cluster."
     },
     {
