@@ -82,7 +82,7 @@ library client
     exposed-modules:  Database.Redis.Client
     build-depends:    bytestring >=0.12 && <0.13
                     , crypton-x509-system >=1.6 && <1.7
-                    , data-default-class >=0.2 && <0.3
+                    , data-default-class >=0.1 && <0.3
                     , dns >=4.2 && <4.3
                     , iproute >=1.7 && <1.8
                     , network >=3.2 && <3.3
