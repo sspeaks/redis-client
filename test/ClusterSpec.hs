@@ -2,11 +2,11 @@
 
 module Main (main) where
 
-import Cluster
-import qualified Data.ByteString.Char8 as BS8
-import Data.Time.Clock (getCurrentTime)
-import Resp (RespData (..))
-import Test.Hspec
+import qualified Data.ByteString.Char8  as BS8
+import           Data.Time.Clock        (getCurrentTime)
+import           Database.Redis.Cluster
+import           Database.Redis.Resp    (RespData (..))
+import           Test.Hspec
 
 main :: IO ()
 main = hspec spec
@@ -85,14 +85,14 @@ spec = do
         Right topology -> do
           -- Check that slots are assigned
           case findNodeForSlot topology 0 of
-            Nothing -> expectationFailure "Slot 0 should be assigned"
+            Nothing     -> expectationFailure "Slot 0 should be assigned"
             Just nodeId -> nodeId `shouldNotBe` ""
 
     it "handles invalid responses" $ do
       currentTime <- getCurrentTime
       let invalidResponse = RespBulkString "invalid"
       case parseClusterSlots invalidResponse currentTime of
-        Left _ -> return () -- Expected
+        Left _  -> return () -- Expected
         Right _ -> expectationFailure "Should fail on invalid response"
 
     it "parses response with replicas" $ do
@@ -119,7 +119,7 @@ spec = do
         Right topology -> do
           -- Check that master is assigned
           case findNodeForSlot topology 0 of
-            Nothing -> expectationFailure "Slot 0 should be assigned"
+            Nothing     -> expectationFailure "Slot 0 should be assigned"
             Just nodeId -> nodeId `shouldNotBe` ""
 
   describe "Node lookup" $ do

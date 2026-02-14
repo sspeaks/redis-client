@@ -7,45 +7,49 @@ module ClusterTunnel
   , servePinnedProxy
   ) where
 
-import           Client                     (Client (..), ConnectionStatus (..))
-import           Cluster                    (ClusterNode (..),
-                                             ClusterTopology (..),
-                                             NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..),
-                                             ClusterError (..))
-import qualified ClusterCommandClient
-import           ClusterCommands            (CommandRouting (..),
-                                             classifyCommand)
-import           Connector                  (Connector)
-import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
-                                             putMVar, takeMVar)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (SomeException, bracket, finally,
-                                             throwIO, try)
-import           Control.Monad              (forever, void, when)
-import qualified Control.Monad.State.Strict as State
-import qualified Data.ByteString            as BS
-import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BS8
-import qualified Data.ByteString.Lazy       as LBS
-import           Data.Char                  (isAlphaNum)
-import           Data.List                  (isPrefixOf)
-import qualified Data.Map.Strict            as Map
-import           Data.Word                  (Word8)
-import           Network.Socket             (Family (..), SockAddr (..), Socket,
-                                             SocketOption (..), SocketType (..),
-                                             bind, defaultProtocol, listen,
-                                             setSocketOption, socket,
-                                             tupleToHostAddress)
-import qualified Network.Socket             as S
-import           Network.Socket.ByteString  (recv, sendAll)
-import           RedisCommandClient         (ClientState (..),
-                                             RedisCommandClient, parseWith)
-import qualified Resp
-import           Resp                       (Encodable (encode), RespData (..))
-import           System.IO                  (BufferMode (LineBuffering), hFlush,
-                                             hSetBuffering, stdout)
-import           Text.Printf                (printf)
+import           Control.Concurrent              (MVar, forkIO, newEmptyMVar,
+                                                  putMVar, takeMVar)
+import           Control.Concurrent.STM          (readTVarIO)
+import           Control.Exception               (SomeException, bracket,
+                                                  finally, throwIO, try)
+import           Control.Monad                   (forever, void, when)
+import qualified Control.Monad.State.Strict      as State
+import qualified Data.ByteString                 as BS
+import qualified Data.ByteString.Builder         as Builder
+import qualified Data.ByteString.Char8           as BS8
+import qualified Data.ByteString.Lazy            as LBS
+import           Data.Char                       (isAlphaNum)
+import           Data.List                       (isPrefixOf)
+import qualified Data.Map.Strict                 as Map
+import           Data.Word                       (Word8)
+import           Database.Redis.Client           (Client (..),
+                                                  ConnectionStatus (..))
+import           Database.Redis.Cluster          (ClusterNode (..),
+                                                  ClusterTopology (..),
+                                                  NodeAddress (..),
+                                                  NodeRole (..))
+import           Database.Redis.Cluster.Client   (ClusterClient (..),
+                                                  ClusterError (..))
+import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
+import           Database.Redis.Cluster.Commands (CommandRouting (..),
+                                                  classifyCommand)
+import           Database.Redis.Command          (ClientState (..),
+                                                  RedisCommandClient, parseWith)
+import           Database.Redis.Connector        (Connector)
+import           Database.Redis.Resp             (Encodable (encode),
+                                                  RespData (..))
+import qualified Database.Redis.Resp             as Resp
+import           Network.Socket                  (Family (..), SockAddr (..),
+                                                  Socket, SocketOption (..),
+                                                  SocketType (..), bind,
+                                                  defaultProtocol, listen,
+                                                  setSocketOption, socket,
+                                                  tupleToHostAddress)
+import qualified Network.Socket                  as S
+import           Network.Socket.ByteString       (recv, sendAll)
+import           System.IO                       (BufferMode (LineBuffering),
+                                                  hFlush, hSetBuffering, stdout)
+import           Text.Printf                     (printf)
 
 -- | Smart proxy mode: Makes cluster appear as single Redis instance
 -- Creates single listening socket and routes commands to appropriate nodes

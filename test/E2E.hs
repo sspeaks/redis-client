@@ -4,7 +4,6 @@ module Main where
 
 import           AppConfig                  (RunState (..),
                                              runCommandsAgainstPlaintextHost)
-import           Client                     (Client (..), PlainTextClient)
 import           Control.Concurrent         (threadDelay)
 import           Control.Exception          (IOException, evaluate, finally,
                                              try)
@@ -15,18 +14,19 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
-import           E2EHelpers                 (cleanupProcess, drainHandle,
-                                             getRedisClientPath,
-                                             waitForSubstring)
-import           RedisCommandClient         (ClientState (..),
+import           Database.Redis.Client      (Client (..), PlainTextClient)
+import           Database.Redis.Command     (ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),
                                              GeoSearchFrom (..),
                                              GeoSearchOption (..), GeoUnit (..),
                                              RedisCommandClient,
                                              RedisCommands (..), parseManyWith)
-import           Resp                       (Encodable (encode), RespData (..),
+import           Database.Redis.Resp        (Encodable (encode), RespData (..),
                                              parseRespData)
+import           E2EHelpers                 (cleanupProcess, drainHandle,
+                                             getRedisClientPath,
+                                             waitForSubstring)
 import           System.Environment         (getEnvironment)
 import           System.Exit                (ExitCode (..))
 import           System.IO                  (BufferMode (LineBuffering), hClose,
@@ -65,6 +65,10 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , muxCount = 1
   })
 
+-- | Run flushAll with a concrete return type to avoid ambiguous FromResp
+runFlushAll :: IO RespData
+runFlushAll = runRedisAction flushAll
+
 main :: IO ()
 main = do
   redisClient <- getRedisClientPath
@@ -81,7 +85,7 @@ main = do
       chunkKilosForTest :: Integer
       chunkKilosForTest = 4
   hspec $ do
-    before_ (void $ runRedisAction flushAll) $ do
+    before_ (void $ runFlushAll) $ do
       describe "Can run basic operations: " $ do
         it "get and set are encoded and respond properly" $ do
           runRedisAction (set "hello" "world") `shouldReturn` RespSimpleString "OK"
@@ -328,7 +332,7 @@ main = do
                 parseManyWith 100 (receive client)
             )
             `shouldReturn` [RespBulkString ("VALUE" <> BS8.pack (show n)) | n <- [1 .. 100 :: Int]]
-    describe "redis-client modes" $ beforeAll_ (void $ runRedisAction flushAll) $ do
+    describe "redis-client modes" $ beforeAll_ (void $ runFlushAll) $ do
       it "fill --data 1 writes expected number of keys" $ do
         (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1"] ""
         code `shouldBe` ExitSuccess
@@ -344,7 +348,7 @@ main = do
         runRedisAction dbsize `shouldReturn` RespInteger 0
 
       it "fill with --key-size 128 creates keys of correct size" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
@@ -369,13 +373,13 @@ main = do
           _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
       it "fill with --key-size 64 creates smaller keys" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
 
       it "fill with --key-size 2048 creates larger keys" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "2048"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
@@ -387,7 +391,7 @@ main = do
         code2 `shouldNotBe` ExitSuccess
 
       it "fill with --key-size 128 fills accurate memory (1GB)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=128, bytesPerCommand = 128 + 512 = 640 bytes
@@ -404,7 +408,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --key-size 64 fills accurate memory (1GB)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=64, bytesPerCommand = 64 + 512 = 576 bytes
@@ -421,7 +425,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --key-size 256 fills accurate memory (1GB)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=256, bytesPerCommand = 256 + 512 = 768 bytes
@@ -438,7 +442,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --key-size 512 fills accurate memory (1GB, backward compatible)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, bytesPerCommand = 512 + 512 = 1024 bytes
@@ -455,7 +459,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --value-size 128 creates values of correct size" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "128"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
@@ -494,7 +498,7 @@ main = do
           _ -> expectationFailure "Expected bulk string response from RANDOMKEY"
 
       it "fill with --value-size 2048 creates larger values" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "2048"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
@@ -539,7 +543,7 @@ main = do
         code2 `shouldNotBe` ExitSuccess
 
       it "fill with --value-size 1024 fills accurate memory (1GB)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "1024"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, valueSize=1024, bytesPerCommand = 512 + 1024 = 1536 bytes
@@ -556,7 +560,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --value-size 8192 fills accurate memory (1GB)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "8192"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, valueSize=8192, bytesPerCommand = 512 + 8192 = 8704 bytes
@@ -573,7 +577,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with custom --key-size and --value-size fills accurate memory (1GB)" $ do
-        void $ runRedisAction flushAll
+        void $ runFlushAll
         (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256", "--value-size", "1024"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=256, valueSize=1024, bytesPerCommand = 256 + 1024 = 1280 bytes
@@ -684,13 +688,13 @@ main = do
                         (pongResp, echoResp) <-
                           viaTunnel $ do
                             pong <- ping
-                            _ <- set "tunnel:key" "via-tls"
+                            _ <- set "tunnel:key" "via-tls" :: RedisCommandClient PlainTextClient RespData
                             val <- get "tunnel:key"
                             pure (pong, val)
                         pongResp `shouldBe` RespSimpleString "PONG"
                         echoResp `shouldBe` RespBulkString "via-tls"
                         runRedisAction (get "tunnel:key") `shouldReturn` RespBulkString "via-tls"
-                        _ <- runRedisAction flushAll
+                        _ <- runFlushAll
                         postAccept <- timeout (2 * 1000000) (try (waitForSubstring hout "Accepted connection") :: IO (Either IOException ()))
                         case postAccept of
                           Nothing -> expectationFailure "Tunnel never logged an accepted connection"

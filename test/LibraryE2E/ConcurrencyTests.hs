@@ -3,18 +3,18 @@
 
 module LibraryE2E.ConcurrencyTests (spec) where
 
-import           ClusterCommandClient     (ClusterError (..),
-                                           closeClusterClient,
-                                           executeKeyedClusterCommand,
-                                           refreshTopology)
-import           Control.Concurrent       (threadDelay)
-import           Control.Concurrent.Async (concurrently, mapConcurrently)
-import           Control.Exception        (SomeException, try)
-import           Control.Monad            (forM_)
-import           Data.IORef               (atomicModifyIORef', newIORef,
-                                           readIORef)
-import           RedisCommandClient       (showBS)
-import           Resp                     (RespData (..))
+import           Control.Concurrent            (threadDelay)
+import           Control.Concurrent.Async      (concurrently, mapConcurrently)
+import           Control.Exception             (SomeException, try)
+import           Control.Monad                 (forM_)
+import           Data.IORef                    (atomicModifyIORef', newIORef,
+                                                readIORef)
+import           Database.Redis.Cluster.Client (ClusterError (..),
+                                                closeClusterClient,
+                                                executeKeyedClusterCommand,
+                                                refreshTopology)
+import           Database.Redis.Command        (showBS)
+import           Database.Redis.Resp           (RespData (..))
 
 import           LibraryE2E.Utils
 

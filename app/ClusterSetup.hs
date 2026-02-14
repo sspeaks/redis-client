@@ -9,26 +9,32 @@ module ClusterSetup
   , flushAllClusterNodes
   ) where
 
-import           AppConfig              (RunState (..), authenticate)
-import           Client                 (Client (connect),
-                                         ConnectionStatus (..),
-                                         PlainTextClient (..), TLSClient (..))
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient   (ClusterClient (..), ClusterConfig (..),
-                                         createClusterClient)
-import           ConnectionPool         (PoolConfig (PoolConfig))
-import qualified ConnectionPool         as CP
-import           Connector              (Connector)
-import           Control.Concurrent.STM (readTVarIO)
-import qualified Control.Monad.State    as State
-import qualified Data.ByteString        as BS
-import qualified Data.Map.Strict        as Map
-import           Data.Maybe             (fromMaybe)
-import qualified RedisCommandClient
-import           RedisCommandClient     (ClientState (ClientState),
-                                         RedisCommands (flushAll))
-import           Text.Printf            (printf)
+import           AppConfig                             (RunState (..),
+                                                        authenticate)
+import           Control.Concurrent.STM                (readTVarIO)
+import qualified Control.Monad.State                   as State
+import qualified Data.ByteString                       as BS
+import qualified Data.Map.Strict                       as Map
+import           Data.Maybe                            (fromMaybe)
+import           Database.Redis.Client                 (Client (connect),
+                                                        ConnectionStatus (..),
+                                                        PlainTextClient (..),
+                                                        TLSClient (..))
+import           Database.Redis.Cluster                (ClusterNode (..),
+                                                        ClusterTopology (..),
+                                                        NodeAddress (..),
+                                                        NodeRole (..))
+import           Database.Redis.Cluster.Client         (ClusterClient (..),
+                                                        ClusterConfig (..),
+                                                        createClusterClient)
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (PoolConfig))
+import qualified Database.Redis.Cluster.ConnectionPool as CP
+import           Database.Redis.Command                (ClientState (ClientState),
+                                                        RedisCommands (flushAll))
+import qualified Database.Redis.Command                as RedisCommand
+import           Database.Redis.Connector              (Connector)
+import           Database.Redis.Resp                   (RespData)
+import           Text.Printf                           (printf)
 
 -- | Authenticate a client connection if a password is configured
 authenticateClient :: (Client client) => RunState -> client 'Connected -> IO (client 'Connected)
@@ -36,7 +42,7 @@ authenticateClient state client
   | null (password state) = return client
   | otherwise = do
       _ <- State.evalStateT
-             (RedisCommandClient.runRedisCommandClient (authenticate (username state) (password state)))
+             (RedisCommand.runRedisCommandClient (authenticate (username state) (password state)))
              (ClientState client BS.empty)
       return client
 
@@ -93,7 +99,7 @@ flushAllClusterNodes clusterClient connector = do
       printf "  Flushing node %s:%d\n" (nodeHost addr) (nodePort addr)
       CP.withConnection (clusterConnectionPool clusterClient) addr connector $ \conn -> do
         let clientState = ClientState conn BS.empty
-        _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
+        (_ :: RespData) <- State.evalStateT (RedisCommand.runRedisCommandClient flushAll) clientState
         return ()
     ) masterNodes
 

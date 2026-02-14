@@ -6,19 +6,19 @@ module ClusterCli (
 )
 where
 
-import           Client                     (Client (receive, send))
-import           ClusterCommandClient       (ClusterError (..))
-import qualified ClusterCommandClient
-import           ClusterCommands            (CommandRouting (..),
-                                             classifyCommand)
-import           Control.Monad.IO.Class     (liftIO)
-import qualified Control.Monad.State.Strict as State
-import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BS8
-import           RedisCommandClient         (ClientState (ClientState),
-                                             RedisCommandClient, parseWith)
-import           Resp                       (Encodable (encode),
-                                             RespData (RespArray, RespBulkString))
+import           Control.Monad.IO.Class          (liftIO)
+import qualified Control.Monad.State.Strict      as State
+import qualified Data.ByteString.Builder         as Builder
+import qualified Data.ByteString.Char8           as BS8
+import           Database.Redis.Client           (Client (receive, send))
+import           Database.Redis.Cluster.Client   (ClusterError (..))
+import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
+import           Database.Redis.Cluster.Commands (CommandRouting (..),
+                                                  classifyCommand)
+import           Database.Redis.Command          (ClientState (ClientState),
+                                                  RedisCommandClient, parseWith)
+import           Database.Redis.Resp             (Encodable (encode),
+                                                  RespData (RespArray, RespBulkString))
 
 -- | Route and execute command parts via ClusterCommandClient
 routeAndExecuteCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)

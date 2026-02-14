@@ -1,4 +1,4 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | High-level Redis command interface built on top of 'Client'.
@@ -7,7 +7,9 @@
 -- (strings, hashes, lists, sets, sorted sets, geo), a 'RedisCommandClient' monad
 -- that manages connection state and incremental RESP parsing, and typed error handling
 -- via 'RedisError'.
-module RedisCommandClient
+--
+-- @since 0.1.0.0
+module Database.Redis.Command
   ( -- * Core types
     ClientState (..)
   , RedisCommandClient (..)
@@ -37,36 +39,32 @@ module RedisCommandClient
     -- * Parsing
   , parseWith
   , parseManyWith
+    -- * FromResp conversion
+  , convertResp
   ) where
 
-import Client (Client (..), ConnectionStatus (..))
-import Control.Exception (Exception, throwIO)
-import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.State as State
-  ( MonadState (get, put),
-    StateT,
-  )
-import Data.Attoparsec.ByteString.Char8 qualified as StrictParse
-import Data.ByteString (ByteString)
-import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy qualified as LBS
-import Data.Kind (Type)
-import Data.Typeable (Typeable)
-import Resp (Encodable (encode), RespData (..), parseRespData)
+import           Control.Exception                (throwIO)
+import           Control.Monad.IO.Class           (MonadIO (..))
+import           Control.Monad.State              as State (MonadState (get, put),
+                                                            StateT)
+import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
+import           Data.ByteString                  (ByteString)
+import qualified Data.ByteString.Builder          as Builder
+import qualified Data.ByteString.Char8            as BS8
+import qualified Data.ByteString.Lazy             as LBS
+import           Data.Kind                        (Type)
+import           Database.Redis.Client            (Client (..),
+                                                   ConnectionStatus (..))
+import           Database.Redis.FromResp          (FromResp (..))
+import           Database.Redis.RedisError        (RedisError (..))
+import           Database.Redis.Resp              (Encodable (encode),
+                                                   RespData (..), parseRespData)
 
--- | Typed exceptions for Redis protocol errors.
-data RedisError
-  = ParseError String        -- ^ RESP parse failure
-  | ConnectionClosed         -- ^ Remote end closed the connection
-  deriving (Show, Typeable)
-
-instance Exception RedisError
 
 -- | Mutable state carried through a 'RedisCommandClient' session: the live connection
 -- and an unparsed RESP byte buffer from previous receives.
 data ClientState client = ClientState
-  { getClient :: client 'Connected,
+  { getClient      :: client 'Connected,
     getParseBuffer :: BS8.ByteString
   }
 
@@ -107,56 +105,57 @@ instance (Client client) => MonadFail (RedisCommandClient client) where
 -- | The standard set of Redis commands. Implemented for both single-node
 -- ('RedisCommandClient') and cluster ('ClusterCommandClient') monads.
 -- Keys and values use strict 'ByteString' to avoid O(n) String conversions.
+-- Command return types are polymorphic via 'FromResp', allowing typed results.
 class (MonadIO m) => RedisCommands m where
-  auth :: ByteString -> ByteString -> m RespData
-  ping :: m RespData
-  set :: ByteString -> ByteString -> m RespData
-  get :: ByteString -> m RespData
-  mget :: [ByteString] -> m RespData
-  setnx :: ByteString -> ByteString -> m RespData
-  decr :: ByteString -> m RespData
-  psetex :: ByteString -> Int -> ByteString -> m RespData
-  bulkSet :: [(ByteString, ByteString)] -> m RespData
-  flushAll :: m RespData
-  dbsize :: m RespData
-  del :: [ByteString] -> m RespData
-  exists :: [ByteString] -> m RespData
-  incr :: ByteString -> m RespData
-  hset :: ByteString -> ByteString -> ByteString -> m RespData
-  hget :: ByteString -> ByteString -> m RespData
-  hmget :: ByteString -> [ByteString] -> m RespData
-  hexists :: ByteString -> ByteString -> m RespData
-  lpush :: ByteString -> [ByteString] -> m RespData
-  lrange :: ByteString -> Int -> Int -> m RespData
-  expire :: ByteString -> Int -> m RespData
-  ttl :: ByteString -> m RespData
-  rpush :: ByteString -> [ByteString] -> m RespData
-  lpop :: ByteString -> m RespData
-  rpop :: ByteString -> m RespData
-  sadd :: ByteString -> [ByteString] -> m RespData
-  smembers :: ByteString -> m RespData
-  scard :: ByteString -> m RespData
-  sismember :: ByteString -> ByteString -> m RespData
-  hdel :: ByteString -> [ByteString] -> m RespData
-  hkeys :: ByteString -> m RespData
-  hvals :: ByteString -> m RespData
-  llen :: ByteString -> m RespData
-  lindex :: ByteString -> Int -> m RespData
-  clientSetInfo :: [ByteString] -> m RespData
+  auth :: (FromResp a) => ByteString -> ByteString -> m a
+  ping :: (FromResp a) => m a
+  set :: (FromResp a) => ByteString -> ByteString -> m a
+  get :: (FromResp a) => ByteString -> m a
+  mget :: (FromResp a) => [ByteString] -> m a
+  setnx :: (FromResp a) => ByteString -> ByteString -> m a
+  decr :: (FromResp a) => ByteString -> m a
+  psetex :: (FromResp a) => ByteString -> Int -> ByteString -> m a
+  bulkSet :: (FromResp a) => [(ByteString, ByteString)] -> m a
+  flushAll :: (FromResp a) => m a
+  dbsize :: (FromResp a) => m a
+  del :: (FromResp a) => [ByteString] -> m a
+  exists :: (FromResp a) => [ByteString] -> m a
+  incr :: (FromResp a) => ByteString -> m a
+  hset :: (FromResp a) => ByteString -> ByteString -> ByteString -> m a
+  hget :: (FromResp a) => ByteString -> ByteString -> m a
+  hmget :: (FromResp a) => ByteString -> [ByteString] -> m a
+  hexists :: (FromResp a) => ByteString -> ByteString -> m a
+  lpush :: (FromResp a) => ByteString -> [ByteString] -> m a
+  lrange :: (FromResp a) => ByteString -> Int -> Int -> m a
+  expire :: (FromResp a) => ByteString -> Int -> m a
+  ttl :: (FromResp a) => ByteString -> m a
+  rpush :: (FromResp a) => ByteString -> [ByteString] -> m a
+  lpop :: (FromResp a) => ByteString -> m a
+  rpop :: (FromResp a) => ByteString -> m a
+  sadd :: (FromResp a) => ByteString -> [ByteString] -> m a
+  smembers :: (FromResp a) => ByteString -> m a
+  scard :: (FromResp a) => ByteString -> m a
+  sismember :: (FromResp a) => ByteString -> ByteString -> m a
+  hdel :: (FromResp a) => ByteString -> [ByteString] -> m a
+  hkeys :: (FromResp a) => ByteString -> m a
+  hvals :: (FromResp a) => ByteString -> m a
+  llen :: (FromResp a) => ByteString -> m a
+  lindex :: (FromResp a) => ByteString -> Int -> m a
+  clientSetInfo :: (FromResp a) => [ByteString] -> m a
   clientReply :: ClientReplyValues -> m (Maybe RespData)
-  zadd :: ByteString -> [(Int, ByteString)] -> m RespData
-  zrange :: ByteString -> Int -> Int -> Bool -> m RespData
-  geoadd :: ByteString -> [(Double, Double, ByteString)] -> m RespData
-  geodist :: ByteString -> ByteString -> ByteString -> Maybe GeoUnit -> m RespData
-  geohash :: ByteString -> [ByteString] -> m RespData
-  geopos :: ByteString -> [ByteString] -> m RespData
-  georadius :: ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  georadiusRo :: ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  georadiusByMember :: ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  georadiusByMemberRo :: ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> m RespData
-  geosearch :: ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m RespData
-  geosearchstore :: ByteString -> ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m RespData
-  clusterSlots :: m RespData
+  zadd :: (FromResp a) => ByteString -> [(Int, ByteString)] -> m a
+  zrange :: (FromResp a) => ByteString -> Int -> Int -> Bool -> m a
+  geoadd :: (FromResp a) => ByteString -> [(Double, Double, ByteString)] -> m a
+  geodist :: (FromResp a) => ByteString -> ByteString -> ByteString -> Maybe GeoUnit -> m a
+  geohash :: (FromResp a) => ByteString -> [ByteString] -> m a
+  geopos :: (FromResp a) => ByteString -> [ByteString] -> m a
+  georadius :: (FromResp a) => ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m a
+  georadiusRo :: (FromResp a) => ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> m a
+  georadiusByMember :: (FromResp a) => ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> m a
+  georadiusByMemberRo :: (FromResp a) => ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> m a
+  geosearch :: (FromResp a) => ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m a
+  geosearchstore :: (FromResp a) => ByteString -> ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m a
+  clusterSlots :: (FromResp a) => m a
 
 -- | Helper to convert a showable value to ByteString for use in commands.
 showBS :: (Show a) => a -> ByteString
@@ -213,6 +212,16 @@ executeCommand args = do
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
   parseWith (receive client)
 
+-- | Convert a raw 'RespData' value using 'FromResp', throwing on failure.
+convertResp :: (FromResp a, MonadIO m) => RespData -> m a
+convertResp rd = case fromResp rd of
+  Right a  -> return a
+  Left err -> liftIO $ throwIO err
+
+-- | Execute a command and convert the result via 'FromResp'.
+executeCommandAs :: (Client client, FromResp a) => [ByteString] -> RedisCommandClient client a
+executeCommandAs args = executeCommand args >>= convertResp
+
 -- | Distance unit for Redis GEO commands.
 data GeoUnit
   = Meters
@@ -221,13 +230,14 @@ data GeoUnit
   | Feet
   deriving (Eq, Show)
 
+-- | Convert a 'GeoUnit' to its Redis protocol keyword.
 geoUnitKeyword :: GeoUnit -> ByteString
 geoUnitKeyword unit =
   case unit of
-    Meters -> "M"
+    Meters     -> "M"
     Kilometers -> "KM"
-    Miles -> "MI"
-    Feet -> "FT"
+    Miles      -> "MI"
+    Feet       -> "FT"
 
 -- | Optional flags for GEORADIUS and GEORADIUSBYMEMBER commands.
 data GeoRadiusFlag
@@ -241,17 +251,18 @@ data GeoRadiusFlag
   | GeoRadiusStoreDist ByteString
   deriving (Eq, Show)
 
+-- | Convert a 'GeoRadiusFlag' to its Redis protocol argument list.
 geoRadiusFlagToList :: GeoRadiusFlag -> [ByteString]
 geoRadiusFlagToList flag =
   case flag of
-    GeoWithCoord -> ["WITHCOORD"]
-    GeoWithDist -> ["WITHDIST"]
-    GeoWithHash -> ["WITHHASH"]
+    GeoWithCoord            -> ["WITHCOORD"]
+    GeoWithDist             -> ["WITHDIST"]
+    GeoWithHash             -> ["WITHHASH"]
     GeoRadiusCount n useAny -> ["COUNT", showBS n] <> ["ANY" | useAny]
-    GeoRadiusAsc -> ["ASC"]
-    GeoRadiusDesc -> ["DESC"]
-    GeoRadiusStore key -> ["STORE", key]
-    GeoRadiusStoreDist key -> ["STOREDIST", key]
+    GeoRadiusAsc            -> ["ASC"]
+    GeoRadiusDesc           -> ["DESC"]
+    GeoRadiusStore key      -> ["STORE", key]
+    GeoRadiusStoreDist key  -> ["STOREDIST", key]
 
 -- | Origin for a GEOSEARCH query: either a longitude\/latitude pair or an existing member.
 data GeoSearchFrom
@@ -259,11 +270,12 @@ data GeoSearchFrom
   | GeoFromMember ByteString
   deriving (Eq, Show)
 
+-- | Convert a 'GeoSearchFrom' to its Redis protocol argument list.
 geoSearchFromToList :: GeoSearchFrom -> [ByteString]
 geoSearchFromToList fromSpec =
   case fromSpec of
     GeoFromLonLat lon lat -> ["FROMLONLAT", showBS lon, showBS lat]
-    GeoFromMember member -> ["FROMMEMBER", member]
+    GeoFromMember member  -> ["FROMMEMBER", member]
 
 -- | Shape for a GEOSEARCH query: circular radius or rectangular box.
 data GeoSearchBy
@@ -271,6 +283,7 @@ data GeoSearchBy
   | GeoByBox Double Double GeoUnit
   deriving (Eq, Show)
 
+-- | Convert a 'GeoSearchBy' to its Redis protocol argument list.
 geoSearchByToList :: GeoSearchBy -> [ByteString]
 geoSearchByToList bySpec =
   case bySpec of
@@ -288,103 +301,104 @@ data GeoSearchOption
   | GeoSearchDesc
   deriving (Eq, Show)
 
+-- | Convert a 'GeoSearchOption' to its Redis protocol argument list.
 geoSearchOptionToList :: GeoSearchOption -> [ByteString]
 geoSearchOptionToList opt =
   case opt of
-    GeoSearchWithCoord -> ["WITHCOORD"]
-    GeoSearchWithDist -> ["WITHDIST"]
-    GeoSearchWithHash -> ["WITHHASH"]
+    GeoSearchWithCoord      -> ["WITHCOORD"]
+    GeoSearchWithDist       -> ["WITHDIST"]
+    GeoSearchWithHash       -> ["WITHHASH"]
     GeoSearchCount n useAny -> ["COUNT", showBS n] <> ["ANY" | useAny]
-    GeoSearchAsc -> ["ASC"]
-    GeoSearchDesc -> ["DESC"]
+    GeoSearchAsc            -> ["ASC"]
+    GeoSearchDesc           -> ["DESC"]
 
 -- | Values for the CLIENT REPLY command.
 data ClientReplyValues = OFF | ON | SKIP
   deriving (Eq, Show)
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
-  ping = executeCommand ["PING"]
-  set k v = executeCommand ["SET", k, v]
-  get k = executeCommand ["GET", k]
-  mget keys = executeCommand ("MGET" : keys)
-  setnx key value = executeCommand ["SETNX", key, value]
-  decr key = executeCommand ["DECR", key]
-  psetex key milliseconds value = executeCommand ["PSETEX", key, showBS milliseconds, value]
-  auth username password = executeCommand ["HELLO", "3", "AUTH", username, password]
-  bulkSet kvs = executeCommand (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
-  flushAll = executeCommand ["FLUSHALL"]
-  dbsize = executeCommand ["DBSIZE"]
-  del keys = executeCommand ("DEL" : keys)
-  exists keys = executeCommand ("EXISTS" : keys)
-  incr key = executeCommand ["INCR", key]
-  hset key field value = executeCommand ["HSET", key, field, value]
-  hget key field = executeCommand ["HGET", key, field]
-  hmget key fields = executeCommand ("HMGET" : key : fields)
-  hexists key field = executeCommand ["HEXISTS", key, field]
-  lpush key values = executeCommand ("LPUSH" : key : values)
-  lrange key start stop = executeCommand ["LRANGE", key, showBS start, showBS stop]
-  expire key seconds = executeCommand ["EXPIRE", key, showBS seconds]
-  ttl key = executeCommand ["TTL", key]
-  rpush key values = executeCommand ("RPUSH" : key : values)
-  lpop key = executeCommand ["LPOP", key]
-  rpop key = executeCommand ["RPOP", key]
-  sadd key members = executeCommand ("SADD" : key : members)
-  smembers key = executeCommand ["SMEMBERS", key]
-  scard key = executeCommand ["SCARD", key]
-  sismember key member = executeCommand ["SISMEMBER", key, member]
-  hdel key fields = executeCommand ("HDEL" : key : fields)
-  hkeys key = executeCommand ["HKEYS", key]
-  hvals key = executeCommand ["HVALS", key]
-  llen key = executeCommand ["LLEN", key]
-  lindex key index = executeCommand ["LINDEX", key, showBS index]
-  clientSetInfo info = executeCommand (["CLIENT", "SETINFO"] ++ info)
-  clusterSlots = executeCommand ["CLUSTER", "SLOTS"]
+  ping = executeCommandAs ["PING"]
+  set k v = executeCommandAs ["SET", k, v]
+  get k = executeCommandAs ["GET", k]
+  mget keys = executeCommandAs ("MGET" : keys)
+  setnx key value = executeCommandAs ["SETNX", key, value]
+  decr key = executeCommandAs ["DECR", key]
+  psetex key milliseconds value = executeCommandAs ["PSETEX", key, showBS milliseconds, value]
+  auth username password = executeCommandAs ["HELLO", "3", "AUTH", username, password]
+  bulkSet kvs = executeCommandAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
+  flushAll = executeCommandAs ["FLUSHALL"]
+  dbsize = executeCommandAs ["DBSIZE"]
+  del keys = executeCommandAs ("DEL" : keys)
+  exists keys = executeCommandAs ("EXISTS" : keys)
+  incr key = executeCommandAs ["INCR", key]
+  hset key field value = executeCommandAs ["HSET", key, field, value]
+  hget key field = executeCommandAs ["HGET", key, field]
+  hmget key fields = executeCommandAs ("HMGET" : key : fields)
+  hexists key field = executeCommandAs ["HEXISTS", key, field]
+  lpush key values = executeCommandAs ("LPUSH" : key : values)
+  lrange key start stop = executeCommandAs ["LRANGE", key, showBS start, showBS stop]
+  expire key seconds = executeCommandAs ["EXPIRE", key, showBS seconds]
+  ttl key = executeCommandAs ["TTL", key]
+  rpush key values = executeCommandAs ("RPUSH" : key : values)
+  lpop key = executeCommandAs ["LPOP", key]
+  rpop key = executeCommandAs ["RPOP", key]
+  sadd key members = executeCommandAs ("SADD" : key : members)
+  smembers key = executeCommandAs ["SMEMBERS", key]
+  scard key = executeCommandAs ["SCARD", key]
+  sismember key member = executeCommandAs ["SISMEMBER", key, member]
+  hdel key fields = executeCommandAs ("HDEL" : key : fields)
+  hkeys key = executeCommandAs ["HKEYS", key]
+  hvals key = executeCommandAs ["HVALS", key]
+  llen key = executeCommandAs ["LLEN", key]
+  lindex key index = executeCommandAs ["LINDEX", key, showBS index]
+  clientSetInfo info = executeCommandAs (["CLIENT", "SETINFO"] ++ info)
+  clusterSlots = executeCommandAs ["CLUSTER", "SLOTS"]
 
   clientReply val = do
     ClientState !client _ <- State.get
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", showBS val])
     case val of
       ON -> Just <$> parseWith (receive client)
-      _ -> return Nothing
+      _  -> return Nothing
 
   zadd key members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members
-    in executeCommand ("ZADD" : key : payload)
+    in executeCommandAs ("ZADD" : key : payload)
 
   zrange key start stop withScores =
     let base = ["ZRANGE", key, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
-    in executeCommand command
+    in executeCommandAs command
 
   geoadd key entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
-    in executeCommand ("GEOADD" : key : payload)
+    in executeCommandAs ("GEOADD" : key : payload)
 
   geodist key member1 member2 unit =
     let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
-    in executeCommand (["GEODIST", key, member1, member2] ++ unitPart)
+    in executeCommandAs (["GEODIST", key, member1, member2] ++ unitPart)
 
-  geohash key members = executeCommand ("GEOHASH" : key : members)
-  geopos key members = executeCommand ("GEOPOS" : key : members)
+  geohash key members = executeCommandAs ("GEOHASH" : key : members)
+  geopos key members = executeCommandAs ("GEOPOS" : key : members)
 
   georadius key longitude latitude radius unit flags =
     let base = ["GEORADIUS", key, showBS longitude, showBS latitude, showBS radius, geoUnitKeyword unit]
-    in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
+    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusRo key longitude latitude radius unit flags =
     let base = ["GEORADIUS_RO", key, showBS longitude, showBS latitude, showBS radius, geoUnitKeyword unit]
-    in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
+    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusByMember key member radius unit flags =
     let base = ["GEORADIUSBYMEMBER", key, member, showBS radius, geoUnitKeyword unit]
-    in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
+    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusByMemberRo key member radius unit flags =
     let base = ["GEORADIUSBYMEMBER_RO", key, member, showBS radius, geoUnitKeyword unit]
-    in executeCommand (base ++ concatMap geoRadiusFlagToList flags)
+    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
 
   geosearch key fromSpec bySpec options =
-    executeCommand (["GEOSEARCH", key]
+    executeCommandAs (["GEOSEARCH", key]
       ++ geoSearchFromToList fromSpec
       ++ geoSearchByToList bySpec
       ++ concatMap geoSearchOptionToList options)
@@ -395,7 +409,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
             ++ geoSearchByToList bySpec
             ++ concatMap geoSearchOptionToList options
         command = if storeDist then base ++ ["STOREDIST"] else base
-    in executeCommand command
+    in executeCommandAs command
 
 -- | Receive exactly one RESP value, fetching more bytes from the connection as needed.
 -- Throws 'ParseError' on malformed data and 'ConnectionClosed' if the remote end hangs up.

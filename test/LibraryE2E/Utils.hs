@@ -1,5 +1,6 @@
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module LibraryE2E.Utils
   ( -- * Client creation
@@ -19,29 +20,32 @@ module LibraryE2E.Utils
   , seedNode
   ) where
 
-import           Client                 (Client (..),
-                                         PlainTextClient (NotConnectedPlainTextClient))
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient   (ClusterClient (..),
-                                         ClusterCommandClient,
-                                         ClusterConfig (..),
-                                         createClusterClient,
-                                         runClusterCommandClient)
-import           ConnectionPool         (PoolConfig (..))
-import           Connector              (Connector, clusterPlaintextConnector)
-import           Control.Concurrent     (threadDelay)
-import           Control.Concurrent.STM (readTVarIO)
-import           Control.Exception      (SomeException, try)
-import           Control.Monad          (forM_)
-import qualified Control.Monad.State    as State
-import qualified Data.ByteString        as BS
-import qualified Data.Map.Strict        as Map
-import           RedisCommandClient     (ClientState (..),
-                                         RedisCommandClient (..),
-                                         RedisCommands (..))
-import           Resp                   (RespData (..))
-import           System.Process         (readProcessWithExitCode)
+import           Control.Concurrent                    (threadDelay)
+import           Control.Concurrent.STM                (readTVarIO)
+import           Control.Exception                     (SomeException, try)
+import           Control.Monad                         (forM_)
+import qualified Control.Monad.State                   as State
+import qualified Data.ByteString                       as BS
+import qualified Data.Map.Strict                       as Map
+import           Database.Redis.Client                 (Client (..),
+                                                        PlainTextClient (NotConnectedPlainTextClient))
+import           Database.Redis.Cluster                (ClusterNode (..),
+                                                        ClusterTopology (..),
+                                                        NodeAddress (..),
+                                                        NodeRole (..))
+import           Database.Redis.Cluster.Client         (ClusterClient (..),
+                                                        ClusterCommandClient,
+                                                        ClusterConfig (..),
+                                                        createClusterClient,
+                                                        runClusterCommandClient)
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
+import           Database.Redis.Command                (ClientState (..),
+                                                        RedisCommandClient (..),
+                                                        RedisCommands (..))
+import           Database.Redis.Connector              (Connector,
+                                                        clusterPlaintextConnector)
+import           Database.Redis.Resp                   (RespData (..))
+import           System.Process                        (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
 seedNode :: NodeAddress
@@ -90,9 +94,9 @@ flushAllNodes client = do
   forM_ masterNodes $ \node -> do
     let addr = nodeAddress node
     result <- try $ do
-      conn <- Client.connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-      _ <- State.evalStateT (runRedisCommandClient flushAll) (ClientState conn BS.empty)
-      Client.close conn
+      conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+      _ <- State.evalStateT (runRedisCommandClient flushAll) (ClientState conn BS.empty) :: IO RespData
+      close conn
     case result of
       Left (_ :: SomeException) -> return ()
       Right _                   -> return ()
@@ -121,9 +125,9 @@ waitForClusterReady maxWaitSeconds = go maxWaitSeconds
     go 0 = error "Cluster did not become ready in time"
     go remaining = do
       result <- try $ do
-        conn <- Client.connect (NotConnectedPlainTextClient (nodeHost seedNode) (Just (nodePort seedNode)))
+        conn <- connect (NotConnectedPlainTextClient (nodeHost seedNode) (Just (nodePort seedNode)))
         resp <- State.evalStateT (runRedisCommandClient ping) (ClientState conn BS.empty)
-        Client.close conn
+        close conn
         return resp
         :: IO (Either SomeException RespData)
       case result of

@@ -3,17 +3,19 @@
 
 module LibraryE2E.ConnectionPoolTests (spec) where
 
-import           ClusterCommandClient     (ClusterClient (..),
-                                           ClusterConfig (..),
-                                           closeClusterClient,
-                                           executeKeyedClusterCommand)
-import           ConnectionPool           (PoolConfig (..), closePool,
-                                           withConnection)
-import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Exception        (SomeException, throwIO, try)
-import           Control.Monad            (forM_)
-import           RedisCommandClient       (showBS)
-import           Resp                     (RespData (..))
+import           Control.Concurrent.Async              (mapConcurrently)
+import           Control.Exception                     (SomeException, throwIO,
+                                                        try)
+import           Control.Monad                         (forM_)
+import           Database.Redis.Cluster.Client         (ClusterClient (..),
+                                                        ClusterConfig (..),
+                                                        closeClusterClient,
+                                                        executeKeyedClusterCommand)
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
+                                                        closePool,
+                                                        withConnection)
+import           Database.Redis.Command                (showBS)
+import           Database.Redis.Resp                   (RespData (..))
 
 import           LibraryE2E.Utils
 

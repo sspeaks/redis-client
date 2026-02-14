@@ -6,11 +6,13 @@ module SlotMappingHelpers
   ( getKeyForNode
   ) where
 
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BS8
-import qualified Data.Vector as V
-import           Cluster (ClusterNode, nodeSlotsServed, SlotRange (..))
-import           ClusterSlotMapping (slotMappings)
+import qualified Data.ByteString                    as BS
+import qualified Data.ByteString.Char8              as BS8
+import qualified Data.Vector                        as V
+import           Database.Redis.Cluster             (ClusterNode,
+                                                     SlotRange (..),
+                                                     nodeSlotsServed)
+import           Database.Redis.Cluster.SlotMapping (slotMappings)
 
 -- | Generates a key that maps to the specified slot using the global mappings.
 -- The key format is "{hashtag}:<suffix>"
@@ -25,5 +27,5 @@ getKeyForSlot range suffix =
 getKeyForNode :: ClusterNode -> String -> BS.ByteString
 getKeyForNode node suffix =
     case nodeSlotsServed node of
-        [] -> error "Node serves no slots"
+        []        -> error "Node serves no slots"
         (range:_) -> getKeyForSlot range suffix

@@ -5,40 +5,45 @@ module ClusterFiller
   ( fillClusterWithData
   ) where
 
-import           Client                  (Client (..), ConnectionStatus (..))
-import           Cluster                 (ClusterNode (..),
-                                          ClusterTopology (..),
-                                          NodeAddress (..), NodeRole (..),
-                                          SlotRange (..))
-import           ClusterCommandClient    (ClusterClient (..))
-import           ClusterSlotMapping      (slotMappings)
-import           Connector               (Connector)
-import           Control.Concurrent      (MVar, forkIO, newEmptyMVar, putMVar,
-                                          takeMVar, threadDelay)
-import           Control.Concurrent.STM  (readTVarIO)
-import           Control.Exception       (SomeException, catch)
-import           Control.Monad           (when)
-import qualified Control.Monad.State     as State
-import qualified Data.ByteString         as BS
-import qualified Data.ByteString.Builder as Builder
-import           Data.ByteString.Char8   (ByteString)
-import qualified Data.ByteString.Char8   as BS8
-import qualified Data.ByteString.Lazy    as LBS
-import           Data.Map.Strict         (Map)
-import qualified Data.Map.Strict         as Map
-import qualified Data.Vector             as V
-import qualified Data.Vector.Unboxed     as VU
-import           Data.Word               (Word16, Word64)
-import           Filler                  (sendChunkedFill)
-import           Data.List               (find)
-import           FillHelpers             (generateBytes,
-                                          generateBytesWithHashTag, nextLCG,
-                                          threadSeedSpacing)
-import           RedisCommandClient      (ClientReplyValues (..),
-                                          ClientState (..), RedisCommands (..),
-                                          runRedisCommandClient)
-import           System.Timeout          (timeout)
-import           Text.Printf             (printf)
+import           Control.Concurrent                 (MVar, forkIO, newEmptyMVar,
+                                                     putMVar, takeMVar,
+                                                     threadDelay)
+import           Control.Concurrent.STM             (readTVarIO)
+import           Control.Exception                  (SomeException, catch)
+import           Control.Monad                      (when)
+import qualified Control.Monad.State                as State
+import qualified Data.ByteString                    as BS
+import qualified Data.ByteString.Builder            as Builder
+import           Data.ByteString.Char8              (ByteString)
+import qualified Data.ByteString.Char8              as BS8
+import qualified Data.ByteString.Lazy               as LBS
+import           Data.List                          (find)
+import           Data.Map.Strict                    (Map)
+import qualified Data.Map.Strict                    as Map
+import qualified Data.Vector                        as V
+import qualified Data.Vector.Unboxed                as VU
+import           Data.Word                          (Word16, Word64)
+import           Database.Redis.Client              (Client (..),
+                                                     ConnectionStatus (..))
+import           Database.Redis.Cluster             (ClusterNode (..),
+                                                     ClusterTopology (..),
+                                                     NodeAddress (..),
+                                                     NodeRole (..),
+                                                     SlotRange (..))
+import           Database.Redis.Cluster.Client      (ClusterClient (..))
+import           Database.Redis.Cluster.SlotMapping (slotMappings)
+import           Database.Redis.Command             (ClientReplyValues (..),
+                                                     ClientState (..),
+                                                     RedisCommands (..),
+                                                     runRedisCommandClient)
+import           Database.Redis.Connector           (Connector)
+import           Database.Redis.Resp                (RespData)
+import           Filler                             (sendChunkedFill)
+import           FillHelpers                        (generateBytes,
+                                                     generateBytesWithHashTag,
+                                                     nextLCG, threadSeedSpacing)
+import           System.Timeout                     (timeout)
+import           Text.Printf                        (printf)
 
 
 
@@ -210,7 +215,7 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipeli
           _ <- clientReply OFF
           sendChunkedFill genChunk mbToFill pipelineBatchSize (keySize + valueSize) threadSeed
           _ <- clientReply ON
-          _ <- dbsize
+          (_ :: RespData) <- dbsize
           return ()
 
     result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState

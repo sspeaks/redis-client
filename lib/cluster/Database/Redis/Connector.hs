@@ -21,7 +21,9 @@
 --   client <- createClusterClient config connector
 --   ...
 -- @
-module Connector
+--
+-- @since 0.1.0.0
+module Database.Redis.Connector
   ( -- * Connector type
     Connector
     -- * Standalone connections
@@ -32,13 +34,11 @@ module Connector
   , clusterTLSConnector
   ) where
 
-import Client
-  ( Client (connect)
-  , ConnectionStatus (..)
-  , PlainTextClient (NotConnectedPlainTextClient)
-  , TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname)
-  )
-import Cluster (NodeAddress (..))
+import           Database.Redis.Client  (Client (connect),
+                                         ConnectionStatus (..),
+                                         PlainTextClient (NotConnectedPlainTextClient),
+                                         TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname))
+import           Database.Redis.Cluster (NodeAddress (..))
 
 -- | A function that creates a connected client for a given node address.
 -- Used throughout the cluster layer to establish connections on demand.

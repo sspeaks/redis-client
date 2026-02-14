@@ -9,17 +9,17 @@ module AppConfig
   , runCommandsAgainstPlaintextHost
   ) where
 
-import           Client                (Client (..),
-                                        PlainTextClient (NotConnectedPlainTextClient),
-                                        TLSClient (..))
-import           Control.Exception     (bracket)
-import qualified Control.Monad.State   as State
-import qualified Data.ByteString       as BS
-import qualified Data.ByteString.Char8 as BS8
-import           RedisCommandClient    (ClientState (..),
-                                        RedisCommandClient (..),
-                                        RedisCommands (..))
-import           Resp                  (RespData (..))
+import           Control.Exception      (bracket)
+import qualified Control.Monad.State    as State
+import qualified Data.ByteString        as BS
+import qualified Data.ByteString.Char8  as BS8
+import           Database.Redis.Client  (Client (..),
+                                         PlainTextClient (NotConnectedPlainTextClient),
+                                         TLSClient (..))
+import           Database.Redis.Command (ClientState (..),
+                                         RedisCommandClient (..),
+                                         RedisCommands (..))
+import           Database.Redis.Resp    (RespData (..))
 
 data RunState = RunState
   { host              :: String,
@@ -70,8 +70,8 @@ defaultRunState = RunState
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
 authenticate _ [] = return $ RespSimpleString "OK"
 authenticate uname pwd = do
-  _ <- auth (BS8.pack uname) (BS8.pack pwd)
-  _ <- clientSetInfo ["LIB-NAME", "seth-spaghetti"]
+  (_ :: RespData) <- auth (BS8.pack uname) (BS8.pack pwd)
+  (_ :: RespData) <- clientSetInfo ["LIB-NAME", "seth-spaghetti"]
   clientSetInfo ["LIB-VER", "0.0.0"]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a

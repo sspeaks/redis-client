@@ -1,5 +1,5 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | TCP and TLS transport layer for Redis connections.
@@ -8,7 +8,9 @@
 -- connection state at compile time: you can only 'send' and 'receive' on a
 -- @client \'Connected@, and only 'connect' a @client \'NotConnected@. This prevents
 -- use-after-close and send-before-connect bugs statically.
-module Client
+--
+-- @since 0.1.0.0
+module Database.Redis.Client
   ( Client (..)
   , serve
   , PlainTextClient (NotConnectedPlainTextClient)
@@ -16,45 +18,43 @@ module Client
   , ConnectionStatus (..)
   ) where
 
-import Control.Exception (IOException, bracket, catch, finally, throwIO)
-import Control.Monad (void)
-import Control.Monad.IO.Class
-import Data.ByteString qualified as BS
-import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy qualified as LBS
-import Data.Default.Class (def)
-import Data.IP (IPv4, toHostAddress)
-import Data.Kind (Type)
-import Data.Word (Word32)
-import Network.DNS
-  ( defaultResolvConf,
-    lookupA,
-    makeResolvSeed,
-    withResolver,
-  )
-import Network.Socket
-  ( Family (AF_INET),
-    HostAddress,
-    SockAddr (SockAddrInet),
-    Socket,
-    SocketOption (..),
-    SocketType (Stream),
-    defaultProtocol,
-    setSocketOption,
-    socket,
-    tupleToHostAddress,
-  )
-import Network.Socket qualified as S
-import Network.Socket.ByteString (recv, sendMany)
-import Network.Socket.ByteString.Lazy (sendAll)
-import Network.TLS (ClientHooks (..), ClientParams (..), Context, Shared (..), Supported (..), Version (..), bye, contextNew, defaultParamsClient, handshake, recvData, sendData)
-import Network.TLS.Extra (ciphersuite_strong)
-import System.IO (BufferMode (LineBuffering), hFlush, hSetBuffering, stdout)
-import System.Environment (lookupEnv)
-import System.Timeout (timeout)
-import System.X509.Unix (getSystemCertificateStore)
-import Text.Printf (printf)
-import Prelude hiding (getContents)
+import           Control.Exception              (IOException, bracket, catch,
+                                                 finally, throwIO)
+import           Control.Monad                  (void)
+import           Control.Monad.IO.Class
+import qualified Data.ByteString                as BS
+import qualified Data.ByteString.Char8          as BS8
+import qualified Data.ByteString.Lazy           as LBS
+import           Data.Default.Class             (def)
+import           Data.IP                        (IPv4, toHostAddress)
+import           Data.Kind                      (Type)
+import           Data.Word                      (Word32)
+import           Network.DNS                    (defaultResolvConf, lookupA,
+                                                 makeResolvSeed, withResolver)
+import           Network.Socket                 (Family (AF_INET), HostAddress,
+                                                 SockAddr (SockAddrInet),
+                                                 Socket, SocketOption (..),
+                                                 SocketType (Stream),
+                                                 defaultProtocol,
+                                                 setSocketOption, socket,
+                                                 tupleToHostAddress)
+import qualified Network.Socket                 as S
+import           Network.Socket.ByteString      (recv, sendMany)
+import           Network.Socket.ByteString.Lazy (sendAll)
+import           Network.TLS                    (ClientHooks (..),
+                                                 ClientParams (..), Context,
+                                                 Shared (..), Supported (..),
+                                                 Version (..), bye, contextNew,
+                                                 defaultParamsClient, handshake,
+                                                 recvData, sendData)
+import           Network.TLS.Extra              (ciphersuite_strong)
+import           Prelude                        hiding (getContents)
+import           System.Environment             (lookupEnv)
+import           System.IO                      (BufferMode (LineBuffering),
+                                                 hFlush, hSetBuffering, stdout)
+import           System.Timeout                 (timeout)
+import           System.X509.Unix               (getSystemCertificateStore)
+import           Text.Printf                    (printf)
 
 -- | Connection lifecycle phase, used as a DataKinds-promoted type parameter
 -- to statically track whether a client is connected.
@@ -105,7 +105,7 @@ instance Client PlainTextClient where
     val <- liftIO $ timeout (300 * 1000000) $ recv sock 16384
     case val of
       Nothing -> fail "recv socket timeout (plaintext)"
-      Just v -> return v
+      Just v  -> return v
 
 -- | TLS-encrypted client. Construct with 'NotConnectedTLSClient' (hostname + optional port,
 -- defaults to 6380) or 'NotConnectedTLSClientWithHostname' when the TLS certificate
@@ -124,7 +124,7 @@ instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
   connect (NotConnectedTLSClient hostname port) =
     connectTLS hostname hostname port
-  
+
   connect (NotConnectedTLSClientWithHostname certHostname targetAddress port) =
     connectTLS certHostname targetAddress port
 
@@ -140,7 +140,7 @@ instance Client TLSClient where
     val <- liftIO $ timeout (300 * 1000000) $ recvData ctx
     case val of
       Nothing -> fail "recv socket timeout (TLS)"
-      Just v -> return v
+      Just v  -> return v
 
 -- | Connect to a TLS server, using certHostname for certificate validation
 -- and targetAddress for the actual network connection.

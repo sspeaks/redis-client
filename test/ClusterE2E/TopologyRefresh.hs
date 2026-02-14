@@ -2,25 +2,27 @@
 
 module ClusterE2E.TopologyRefresh (spec) where
 
-import           Client                   (PlainTextClient (NotConnectedPlainTextClient),
-                                           connect)
-import           Cluster                  (ClusterTopology (..),
-                                           NodeAddress (..))
-import           ClusterCommandClient     (ClusterClient (..),
-                                           ClusterConfig (..),
-                                           closeClusterClient,
-                                           createClusterClient, refreshTopology)
 import           ClusterE2E.Utils
-import           ConnectionPool           (PoolConfig (..))
+import           Database.Redis.Client                 (PlainTextClient (NotConnectedPlainTextClient),
+                                                        connect)
+import           Database.Redis.Cluster                (ClusterTopology (..),
+                                                        NodeAddress (..))
+import           Database.Redis.Cluster.Client         (ClusterClient (..),
+                                                        ClusterConfig (..),
+                                                        closeClusterClient,
+                                                        createClusterClient,
+                                                        refreshTopology)
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
 
-import           Control.Concurrent       (threadDelay)
-import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Concurrent.STM   (readTVarIO)
-import           Control.Exception        (bracket)
+import           Control.Concurrent                    (threadDelay)
+import           Control.Concurrent.Async              (mapConcurrently)
+import           Control.Concurrent.STM                (readTVarIO)
+import           Control.Exception                     (bracket)
 
 
-import           RedisCommandClient       (RedisCommands (..), showBS)
-import           Resp                     (RespData (..))
+import           Database.Redis.Command                (RedisCommands (..),
+                                                        showBS)
+import           Database.Redis.Resp                   (RespData (..))
 import           Test.Hspec
 
 spec :: Spec
@@ -167,7 +169,7 @@ spec = describe "Topology refresh" $ do
 
         -- We can't easily force a refresh failure without breaking the cluster,
         -- so we'll just verify that normal operations work and topology is valid
-        _result <- runCmd client $ get "refresh:test:verification"
+        _result <- runCmd_ client $ get "refresh:test:verification"
 
         -- Topology should still be valid
         topology2 <- readTVarIO (clusterTopology client)

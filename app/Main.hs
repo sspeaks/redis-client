@@ -3,66 +3,84 @@
 
 module Main where
 
-import           Client                  (Client (receive, send),
-                                          TLSClient (..), serve)
-import           ClusterCommandClient    (ClusterClient (..),
-                                          ClusterCommandClient,
-                                          closeClusterClient,
-                                          runClusterCommandClient)
-import           ClusterFiller           (fillClusterWithData)
+import           ClusterFiller                         (fillClusterWithData)
+import           Database.Redis.Client                 (Client (receive, send),
+                                                        TLSClient (..), serve)
+import           Database.Redis.Cluster.Client         (ClusterClient (..),
+                                                        ClusterCommandClient,
+                                                        closeClusterClient,
+                                                        runClusterCommandClient)
 
-import           ClusterSetup            (createClusterClientFromState,
-                                          createPlaintextConnector,
-                                          createTLSConnector,
-                                          flushAllClusterNodes)
-import           ClusterTunnel           (servePinnedProxy, serveSmartProxy)
-import           Control.Concurrent      (forkIO, newEmptyMVar, putMVar,
-                                          takeMVar)
+import           ClusterSetup                          (createClusterClientFromState,
+                                                        createPlaintextConnector,
+                                                        createTLSConnector,
+                                                        flushAllClusterNodes)
+import           ClusterTunnel                         (servePinnedProxy,
+                                                        serveSmartProxy)
+import           Control.Concurrent                    (forkIO, newEmptyMVar,
+                                                        putMVar, takeMVar)
 
-import           AppConfig               (RunState (..), defaultRunState,
-                                          runCommandsAgainstPlaintextHost,
-                                          runCommandsAgainstTLSHost)
-import           Cluster                 (ClusterNode (..),
-                                          ClusterTopology (..), NodeRole (..),
-                                          calculateSlot, findNodeAddressForSlot)
-import           ClusterCli              (routeAndExecuteCommand)
-import           Connector               (Connector)
-import           Control.Concurrent.STM  (readTVarIO)
-import           Control.Monad           (unless, void, when)
+import           AppConfig                             (RunState (..),
+                                                        defaultRunState,
+                                                        runCommandsAgainstPlaintextHost,
+                                                        runCommandsAgainstTLSHost)
+import           ClusterCli                            (routeAndExecuteCommand)
+import           Control.Concurrent.STM                (readTVarIO)
+import           Control.Monad                         (unless, void, when)
 import           Control.Monad.IO.Class
-import qualified Control.Monad.State     as State
-import qualified Data.ByteString         as BS
-import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Char8   as BS8
-import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
-                                          readIORef)
-import qualified Data.Map.Strict         as Map
-import           Data.Maybe              (fromMaybe, isNothing)
-import           Data.Time.Clock         (diffUTCTime, getCurrentTime)
-import           Data.Word               (Word64, Word8)
-import           Filler                  (fillCacheWithData,
-                                          fillCacheWithDataMB, initRandomNoise)
-import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
-                                          createMultiplexPool, submitToNode,
-                                          submitToNodeAsync, waitSlotResult)
-import           Numeric                 (showHex)
-import           RedisCommandClient      (ClientState (ClientState),
-                                          RedisCommandClient,
-                                          RedisCommands (..), encodeGetBuilder,
-                                          encodeSetBuilder, parseWith)
-import           Resp                    (Encodable (encode),
-                                          RespData (RespArray, RespBulkString))
-import           System.Console.GetOpt   (ArgDescr (..), ArgOrder (..),
-                                          OptDescr (Option), getOpt, usageInfo)
-import           System.Console.Readline (addHistory, readline)
-import           System.Environment      (getArgs, getExecutablePath)
-import           System.Exit             (exitFailure, exitSuccess)
-import           System.IO               (hIsTerminalDevice, hPutStrLn, isEOF,
-                                          stderr, stdin)
-import           System.Process          (ProcessHandle, createProcess, proc,
-                                          waitForProcess)
-import           System.Random           (randomIO)
-import           Text.Printf             (printf)
+import qualified Control.Monad.State                   as State
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Builder               as Builder
+import qualified Data.ByteString.Char8                 as BS8
+import           Data.IORef                            (IORef,
+                                                        atomicModifyIORef',
+                                                        newIORef, readIORef)
+import qualified Data.Map.Strict                       as Map
+import           Data.Maybe                            (fromMaybe, isNothing)
+import           Data.Time.Clock                       (diffUTCTime,
+                                                        getCurrentTime)
+import           Data.Word                             (Word64, Word8)
+import           Database.Redis.Cluster                (ClusterNode (..),
+                                                        ClusterTopology (..),
+                                                        NodeRole (..),
+                                                        calculateSlot,
+                                                        findNodeAddressForSlot)
+import           Database.Redis.Command                (ClientState (ClientState),
+                                                        RedisCommandClient,
+                                                        RedisCommands (..),
+                                                        encodeGetBuilder,
+                                                        encodeSetBuilder,
+                                                        parseWith)
+import           Database.Redis.Connector              (Connector)
+import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
+                                                        closeMultiplexPool,
+                                                        createMultiplexPool,
+                                                        submitToNode,
+                                                        submitToNodeAsync,
+                                                        waitSlotResult)
+import           Database.Redis.Resp                   (Encodable (encode),
+                                                        RespData (RespArray, RespBulkString))
+import           Filler                                (fillCacheWithData,
+                                                        fillCacheWithDataMB,
+                                                        initRandomNoise)
+import           Numeric                               (showHex)
+import           System.Console.GetOpt                 (ArgDescr (..),
+                                                        ArgOrder (..),
+                                                        OptDescr (Option),
+                                                        getOpt, usageInfo)
+import           System.Console.Readline               (addHistory, readline)
+import           System.Environment                    (getArgs,
+                                                        getExecutablePath)
+import           System.Exit                           (exitFailure,
+                                                        exitSuccess)
+import           System.IO                             (hIsTerminalDevice,
+                                                        hPutStrLn, isEOF,
+                                                        stderr, stdin)
+import           System.Process                        (ProcessHandle,
+                                                        createProcess, proc,
+                                                        waitForProcess)
+import           System.Random                         (randomIO)
+import           Text.Printf                           (printf)
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
@@ -238,8 +256,8 @@ fill state = do
       else do
         printf "Flushing cache '%s'\n" (host state)
         if useTLS state
-          then runCommandsAgainstTLSHost state (void flushAll)
-          else runCommandsAgainstPlaintextHost state (void flushAll)
+          then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+          else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
     putStrLn "Flush complete"
     exitSuccess
 
@@ -279,8 +297,8 @@ spawnFillProcesses state nprocs = do
   when (flush state && not (useCluster state)) $ do
     printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
     if useTLS state
-      then runCommandsAgainstTLSHost state (void flushAll)
-      else runCommandsAgainstPlaintextHost state (void flushAll)
+      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
 
   -- Calculate data per process
   let totalGB = dataGBs state
@@ -337,8 +355,8 @@ fillStandalone state = do
   when (flush state && isNothing (numProcesses state)) $ do
     printf "Flushing cache '%s'\n" (host state)
     if useTLS state
-      then runCommandsAgainstTLSHost state (void flushAll)
-      else runCommandsAgainstPlaintextHost state (void flushAll)
+      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
   when (dataGBs state > 0) $ do
     initRandomNoise -- Ensure noise buffer is initialized once and shared
     baseSeed <- randomIO :: IO Word64
