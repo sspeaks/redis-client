@@ -27,6 +27,7 @@
 module Database.Redis.Standalone
   ( -- * Configuration
     StandaloneConfig (..)
+  , defaultStandaloneConfig
     -- * Client type
   , StandaloneClient
   , StandaloneCommandClient
@@ -46,7 +47,8 @@ import           Control.Exception                   (SomeException, bracket,
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
-import           Database.Redis.Client               (Client (..))
+import           Database.Redis.Client               (Client (..),
+                                                      PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Command              (ClientReplyValues (..),
                                                       RedisCommands (..),
@@ -57,7 +59,8 @@ import           Database.Redis.Command              (ClientReplyValues (..),
                                                       geoSearchFromToList,
                                                       geoSearchOptionToList,
                                                       geoUnitKeyword, showBS)
-import           Database.Redis.Connector            (Connector)
+import           Database.Redis.Connector            (Connector,
+                                                      clusterPlaintextConnector)
 import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
                                                       createMultiplexer,
                                                       createSlotPool,
@@ -72,6 +75,20 @@ data StandaloneConfig client = StandaloneConfig
   { standaloneNodeAddress      :: !NodeAddress       -- ^ Redis node to connect to.
   , standaloneConnector        :: !(Connector client) -- ^ Connection factory (plaintext or TLS).
   , standaloneMultiplexerCount :: !Int                -- ^ Number of multiplexers to create (default: 1).
+  }
+
+-- | Default configuration connecting to @localhost:6379@ over plaintext with 1 multiplexer.
+--
+-- @
+-- runRedis defaultStandaloneConfig $ do
+--   set \"key\" \"value\"
+--   get \"key\"
+-- @
+defaultStandaloneConfig :: StandaloneConfig PlainTextClient
+defaultStandaloneConfig = StandaloneConfig
+  { standaloneNodeAddress      = NodeAddress "localhost" 6379
+  , standaloneConnector        = clusterPlaintextConnector
+  , standaloneMultiplexerCount = 1
   }
 
 -- | A standalone Redis client backed by a multiplexer and slot pool.

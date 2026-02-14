@@ -228,7 +228,7 @@
         "Typecheck passes"
       ],
       "priority": 15,
-      "passes": false,
+      "passes": true,
       "notes": "Use Control.Exception.bracket for exception safety. Mark createStandaloneClient and closeStandaloneClient with Haddock notes like '-- | ... Consider using withStandaloneClient instead for automatic cleanup.'"
     },
     {
