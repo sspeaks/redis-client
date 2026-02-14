@@ -1,4 +1,5 @@
-#!/bin/bash
+#! /usr/bin/env nix-shell
+#! nix-shell -p bash -i bash
 
 # shellcheck disable=SC2046
 docker load <$(nix-build nix/e2e-docker.nix)
