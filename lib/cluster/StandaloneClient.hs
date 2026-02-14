@@ -39,26 +39,27 @@ module StandaloneClient
   , runStandaloneClient
   ) where
 
-import           Cluster                (NodeAddress (..))
-import           Connector              (Connector)
-import           Control.Exception      (SomeException, catch)
-import           Control.Monad.IO.Class (MonadIO (..))
-import           Control.Monad.Reader   (ReaderT, ask, runReaderT)
-import           Data.ByteString        (ByteString)
-import           Database.Redis.Client  (Client (..))
-import           Database.Redis.Command (ClientReplyValues (..),
-                                         RedisCommands (..), convertResp,
-                                         encodeCommandBuilder,
-                                         geoRadiusFlagToList, geoSearchByToList,
-                                         geoSearchFromToList,
-                                         geoSearchOptionToList, geoUnitKeyword,
-                                         showBS)
-import           Database.Redis.Resp    (RespData)
-import           FromResp               (FromResp (..))
-import           Multiplexer            (Multiplexer, SlotPool,
-                                         createMultiplexer, createSlotPool,
-                                         destroyMultiplexer,
-                                         submitCommandPooled)
+import           Cluster                  (NodeAddress (..))
+import           Control.Exception        (SomeException, catch)
+import           Control.Monad.IO.Class   (MonadIO (..))
+import           Control.Monad.Reader     (ReaderT, ask, runReaderT)
+import           Data.ByteString          (ByteString)
+import           Database.Redis.Client    (Client (..))
+import           Database.Redis.Command   (ClientReplyValues (..),
+                                           RedisCommands (..), convertResp,
+                                           encodeCommandBuilder,
+                                           geoRadiusFlagToList,
+                                           geoSearchByToList,
+                                           geoSearchFromToList,
+                                           geoSearchOptionToList,
+                                           geoUnitKeyword, showBS)
+import           Database.Redis.Connector (Connector)
+import           Database.Redis.Resp      (RespData)
+import           FromResp                 (FromResp (..))
+import           Multiplexer              (Multiplexer, SlotPool,
+                                           createMultiplexer, createSlotPool,
+                                           destroyMultiplexer,
+                                           submitCommandPooled)
 
 
 -- | Configuration for a standalone Redis client.

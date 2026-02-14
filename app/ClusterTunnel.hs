@@ -15,7 +15,6 @@ import           ClusterCommandClient       (ClusterClient (..),
 import qualified ClusterCommandClient
 import           ClusterCommands            (CommandRouting (..),
                                              classifyCommand)
-import           Connector                  (Connector)
 import           Control.Concurrent         (MVar, forkIO, newEmptyMVar,
                                              putMVar, takeMVar)
 import           Control.Concurrent.STM     (readTVarIO)
@@ -34,6 +33,7 @@ import           Data.Word                  (Word8)
 import           Database.Redis.Client      (Client (..), ConnectionStatus (..))
 import           Database.Redis.Command     (ClientState (..),
                                              RedisCommandClient, parseWith)
+import           Database.Redis.Connector   (Connector)
 import           Database.Redis.Resp        (Encodable (encode), RespData (..))
 import qualified Database.Redis.Resp        as Resp
 import           Network.Socket             (Family (..), SockAddr (..), Socket,

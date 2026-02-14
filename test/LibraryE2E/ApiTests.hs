@@ -3,18 +3,18 @@
 
 module LibraryE2E.ApiTests (spec) where
 
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeRole (..))
-import           ClusterCommandClient   (ClusterClient (clusterTopology),
-                                         closeClusterClient,
-                                         createClusterClient,
-                                         executeKeylessClusterCommand,
-                                         refreshTopology)
-import           Connector              (clusterPlaintextConnector)
-import           Control.Concurrent.STM (readTVarIO)
-import qualified Data.Map.Strict        as Map
-import           Database.Redis.Command (RedisCommands (..))
-import           Database.Redis.Resp    (RespData (..))
+import           Cluster                  (ClusterNode (..),
+                                           ClusterTopology (..), NodeRole (..))
+import           ClusterCommandClient     (ClusterClient (clusterTopology),
+                                           closeClusterClient,
+                                           createClusterClient,
+                                           executeKeylessClusterCommand,
+                                           refreshTopology)
+import           Control.Concurrent.STM   (readTVarIO)
+import qualified Data.Map.Strict          as Map
+import           Database.Redis.Command   (RedisCommands (..))
+import           Database.Redis.Connector (clusterPlaintextConnector)
+import           Database.Redis.Resp      (RespData (..))
 
 import           LibraryE2E.Utils
 

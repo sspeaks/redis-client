@@ -21,7 +21,7 @@
 --   client <- createClusterClient config connector
 --   ...
 -- @
-module Connector
+module Database.Redis.Connector
   ( -- * Connector type
     Connector
     -- * Standalone connections

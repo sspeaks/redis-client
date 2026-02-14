@@ -19,29 +19,30 @@ module LibraryE2E.Utils
   , seedNode
   ) where
 
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient   (ClusterClient (..),
-                                         ClusterCommandClient,
-                                         ClusterConfig (..),
-                                         createClusterClient,
-                                         runClusterCommandClient)
-import           ConnectionPool         (PoolConfig (..))
-import           Connector              (Connector, clusterPlaintextConnector)
-import           Control.Concurrent     (threadDelay)
-import           Control.Concurrent.STM (readTVarIO)
-import           Control.Exception      (SomeException, try)
-import           Control.Monad          (forM_)
-import qualified Control.Monad.State    as State
-import qualified Data.ByteString        as BS
-import qualified Data.Map.Strict        as Map
-import           Database.Redis.Client  (Client (..),
-                                         PlainTextClient (NotConnectedPlainTextClient))
-import           Database.Redis.Command (ClientState (..),
-                                         RedisCommandClient (..),
-                                         RedisCommands (..))
-import           Database.Redis.Resp    (RespData (..))
-import           System.Process         (readProcessWithExitCode)
+import           Cluster                  (ClusterNode (..),
+                                           ClusterTopology (..),
+                                           NodeAddress (..), NodeRole (..))
+import           ClusterCommandClient     (ClusterClient (..),
+                                           ClusterCommandClient,
+                                           ClusterConfig (..),
+                                           createClusterClient,
+                                           runClusterCommandClient)
+import           ConnectionPool           (PoolConfig (..))
+import           Control.Concurrent       (threadDelay)
+import           Control.Concurrent.STM   (readTVarIO)
+import           Control.Exception        (SomeException, try)
+import           Control.Monad            (forM_)
+import qualified Control.Monad.State      as State
+import qualified Data.ByteString          as BS
+import qualified Data.Map.Strict          as Map
+import           Database.Redis.Client    (Client (..),
+                                           PlainTextClient (NotConnectedPlainTextClient))
+import           Database.Redis.Command   (ClientState (..),
+                                           RedisCommandClient (..),
+                                           RedisCommands (..))
+import           Database.Redis.Connector (Connector, clusterPlaintextConnector)
+import           Database.Redis.Resp      (RespData (..))
+import           System.Process           (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
 seedNode :: NodeAddress

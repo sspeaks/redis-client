@@ -9,27 +9,29 @@ module ClusterSetup
   , flushAllClusterNodes
   ) where
 
-import           AppConfig              (RunState (..), authenticate)
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient   (ClusterClient (..), ClusterConfig (..),
-                                         createClusterClient)
-import           ConnectionPool         (PoolConfig (PoolConfig))
-import qualified ConnectionPool         as CP
-import           Connector              (Connector)
-import           Control.Concurrent.STM (readTVarIO)
-import qualified Control.Monad.State    as State
-import qualified Data.ByteString        as BS
-import qualified Data.Map.Strict        as Map
-import           Data.Maybe             (fromMaybe)
-import           Database.Redis.Client  (Client (connect),
-                                         ConnectionStatus (..),
-                                         PlainTextClient (..), TLSClient (..))
-import           Database.Redis.Command (ClientState (ClientState),
-                                         RedisCommands (flushAll))
-import qualified Database.Redis.Command as RedisCommand
-import           Database.Redis.Resp    (RespData)
-import           Text.Printf            (printf)
+import           AppConfig                (RunState (..), authenticate)
+import           Cluster                  (ClusterNode (..),
+                                           ClusterTopology (..),
+                                           NodeAddress (..), NodeRole (..))
+import           ClusterCommandClient     (ClusterClient (..),
+                                           ClusterConfig (..),
+                                           createClusterClient)
+import           ConnectionPool           (PoolConfig (PoolConfig))
+import qualified ConnectionPool           as CP
+import           Control.Concurrent.STM   (readTVarIO)
+import qualified Control.Monad.State      as State
+import qualified Data.ByteString          as BS
+import qualified Data.Map.Strict          as Map
+import           Data.Maybe               (fromMaybe)
+import           Database.Redis.Client    (Client (connect),
+                                           ConnectionStatus (..),
+                                           PlainTextClient (..), TLSClient (..))
+import           Database.Redis.Command   (ClientState (ClientState),
+                                           RedisCommands (flushAll))
+import qualified Database.Redis.Command   as RedisCommand
+import           Database.Redis.Connector (Connector)
+import           Database.Redis.Resp      (RespData)
+import           Text.Printf              (printf)
 
 -- | Authenticate a client connection if a password is configured
 authenticateClient :: (Client client) => RunState -> client 'Connected -> IO (client 'Connected)

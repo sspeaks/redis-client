@@ -3,14 +3,14 @@
 
 module LibraryE2E.StandaloneTests (spec) where
 
-import           Cluster                (NodeAddress (..))
-import           Connector              (clusterPlaintextConnector)
-import           Database.Redis.Command (RedisCommands (..))
-import           Database.Redis.Resp    (RespData (..))
-import           StandaloneClient       (StandaloneClient,
-                                         closeStandaloneClient,
-                                         createStandaloneClient,
-                                         runStandaloneClient)
+import           Cluster                  (NodeAddress (..))
+import           Database.Redis.Command   (RedisCommands (..))
+import           Database.Redis.Connector (clusterPlaintextConnector)
+import           Database.Redis.Resp      (RespData (..))
+import           StandaloneClient         (StandaloneClient,
+                                           closeStandaloneClient,
+                                           createStandaloneClient,
+                                           runStandaloneClient)
 
 import           Test.Hspec
 

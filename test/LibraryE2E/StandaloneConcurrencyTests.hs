@@ -5,7 +5,6 @@ module LibraryE2E.StandaloneConcurrencyTests (spec) where
 
 import           Client                   (PlainTextClient)
 import           Cluster                  (NodeAddress (..))
-import           Connector                (clusterPlaintextConnector)
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Exception        (SomeException, try)
 import           Control.Monad            (forM_)
@@ -13,6 +12,7 @@ import           Data.IORef               (atomicModifyIORef', newIORef,
                                            readIORef)
 import           Database.Redis.Command   (RedisCommands (..),
                                            encodeCommandBuilder, showBS)
+import           Database.Redis.Connector (clusterPlaintextConnector)
 import           Database.Redis.Resp      (RespData (..))
 import           MultiplexPool            (MultiplexPool, closeMultiplexPool,
                                            createMultiplexPool, submitToNode)
