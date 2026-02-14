@@ -42,6 +42,7 @@ library
     import:           defaults
     reexported-modules:
         Resp
+      , FromResp
       , Client
       , Crc16
       , RedisCommandClient
@@ -93,11 +94,13 @@ library redis-command-client
     import:           defaults
     hs-source-dirs:   lib/redis-command-client
     exposed-modules:  RedisCommandClient
+                    , FromResp
     build-depends:    attoparsec
                     , bytestring
                     , client
                     , mtl
                     , resp
+                    , text
 
 library cluster
     import:           defaults

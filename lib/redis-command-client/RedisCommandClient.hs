@@ -1,4 +1,4 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | High-level Redis command interface built on top of 'Client'.
@@ -39,26 +39,27 @@ module RedisCommandClient
   , parseManyWith
   ) where
 
-import Client (Client (..), ConnectionStatus (..))
-import Control.Exception (Exception, throwIO)
-import Control.Monad.IO.Class (MonadIO (..))
-import Control.Monad.State as State
-  ( MonadState (get, put),
-    StateT,
-  )
-import Data.Attoparsec.ByteString.Char8 qualified as StrictParse
-import Data.ByteString (ByteString)
-import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy qualified as LBS
-import Data.Kind (Type)
-import Data.Typeable (Typeable)
-import Resp (Encodable (encode), RespData (..), parseRespData)
+import           Client                           (Client (..),
+                                                   ConnectionStatus (..))
+import           Control.Exception                (Exception, throwIO)
+import           Control.Monad.IO.Class           (MonadIO (..))
+import           Control.Monad.State              as State (MonadState (get, put),
+                                                            StateT)
+import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
+import           Data.ByteString                  (ByteString)
+import qualified Data.ByteString.Builder          as Builder
+import qualified Data.ByteString.Char8            as BS8
+import qualified Data.ByteString.Lazy             as LBS
+import           Data.Kind                        (Type)
+import           Data.Typeable                    (Typeable)
+import           Resp                             (Encodable (encode),
+                                                   RespData (..), parseRespData)
 
 -- | Typed exceptions for Redis protocol errors.
 data RedisError
   = ParseError String        -- ^ RESP parse failure
   | ConnectionClosed         -- ^ Remote end closed the connection
+  | UnexpectedResp RespData  -- ^ Unexpected RESP value during 'FromResp' conversion
   deriving (Show, Typeable)
 
 instance Exception RedisError
@@ -66,7 +67,7 @@ instance Exception RedisError
 -- | Mutable state carried through a 'RedisCommandClient' session: the live connection
 -- and an unparsed RESP byte buffer from previous receives.
 data ClientState client = ClientState
-  { getClient :: client 'Connected,
+  { getClient      :: client 'Connected,
     getParseBuffer :: BS8.ByteString
   }
 
@@ -224,10 +225,10 @@ data GeoUnit
 geoUnitKeyword :: GeoUnit -> ByteString
 geoUnitKeyword unit =
   case unit of
-    Meters -> "M"
+    Meters     -> "M"
     Kilometers -> "KM"
-    Miles -> "MI"
-    Feet -> "FT"
+    Miles      -> "MI"
+    Feet       -> "FT"
 
 -- | Optional flags for GEORADIUS and GEORADIUSBYMEMBER commands.
 data GeoRadiusFlag
@@ -244,14 +245,14 @@ data GeoRadiusFlag
 geoRadiusFlagToList :: GeoRadiusFlag -> [ByteString]
 geoRadiusFlagToList flag =
   case flag of
-    GeoWithCoord -> ["WITHCOORD"]
-    GeoWithDist -> ["WITHDIST"]
-    GeoWithHash -> ["WITHHASH"]
+    GeoWithCoord            -> ["WITHCOORD"]
+    GeoWithDist             -> ["WITHDIST"]
+    GeoWithHash             -> ["WITHHASH"]
     GeoRadiusCount n useAny -> ["COUNT", showBS n] <> ["ANY" | useAny]
-    GeoRadiusAsc -> ["ASC"]
-    GeoRadiusDesc -> ["DESC"]
-    GeoRadiusStore key -> ["STORE", key]
-    GeoRadiusStoreDist key -> ["STOREDIST", key]
+    GeoRadiusAsc            -> ["ASC"]
+    GeoRadiusDesc           -> ["DESC"]
+    GeoRadiusStore key      -> ["STORE", key]
+    GeoRadiusStoreDist key  -> ["STOREDIST", key]
 
 -- | Origin for a GEOSEARCH query: either a longitude\/latitude pair or an existing member.
 data GeoSearchFrom
@@ -263,7 +264,7 @@ geoSearchFromToList :: GeoSearchFrom -> [ByteString]
 geoSearchFromToList fromSpec =
   case fromSpec of
     GeoFromLonLat lon lat -> ["FROMLONLAT", showBS lon, showBS lat]
-    GeoFromMember member -> ["FROMMEMBER", member]
+    GeoFromMember member  -> ["FROMMEMBER", member]
 
 -- | Shape for a GEOSEARCH query: circular radius or rectangular box.
 data GeoSearchBy
@@ -291,12 +292,12 @@ data GeoSearchOption
 geoSearchOptionToList :: GeoSearchOption -> [ByteString]
 geoSearchOptionToList opt =
   case opt of
-    GeoSearchWithCoord -> ["WITHCOORD"]
-    GeoSearchWithDist -> ["WITHDIST"]
-    GeoSearchWithHash -> ["WITHHASH"]
+    GeoSearchWithCoord      -> ["WITHCOORD"]
+    GeoSearchWithDist       -> ["WITHDIST"]
+    GeoSearchWithHash       -> ["WITHHASH"]
     GeoSearchCount n useAny -> ["COUNT", showBS n] <> ["ANY" | useAny]
-    GeoSearchAsc -> ["ASC"]
-    GeoSearchDesc -> ["DESC"]
+    GeoSearchAsc            -> ["ASC"]
+    GeoSearchDesc           -> ["DESC"]
 
 -- | Values for the CLIENT REPLY command.
 data ClientReplyValues = OFF | ON | SKIP
@@ -345,7 +346,7 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", showBS val])
     case val of
       ON -> Just <$> parseWith (receive client)
-      _ -> return Nothing
+      _  -> return Nothing
 
   zadd key members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members
