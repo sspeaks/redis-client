@@ -1,5 +1,5 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds  #-}
+{-# LANGUAGE GADTs      #-}
 {-# LANGUAGE LambdaCase #-}
 
 -- | Multiplexed command pipelining over a single Redis connection.
@@ -24,38 +24,40 @@ module Multiplexer
   , createMultiplexer
   , submitCommand
   , submitCommandPooled
+  , submitCommandPairPooled
   , submitCommandAsync
   , waitSlot
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where
 
-import Client (Client (..), ConnectionStatus (..))
-import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId)
-import qualified GHC.Conc as GHC (threadCapability)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, takeMVar, tryPutMVar)
-import Control.Exception
-  ( Exception
-  , SomeException
-  , mask_
-  , throwIO
-  , toException
-  , try
-  )
-import Control.Monad (forM_, void)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Builder.Extra as Builder (toLazyByteStringWith, untrimmedStrategy)
-import qualified Data.ByteString.Lazy as LBS
+import           Client                           (Client (..),
+                                                   ConnectionStatus (..))
+import           Control.Concurrent               (ThreadId, forkIO, killThread,
+                                                   myThreadId)
+import           Control.Concurrent.MVar          (MVar, newEmptyMVar, takeMVar,
+                                                   tryPutMVar)
+import           Control.Exception                (Exception, SomeException,
+                                                   mask_, throwIO, toException,
+                                                   try)
+import           Control.Monad                    (forM_, void)
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
-import Data.IORef (IORef, newIORef, readIORef, writeIORef, atomicWriteIORef, atomicModifyIORef')
-import Data.List (foldl')
-import Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
-import Data.Typeable (Typeable)
-import qualified Data.Vector as V
-import Resp (RespData, parseRespData)
+import           Data.ByteString                  (ByteString)
+import qualified Data.ByteString                  as BS
+import qualified Data.ByteString.Builder          as Builder
+import qualified Data.ByteString.Builder.Extra    as Builder (toLazyByteStringWith,
+                                                              untrimmedStrategy)
+import qualified Data.ByteString.Lazy             as LBS
+import           Data.IORef                       (IORef, atomicModifyIORef',
+                                                   atomicWriteIORef, newIORef,
+                                                   readIORef, writeIORef)
+import           Data.List                        (foldl')
+import           Data.Sequence                    (Seq)
+import qualified Data.Sequence                    as Seq
+import           Data.Typeable                    (Typeable)
+import qualified Data.Vector                      as V
+import qualified GHC.Conc                         as GHC (threadCapability)
+import           Resp                             (RespData, parseRespData)
 
 -- | Exception thrown when submitting to a dead multiplexer.
 data MultiplexerException
@@ -79,7 +81,7 @@ data ResponseSlot = ResponseSlot
 -- Uses multiple IORef-based stacks indexed by capability (core) to reduce
 -- CAS contention between threads on different cores.
 data SlotPool = SlotPool
-  { spStripes :: !(V.Vector (IORef [ResponseSlot]))
+  { spStripes    :: !(V.Vector (IORef [ResponseSlot]))
   , spNumStripes :: !Int
   }
 
@@ -133,8 +135,8 @@ releaseSlot sp slot = do
 
 -- | A command waiting to be sent, paired with a response slot.
 data PendingCommand = PendingCommand
-  { pcBuilder  :: !Builder.Builder
-  , pcSlot     :: !ResponseSlot
+  { pcBuilder :: !Builder.Builder
+  , pcSlot    :: !ResponseSlot
   }
 
 -- | SPSC queue for pending response slots.
@@ -193,8 +195,8 @@ pendingDrainAll pq = do
 -- Producers use atomicModifyIORef' to cons onto the list (single CAS).
 -- The consumer reverses once per drain. MVar signals new item availability.
 data CommandQueue = CommandQueue
-  { cqItems    :: !(IORef [PendingCommand])  -- reverse order (newest first)
-  , cqSignal   :: !(MVar ())                 -- wake writer when items available
+  { cqItems  :: !(IORef [PendingCommand])  -- reverse order (newest first)
+  , cqSignal :: !(MVar ())                 -- wake writer when items available
   }
 
 newCommandQueue :: IO CommandQueue
@@ -209,6 +211,16 @@ commandEnqueue cq pc = do
   atomicModifyIORef' (cqItems cq) $ \xs -> (pc : xs, ())
   void $ tryPutMVar (cqSignal cq) ()
 {-# INLINE commandEnqueue #-}
+
+-- | Enqueue two commands atomically (caller thread — multi-producer safe).
+-- Both commands are added in a single CAS so no other command can be
+-- interleaved between them. The first command will appear before the second
+-- in the pipeline.
+commandEnqueuePair :: CommandQueue -> PendingCommand -> PendingCommand -> IO ()
+commandEnqueuePair cq pc1 pc2 = do
+  atomicModifyIORef' (cqItems cq) $ \xs -> (pc2 : pc1 : xs, ())
+  void $ tryPutMVar (cqSignal cq) ()
+{-# INLINE commandEnqueuePair #-}
 
 -- | Drain all commands (writer thread only — single consumer).
 -- Blocks if empty. Returns commands in submission order.
@@ -298,6 +310,35 @@ submitCommandPooled pool mux cmdBuilder = do
         Just (Left e)     -> throwIO e
         Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
 {-# INLINE submitCommandPooled #-}
+
+-- | Submit two commands atomically as a pair. Both are enqueued in a single
+-- atomic operation so no other command can be interleaved between them.
+-- Returns only the second command's response; the first response is discarded.
+-- Used for ASKING + command sequences where ASKING must immediately precede
+-- the target command on the same connection.
+submitCommandPairPooled :: SlotPool -> Multiplexer -> Builder.Builder -> Builder.Builder -> IO RespData
+submitCommandPairPooled pool mux firstBuilder secondBuilder = do
+  isAlive <- readIORef (muxAlive mux)
+  if not isAlive
+    then throwIO $ MultiplexerDead "Multiplexer is not alive"
+    else do
+      slot1 <- acquireSlot pool
+      slot2 <- acquireSlot pool
+      let pending1 = PendingCommand firstBuilder slot1
+          pending2 = PendingCommand secondBuilder slot2
+      commandEnqueuePair (muxCommandQueue mux) pending1 pending2
+      -- Wait for and discard the first response (ASKING → +OK)
+      takeMVar (slotSignal slot1)
+      releaseSlot pool slot1
+      -- Wait for the actual command response
+      takeMVar (slotSignal slot2)
+      mResult <- readIORef (slotResult slot2)
+      releaseSlot pool slot2
+      case mResult of
+        Just (Right resp) -> return resp
+        Just (Left e)     -> throwIO e
+        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+{-# INLINE submitCommandPairPooled #-}
 
 -- | Submit a command asynchronously: enqueue it and return the ResponseSlot.
 -- The caller must later call 'waitSlot' to get the result, then 'releaseSlot'.

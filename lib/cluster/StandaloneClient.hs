@@ -1,5 +1,3 @@
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Standalone multiplexed Redis client.
@@ -19,7 +17,6 @@
 --         { standaloneNodeAddress     = NodeAddress \"localhost\" 6379
 --         , standaloneConnector       = clusterPlaintextConnector
 --         , standaloneMultiplexerCount = 1
---         , standaloneUseMultiplexing = True
 --         }
 --   client <- createStandaloneClientFromConfig config
 --   runStandaloneClient client $ do
@@ -42,51 +39,38 @@ module StandaloneClient
   , runStandaloneClient
   ) where
 
-import           Client                      (Client (..))
-import           Cluster                     (NodeAddress (..))
-import           Connector                   (Connector)
-import           Control.Exception           (SomeException, catch)
-import           Control.Monad.IO.Class      (MonadIO (..))
-import qualified Control.Monad.State         as State
-import           Data.ByteString             (ByteString)
-import qualified Data.ByteString.Char8       as BS8
-import           Data.IORef                  (IORef, newIORef, readIORef,
-                                              writeIORef)
-import           Multiplexer                 (Multiplexer, SlotPool,
-                                              createMultiplexer, createSlotPool,
-                                              destroyMultiplexer,
-                                              submitCommandPooled)
-import           RedisCommandClient          (RedisCommands (..),
-                                              ClientState (..),
-                                              encodeCommandBuilder, showBS,
-                                              geoUnitKeyword, geoRadiusFlagToList,
-                                              geoSearchFromToList, geoSearchByToList,
-                                              geoSearchOptionToList,
-                                              ClientReplyValues (..),
-                                              parseWith, wrapInRay)
-import           Resp                        (RespData, Encodable (..))
-import qualified Data.ByteString.Builder     as Builder
+import           Client                 (Client (..))
+import           Cluster                (NodeAddress (..))
+import           Connector              (Connector)
+import           Control.Exception      (SomeException, catch)
+import           Control.Monad.IO.Class (MonadIO (..))
+import           Control.Monad.Reader   (ReaderT, ask, runReaderT)
+import           Data.ByteString        (ByteString)
+import           Multiplexer            (Multiplexer, SlotPool,
+                                         createMultiplexer, createSlotPool,
+                                         destroyMultiplexer,
+                                         submitCommandPooled)
+import           RedisCommandClient     (ClientReplyValues (..),
+                                         RedisCommands (..),
+                                         encodeCommandBuilder,
+                                         geoRadiusFlagToList, geoSearchByToList,
+                                         geoSearchFromToList,
+                                         geoSearchOptionToList, geoUnitKeyword,
+                                         showBS)
+import           Resp                   (RespData)
+
 
 -- | Configuration for a standalone Redis client.
 data StandaloneConfig client = StandaloneConfig
   { standaloneNodeAddress      :: !NodeAddress       -- ^ Redis node to connect to.
   , standaloneConnector        :: !(Connector client) -- ^ Connection factory (plaintext or TLS).
   , standaloneMultiplexerCount :: !Int                -- ^ Number of multiplexers to create (default: 1).
-  , standaloneUseMultiplexing  :: !Bool               -- ^ Use multiplexed pipelining (default: True). When False, falls back to 'RedisCommandClient' behaviour.
   }
 
--- | Backend for the standalone client: either multiplexed or direct.
-data StandaloneBackend where
-  -- | Multiplexed backend using a 'Multiplexer' and 'SlotPool'.
-  MuxBackend :: !Multiplexer -> !SlotPool -> StandaloneBackend
-  -- | Direct (non-multiplexed) backend using 'RedisCommandClient'-style
-  -- sequential command execution over a single connection.
-  DirectBackend :: (Client client) => !(IORef (ClientState client)) -> StandaloneBackend
-
--- | A standalone Redis client. Holds either a multiplexed backend (default)
--- or a direct connection backend when multiplexing is disabled.
-newtype StandaloneClient = StandaloneClient
-  { standaloneBackend :: StandaloneBackend
+-- | A standalone Redis client backed by a multiplexer and slot pool.
+data StandaloneClient = StandaloneClient
+  { standaloneMux  :: !Multiplexer
+  , standalonePool :: !SlotPool
   }
 
 -- | Create a standalone multiplexed client by connecting to a single Redis node.
@@ -100,59 +84,43 @@ createStandaloneClient connector addr = do
   conn <- connector addr
   mux <- createMultiplexer conn (receive conn)
   pool <- createSlotPool 256
-  return $ StandaloneClient (MuxBackend mux pool)
+  return $ StandaloneClient mux pool
 
 -- | Create a standalone client from a 'StandaloneConfig'.
--- When 'standaloneUseMultiplexing' is True (the default), creates a multiplexed
--- backend. When False, falls back to direct 'RedisCommandClient' behaviour.
 createStandaloneClientFromConfig
   :: (Client client)
   => StandaloneConfig client
   -> IO StandaloneClient
-createStandaloneClientFromConfig config
-  | standaloneUseMultiplexing config = do
-      conn <- standaloneConnector config (standaloneNodeAddress config)
-      mux <- createMultiplexer conn (receive conn)
-      pool <- createSlotPool 256
-      return $ StandaloneClient (MuxBackend mux pool)
-  | otherwise = do
-      conn <- standaloneConnector config (standaloneNodeAddress config)
-      ref <- newIORef (ClientState conn BS8.empty)
-      return $ StandaloneClient (DirectBackend ref)
+createStandaloneClientFromConfig config = do
+  conn <- standaloneConnector config (standaloneNodeAddress config)
+  mux <- createMultiplexer conn (receive conn)
+  pool <- createSlotPool 256
+  return $ StandaloneClient mux pool
 
--- | Close the standalone client, destroying the underlying multiplexer
--- or closing the direct connection.
+-- | Close the standalone client, destroying the underlying multiplexer.
 closeStandaloneClient :: StandaloneClient -> IO ()
 closeStandaloneClient client =
-  case standaloneBackend client of
-    MuxBackend mux _ ->
-      destroyMultiplexer mux
-        `catch` \(_ :: SomeException) -> return ()
-    DirectBackend ref -> do
-      ClientState conn _ <- readIORef ref
-      close conn
-        `catch` \(_ :: SomeException) -> return ()
+  destroyMultiplexer (standaloneMux client)
+    `catch` \(_ :: SomeException) -> return ()
 
 -- | Monad for executing Redis commands on a standalone client.
-data StandaloneCommandClient a where
-  StandaloneCommandClient ::
-    State.StateT StandaloneClient IO a
-    -> StandaloneCommandClient a
+newtype StandaloneCommandClient a = StandaloneCommandClient
+  { unStandaloneCommandClient :: ReaderT StandaloneClient IO a }
 
 -- | Run Redis commands against the standalone client.
 runStandaloneClient :: StandaloneClient -> StandaloneCommandClient a -> IO a
 runStandaloneClient client (StandaloneCommandClient action) =
-  State.evalStateT action client
+  runReaderT action client
 
 instance Functor StandaloneCommandClient where
-  fmap f (StandaloneCommandClient s) = StandaloneCommandClient (fmap f s)
+  fmap f (StandaloneCommandClient r) = StandaloneCommandClient (fmap f r)
 
 instance Applicative StandaloneCommandClient where
   pure = StandaloneCommandClient . pure
-  StandaloneCommandClient f <*> StandaloneCommandClient s = StandaloneCommandClient (f <*> s)
+  StandaloneCommandClient f <*> StandaloneCommandClient r = StandaloneCommandClient (f <*> r)
 
 instance Monad StandaloneCommandClient where
-  StandaloneCommandClient s >>= f = StandaloneCommandClient (s >>= \a -> let StandaloneCommandClient s' = f a in s')
+  StandaloneCommandClient r >>= f = StandaloneCommandClient (r >>= \a -> unStandaloneCommandClient (f a))
 
 instance MonadIO StandaloneCommandClient where
   liftIO = StandaloneCommandClient . liftIO
@@ -160,26 +128,12 @@ instance MonadIO StandaloneCommandClient where
 instance MonadFail StandaloneCommandClient where
   fail = StandaloneCommandClient . liftIO . Prelude.fail
 
--- | Submit a command via whichever backend is active.
+-- | Submit a command via the multiplexer backend.
 submitMux :: [ByteString] -> StandaloneCommandClient RespData
 submitMux args = do
-  client <- StandaloneCommandClient State.get
-  case standaloneBackend client of
-    MuxBackend mux pool -> do
-      let cmdBuilder = encodeCommandBuilder args
-      liftIO $ submitCommandPooled pool mux cmdBuilder
-    DirectBackend ref -> liftIO $ do
-      st <- readIORef ref
-      executeDirect ref st args
-
--- | Execute a command on the direct (non-multiplexed) backend by sending the
--- RESP-encoded command and parsing the response, then updating the shared state.
-executeDirect :: (Client client) => IORef (ClientState client) -> ClientState client -> [ByteString] -> IO RespData
-executeDirect ref (ClientState conn buf) args = do
-  send conn (Builder.toLazyByteString . encode $ wrapInRay args)
-  (result, st') <- State.runStateT (parseWith (liftIO $ receive conn)) (ClientState conn buf)
-  writeIORef ref st'
-  return result
+  client <- StandaloneCommandClient ask
+  let cmdBuilder = encodeCommandBuilder args
+  liftIO $ submitCommandPooled (standalonePool client) (standaloneMux client) cmdBuilder
 
 instance RedisCommands StandaloneCommandClient where
   auth username password = submitMux ["HELLO", "3", "AUTH", username, password]

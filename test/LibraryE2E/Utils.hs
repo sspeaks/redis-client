@@ -19,28 +19,29 @@ module LibraryE2E.Utils
   , seedNode
   ) where
 
-import           Client                     (Client (..),
-                                             PlainTextClient (NotConnectedPlainTextClient))
-import           Cluster                    (ClusterTopology (..), ClusterNode (..),
-                                             NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..),
-                                             ClusterCommandClient,
-                                             createClusterClient,
-                                             runClusterCommandClient)
-import           ConnectionPool             (PoolConfig (..))
-import           Connector                  (Connector, clusterPlaintextConnector)
-import           Control.Concurrent         (threadDelay)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (SomeException, try)
-import           Control.Monad              (forM_)
-import qualified Control.Monad.State        as State
-import qualified Data.ByteString            as BS
-import qualified Data.Map.Strict            as Map
-import           RedisCommandClient         (ClientState (..),
-                                             RedisCommandClient (..),
-                                             RedisCommands (..))
-import           Resp                       (RespData (..))
-import           System.Process             (readProcessWithExitCode)
+import           Client                 (Client (..),
+                                         PlainTextClient (NotConnectedPlainTextClient))
+import           Cluster                (ClusterNode (..), ClusterTopology (..),
+                                         NodeAddress (..), NodeRole (..))
+import           ClusterCommandClient   (ClusterClient (..),
+                                         ClusterCommandClient,
+                                         ClusterConfig (..),
+                                         createClusterClient,
+                                         runClusterCommandClient)
+import           ConnectionPool         (PoolConfig (..))
+import           Connector              (Connector, clusterPlaintextConnector)
+import           Control.Concurrent     (threadDelay)
+import           Control.Concurrent.STM (readTVarIO)
+import           Control.Exception      (SomeException, try)
+import           Control.Monad          (forM_)
+import qualified Control.Monad.State    as State
+import qualified Data.ByteString        as BS
+import qualified Data.Map.Strict        as Map
+import           RedisCommandClient     (ClientState (..),
+                                         RedisCommandClient (..),
+                                         RedisCommands (..))
+import           Resp                   (RespData (..))
+import           System.Process         (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
 seedNode :: NodeAddress
@@ -63,7 +64,6 @@ defaultTestConfig = ClusterConfig
   , clusterMaxRetries              = 3
   , clusterRetryDelay              = 100000  -- 100ms
   , clusterTopologyRefreshInterval = 600     -- 10 minutes
-  , clusterUseMultiplexing         = True
   }
 
 -- | Plaintext connector for tests
@@ -95,7 +95,7 @@ flushAllNodes client = do
       Client.close conn
     case result of
       Left (_ :: SomeException) -> return ()
-      Right _                    -> return ()
+      Right _                   -> return ()
 
 -- | Docker container names for each node
 nodeContainerName :: Int -> String

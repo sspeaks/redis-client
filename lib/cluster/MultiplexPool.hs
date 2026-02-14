@@ -1,5 +1,5 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GADTs     #-}
 
 -- | Pool of 'Multiplexer's for cluster-mode usage.
 --
@@ -15,35 +15,32 @@ module MultiplexPool
   ( MultiplexPool
   , createMultiplexPool
   , submitToNode
+  , submitToNodeWithAsking
   , submitToNodeAsync
   , waitSlotResult
   , closeMultiplexPool
   ) where
 
-import Client (Client (..))
-import Cluster (NodeAddress (..))
-import Connector (Connector)
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar)
-import Control.Exception (SomeException, catch, throwIO)
-import Data.IORef (IORef, newIORef, readIORef, atomicWriteIORef, atomicModifyIORef')
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import Data.Vector (Vector)
-import qualified Data.Vector as V
-import Multiplexer
-  ( Multiplexer
-  , SlotPool
-  , ResponseSlot
-  , createSlotPool
-  , createMultiplexer
-  , destroyMultiplexer
-  , isMultiplexerAlive
-  , submitCommandPooled
-  , submitCommandAsync
-  , waitSlot
-  )
-import Resp (RespData)
+import           Client                  (Client (..))
+import           Cluster                 (NodeAddress (..))
+import           Connector               (Connector)
+import           Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
+import           Control.Exception       (SomeException, catch, throwIO)
 import qualified Data.ByteString.Builder as Builder
+import           Data.IORef              (IORef, atomicModifyIORef',
+                                          atomicWriteIORef, newIORef, readIORef)
+import           Data.Map.Strict         (Map)
+import qualified Data.Map.Strict         as Map
+import           Data.Vector             (Vector)
+import qualified Data.Vector             as V
+import           Multiplexer             (Multiplexer, ResponseSlot, SlotPool,
+                                          createMultiplexer, createSlotPool,
+                                          destroyMultiplexer,
+                                          isMultiplexerAlive,
+                                          submitCommandAsync,
+                                          submitCommandPairPooled,
+                                          submitCommandPooled, waitSlot)
+import           Resp                    (RespData)
 
 -- | Per-node multiplexer group with its own round-robin counter.
 -- Keeping the counter per-node eliminates cross-node CAS contention
@@ -58,11 +55,11 @@ data NodeMuxes = NodeMuxes
 -- with MVar protecting creation/replacement (exclusive writes).
 -- Includes a per-pool SlotPool for ResponseSlot reuse.
 data MultiplexPool client = MultiplexPool
-  { poolNodesRef   :: !(IORef (Map NodeAddress NodeMuxes))    -- fast reads
-  , poolNodesLock  :: !(MVar ())                              -- protects writes
-  , poolConnector  :: !(Connector client)
-  , poolSlotPool   :: !SlotPool                               -- reusable ResponseSlots
-  , poolMuxCount   :: !Int                                    -- multiplexers per node
+  { poolNodesRef  :: !(IORef (Map NodeAddress NodeMuxes))    -- fast reads
+  , poolNodesLock :: !(MVar ())                              -- protects writes
+  , poolConnector :: !(Connector client)
+  , poolSlotPool  :: !SlotPool                               -- reusable ResponseSlots
+  , poolMuxCount  :: !Int                                    -- multiplexers per node
   }
 
 -- | Create a new empty multiplexer pool.
@@ -100,6 +97,29 @@ submitToNode pool addr cmdBuilder = do
           newMux <- replaceMux pool addr mux
           submitCommandPooled (poolSlotPool pool) newMux cmdBuilder
 {-# INLINE submitToNode #-}
+
+-- | Submit an ASKING command followed by a real command atomically to a node.
+-- Both commands are enqueued in a single atomic operation so no other command
+-- can be interleaved between them on the same connection. The ASKING response
+-- is discarded; only the real command's response is returned.
+submitToNodeWithAsking
+  :: (Client client)
+  => MultiplexPool client
+  -> NodeAddress
+  -> Builder.Builder  -- ^ ASKING command builder
+  -> Builder.Builder  -- ^ The actual command builder
+  -> IO RespData
+submitToNodeWithAsking pool addr askingBuilder cmdBuilder = do
+  mux <- getMultiplexer pool addr
+  submitCommandPairPooled (poolSlotPool pool) mux askingBuilder cmdBuilder
+    `catch` \(e :: SomeException) -> do
+      alive <- isMultiplexerAlive mux
+      if alive
+        then throwIO e
+        else do
+          newMux <- replaceMux pool addr mux
+          submitCommandPairPooled (poolSlotPool pool) newMux askingBuilder cmdBuilder
+{-# INLINE submitToNodeWithAsking #-}
 
 -- | Async version of submitToNode: enqueue the command and return a ResponseSlot.
 -- Caller must later call 'waitSlotResult' to get the response.

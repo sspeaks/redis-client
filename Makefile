@@ -13,6 +13,8 @@ help:
 
 # Setup dependencies (run once in new environment)
 setup:
+	git config core.hooksPath .githooks
+	@echo "Git hooks configured from .githooks/"
 ifeq ($(HAS_NIX),yes)
 	@echo "Using Nix for dependency management"
 	nix-shell --run "cabal update"

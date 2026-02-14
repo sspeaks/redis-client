@@ -9,4 +9,7 @@ pkgs.haskellPackages.shellFor {
     stylish-haskell
     pkgs.zlib
   ];
+  shellHook = ''
+    git config core.hooksPath .githooks
+  '';
 }

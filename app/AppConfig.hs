@@ -1,4 +1,4 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module AppConfig
@@ -9,35 +9,38 @@ module AppConfig
   , runCommandsAgainstPlaintextHost
   ) where
 
-import Client (Client (..), PlainTextClient (NotConnectedPlainTextClient), TLSClient (..))
-import Control.Exception (bracket)
-import qualified Control.Monad.State as State
-import qualified Data.ByteString as BS
+import           Client                (Client (..),
+                                        PlainTextClient (NotConnectedPlainTextClient),
+                                        TLSClient (..))
+import           Control.Exception     (bracket)
+import qualified Control.Monad.State   as State
+import qualified Data.ByteString       as BS
 import qualified Data.ByteString.Char8 as BS8
-import RedisCommandClient (ClientState (..), RedisCommandClient (..), RedisCommands (..))
-import Resp (RespData (..))
+import           RedisCommandClient    (ClientState (..),
+                                        RedisCommandClient (..),
+                                        RedisCommands (..))
+import           Resp                  (RespData (..))
 
 data RunState = RunState
-  { host :: String,
-    port :: Maybe Int,
-    username :: String,
-    password :: String,
-    useTLS :: Bool,
-    dataGBs :: Int,
-    flush :: Bool,
-    serial :: Bool,
-    numConnections :: Maybe Int,
-    useCluster :: Bool,
-    tunnelMode :: String,
-    keySize :: Int,
-    valueSize :: Int,
+  { host              :: String,
+    port              :: Maybe Int,
+    username          :: String,
+    password          :: String,
+    useTLS            :: Bool,
+    dataGBs           :: Int,
+    flush             :: Bool,
+    serial            :: Bool,
+    numConnections    :: Maybe Int,
+    useCluster        :: Bool,
+    tunnelMode        :: String,
+    keySize           :: Int,
+    valueSize         :: Int,
     pipelineBatchSize :: Int,
-    numProcesses :: Maybe Int,
-    processIndex :: Maybe Int,
-    useMux :: Bool,
-    benchOperation :: String,
-    benchDuration :: Int,
-    muxCount :: Int
+    numProcesses      :: Maybe Int,
+    processIndex      :: Maybe Int,
+    benchOperation    :: String,
+    benchDuration     :: Int,
+    muxCount          :: Int
   }
   deriving (Show)
 
@@ -59,7 +62,6 @@ defaultRunState = RunState
   , pipelineBatchSize = 8192
   , numProcesses = Nothing
   , processIndex = Nothing
-  , useMux = True
   , benchOperation = "set"
   , benchDuration = 30
   , muxCount = 1

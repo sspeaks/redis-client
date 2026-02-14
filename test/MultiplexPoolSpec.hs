@@ -1,22 +1,23 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
-import Client (Client (..), ConnectionStatus (..))
-import Cluster (NodeAddress (..))
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
+import           Client                  (Client (..), ConnectionStatus (..))
+import           Cluster                 (NodeAddress (..))
+import           Control.Concurrent      (forkIO, threadDelay)
+import           Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import           Control.Monad.IO.Class  (liftIO)
+import           Data.ByteString         (ByteString)
+import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy as LBS
-import Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')
-import Control.Monad.IO.Class (liftIO)
-import MultiplexPool
-import Resp (RespData (..), Encodable (..))
-import Test.Hspec
+import qualified Data.ByteString.Lazy    as LBS
+import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
+                                          readIORef)
+import           MultiplexPool
+import           Resp                    (Encodable (..), RespData (..))
+import           Test.Hspec
 
 -- ---------------------------------------------------------------------------
 -- Mock client for testing without a real Redis connection
@@ -56,6 +57,11 @@ createMockClient = do
       addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
   return (client, addRecv)
 
+-- | Total version of 'head' that avoids the -Wx-partial warning in tests.
+firstOf :: [a] -> a
+firstOf (x:_) = x
+firstOf []    = error "firstOf: empty list"
+
 encodeResp :: RespData -> ByteString
 encodeResp = LBS.toStrict . Builder.toLazyByteString . encode
 
@@ -85,11 +91,6 @@ getAddRecvs mapRef addr = do
   xs <- readIORef mapRef
   return [f | (a, f) <- xs, a == addr]
 
--- | Feed a response to all multiplexers for a node.
-feedAll :: AddRecvMap -> NodeAddress -> ByteString -> IO ()
-feedAll mapRef addr bs = do
-  fns <- getAddRecvs mapRef addr
-  mapM_ ($ bs) fns
 
 -- ---------------------------------------------------------------------------
 -- Test nodes
@@ -113,6 +114,7 @@ spec = do
   lazyCreationSpec
   multiNodeRoutingSpec
   poolClosureSpec
+  askingSpec
 
 roundRobinSpec :: Spec
 roundRobinSpec = describe "Round-robin routing" $ do
@@ -137,7 +139,7 @@ roundRobinSpec = describe "Round-robin routing" $ do
       length fns `shouldBe` 3
 
       -- Feed response to first mux (round-robin starts at 0)
-      (head fns) (encodeResp (RespSimpleString "PONG1"))
+      (firstOf fns) (encodeResp (RespSimpleString "PONG1"))
       r <- takeMVar resultMVar
       r `shouldBe` RespSimpleString "PONG1"
       return fns
@@ -171,7 +173,7 @@ roundRobinSpec = describe "Round-robin routing" $ do
         r <- submitToNode pool node1 (encodeCmd ["PING"])
         putMVar resultMVar r
       threadDelay 10000
-      (head addRecvFns) (encodeResp (RespSimpleString "PONG4"))
+      (firstOf addRecvFns) (encodeResp (RespSimpleString "PONG4"))
       r <- takeMVar resultMVar
       r `shouldBe` RespSimpleString "PONG4"
 
@@ -189,7 +191,7 @@ roundRobinSpec = describe "Round-robin routing" $ do
     threadDelay 50000
     fns <- getAddRecvs addRecvMap node1
     length fns `shouldBe` 1
-    (head fns) (encodeResp (RespSimpleString "OK"))
+    (firstOf fns) (encodeResp (RespSimpleString "OK"))
     r1 <- takeMVar resultMVar
     r1 `shouldBe` RespSimpleString "OK"
 
@@ -198,7 +200,7 @@ roundRobinSpec = describe "Round-robin routing" $ do
       r <- submitToNode pool node1 (encodeCmd ["PING"])
       putMVar resultMVar r
     threadDelay 10000
-    (head fns) (encodeResp (RespSimpleString "OK2"))
+    (firstOf fns) (encodeResp (RespSimpleString "OK2"))
     r2 <- takeMVar resultMVar
     r2 `shouldBe` RespSimpleString "OK2"
 
@@ -230,7 +232,7 @@ lazyCreationSpec = describe "Lazy creation" $ do
     length fns2 `shouldBe` 0
 
     -- Feed response and clean up
-    (head fns1) (encodeResp (RespSimpleString "OK"))
+    (firstOf fns1) (encodeResp (RespSimpleString "OK"))
     _ <- takeMVar resultMVar
 
     closeMultiplexPool pool
@@ -246,7 +248,7 @@ lazyCreationSpec = describe "Lazy creation" $ do
       putMVar resultMVar r
     threadDelay 50000
     fns1 <- getAddRecvs addRecvMap node1
-    (head fns1) (encodeResp (RespSimpleString "OK"))
+    (firstOf fns1) (encodeResp (RespSimpleString "OK"))
     _ <- takeMVar resultMVar
 
     -- Second access should NOT create new connections
@@ -291,8 +293,8 @@ multiNodeRoutingSpec = describe "Multi-node routing" $ do
     length fns2 `shouldBe` 1
 
     -- Feed different responses to confirm independent routing
-    (head fns1) (encodeResp (RespSimpleString "OK1"))
-    (head fns2) (encodeResp (RespSimpleString "OK2"))
+    (firstOf fns1) (encodeResp (RespSimpleString "OK1"))
+    (firstOf fns2) (encodeResp (RespSimpleString "OK2"))
 
     r1 <- takeMVar r1MVar
     r2 <- takeMVar r2MVar
@@ -324,7 +326,7 @@ multiNodeRoutingSpec = describe "Multi-node routing" $ do
     -- Feed responses and verify
     mapM_ (\(node, mv) -> do
       fns <- getAddRecvs addRecvMap node
-      (head fns) (encodeResp (RespSimpleString "PONG"))
+      (firstOf fns) (encodeResp (RespSimpleString "PONG"))
       r <- takeMVar mv
       r `shouldBe` RespSimpleString "PONG"
       ) (zip [node1, node2, node3] mvars)
@@ -344,7 +346,7 @@ poolClosureSpec = describe "Pool closure" $ do
       putMVar r1MVar r
     threadDelay 50000
     fns1 <- getAddRecvs addRecvMap node1
-    (head fns1) (encodeResp (RespSimpleString "OK"))
+    (firstOf fns1) (encodeResp (RespSimpleString "OK"))
     _ <- takeMVar r1MVar
 
     r2MVar <- newEmptyMVar
@@ -353,7 +355,7 @@ poolClosureSpec = describe "Pool closure" $ do
       putMVar r2MVar r
     threadDelay 50000
     fns2 <- getAddRecvs addRecvMap node2
-    (head fns2) (encodeResp (RespSimpleString "OK"))
+    (firstOf fns2) (encodeResp (RespSimpleString "OK"))
     _ <- takeMVar r2MVar
 
     -- Close the pool
@@ -383,4 +385,77 @@ poolClosureSpec = describe "Pool closure" $ do
     -- Close without ever using it
     closeMultiplexPool pool
     -- Close again — should be idempotent
+    closeMultiplexPool pool
+
+askingSpec :: Spec
+askingSpec = describe "ASKING support (submitToNodeWithAsking)" $ do
+  it "consumes the ASKING +OK and returns only the command response" $ do
+    (connector, addRecvMap) <- createMockConnector
+    pool <- createMultiplexPool connector 1
+
+    resultMVar <- newEmptyMVar
+    _ <- forkIO $ do
+      r <- submitToNodeWithAsking pool node1
+             (encodeCmd ["ASKING"])
+             (encodeCmd ["GET", "mykey"])
+      putMVar resultMVar r
+    threadDelay 50000
+
+    -- Feed two responses: +OK for ASKING, then the real GET response
+    fns <- getAddRecvs addRecvMap node1
+    length fns `shouldBe` 1
+    (firstOf fns) (encodeResp (RespSimpleString "OK"))       -- ASKING response
+    (firstOf fns) (encodeResp (RespBulkString "myvalue"))    -- GET response
+
+    r <- takeMVar resultMVar
+    -- Should return the GET response, not the ASKING +OK
+    r `shouldBe` RespBulkString "myvalue"
+
+    closeMultiplexPool pool
+
+  it "sends ASKING to the target node, not the original node" $ do
+    (connector, addRecvMap) <- createMockConnector
+    pool <- createMultiplexPool connector 1
+
+    -- Submit ASKING+SET to node2 (the ASK target)
+    resultMVar <- newEmptyMVar
+    _ <- forkIO $ do
+      r <- submitToNodeWithAsking pool node2
+             (encodeCmd ["ASKING"])
+             (encodeCmd ["SET", "migratingkey", "val"])
+      putMVar resultMVar r
+    threadDelay 50000
+
+    -- node1 should have no connections
+    fns1 <- getAddRecvs addRecvMap node1
+    length fns1 `shouldBe` 0
+
+    -- node2 should have the connection and receive both responses
+    fns2 <- getAddRecvs addRecvMap node2
+    length fns2 `shouldBe` 1
+    (firstOf fns2) (encodeResp (RespSimpleString "OK"))  -- ASKING response
+    (firstOf fns2) (encodeResp (RespSimpleString "OK"))  -- SET response
+
+    r <- takeMVar resultMVar
+    r `shouldBe` RespSimpleString "OK"
+
+    closeMultiplexPool pool
+
+  it "regular submitToNode only consumes one response" $ do
+    (connector, addRecvMap) <- createMockConnector
+    pool <- createMultiplexPool connector 1
+
+    resultMVar <- newEmptyMVar
+    _ <- forkIO $ do
+      r <- submitToNode pool node1 (encodeCmd ["GET", "normalkey"])
+      putMVar resultMVar r
+    threadDelay 50000
+
+    fns <- getAddRecvs addRecvMap node1
+    -- Only feed one response — no ASKING involved
+    (firstOf fns) (encodeResp (RespBulkString "normalvalue"))
+
+    r <- takeMVar resultMVar
+    r `shouldBe` RespBulkString "normalvalue"
+
     closeMultiplexPool pool

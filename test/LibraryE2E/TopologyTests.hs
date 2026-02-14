@@ -3,21 +3,20 @@
 
 module LibraryE2E.TopologyTests (spec) where
 
-import           Cluster                    (ClusterTopology (..), ClusterNode (..),
-                                             NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..),
-                                             closeClusterClient,
-                                             executeClusterCommand,
-                                             refreshTopology)
-import           Control.Concurrent         (threadDelay)
-import           Control.Concurrent.Async   (mapConcurrently)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (SomeException, try)
-import qualified Data.Map.Strict            as Map
-import           Data.Time.Clock            (diffUTCTime)
-import qualified Data.Vector                as V
-import           RedisCommandClient         (RedisCommands (..))
-import           Resp                       (RespData (..))
+import           Cluster                  (ClusterNode (..),
+                                           ClusterTopology (..), NodeRole (..))
+import           ClusterCommandClient     (ClusterClient (..),
+                                           closeClusterClient,
+                                           executeKeyedClusterCommand,
+                                           refreshTopology)
+import           Control.Concurrent       (threadDelay)
+import           Control.Concurrent.Async (mapConcurrently)
+import           Control.Concurrent.STM   (readTVarIO)
+import           Control.Exception        (SomeException, try)
+import qualified Data.Map.Strict          as Map
+import           Data.Time.Clock          (diffUTCTime)
+import qualified Data.Vector              as V
+import           Resp                     (RespData (..))
 
 import           LibraryE2E.Utils
 
@@ -78,7 +77,7 @@ spec = describe "Topology Refresh" $ do
       client <- createTestClient
 
       -- Write a key to establish baseline
-      r1 <- executeClusterCommand client "topo-recover-key" (set "topo-recover-key" "alive")
+      r1 <- executeKeyedClusterCommand client "topo-recover-key" ["SET", "topo-recover-key", "alive"]
       r1 `shouldSatisfy` isRight'
 
       -- Stop a non-seed node to avoid breaking topology discovery
@@ -90,7 +89,7 @@ spec = describe "Topology Refresh" $ do
       _ <- try (refreshTopology client) :: IO (Either SomeException ())
 
       -- Operations to other nodes should still work
-      _ <- executeClusterCommand client "topo-other-node" (set "topo-other-node" "works")
+      _ <- executeKeyedClusterCommand client "topo-other-node" ["SET", "topo-other-node", "works"]
       -- This might succeed or fail depending on which node owns the key slot
       -- The important thing is it doesn't hang
 
@@ -101,7 +100,7 @@ spec = describe "Topology Refresh" $ do
       -- After recovery, all operations should work
       threadDelay 5000000  -- 5s for cluster to stabilize
       _ <- try (refreshTopology client) :: IO (Either SomeException ())
-      r3 <- executeClusterCommand client "topo-recover-key" (get "topo-recover-key")
+      r3 <- executeKeyedClusterCommand client "topo-recover-key" ["GET", "topo-recover-key"]
       -- After cluster recovery, the key should still be readable
       case r3 of
         Right (RespBulkString "alive") -> return ()

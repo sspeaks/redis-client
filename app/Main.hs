@@ -3,73 +3,66 @@
 
 module Main where
 
-import           Client                     (Client (receive, send),
-                                             TLSClient (..), serve)
-import           ClusterCommandClient       (ClusterClient (..),
-                                             ClusterCommandClient,
-                                             closeClusterClient,
-                                             runClusterCommandClient)
-import           ClusterFiller              (fillClusterWithData)
+import           Client                  (Client (receive, send),
+                                          TLSClient (..), serve)
+import           ClusterCommandClient    (ClusterClient (..),
+                                          ClusterCommandClient,
+                                          closeClusterClient,
+                                          runClusterCommandClient)
+import           ClusterFiller           (fillClusterWithData)
 
-import           ClusterSetup               (createClusterClientFromState,
-                                             createPlaintextConnector,
-                                             createTLSConnector,
-                                             flushAllClusterNodes)
-import           ClusterTunnel              (servePinnedProxy, serveSmartProxy)
-import           Control.Concurrent         (forkIO, newEmptyMVar, putMVar,
-                                             takeMVar)
+import           ClusterSetup            (createClusterClientFromState,
+                                          createPlaintextConnector,
+                                          createTLSConnector,
+                                          flushAllClusterNodes)
+import           ClusterTunnel           (servePinnedProxy, serveSmartProxy)
+import           Control.Concurrent      (forkIO, newEmptyMVar, putMVar,
+                                          takeMVar)
 
-import           ClusterCli                 (routeAndExecuteCommand)
-import           Control.Monad              (unless, void, when)
+import           AppConfig               (RunState (..), defaultRunState,
+                                          runCommandsAgainstPlaintextHost,
+                                          runCommandsAgainstTLSHost)
+import           Cluster                 (ClusterNode (..),
+                                          ClusterTopology (..), NodeRole (..),
+                                          calculateSlot, findNodeAddressForSlot)
+import           ClusterCli              (routeAndExecuteCommand)
+import           Connector               (Connector)
+import           Control.Concurrent.STM  (readTVarIO)
+import           Control.Monad           (unless, void, when)
 import           Control.Monad.IO.Class
-import qualified Control.Monad.State        as State
-import qualified Data.ByteString            as BS
-import qualified Data.ByteString.Builder    as Builder
-import qualified Data.ByteString.Char8      as BS8
-import           Data.IORef                 (IORef, atomicModifyIORef',
-                                             newIORef, readIORef)
-import           Data.Maybe                 (fromMaybe, isNothing)
-import           Data.Time.Clock            (diffUTCTime, getCurrentTime)
-import           Data.Word                  (Word64, Word8)
-import           Filler                     (fillCacheWithData,
-                                             fillCacheWithDataMB,
-                                             initRandomNoise)
-import           MultiplexPool              (MultiplexPool,
-                                             createMultiplexPool,
-                                             closeMultiplexPool, submitToNode,
-                                             submitToNodeAsync, waitSlotResult)
-import           Connector                  (Connector)
-import           Cluster                    (ClusterNode (..),
-                                             ClusterTopology (..),
-                                             NodeRole (..),
-                                             calculateSlot, findNodeAddressForSlot)
-import           Numeric                    (showHex)
-import           Control.Concurrent.STM     (readTVarIO)
-import qualified Data.Map.Strict            as Map
-import           AppConfig                  (RunState (..),
-                                             defaultRunState,
-                                             runCommandsAgainstPlaintextHost,
-                                             runCommandsAgainstTLSHost)
-import           RedisCommandClient         (ClientState (ClientState),
-                                             RedisCommandClient,
-                                             RedisCommands (..),
-                                             encodeSetBuilder,
-                                             encodeGetBuilder,
-                                             parseWith)
-import           Resp                       (Encodable (encode),
-                                             RespData (RespArray, RespBulkString))
-import           System.Console.GetOpt      (ArgDescr (..), ArgOrder (..),
-                                             OptDescr (Option), getOpt,
-                                             usageInfo)
-import           System.Console.Readline    (addHistory, readline)
-import           System.Environment         (getArgs, getExecutablePath)
-import           System.Exit                (exitFailure, exitSuccess)
-import           System.IO                  (hIsTerminalDevice, hPutStrLn,
-                                             isEOF, stderr, stdin)
-import           System.Process             (ProcessHandle, createProcess, proc,
-                                             waitForProcess)
-import           System.Random              (randomIO)
-import           Text.Printf                (printf)
+import qualified Control.Monad.State     as State
+import qualified Data.ByteString         as BS
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Char8   as BS8
+import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
+                                          readIORef)
+import qualified Data.Map.Strict         as Map
+import           Data.Maybe              (fromMaybe, isNothing)
+import           Data.Time.Clock         (diffUTCTime, getCurrentTime)
+import           Data.Word               (Word64, Word8)
+import           Filler                  (fillCacheWithData,
+                                          fillCacheWithDataMB, initRandomNoise)
+import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
+                                          createMultiplexPool, submitToNode,
+                                          submitToNodeAsync, waitSlotResult)
+import           Numeric                 (showHex)
+import           RedisCommandClient      (ClientState (ClientState),
+                                          RedisCommandClient,
+                                          RedisCommands (..), encodeGetBuilder,
+                                          encodeSetBuilder, parseWith)
+import           Resp                    (Encodable (encode),
+                                          RespData (RespArray, RespBulkString))
+import           System.Console.GetOpt   (ArgDescr (..), ArgOrder (..),
+                                          OptDescr (Option), getOpt, usageInfo)
+import           System.Console.Readline (addHistory, readline)
+import           System.Environment      (getArgs, getExecutablePath)
+import           System.Exit             (exitFailure, exitSuccess)
+import           System.IO               (hIsTerminalDevice, hPutStrLn, isEOF,
+                                          stderr, stdin)
+import           System.Process          (ProcessHandle, createProcess, proc,
+                                          waitForProcess)
+import           System.Random           (randomIO)
+import           Text.Printf             (printf)
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
@@ -105,7 +98,6 @@ options =
           else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)",
     Option ['P'] ["processes"] (ReqArg (\arg opt -> return $ opt {numProcesses = Just . read $ arg}) "NUM") "Number of parallel processes to spawn (default: 1)",
     Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)",
-    Option [] ["mux"] (NoArg (\opt -> return $ opt {useMux = True})) "Enable multiplexed pipelining for cluster commands",
     Option [] ["operation"] (ReqArg (\arg opt -> do
         if arg `elem` ["set", "get", "mixed"]
           then return $ opt {benchOperation = arg}
@@ -600,7 +592,7 @@ benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
           !slot = calculateSlot key
       case findNodeAddressForSlot topology slot of
         Just addr -> void $ submitToNode muxPool addr cmd
-        Nothing -> return ()
+        Nothing   -> return ()
       ) [0 .. numKeys - 1]
 
 -- | Worker thread that submits commands for the specified duration

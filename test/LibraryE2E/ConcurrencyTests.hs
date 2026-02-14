@@ -3,17 +3,18 @@
 
 module LibraryE2E.ConcurrencyTests (spec) where
 
-import           ClusterCommandClient       (ClusterError (..),
-                                             closeClusterClient,
-                                             executeClusterCommand,
-                                             refreshTopology)
-import           Control.Concurrent         (threadDelay)
-import           Control.Concurrent.Async   (mapConcurrently, concurrently)
-import           Control.Exception          (SomeException, try)
-import           Control.Monad              (forM_)
-import           Data.IORef                 (newIORef, atomicModifyIORef', readIORef)
-import           RedisCommandClient         (RedisCommands (..), showBS)
-import           Resp                       (RespData (..))
+import           ClusterCommandClient     (ClusterError (..),
+                                           closeClusterClient,
+                                           executeKeyedClusterCommand,
+                                           refreshTopology)
+import           Control.Concurrent       (threadDelay)
+import           Control.Concurrent.Async (concurrently, mapConcurrently)
+import           Control.Exception        (SomeException, try)
+import           Control.Monad            (forM_)
+import           Data.IORef               (atomicModifyIORef', newIORef,
+                                           readIORef)
+import           RedisCommandClient       (showBS)
+import           Resp                     (RespData (..))
 
 import           LibraryE2E.Utils
 
@@ -40,13 +41,13 @@ spec = describe "Concurrent Cluster Operations" $ do
               val = "v-" <> showBS tid <> "-" <> showBS i
 
           -- SET
-          sr <- executeClusterCommand client key (set key val)
+          sr <- executeKeyedClusterCommand client key ["SET", key, val]
           case sr of
-            Left _ -> atomicModifyIORef' errors (\n -> (n + 1, ()))
+            Left _  -> atomicModifyIORef' errors (\n -> (n + 1, ()))
             Right _ -> return ()
 
           -- GET and verify
-          gr <- executeClusterCommand client key (get key)
+          gr <- executeKeyedClusterCommand client key ["GET", key]
           case gr of
             Right (RespBulkString v) | v == val -> return ()
             Right (RespBulkString _) ->
@@ -80,7 +81,7 @@ spec = describe "Concurrent Cluster Operations" $ do
             mapConcurrently (\tid -> do
               forM_ [1..50 :: Int] $ \i -> do
                 let key = "refresh-storm-" <> showBS tid <> "-" <> showBS i
-                r <- executeClusterCommand client key (set key "v")
+                r <- executeKeyedClusterCommand client key ["SET", key, "v"]
                 case r of
                   Right _ -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
                   Left _  -> return ()
@@ -104,7 +105,7 @@ spec = describe "Concurrent Cluster Operations" $ do
       -- Warm up connections
       forM_ [1..10 :: Int] $ \i -> do
         let k = "warmup-" <> showBS i
-        _ <- executeClusterCommand client k (set k "v")
+        _ <- executeKeyedClusterCommand client k ["SET", k, "v"]
         return ()
 
       successCount <- newIORef (0 :: Int)
@@ -114,7 +115,7 @@ spec = describe "Concurrent Cluster Operations" $ do
       let workerAction = mapConcurrently (\tid -> do
             forM_ [1..100 :: Int] $ \i -> do
               let key = "nodefail-" <> showBS tid <> "-" <> showBS i
-              r <- try (executeClusterCommand client key (set key "v"))
+              r <- try (executeKeyedClusterCommand client key ["SET", key, "v"])
                     :: IO (Either SomeException (Either ClusterError RespData))
               case r of
                 Right (Right _) -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
@@ -143,7 +144,7 @@ spec = describe "Concurrent Cluster Operations" $ do
 
       -- Final verification: cluster is healthy again
       _ <- try (refreshTopology client) :: IO (Either SomeException ())
-      r <- executeClusterCommand client "final-check" (set "final-check" "ok")
+      r <- executeKeyedClusterCommand client "final-check" ["SET", "final-check", "ok"]
       r `shouldSatisfy` isRight'
 
       flushAllNodes client

@@ -2,20 +2,25 @@
 
 module ClusterE2E.TopologyRefresh (spec) where
 
-import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect)
-import           Cluster                    (ClusterTopology (..), NodeAddress (..))
-import           ClusterCommandClient       (ClusterClient (..), ClusterConfig (..), closeClusterClient, createClusterClient, refreshTopology)
+import           Client                   (PlainTextClient (NotConnectedPlainTextClient),
+                                           connect)
+import           Cluster                  (ClusterTopology (..),
+                                           NodeAddress (..))
+import           ClusterCommandClient     (ClusterClient (..),
+                                           ClusterConfig (..),
+                                           closeClusterClient,
+                                           createClusterClient, refreshTopology)
 import           ClusterE2E.Utils
-import           ConnectionPool             (PoolConfig (..))
+import           ConnectionPool           (PoolConfig (..))
 
-import           Control.Concurrent         (threadDelay)
-import           Control.Concurrent.Async   (mapConcurrently)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (bracket)
+import           Control.Concurrent       (threadDelay)
+import           Control.Concurrent.Async (mapConcurrently)
+import           Control.Concurrent.STM   (readTVarIO)
+import           Control.Exception        (bracket)
 
 
-import           RedisCommandClient         (RedisCommands (..), showBS)
-import           Resp                       (RespData (..))
+import           RedisCommandClient       (RedisCommands (..), showBS)
+import           Resp                     (RespData (..))
 import           Test.Hspec
 
 spec :: Spec
@@ -33,8 +38,7 @@ spec = describe "Topology refresh" $ do
                 },
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 1,  -- 1 second for fast testing
-              clusterUseMultiplexing = False
+              clusterTopologyRefreshInterval = 1  -- 1 second for fast testing
             }
           connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
@@ -118,15 +122,14 @@ spec = describe "Topology refresh" $ do
                 },
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 1,  -- 1 second
-              clusterUseMultiplexing = False
+              clusterTopologyRefreshInterval = 1  -- 1 second
             }
           connector (NodeAddress host port) = connect (NotConnectedPlainTextClient host (Just port))
 
       bracket (createClusterClient config connector) closeClusterClient $ \client -> do
         -- Wait 600ms to get close to refresh boundary
         threadDelay 600000
-        
+
         -- Execute commands concurrently (they'll serialize via connection but spawn async)
         -- The key test is that topology refresh during these operations doesn't break anything
         results <- mapConcurrently (\n -> do
@@ -137,7 +140,7 @@ spec = describe "Topology refresh" $ do
         -- All commands should succeed despite topology refresh happening concurrently
         let allOk = all (\r -> case r of
                           RespSimpleString "OK" -> True
-                          _ -> False
+                          _                     -> False
                         ) results
         allOk `shouldBe` True
 
@@ -165,7 +168,7 @@ spec = describe "Topology refresh" $ do
         -- We can't easily force a refresh failure without breaking the cluster,
         -- so we'll just verify that normal operations work and topology is valid
         _result <- runCmd client $ get "refresh:test:verification"
-        
+
         -- Topology should still be valid
         topology2 <- readTVarIO (clusterTopology client)
         topologyUpdateTime topology2 `shouldSatisfy` (\t -> t >= time1)

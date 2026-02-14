@@ -42,7 +42,7 @@ executeKeylessCommand parts = do
 executeKeyedCommand :: (Client client) => BS8.ByteString -> [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 executeKeyedCommand key parts = do
   clusterClient <- State.get
-  result <- liftIO $ ClusterCommandClient.executeClusterCommand clusterClient key (sendRespCommand parts)
+  result <- liftIO $ ClusterCommandClient.executeKeyedClusterCommand clusterClient key parts
   return $ case result of
     Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg ++ "\nHint: Use hash tags like {user}:key to ensure keys map to the same slot"
     Left err -> Left (show err)

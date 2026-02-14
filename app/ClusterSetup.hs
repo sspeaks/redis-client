@@ -9,29 +9,26 @@ module ClusterSetup
   , flushAllClusterNodes
   ) where
 
-import           Client                     (Client (connect),
-                                             ConnectionStatus (..),
-                                             PlainTextClient (..),
-                                             TLSClient (..))
-import           Cluster                    (ClusterNode (..),
-                                             ClusterTopology (..),
-                                             NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient       (ClusterClient (..),
-                                             ClusterConfig (..),
-                                             createClusterClient)
-import           Connector                  (Connector)
-import           ConnectionPool             (PoolConfig (PoolConfig))
-import qualified ConnectionPool             as CP
-import           Control.Concurrent.STM     (readTVarIO)
-import qualified Control.Monad.State        as State
-import           AppConfig                  (RunState (..), authenticate)
-import qualified Data.ByteString            as BS
-import qualified Data.Map.Strict            as Map
-import           Data.Maybe                 (fromMaybe)
+import           AppConfig              (RunState (..), authenticate)
+import           Client                 (Client (connect),
+                                         ConnectionStatus (..),
+                                         PlainTextClient (..), TLSClient (..))
+import           Cluster                (ClusterNode (..), ClusterTopology (..),
+                                         NodeAddress (..), NodeRole (..))
+import           ClusterCommandClient   (ClusterClient (..), ClusterConfig (..),
+                                         createClusterClient)
+import           ConnectionPool         (PoolConfig (PoolConfig))
+import qualified ConnectionPool         as CP
+import           Connector              (Connector)
+import           Control.Concurrent.STM (readTVarIO)
+import qualified Control.Monad.State    as State
+import qualified Data.ByteString        as BS
+import qualified Data.Map.Strict        as Map
+import           Data.Maybe             (fromMaybe)
 import qualified RedisCommandClient
-import           RedisCommandClient         (ClientState (ClientState),
-                                             RedisCommands (flushAll))
-import           Text.Printf                (printf)
+import           RedisCommandClient     (ClientState (ClientState),
+                                         RedisCommands (flushAll))
+import           Text.Printf            (printf)
 
 -- | Authenticate a client connection if a password is configured
 authenticateClient :: (Client client) => RunState -> client 'Connected -> IO (client 'Connected)
@@ -77,7 +74,6 @@ createClusterClientFromState state connector = do
         , clusterMaxRetries = 3
         , clusterRetryDelay = 100000  -- 100ms
         , clusterTopologyRefreshInterval = 600  -- 10 minutes
-        , clusterUseMultiplexing = useMux state
         }
   createClusterClient clusterCfg connector
 

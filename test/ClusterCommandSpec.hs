@@ -2,11 +2,11 @@
 
 module Main (main) where
 
-import ClusterCommandClient
-import Cluster (NodeAddress (..))
-import ConnectionPool (PoolConfig (..))
-import Resp (RespData (..))
-import Test.Hspec
+import           Cluster              (NodeAddress (..))
+import           ClusterCommandClient
+import           ConnectionPool       (PoolConfig (..))
+import           Resp                 (RespData (..))
+import           Test.Hspec
 
 main :: IO ()
 main = hspec spec
@@ -176,8 +176,7 @@ spec = do
               clusterPoolConfig = poolConfig,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 600,
-              clusterUseMultiplexing = False
+              clusterTopologyRefreshInterval = 600
             }
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000
