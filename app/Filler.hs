@@ -9,13 +9,13 @@ module Filler
   , sendChunkedFill
   ) where
 
-import           Client                  (Client (..))
 import           Control.Monad           (when)
 import qualified Control.Monad.State     as State
 import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy    as LBS
 import           Data.Word               (Word64)
+import           Database.Redis.Client   (Client (..))
 import           Database.Redis.Resp     (RespData)
 import           FillHelpers             (generateBytes, nextLCG, randomNoise,
                                           threadSeedSpacing)

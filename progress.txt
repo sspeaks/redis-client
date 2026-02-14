@@ -14,6 +14,7 @@ Started: Fri Feb 13 10:15:20 PM PST 2026
 - `RedisCommands` methods are now polymorphic via `FromResp`. Call sites need type annotations or explicit `:: IO RespData` when the type is ambiguous.
 - When commands like `flushAll`, `dbsize`, `auth`, `clientSetInfo` are used with `_ <-` bindings, use `(_ :: RespData) <- command` to resolve the ambiguous `FromResp` type.
 - `void flushAll` becomes `do { (_ :: RespData) <- flushAll; pure () }` because `void` doesn't help GHC resolve the ambiguous type variable.
+- When renaming modules, update 3 places in cabal: `exposed-modules` in the sub-library, `reexported-modules` in the main library, and check `Redis.hs` re-exports (`module OldName` → `module NewName`).
 ---
 
 ## 2026-02-14T06:15 - US-001
@@ -66,4 +67,18 @@ Started: Fri Feb 13 10:15:20 PM PST 2026
   - `void` doesn't help resolve ambiguous types because it just discards the result without constraining it
   - The `(_ :: RespData)` pattern binding is the cleanest way to resolve ambiguous FromResp constraints
   - GHC2021 includes ScopedTypeVariables but type vars only scope with explicit `forall`, so `(_ :: Type)` is safer than full expression type annotations
+---
+
+## 2026-02-14T06:37 - US-005
+- Renamed `Resp` module to `Database.Redis.Resp` following Hackage hierarchical naming conventions
+- Created `lib/resp/Database/Redis/` directory structure, moved and renamed module
+- Updated `hask-redis-mux.cabal`: `exposed-modules` and `reexported-modules` 
+- Updated all imports across lib/, test/, and app/ (40+ files)
+- Updated `module Resp` re-export in `Redis.hs` to `module Database.Redis.Resp`
+- All unit tests pass, full project builds cleanly
+- Files changed: `lib/resp/Database/Redis/Resp.hs` (new), `lib/resp/Resp.hs` (deleted), `hask-redis-mux/hask-redis-mux.cabal`, `lib/redis/Redis.hs`, plus all files importing `Resp` in lib/, test/, and app/
+- **Learnings for future iterations:**
+  - The `Redis.hs` convenience module has `module Resp` re-exports that must also be updated (not just `import` statements)
+  - `sed -i 's/import           Resp /import           Database.Redis.Resp /' ...` works well for bulk renaming across many files with consistent formatting
+  - The cabal file has two places referencing each module: `exposed-modules` in the sub-library and `reexported-modules` in the main library stanza
 ---

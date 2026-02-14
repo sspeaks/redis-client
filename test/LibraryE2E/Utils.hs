@@ -19,8 +19,6 @@ module LibraryE2E.Utils
   , seedNode
   ) where
 
-import           Client                 (Client (..),
-                                         PlainTextClient (NotConnectedPlainTextClient))
 import           Cluster                (ClusterNode (..), ClusterTopology (..),
                                          NodeAddress (..), NodeRole (..))
 import           ClusterCommandClient   (ClusterClient (..),
@@ -37,6 +35,8 @@ import           Control.Monad          (forM_)
 import qualified Control.Monad.State    as State
 import qualified Data.ByteString        as BS
 import qualified Data.Map.Strict        as Map
+import           Database.Redis.Client  (Client (..),
+                                         PlainTextClient (NotConnectedPlainTextClient))
 import           Database.Redis.Resp    (RespData (..))
 import           RedisCommandClient     (ClientState (..),
                                          RedisCommandClient (..),

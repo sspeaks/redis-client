@@ -20,8 +20,6 @@ module ClusterE2E.Utils
   , drainHandle
   ) where
 
-import           Client                 (Client (..), ConnectionStatus (..),
-                                         PlainTextClient (NotConnectedPlainTextClient))
 import           Cluster                (ClusterNode (..), ClusterTopology (..),
                                          NodeAddress (..), NodeRole (..))
 import           ClusterCommandClient   (ClusterClient (..),
@@ -30,6 +28,8 @@ import           ClusterCommandClient   (ClusterClient (..),
                                          createClusterClient,
                                          runClusterCommandClient)
 import           ConnectionPool         (PoolConfig (..))
+import           Database.Redis.Client  (Client (..), ConnectionStatus (..),
+                                         PlainTextClient (NotConnectedPlainTextClient))
 
 import           Control.Concurrent     (threadDelay)
 import           Control.Concurrent.STM (readTVarIO)

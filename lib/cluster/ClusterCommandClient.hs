@@ -59,7 +59,6 @@ module ClusterCommandClient
   )
 where
 
-import           Client                  (Client (..))
 import           Cluster                 (ClusterNode (..),
                                           ClusterTopology (..),
                                           NodeAddress (..), NodeRole (..),
@@ -84,6 +83,7 @@ import qualified Data.Map.Strict         as Map
 import           Data.Time.Clock         (NominalDiffTime, diffUTCTime,
                                           getCurrentTime)
 import           Data.Word               (Word16)
+import           Database.Redis.Client   (Client (..))
 import           Database.Redis.Resp     (RespData (..))
 import           FromResp                (FromResp (..))
 import           MultiplexPool           (MultiplexPool, closeMultiplexPool,

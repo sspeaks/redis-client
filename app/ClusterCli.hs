@@ -6,7 +6,6 @@ module ClusterCli (
 )
 where
 
-import           Client                     (Client (receive, send))
 import           ClusterCommandClient       (ClusterError (..))
 import qualified ClusterCommandClient
 import           ClusterCommands            (CommandRouting (..),
@@ -15,6 +14,7 @@ import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
+import           Database.Redis.Client      (Client (receive, send))
 import           Database.Redis.Resp        (Encodable (encode),
                                              RespData (RespArray, RespBulkString))
 import           RedisCommandClient         (ClientState (ClientState),

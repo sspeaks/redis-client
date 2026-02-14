@@ -44,7 +44,7 @@ library
         Database.Redis.Resp
       , FromResp
       , RedisError
-      , Client
+      , Database.Redis.Client
       , Crc16
       , RedisCommandClient
       , Cluster
@@ -75,7 +75,7 @@ library resp
 library client
     import:           defaults
     hs-source-dirs:   lib/client
-    exposed-modules:  Client
+    exposed-modules:  Database.Redis.Client
     build-depends:    bytestring
                     , crypton-x509-system
                     , data-default-class

@@ -5,7 +5,6 @@ module ClusterFiller
   ( fillClusterWithData
   ) where
 
-import           Client                  (Client (..), ConnectionStatus (..))
 import           Cluster                 (ClusterNode (..),
                                           ClusterTopology (..),
                                           NodeAddress (..), NodeRole (..),
@@ -30,6 +29,7 @@ import qualified Data.Map.Strict         as Map
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
+import           Database.Redis.Client   (Client (..), ConnectionStatus (..))
 import           Database.Redis.Resp     (RespData)
 import           Filler                  (sendChunkedFill)
 import           FillHelpers             (generateBytes,

@@ -4,7 +4,6 @@
 
 module Main (main) where
 
-import           Client                  (Client (..), ConnectionStatus (..))
 import           Cluster                 (ClusterNode (..),
                                           ClusterTopology (..),
                                           NodeAddress (..), NodeRole (..),
@@ -25,6 +24,7 @@ import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
 import qualified Data.Map.Strict         as Map
 import           Data.Time.Clock         (getCurrentTime)
 import qualified Data.Vector             as V
+import           Database.Redis.Client   (Client (..), ConnectionStatus (..))
 import           Database.Redis.Resp     (Encodable (..), RespData (..))
 import           MultiplexPool           (closeMultiplexPool,
                                           createMultiplexPool)

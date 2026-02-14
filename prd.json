@@ -76,9 +76,8 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "The hs-source-dirs for the resp library is lib/resp, so the file path becomes lib/resp/Database/Redis/Resp.hs. Update the reexported-modules in the main library stanza too."
-    },
     {
       "id": "US-006",
       "title": "Rename Client module to Database.Redis.Client",

@@ -31,8 +31,6 @@ module Multiplexer
   , isMultiplexerAlive
   ) where
 
-import           Client                           (Client (..),
-                                                   ConnectionStatus (..))
 import           Control.Concurrent               (ThreadId, forkIO, killThread,
                                                    myThreadId)
 import           Control.Concurrent.MVar          (MVar, newEmptyMVar, takeMVar,
@@ -56,6 +54,8 @@ import           Data.Sequence                    (Seq)
 import qualified Data.Sequence                    as Seq
 import           Data.Typeable                    (Typeable)
 import qualified Data.Vector                      as V
+import           Database.Redis.Client            (Client (..),
+                                                   ConnectionStatus (..))
 import           Database.Redis.Resp              (RespData, parseRespData)
 import qualified GHC.Conc                         as GHC (threadCapability)
 

@@ -3,13 +3,13 @@
 
 module Main where
 
-import           Client                  (Client (receive, send),
-                                          TLSClient (..), serve)
 import           ClusterCommandClient    (ClusterClient (..),
                                           ClusterCommandClient,
                                           closeClusterClient,
                                           runClusterCommandClient)
 import           ClusterFiller           (fillClusterWithData)
+import           Database.Redis.Client   (Client (receive, send),
+                                          TLSClient (..), serve)
 
 import           ClusterSetup            (createClusterClientFromState,
                                           createPlaintextConnector,

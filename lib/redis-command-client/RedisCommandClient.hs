@@ -41,8 +41,6 @@ module RedisCommandClient
   , convertResp
   ) where
 
-import           Client                           (Client (..),
-                                                   ConnectionStatus (..))
 import           Control.Exception                (throwIO)
 import           Control.Monad.IO.Class           (MonadIO (..))
 import           Control.Monad.State              as State (MonadState (get, put),
@@ -53,6 +51,8 @@ import qualified Data.ByteString.Builder          as Builder
 import qualified Data.ByteString.Char8            as BS8
 import qualified Data.ByteString.Lazy             as LBS
 import           Data.Kind                        (Type)
+import           Database.Redis.Client            (Client (..),
+                                                   ConnectionStatus (..))
 import           Database.Redis.Resp              (Encodable (encode),
                                                    RespData (..), parseRespData)
 import           FromResp                         (FromResp (..))

@@ -20,16 +20,16 @@ module ConnectionPool
   )
 where
 
-import           Client                 (Client (..), ConnectionStatus (..))
-import           Cluster                (NodeAddress (..))
-import           Connector              (Connector)
-import           Control.Concurrent.MVar (MVar, newMVar, newEmptyMVar,
-                                          modifyMVar, putMVar, takeMVar)
-import           Control.Exception      (SomeException, catch, throwIO, try,
-                                          toException)
-import           Control.Monad          (forM_)
-import           Data.Map.Strict        (Map)
-import qualified Data.Map.Strict        as Map
+import           Cluster                 (NodeAddress (..))
+import           Connector               (Connector)
+import           Control.Concurrent.MVar (MVar, modifyMVar, newEmptyMVar,
+                                          newMVar, putMVar, takeMVar)
+import           Control.Exception       (SomeException, catch, throwIO,
+                                          toException, try)
+import           Control.Monad           (forM_)
+import           Data.Map.Strict         (Map)
+import qualified Data.Map.Strict         as Map
+import           Database.Redis.Client   (Client (..), ConnectionStatus (..))
 
 -- | Configuration for the connection pool.
 data PoolConfig = PoolConfig

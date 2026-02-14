@@ -7,7 +7,6 @@ module ClusterTunnel
   , servePinnedProxy
   ) where
 
-import           Client                     (Client (..), ConnectionStatus (..))
 import           Cluster                    (ClusterNode (..),
                                              ClusterTopology (..),
                                              NodeAddress (..), NodeRole (..))
@@ -32,6 +31,7 @@ import           Data.Char                  (isAlphaNum)
 import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word8)
+import           Database.Redis.Client      (Client (..), ConnectionStatus (..))
 import           Database.Redis.Resp        (Encodable (encode), RespData (..))
 import qualified Database.Redis.Resp        as Resp
 import           Network.Socket             (Family (..), SockAddr (..), Socket,
