@@ -21,7 +21,6 @@ module MultiplexPool
   , closeMultiplexPool
   ) where
 
-import           Cluster                  (NodeAddress (..))
 import           Control.Concurrent.MVar  (MVar, modifyMVar, newMVar)
 import           Control.Exception        (SomeException, catch, throwIO)
 import qualified Data.ByteString.Builder  as Builder
@@ -33,6 +32,7 @@ import qualified Data.Map.Strict          as Map
 import           Data.Vector              (Vector)
 import qualified Data.Vector              as V
 import           Database.Redis.Client    (Client (..))
+import           Database.Redis.Cluster   (NodeAddress (..))
 import           Database.Redis.Connector (Connector)
 import           Database.Redis.Resp      (RespData)
 import           Multiplexer              (Multiplexer, ResponseSlot, SlotPool,

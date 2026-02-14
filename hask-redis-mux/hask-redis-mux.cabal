@@ -47,11 +47,11 @@ library
       , Database.Redis.Client
       , Database.Redis.Crc16
       , Database.Redis.Command
-      , Cluster
-      , ClusterCommandClient
-      , ClusterCommands
-      , ClusterSlotMapping
-      , ConnectionPool
+      , Database.Redis.Cluster
+      , Database.Redis.Cluster.Client
+      , Database.Redis.Cluster.Commands
+      , Database.Redis.Cluster.SlotMapping
+      , Database.Redis.Cluster.ConnectionPool
       , Database.Redis.Connector
       , MultiplexPool
       , Multiplexer
@@ -107,11 +107,11 @@ library redis-command-client
 library cluster
     import:           defaults
     hs-source-dirs:   lib/cluster
-    exposed-modules:  Cluster
-                    , ClusterCommandClient
-                    , ClusterCommands
-                    , ClusterSlotMapping
-                    , ConnectionPool
+    exposed-modules:  Database.Redis.Cluster
+                    , Database.Redis.Cluster.Client
+                    , Database.Redis.Cluster.Commands
+                    , Database.Redis.Cluster.SlotMapping
+                    , Database.Redis.Cluster.ConnectionPool
                     , Database.Redis.Connector
                     , MultiplexPool
                     , Multiplexer

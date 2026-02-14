@@ -32,10 +32,11 @@ module Database.Redis.Connector
   , clusterTLSConnector
   ) where
 
-import           Cluster               (NodeAddress (..))
-import           Database.Redis.Client (Client (connect), ConnectionStatus (..),
-                                        PlainTextClient (NotConnectedPlainTextClient),
-                                        TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname))
+import           Database.Redis.Client  (Client (connect),
+                                         ConnectionStatus (..),
+                                         PlainTextClient (NotConnectedPlainTextClient),
+                                         TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname))
+import           Database.Redis.Cluster (NodeAddress (..))
 
 -- | A function that creates a connected client for a given node address.
 -- Used throughout the cluster layer to establish connections on demand.

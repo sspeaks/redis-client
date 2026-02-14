@@ -2,10 +2,10 @@
 
 module Main (main) where
 
-import           Cluster
-import qualified Data.ByteString.Char8 as BS8
-import           Data.Time.Clock       (getCurrentTime)
-import           Database.Redis.Resp   (RespData (..))
+import qualified Data.ByteString.Char8  as BS8
+import           Data.Time.Clock        (getCurrentTime)
+import           Database.Redis.Cluster
+import           Database.Redis.Resp    (RespData (..))
 import           Test.Hspec
 
 main :: IO ()

@@ -4,31 +4,36 @@
 
 module Main (main) where
 
-import           Cluster                 (ClusterNode (..),
-                                          ClusterTopology (..),
-                                          NodeAddress (..), NodeRole (..),
-                                          SlotRange (..))
-import           ClusterCommandClient
-import           ConnectionPool          (PoolConfig (..), createPool)
-import           Control.Concurrent      (forkIO, threadDelay)
-import           Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar,
-                                          takeMVar)
-import           Control.Concurrent.STM  (newTVarIO)
-import           Control.Monad.IO.Class  (liftIO)
-import           Data.ByteString         (ByteString)
-import qualified Data.ByteString         as BS
-import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy    as LBS
-import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
-                                          readIORef)
-import qualified Data.Map.Strict         as Map
-import           Data.Time.Clock         (getCurrentTime)
-import qualified Data.Vector             as V
-import           Database.Redis.Client   (Client (..), ConnectionStatus (..))
-import           Database.Redis.Resp     (Encodable (..), RespData (..))
-import           MultiplexPool           (closeMultiplexPool,
-                                          createMultiplexPool)
-import           System.Timeout          (timeout)
+import           Control.Concurrent                    (forkIO, threadDelay)
+import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
+                                                        putMVar, takeMVar)
+import           Control.Concurrent.STM                (newTVarIO)
+import           Control.Monad.IO.Class                (liftIO)
+import           Data.ByteString                       (ByteString)
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Builder               as Builder
+import qualified Data.ByteString.Lazy                  as LBS
+import           Data.IORef                            (IORef,
+                                                        atomicModifyIORef',
+                                                        newIORef, readIORef)
+import qualified Data.Map.Strict                       as Map
+import           Data.Time.Clock                       (getCurrentTime)
+import qualified Data.Vector                           as V
+import           Database.Redis.Client                 (Client (..),
+                                                        ConnectionStatus (..))
+import           Database.Redis.Cluster                (ClusterNode (..),
+                                                        ClusterTopology (..),
+                                                        NodeAddress (..),
+                                                        NodeRole (..),
+                                                        SlotRange (..))
+import           Database.Redis.Cluster.Client
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
+                                                        createPool)
+import           Database.Redis.Resp                   (Encodable (..),
+                                                        RespData (..))
+import           MultiplexPool                         (closeMultiplexPool,
+                                                        createMultiplexPool)
+import           System.Timeout                        (timeout)
 import           Test.Hspec
 
 main :: IO ()

@@ -32,7 +32,7 @@
 -- For advanced use (e.g.\ forwarding raw RESP commands), the low-level
 -- 'executeKeyedClusterCommand' and 'executeKeylessClusterCommand' are also
 -- available but are not re-exported by the convenience "Redis" module.
-module ClusterCommandClient
+module Database.Redis.Cluster.Client
   ( -- * Client Types
     ClusterClient (..),
     ClusterCommandClient,
@@ -59,49 +59,59 @@ module ClusterCommandClient
   )
 where
 
-import           Cluster                  (ClusterNode (..),
-                                           ClusterTopology (..),
-                                           NodeAddress (..), NodeRole (..),
-                                           calculateSlot,
-                                           findNodeAddressForSlot,
-                                           parseClusterSlots)
-import           ConnectionPool           (ConnectionPool, PoolConfig (..),
-                                           closePool, createPool,
-                                           withConnection)
-import           Control.Concurrent       (threadDelay)
-import           Control.Concurrent.MVar  (MVar, newMVar, putMVar, tryTakeMVar)
-import           Control.Concurrent.STM   (TVar, atomically, newTVarIO,
-                                           readTVarIO, writeTVar)
-import           Control.Exception        (SomeException, finally, throwIO, try)
-import           Control.Monad            (when)
-import           Control.Monad.IO.Class   (MonadIO (..))
-import qualified Control.Monad.State      as State
-import           Data.ByteString          (ByteString)
-import qualified Data.ByteString          as BS
-import qualified Data.ByteString.Builder  as Builder
-import qualified Data.ByteString.Char8    as BS8
-import qualified Data.Map.Strict          as Map
-import           Data.Time.Clock          (NominalDiffTime, diffUTCTime,
-                                           getCurrentTime)
-import           Data.Word                (Word16)
-import           Database.Redis.Client    (Client (..))
-import           Database.Redis.Command   (ClientState (..),
-                                           RedisCommandClient (..),
-                                           RedisCommands (..), convertResp,
-                                           encodeCommandBuilder,
-                                           geoRadiusFlagToList,
-                                           geoSearchByToList,
-                                           geoSearchFromToList,
-                                           geoSearchOptionToList,
-                                           geoUnitKeyword,
-                                           runRedisCommandClient, showBS)
-import qualified Database.Redis.Command   as RedisCommandClient
-import           Database.Redis.Connector (Connector)
-import           Database.Redis.Resp      (RespData (..))
-import           FromResp                 (FromResp (..))
-import           MultiplexPool            (MultiplexPool, closeMultiplexPool,
-                                           createMultiplexPool, submitToNode,
-                                           submitToNodeWithAsking)
+import           Control.Concurrent                    (threadDelay)
+import           Control.Concurrent.MVar               (MVar, newMVar, putMVar,
+                                                        tryTakeMVar)
+import           Control.Concurrent.STM                (TVar, atomically,
+                                                        newTVarIO, readTVarIO,
+                                                        writeTVar)
+import           Control.Exception                     (SomeException, finally,
+                                                        throwIO, try)
+import           Control.Monad                         (when)
+import           Control.Monad.IO.Class                (MonadIO (..))
+import qualified Control.Monad.State                   as State
+import           Data.ByteString                       (ByteString)
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Builder               as Builder
+import qualified Data.ByteString.Char8                 as BS8
+import qualified Data.Map.Strict                       as Map
+import           Data.Time.Clock                       (NominalDiffTime,
+                                                        diffUTCTime,
+                                                        getCurrentTime)
+import           Data.Word                             (Word16)
+import           Database.Redis.Client                 (Client (..))
+import           Database.Redis.Cluster                (ClusterNode (..),
+                                                        ClusterTopology (..),
+                                                        NodeAddress (..),
+                                                        NodeRole (..),
+                                                        calculateSlot,
+                                                        findNodeAddressForSlot,
+                                                        parseClusterSlots)
+import           Database.Redis.Cluster.ConnectionPool (ConnectionPool,
+                                                        PoolConfig (..),
+                                                        closePool, createPool,
+                                                        withConnection)
+import           Database.Redis.Command                (ClientState (..),
+                                                        RedisCommandClient (..),
+                                                        RedisCommands (..),
+                                                        convertResp,
+                                                        encodeCommandBuilder,
+                                                        geoRadiusFlagToList,
+                                                        geoSearchByToList,
+                                                        geoSearchFromToList,
+                                                        geoSearchOptionToList,
+                                                        geoUnitKeyword,
+                                                        runRedisCommandClient,
+                                                        showBS)
+import qualified Database.Redis.Command                as RedisCommandClient
+import           Database.Redis.Connector              (Connector)
+import           Database.Redis.Resp                   (RespData (..))
+import           FromResp                              (FromResp (..))
+import           MultiplexPool                         (MultiplexPool,
+                                                        closeMultiplexPool,
+                                                        createMultiplexPool,
+                                                        submitToNode,
+                                                        submitToNodeWithAsking)
 
 -- | Error types specific to cluster operations.
 data ClusterError

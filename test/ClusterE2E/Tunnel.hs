@@ -3,21 +3,23 @@
 
 module ClusterE2E.Tunnel (spec) where
 
-import           Client                 (PlainTextClient (NotConnectedPlainTextClient),
-                                         close, connect)
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeAddress (..), NodeRole (..))
-import           ClusterCommandClient   (closeClusterClient, clusterTopology)
+import           Client                        (PlainTextClient (NotConnectedPlainTextClient),
+                                                close, connect)
 import           ClusterE2E.Utils
-import           Control.Concurrent.STM (readTVarIO)
-import           Control.Exception      (bracket)
-import           Control.Monad          (forM_, when)
-import qualified Data.ByteString.Char8  as BS8
-import           Data.List              (isInfixOf)
-import qualified Data.Map.Strict        as Map
-import           Database.Redis.Command (RedisCommands (..))
-import           Database.Redis.Resp    (RespData (..))
-import           SlotMappingHelpers     (getKeyForNode)
+import           Control.Concurrent.STM        (readTVarIO)
+import           Control.Exception             (bracket)
+import           Control.Monad                 (forM_, when)
+import qualified Data.ByteString.Char8         as BS8
+import           Data.List                     (isInfixOf)
+import qualified Data.Map.Strict               as Map
+import           Database.Redis.Cluster        (ClusterNode (..),
+                                                ClusterTopology (..),
+                                                NodeAddress (..), NodeRole (..))
+import           Database.Redis.Cluster.Client (closeClusterClient,
+                                                clusterTopology)
+import           Database.Redis.Command        (RedisCommands (..))
+import           Database.Redis.Resp           (RespData (..))
+import           SlotMappingHelpers            (getKeyForNode)
 import           Test.Hspec
 
 spec :: Spec

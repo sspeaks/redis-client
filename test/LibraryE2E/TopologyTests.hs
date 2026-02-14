@@ -3,20 +3,21 @@
 
 module LibraryE2E.TopologyTests (spec) where
 
-import           Cluster                  (ClusterNode (..),
-                                           ClusterTopology (..), NodeRole (..))
-import           ClusterCommandClient     (ClusterClient (..),
-                                           closeClusterClient,
-                                           executeKeyedClusterCommand,
-                                           refreshTopology)
-import           Control.Concurrent       (threadDelay)
-import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Concurrent.STM   (readTVarIO)
-import           Control.Exception        (SomeException, try)
-import qualified Data.Map.Strict          as Map
-import           Data.Time.Clock          (diffUTCTime)
-import qualified Data.Vector              as V
-import           Database.Redis.Resp      (RespData (..))
+import           Control.Concurrent            (threadDelay)
+import           Control.Concurrent.Async      (mapConcurrently)
+import           Control.Concurrent.STM        (readTVarIO)
+import           Control.Exception             (SomeException, try)
+import qualified Data.Map.Strict               as Map
+import           Data.Time.Clock               (diffUTCTime)
+import qualified Data.Vector                   as V
+import           Database.Redis.Cluster        (ClusterNode (..),
+                                                ClusterTopology (..),
+                                                NodeRole (..))
+import           Database.Redis.Cluster.Client (ClusterClient (..),
+                                                closeClusterClient,
+                                                executeKeyedClusterCommand,
+                                                refreshTopology)
+import           Database.Redis.Resp           (RespData (..))
 
 import           LibraryE2E.Utils
 

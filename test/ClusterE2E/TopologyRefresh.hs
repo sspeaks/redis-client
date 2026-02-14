@@ -2,25 +2,27 @@
 
 module ClusterE2E.TopologyRefresh (spec) where
 
-import           Client                   (PlainTextClient (NotConnectedPlainTextClient),
-                                           connect)
-import           Cluster                  (ClusterTopology (..),
-                                           NodeAddress (..))
-import           ClusterCommandClient     (ClusterClient (..),
-                                           ClusterConfig (..),
-                                           closeClusterClient,
-                                           createClusterClient, refreshTopology)
+import           Client                                (PlainTextClient (NotConnectedPlainTextClient),
+                                                        connect)
 import           ClusterE2E.Utils
-import           ConnectionPool           (PoolConfig (..))
+import           Database.Redis.Cluster                (ClusterTopology (..),
+                                                        NodeAddress (..))
+import           Database.Redis.Cluster.Client         (ClusterClient (..),
+                                                        ClusterConfig (..),
+                                                        closeClusterClient,
+                                                        createClusterClient,
+                                                        refreshTopology)
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
 
-import           Control.Concurrent       (threadDelay)
-import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Concurrent.STM   (readTVarIO)
-import           Control.Exception        (bracket)
+import           Control.Concurrent                    (threadDelay)
+import           Control.Concurrent.Async              (mapConcurrently)
+import           Control.Concurrent.STM                (readTVarIO)
+import           Control.Exception                     (bracket)
 
 
-import           Database.Redis.Command   (RedisCommands (..), showBS)
-import           Database.Redis.Resp      (RespData (..))
+import           Database.Redis.Command                (RedisCommands (..),
+                                                        showBS)
+import           Database.Redis.Resp                   (RespData (..))
 import           Test.Hspec
 
 spec :: Spec

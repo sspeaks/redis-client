@@ -2,7 +2,7 @@
 
 -- | Shared command classification for cluster routing
 -- This module provides lists of Redis commands categorized by their routing requirements
-module ClusterCommands
+module Database.Redis.Cluster.Commands
   ( keylessCommands,
     requiresKeyCommands,
     CommandRouting (..),
@@ -10,9 +10,9 @@ module ClusterCommands
   )
 where
 
-import Data.ByteString (ByteString)
+import           Data.ByteString       (ByteString)
 import qualified Data.ByteString.Char8 as BS8
-import Data.Char (toUpper)
+import           Data.Char             (toUpper)
 
 -- | Result of classifying a command for cluster routing
 data CommandRouting

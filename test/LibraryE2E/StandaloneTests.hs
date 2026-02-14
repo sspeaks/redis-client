@@ -3,7 +3,7 @@
 
 module LibraryE2E.StandaloneTests (spec) where
 
-import           Cluster                  (NodeAddress (..))
+import           Database.Redis.Cluster   (NodeAddress (..))
 import           Database.Redis.Command   (RedisCommands (..))
 import           Database.Redis.Connector (clusterPlaintextConnector)
 import           Database.Redis.Resp      (RespData (..))

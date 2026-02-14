@@ -5,7 +5,7 @@
 -- Provides types for representing cluster nodes, slot ranges, and the full topology,
 -- plus functions to compute hash slots, parse @CLUSTER SLOTS@ responses, and look up
 -- which node owns a given slot.
-module Cluster
+module Database.Redis.Cluster
   ( ClusterNode (..),
     SlotRange (..),
     ClusterTopology (..),

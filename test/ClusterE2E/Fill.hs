@@ -2,24 +2,27 @@
 
 module ClusterE2E.Fill (spec) where
 
-import           Client                 (PlainTextClient (NotConnectedPlainTextClient),
-                                         close, connect)
-import           Cluster                (ClusterNode (..), ClusterTopology (..),
-                                         NodeAddress (..), NodeRole (..),
-                                         SlotRange (..))
-import           ClusterCommandClient   (closeClusterClient, clusterTopology)
+import           Client                        (PlainTextClient (NotConnectedPlainTextClient),
+                                                close, connect)
 import           ClusterE2E.Utils
-import           Control.Concurrent     (threadDelay)
-import           Control.Concurrent.STM (readTVarIO)
-import           Control.Exception      (bracket)
-import qualified Data.ByteString.Char8  as BS8
-import           Data.List              (isInfixOf)
-import qualified Data.Map.Strict        as Map
-import           Database.Redis.Command (RedisCommands (..), showBS)
-import           Database.Redis.Resp    (RespData (..))
-import           SlotMappingHelpers     (getKeyForNode)
-import           System.Exit            (ExitCode (..))
-import           System.Process         (proc, readCreateProcessWithExitCode)
+import           Control.Concurrent            (threadDelay)
+import           Control.Concurrent.STM        (readTVarIO)
+import           Control.Exception             (bracket)
+import qualified Data.ByteString.Char8         as BS8
+import           Data.List                     (isInfixOf)
+import qualified Data.Map.Strict               as Map
+import           Database.Redis.Cluster        (ClusterNode (..),
+                                                ClusterTopology (..),
+                                                NodeAddress (..), NodeRole (..),
+                                                SlotRange (..))
+import           Database.Redis.Cluster.Client (closeClusterClient,
+                                                clusterTopology)
+import           Database.Redis.Command        (RedisCommands (..), showBS)
+import           Database.Redis.Resp           (RespData (..))
+import           SlotMappingHelpers            (getKeyForNode)
+import           System.Exit                   (ExitCode (..))
+import           System.Process                (proc,
+                                                readCreateProcessWithExitCode)
 import           Test.Hspec
 
 spec :: Spec
