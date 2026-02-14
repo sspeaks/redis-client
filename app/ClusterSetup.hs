@@ -25,10 +25,10 @@ import qualified Control.Monad.State    as State
 import qualified Data.ByteString        as BS
 import qualified Data.Map.Strict        as Map
 import           Data.Maybe             (fromMaybe)
+import           Database.Redis.Resp    (RespData)
 import qualified RedisCommandClient
 import           RedisCommandClient     (ClientState (ClientState),
                                          RedisCommands (flushAll))
-import           Resp                   (RespData)
 import           Text.Printf            (printf)
 
 -- | Authenticate a client connection if a password is configured

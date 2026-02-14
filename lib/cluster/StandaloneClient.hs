@@ -46,6 +46,7 @@ import           Control.Exception      (SomeException, catch)
 import           Control.Monad.IO.Class (MonadIO (..))
 import           Control.Monad.Reader   (ReaderT, ask, runReaderT)
 import           Data.ByteString        (ByteString)
+import           Database.Redis.Resp    (RespData)
 import           FromResp               (FromResp (..))
 import           Multiplexer            (Multiplexer, SlotPool,
                                          createMultiplexer, createSlotPool,
@@ -58,7 +59,6 @@ import           RedisCommandClient     (ClientReplyValues (..),
                                          geoSearchFromToList,
                                          geoSearchOptionToList, geoUnitKeyword,
                                          showBS)
-import           Resp                   (RespData)
 
 
 -- | Configuration for a standalone Redis client.

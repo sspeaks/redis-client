@@ -3,24 +3,23 @@
 
 module LibraryE2E.StandaloneConcurrencyTests (spec) where
 
-import           Cluster                    (NodeAddress (..))
-import           Connector                  (clusterPlaintextConnector)
-import           Client                     (PlainTextClient)
-import           Control.Concurrent.Async   (mapConcurrently)
-import           Control.Exception          (SomeException, try)
-import           Control.Monad              (forM_)
-import           Data.IORef                 (newIORef, atomicModifyIORef', readIORef)
-import           MultiplexPool              (MultiplexPool,
-                                             createMultiplexPool,
-                                             submitToNode,
-                                             closeMultiplexPool)
-import           RedisCommandClient         (RedisCommands (..),
-                                             encodeCommandBuilder, showBS)
-import           Resp                       (RespData (..))
-import           StandaloneClient           (StandaloneClient,
-                                             createStandaloneClient,
-                                             closeStandaloneClient,
-                                             runStandaloneClient)
+import           Client                   (PlainTextClient)
+import           Cluster                  (NodeAddress (..))
+import           Connector                (clusterPlaintextConnector)
+import           Control.Concurrent.Async (mapConcurrently)
+import           Control.Exception        (SomeException, try)
+import           Control.Monad            (forM_)
+import           Data.IORef               (atomicModifyIORef', newIORef,
+                                           readIORef)
+import           Database.Redis.Resp      (RespData (..))
+import           MultiplexPool            (MultiplexPool, closeMultiplexPool,
+                                           createMultiplexPool, submitToNode)
+import           RedisCommandClient       (RedisCommands (..),
+                                           encodeCommandBuilder, showBS)
+import           StandaloneClient         (StandaloneClient,
+                                           closeStandaloneClient,
+                                           createStandaloneClient,
+                                           runStandaloneClient)
 
 import           Test.Hspec
 
@@ -57,7 +56,7 @@ spec = describe "Concurrency and Stress Tests" $ do
           sr <- try (runStandaloneClient client (set key val))
                   :: IO (Either SomeException RespData)
           case sr of
-            Left _ -> atomicModifyIORef' errors (\n -> (n + 1, ()))
+            Left _  -> atomicModifyIORef' errors (\n -> (n + 1, ()))
             Right _ -> return ()
 
           -- GET and verify
@@ -180,8 +179,8 @@ spec = describe "Concurrency and Stress Tests" $ do
       -- We just verify it completed (didn't hang) — the try already proves that.
       case result of
         Right (RespSimpleString "PONG") -> return ()  -- Auto-reconnected
-        Right _                          -> return ()  -- Some other response
-        Left _                           -> return ()  -- Threw an exception (also acceptable)
+        Right _                         -> return ()  -- Some other response
+        Left _                          -> return ()  -- Threw an exception (also acceptable)
 
     it "rapid submit-after-destroy throws MultiplexerDead" $ do
       client <- createTestStandaloneClient

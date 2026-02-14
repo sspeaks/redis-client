@@ -15,6 +15,8 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
+import           Database.Redis.Resp        (Encodable (encode), RespData (..),
+                                             parseRespData)
 import           E2EHelpers                 (cleanupProcess, drainHandle,
                                              getRedisClientPath,
                                              waitForSubstring)
@@ -25,8 +27,6 @@ import           RedisCommandClient         (ClientState (..),
                                              GeoSearchOption (..), GeoUnit (..),
                                              RedisCommandClient,
                                              RedisCommands (..), parseManyWith)
-import           Resp                       (Encodable (encode), RespData (..),
-                                             parseRespData)
 import           System.Environment         (getEnvironment)
 import           System.Exit                (ExitCode (..))
 import           System.IO                  (BufferMode (LineBuffering), hClose,

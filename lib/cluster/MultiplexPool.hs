@@ -33,6 +33,7 @@ import           Data.Map.Strict         (Map)
 import qualified Data.Map.Strict         as Map
 import           Data.Vector             (Vector)
 import qualified Data.Vector             as V
+import           Database.Redis.Resp     (RespData)
 import           Multiplexer             (Multiplexer, ResponseSlot, SlotPool,
                                           createMultiplexer, createSlotPool,
                                           destroyMultiplexer,
@@ -40,7 +41,6 @@ import           Multiplexer             (Multiplexer, ResponseSlot, SlotPool,
                                           submitCommandAsync,
                                           submitCommandPairPooled,
                                           submitCommandPooled, waitSlot)
-import           Resp                    (RespData)
 
 -- | Per-node multiplexer group with its own round-robin counter.
 -- Keeping the counter per-node eliminates cross-node CAS contention

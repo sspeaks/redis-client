@@ -9,8 +9,8 @@ import           ClusterCommandClient (ClusterConfig (..), ClusterError (..),
                                        refreshTopology)
 import           Control.Concurrent   (threadDelay)
 import           Control.Exception    (SomeException, try)
+import           Database.Redis.Resp  (RespData (..))
 import           RedisCommandClient   (showBS)
-import           Resp                 (RespData (..))
 
 import           LibraryE2E.Utils
 

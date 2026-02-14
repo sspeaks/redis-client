@@ -16,7 +16,7 @@ import           Control.Exception        (SomeException, try)
 import qualified Data.Map.Strict          as Map
 import           Data.Time.Clock          (diffUTCTime)
 import qualified Data.Vector              as V
-import           Resp                     (RespData (..))
+import           Database.Redis.Resp      (RespData (..))
 
 import           LibraryE2E.Utils
 

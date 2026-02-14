@@ -3,9 +3,9 @@ module RedisError
   ( RedisError (..)
   ) where
 
-import           Control.Exception (Exception)
-import           Data.Typeable     (Typeable)
-import           Resp              (RespData)
+import           Control.Exception   (Exception)
+import           Data.Typeable       (Typeable)
+import           Database.Redis.Resp (RespData)
 
 -- | Typed exceptions for Redis protocol errors.
 data RedisError

@@ -38,12 +38,12 @@ import           Control.Monad          (void)
 import qualified Control.Monad.State    as State
 import qualified Data.ByteString        as BS
 import qualified Data.Map.Strict        as Map
+import           Database.Redis.Resp    (RespData (..))
 import           E2EHelpers             (cleanupProcess, drainHandle,
                                          getRedisClientPath, waitForSubstring)
 import           RedisCommandClient     (ClientState (..),
                                          RedisCommandClient (..),
                                          RedisCommands (..))
-import           Resp                   (RespData (..))
 import           System.Exit            (ExitCode (..))
 import           System.IO              (BufferMode (..), hClose, hFlush,
                                          hGetContents, hPutStrLn, hSetBuffering)

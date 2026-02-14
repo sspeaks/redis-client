@@ -2,23 +2,25 @@
 
 module ClusterE2E.Cli (spec) where
 
-import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close)
-import           Cluster                    (NodeAddress (..), NodeRole (..),
-                                             ClusterNode (..), ClusterTopology (..), SlotRange(..),
-                                             calculateSlot, findNodeForSlot)
-import           ClusterCommandClient       (closeClusterClient, clusterTopology)
+import           Client                 (PlainTextClient (NotConnectedPlainTextClient),
+                                         close, connect)
+import           Cluster                (ClusterNode (..), ClusterTopology (..),
+                                         NodeAddress (..), NodeRole (..),
+                                         SlotRange (..), calculateSlot,
+                                         findNodeForSlot)
+import           ClusterCommandClient   (closeClusterClient, clusterTopology)
 import           ClusterE2E.Utils
-import           SlotMappingHelpers         (getKeyForNode)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (bracket)
-import qualified Data.ByteString.Char8      as BS8
-import qualified Data.ByteString            as BS
-import           Data.Char                  (toLower)
-import           Data.List                  (isInfixOf, nub)
-import qualified Data.Map.Strict            as Map
-import           RedisCommandClient         (RedisCommands (..))
-import           Resp                       (RespData (..))
-import           System.Exit                (ExitCode (..))
+import           Control.Concurrent.STM (readTVarIO)
+import           Control.Exception      (bracket)
+import qualified Data.ByteString        as BS
+import qualified Data.ByteString.Char8  as BS8
+import           Data.Char              (toLower)
+import           Data.List              (isInfixOf, nub)
+import qualified Data.Map.Strict        as Map
+import           Database.Redis.Resp    (RespData (..))
+import           RedisCommandClient     (RedisCommands (..))
+import           SlotMappingHelpers     (getKeyForNode)
+import           System.Exit            (ExitCode (..))
 import           Test.Hspec
 
 spec :: Spec

@@ -2,13 +2,13 @@
 
 module ClusterE2E.Basic (spec) where
 
-import           Cluster                    (calculateSlot)
-import           ClusterCommandClient       (closeClusterClient)
+import           Cluster               (calculateSlot)
+import           ClusterCommandClient  (closeClusterClient)
 import           ClusterE2E.Utils
-import           Control.Exception          (bracket)
-import qualified Data.ByteString.Char8      as BS8
-import           RedisCommandClient         (RedisCommands (..))
-import           Resp                       (RespData (..))
+import           Control.Exception     (bracket)
+import qualified Data.ByteString.Char8 as BS8
+import           Database.Redis.Resp   (RespData (..))
+import           RedisCommandClient    (RedisCommands (..))
 import           Test.Hspec
 
 spec :: Spec

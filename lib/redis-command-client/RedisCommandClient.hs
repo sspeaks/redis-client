@@ -53,10 +53,10 @@ import qualified Data.ByteString.Builder          as Builder
 import qualified Data.ByteString.Char8            as BS8
 import qualified Data.ByteString.Lazy             as LBS
 import           Data.Kind                        (Type)
+import           Database.Redis.Resp              (Encodable (encode),
+                                                   RespData (..), parseRespData)
 import           FromResp                         (FromResp (..))
 import           RedisError                       (RedisError (..))
-import           Resp                             (Encodable (encode),
-                                                   RespData (..), parseRespData)
 
 
 -- | Mutable state carried through a 'RedisCommandClient' session: the live connection

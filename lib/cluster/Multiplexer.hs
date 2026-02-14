@@ -56,8 +56,8 @@ import           Data.Sequence                    (Seq)
 import qualified Data.Sequence                    as Seq
 import           Data.Typeable                    (Typeable)
 import qualified Data.Vector                      as V
+import           Database.Redis.Resp              (RespData, parseRespData)
 import qualified GHC.Conc                         as GHC (threadCapability)
-import           Resp                             (RespData, parseRespData)
 
 -- | Exception thrown when submitting to a dead multiplexer.
 data MultiplexerException

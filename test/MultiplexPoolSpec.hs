@@ -15,8 +15,8 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy    as LBS
 import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
                                           readIORef)
+import           Database.Redis.Resp     (Encodable (..), RespData (..))
 import           MultiplexPool
-import           Resp                    (Encodable (..), RespData (..))
 import           Test.Hspec
 
 -- ---------------------------------------------------------------------------

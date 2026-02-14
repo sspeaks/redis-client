@@ -84,6 +84,7 @@ import qualified Data.Map.Strict         as Map
 import           Data.Time.Clock         (NominalDiffTime, diffUTCTime,
                                           getCurrentTime)
 import           Data.Word               (Word16)
+import           Database.Redis.Resp     (RespData (..))
 import           FromResp                (FromResp (..))
 import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
                                           createMultiplexPool, submitToNode,
@@ -97,7 +98,6 @@ import           RedisCommandClient      (ClientState (..),
                                           geoSearchFromToList,
                                           geoSearchOptionToList, geoUnitKeyword,
                                           runRedisCommandClient, showBS)
-import           Resp                    (RespData (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError

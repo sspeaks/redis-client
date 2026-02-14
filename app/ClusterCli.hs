@@ -15,10 +15,10 @@ import           Control.Monad.IO.Class     (liftIO)
 import qualified Control.Monad.State.Strict as State
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
+import           Database.Redis.Resp        (Encodable (encode),
+                                             RespData (RespArray, RespBulkString))
 import           RedisCommandClient         (ClientState (ClientState),
                                              RedisCommandClient, parseWith)
-import           Resp                       (Encodable (encode),
-                                             RespData (RespArray, RespBulkString))
 
 -- | Route and execute command parts via ClusterCommandClient
 routeAndExecuteCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)

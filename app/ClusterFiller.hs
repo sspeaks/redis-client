@@ -30,6 +30,7 @@ import qualified Data.Map.Strict         as Map
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
+import           Database.Redis.Resp     (RespData)
 import           Filler                  (sendChunkedFill)
 import           FillHelpers             (generateBytes,
                                           generateBytesWithHashTag, nextLCG,
@@ -37,7 +38,6 @@ import           FillHelpers             (generateBytes,
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
-import           Resp                    (RespData)
 import           System.Timeout          (timeout)
 import           Text.Printf             (printf)
 

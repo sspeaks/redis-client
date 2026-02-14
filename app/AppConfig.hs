@@ -16,10 +16,10 @@ import           Control.Exception     (bracket)
 import qualified Control.Monad.State   as State
 import qualified Data.ByteString       as BS
 import qualified Data.ByteString.Char8 as BS8
+import           Database.Redis.Resp   (RespData (..))
 import           RedisCommandClient    (ClientState (..),
                                         RedisCommandClient (..),
                                         RedisCommands (..))
-import           Resp                  (RespData (..))
 
 data RunState = RunState
   { host              :: String,

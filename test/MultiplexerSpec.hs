@@ -1,23 +1,24 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
-import Client (Client (..), ConnectionStatus (..))
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, try)
-import Control.Monad.IO.Class (liftIO)
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
+import           Client                  (Client (..), ConnectionStatus (..))
+import           Control.Concurrent      (forkIO, threadDelay)
+import           Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import           Control.Exception       (SomeException, try)
+import           Control.Monad.IO.Class  (liftIO)
+import           Data.ByteString         (ByteString)
+import qualified Data.ByteString         as BS
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy as LBS
-import Data.IORef (IORef, newIORef, readIORef, atomicModifyIORef')
-import Multiplexer
-import Resp (RespData (..), Encodable (..))
-import Test.Hspec
+import qualified Data.ByteString.Lazy    as LBS
+import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
+                                          readIORef)
+import           Database.Redis.Resp     (Encodable (..), RespData (..))
+import           Multiplexer
+import           Test.Hspec
 
 -- ---------------------------------------------------------------------------
 -- Mock client for testing without a real Redis connection

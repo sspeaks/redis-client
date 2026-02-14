@@ -2,16 +2,16 @@
 
 module Main where
 
-import Data.Attoparsec.ByteString.Char8 (parseOnly)
-import Data.ByteString.Builder qualified as Builder
-import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy qualified as LBS
-import Data.Either (isLeft)
-import Data.Map qualified as M
-import Data.Set qualified as S
-import RedisCommandClient (wrapInRay)
-import Resp
-import Test.Hspec
+import           Data.Attoparsec.ByteString.Char8 (parseOnly)
+import qualified Data.ByteString.Builder          as Builder
+import qualified Data.ByteString.Char8            as BS8
+import qualified Data.ByteString.Lazy             as LBS
+import           Data.Either                      (isLeft)
+import qualified Data.Map                         as M
+import qualified Data.Set                         as S
+import           Database.Redis.Resp
+import           RedisCommandClient               (wrapInRay)
+import           Test.Hspec
 
 main :: IO ()
 main = hspec $ do

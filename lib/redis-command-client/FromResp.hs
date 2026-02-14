@@ -9,11 +9,11 @@ module FromResp
   ( FromResp (..)
   ) where
 
-import           Data.ByteString    (ByteString)
-import           Data.Text          (Text)
-import qualified Data.Text.Encoding as TE
-import           RedisError         (RedisError (..))
-import           Resp               (RespData (..))
+import           Data.ByteString     (ByteString)
+import           Data.Text           (Text)
+import qualified Data.Text.Encoding  as TE
+import           Database.Redis.Resp (RespData (..))
+import           RedisError          (RedisError (..))
 
 -- | Convert a 'RespData' value to a Haskell type.
 --

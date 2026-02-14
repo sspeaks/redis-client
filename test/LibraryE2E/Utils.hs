@@ -37,10 +37,10 @@ import           Control.Monad          (forM_)
 import qualified Control.Monad.State    as State
 import qualified Data.ByteString        as BS
 import qualified Data.Map.Strict        as Map
+import           Database.Redis.Resp    (RespData (..))
 import           RedisCommandClient     (ClientState (..),
                                          RedisCommandClient (..),
                                          RedisCommands (..))
-import           Resp                   (RespData (..))
 import           System.Process         (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery

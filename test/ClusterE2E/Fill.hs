@@ -2,22 +2,24 @@
 
 module ClusterE2E.Fill (spec) where
 
-import           Client                     (PlainTextClient (NotConnectedPlainTextClient), connect, close)
-import           Cluster                    (NodeAddress (..), NodeRole (..),
-                                             ClusterNode (..), ClusterTopology (..), SlotRange(..))
-import           ClusterCommandClient       (closeClusterClient, clusterTopology)
+import           Client                 (PlainTextClient (NotConnectedPlainTextClient),
+                                         close, connect)
+import           Cluster                (ClusterNode (..), ClusterTopology (..),
+                                         NodeAddress (..), NodeRole (..),
+                                         SlotRange (..))
+import           ClusterCommandClient   (closeClusterClient, clusterTopology)
 import           ClusterE2E.Utils
-import           SlotMappingHelpers         (getKeyForNode)
-import           Control.Concurrent         (threadDelay)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (bracket)
-import qualified Data.ByteString.Char8      as BS8
-import           Data.List                  (isInfixOf)
-import qualified Data.Map.Strict            as Map
-import           RedisCommandClient         (RedisCommands (..), showBS)
-import           Resp                       (RespData (..))
-import           System.Exit                (ExitCode (..))
-import           System.Process             (proc, readCreateProcessWithExitCode)
+import           Control.Concurrent     (threadDelay)
+import           Control.Concurrent.STM (readTVarIO)
+import           Control.Exception      (bracket)
+import qualified Data.ByteString.Char8  as BS8
+import           Data.List              (isInfixOf)
+import qualified Data.Map.Strict        as Map
+import           Database.Redis.Resp    (RespData (..))
+import           RedisCommandClient     (RedisCommands (..), showBS)
+import           SlotMappingHelpers     (getKeyForNode)
+import           System.Exit            (ExitCode (..))
+import           System.Process         (proc, readCreateProcessWithExitCode)
 import           Test.Hspec
 
 spec :: Spec
@@ -189,7 +191,7 @@ spec = describe "Cluster Fill Mode" $ do
         close conn
         case result of
           RespInteger n -> return n
-          _ -> return 0
+          _             -> return 0
         ) masterNodes
 
       -- Each master should have some keys (verifying distribution)

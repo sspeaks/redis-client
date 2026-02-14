@@ -41,7 +41,7 @@ common test-defaults
 library
     import:           defaults
     reexported-modules:
-        Resp
+        Database.Redis.Resp
       , FromResp
       , RedisError
       , Client
@@ -67,7 +67,7 @@ library
 library resp
     import:           defaults
     hs-source-dirs:   lib/resp
-    exposed-modules:  Resp
+    exposed-modules:  Database.Redis.Resp
     build-depends:    attoparsec
                     , bytestring
                     , containers

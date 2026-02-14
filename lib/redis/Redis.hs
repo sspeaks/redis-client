@@ -16,7 +16,7 @@
 -- @
 module Redis
   ( -- * RESP Protocol
-    module Resp
+    module Database.Redis.Resp
     -- * Transport
   , module Client
     -- * Redis Commands
@@ -53,6 +53,8 @@ import           Connector            (Connector, clusterPlaintextConnector,
                                        clusterTLSConnector, connectPlaintext,
                                        connectTLS)
 import           Data.ByteString      (ByteString)
+import           Database.Redis.Resp  (Encodable (..), RespData (..),
+                                       parseRespData, parseStrict)
 import           FromResp             (FromResp (..))
 import           Multiplexer          (Multiplexer, MultiplexerException (..),
                                        createMultiplexer, destroyMultiplexer,
@@ -66,8 +68,6 @@ import           RedisCommandClient   (ClientReplyValues (..), ClientState (..),
                                        encodeCommand, encodeCommandBuilder,
                                        encodeGetBuilder, encodeSetBuilder,
                                        parseManyWith, parseWith, showBS)
-import           Resp                 (Encodable (..), RespData (..),
-                                       parseRespData, parseStrict)
 import           StandaloneClient     (StandaloneClient,
                                        StandaloneCommandClient,
                                        StandaloneConfig (..),

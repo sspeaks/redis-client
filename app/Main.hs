@@ -40,6 +40,8 @@ import qualified Data.Map.Strict         as Map
 import           Data.Maybe              (fromMaybe, isNothing)
 import           Data.Time.Clock         (diffUTCTime, getCurrentTime)
 import           Data.Word               (Word64, Word8)
+import           Database.Redis.Resp     (Encodable (encode),
+                                          RespData (RespArray, RespBulkString))
 import           Filler                  (fillCacheWithData,
                                           fillCacheWithDataMB, initRandomNoise)
 import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
@@ -50,8 +52,6 @@ import           RedisCommandClient      (ClientState (ClientState),
                                           RedisCommandClient,
                                           RedisCommands (..), encodeGetBuilder,
                                           encodeSetBuilder, parseWith)
-import           Resp                    (Encodable (encode),
-                                          RespData (RespArray, RespBulkString))
 import           System.Console.GetOpt   (ArgDescr (..), ArgOrder (..),
                                           OptDescr (Option), getOpt, usageInfo)
 import           System.Console.Readline (addHistory, readline)

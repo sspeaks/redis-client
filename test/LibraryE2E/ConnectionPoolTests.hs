@@ -12,8 +12,8 @@ import           ConnectionPool           (PoolConfig (..), closePool,
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Exception        (SomeException, throwIO, try)
 import           Control.Monad            (forM_)
+import           Database.Redis.Resp      (RespData (..))
 import           RedisCommandClient       (showBS)
-import           Resp                     (RespData (..))
 
 import           LibraryE2E.Utils
 
