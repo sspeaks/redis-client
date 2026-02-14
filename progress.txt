@@ -94,3 +94,21 @@ Started: Fri Feb 13 10:15:20 PM PST 2026
   - `sed` with fixed spacing patterns can miss imports with different indentation — always verify with grep after sed
   - `ClusterCommandClient.hs` and `StandaloneClient.hs` in lib/cluster/ have their own `Client` imports with different spacing
 ---
+
+## 2026-02-14T06:45 - US-006 through US-014 (Module Renaming)
+- Completed all module renames to Database.Redis.* hierarchy:
+  - US-006: Client → Database.Redis.Client
+  - US-007: Crc16 → Database.Redis.Crc16
+  - US-008: RedisCommandClient → Database.Redis.Command (+ qualified alias for ClusterCommandClient)
+  - US-009: Connector → Database.Redis.Connector
+  - US-010: Cluster/ClusterCommandClient/ClusterCommands/ClusterSlotMapping/ConnectionPool → Database.Redis.Cluster.*
+  - US-011: Multiplexer/MultiplexPool → Database.Redis.Internal.*
+  - US-012: StandaloneClient → Database.Redis.Standalone, Redis → Database.Redis
+  - US-013/US-014: Verified parent project app/ and all test/ imports are updated
+- All unit tests pass, full project builds
+- **Learnings for future iterations:**
+  - Modules with qualified imports (e.g. `import qualified RedisCommandClient`) need `as OldName` alias when renamed to preserve qualified usage sites
+  - `sed` with fixed spacing misses imports with different indentation — always verify with `grep` after
+  - The cluster sub-library has internal cross-references (e.g. ClusterCommandClient imports from Cluster, ConnectionPool) that must be updated
+  - `FromResp` and `RedisError` modules were NOT renamed — they remain under flat names in redis-command-client sub-library
+---

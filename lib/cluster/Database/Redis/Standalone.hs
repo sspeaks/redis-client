@@ -6,10 +6,10 @@
 -- pipelined throughput without cluster mode. Implements 'RedisCommands' so all
 -- existing commands work transparently.
 --
--- Use 'StandaloneConfig' to control multiplexing behaviour:
+-- Use 'withStandaloneClient' for automatic resource management (recommended):
 --
 -- @
--- import Redis
+-- import Database.Redis
 --
 -- main :: IO ()
 -- main = do
@@ -18,12 +18,11 @@
 --         , standaloneConnector       = clusterPlaintextConnector
 --         , standaloneMultiplexerCount = 1
 --         }
---   client <- createStandaloneClientFromConfig config
---   runStandaloneClient client $ do
---     set \"key\" \"value\"
---     result <- get \"key\"
---     ...
---   closeStandaloneClient client
+--   withStandaloneClient config $ \\client ->
+--     runStandaloneClient client $ do
+--       set \"key\" \"value\"
+--       result <- get \"key\"
+--       ...
 -- @
 module Database.Redis.Standalone
   ( -- * Configuration
@@ -35,11 +34,15 @@ module Database.Redis.Standalone
   , createStandaloneClient
   , createStandaloneClientFromConfig
   , closeStandaloneClient
+    -- * Bracket-style lifecycle (recommended)
+  , withStandaloneClient
+  , runRedis
     -- * Running commands
   , runStandaloneClient
   ) where
 
-import           Control.Exception                   (SomeException, catch)
+import           Control.Exception                   (SomeException, bracket,
+                                                      catch)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
@@ -79,6 +82,8 @@ data StandaloneClient = StandaloneClient
 
 -- | Create a standalone multiplexed client by connecting to a single Redis node.
 -- This is the simple API; for more control, use 'createStandaloneClientFromConfig'.
+--
+-- Consider using 'withStandaloneClient' instead for automatic cleanup.
 createStandaloneClient
   :: (Client client)
   => Connector client
@@ -102,10 +107,48 @@ createStandaloneClientFromConfig config = do
   return $ StandaloneClient mux pool
 
 -- | Close the standalone client, destroying the underlying multiplexer.
+--
+-- Consider using 'withStandaloneClient' instead for automatic cleanup.
 closeStandaloneClient :: StandaloneClient -> IO ()
 closeStandaloneClient client =
   destroyMultiplexer (standaloneMux client)
     `catch` \(_ :: SomeException) -> return ()
+
+-- | Bracket-style resource management for standalone clients.
+--
+-- Creates a client, runs the given action, and ensures the client is closed
+-- even if an exception occurs. Prefer this over manual 'createStandaloneClientFromConfig'
+-- and 'closeStandaloneClient'.
+--
+-- @
+-- withStandaloneClient config $ \\client ->
+--   runStandaloneClient client $ do
+--     set \"key\" \"value\"
+--     get \"key\"
+-- @
+withStandaloneClient
+  :: (Client client)
+  => StandaloneConfig client
+  -> (StandaloneClient -> IO a)
+  -> IO a
+withStandaloneClient config =
+  bracket (createStandaloneClientFromConfig config) closeStandaloneClient
+
+-- | Convenience function that creates a client, runs commands, and closes
+-- the client in one step.
+--
+-- @
+-- result <- runRedis defaultStandaloneConfig $ do
+--   set \"key\" \"value\"
+--   get \"key\"
+-- @
+runRedis
+  :: (Client client)
+  => StandaloneConfig client
+  -> StandaloneCommandClient a
+  -> IO a
+runRedis config action =
+  withStandaloneClient config (`runStandaloneClient` action)
 
 -- | Monad for executing Redis commands on a standalone client.
 newtype StandaloneCommandClient a = StandaloneCommandClient

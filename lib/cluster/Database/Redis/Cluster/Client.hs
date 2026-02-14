@@ -41,6 +41,7 @@ module Database.Redis.Cluster.Client
     -- * Client Lifecycle
     createClusterClient,
     closeClusterClient,
+    withClusterClient,
     refreshTopology,
     -- * Running Commands (monadic, recommended)
     runClusterCommandClient,
@@ -65,8 +66,8 @@ import           Control.Concurrent.MVar               (MVar, newMVar, putMVar,
 import           Control.Concurrent.STM                (TVar, atomically,
                                                         newTVarIO, readTVarIO,
                                                         writeTVar)
-import           Control.Exception                     (SomeException, finally,
-                                                        throwIO, try)
+import           Control.Exception                     (SomeException, bracket,
+                                                        finally, throwIO, try)
 import           Control.Monad                         (when)
 import           Control.Monad.IO.Class                (MonadIO (..))
 import qualified Control.Monad.State                   as State
@@ -242,10 +243,33 @@ createClusterClient config connector = do
       return $ ClusterClient topology pool config connector refreshLock muxPool
 
 -- | Close all pooled connections across every node.
+--
+-- Consider using 'withClusterClient' instead for automatic cleanup.
 closeClusterClient :: (Client client) => ClusterClient client -> IO ()
 closeClusterClient client = do
   closePool (clusterConnectionPool client)
   closeMultiplexPool (clusterMultiplexPool client)
+
+-- | Bracket-style resource management for cluster clients.
+--
+-- Creates a client, runs the given action, and ensures the client is closed
+-- even if an exception occurs. Prefer this over manual 'createClusterClient'
+-- and 'closeClusterClient'.
+--
+-- @
+-- withClusterClient config connector $ \\client ->
+--   runClusterCommandClient client $ do
+--     set \"key\" \"value\"
+--     get \"key\"
+-- @
+withClusterClient
+  :: (Client client)
+  => ClusterConfig
+  -> Connector client
+  -> (ClusterClient client -> IO a)
+  -> IO a
+withClusterClient config connector =
+  bracket (createClusterClient config connector) closeClusterClient
 
 -- | Refresh cluster topology by querying CLUSTER SLOTS.
 -- Uses a lock to prevent thundering herd: if another thread is already
