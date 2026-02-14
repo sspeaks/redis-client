@@ -1,4 +1,4 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module ClusterE2E.Utils
@@ -20,35 +20,38 @@ module ClusterE2E.Utils
   , drainHandle
   ) where
 
-import           Client                     (Client (..), ConnectionStatus (..),
-                                             PlainTextClient (NotConnectedPlainTextClient))
-import           Cluster                    (NodeAddress (..), NodeRole (..),
-                                             ClusterNode (..), ClusterTopology (..))
-import           ClusterCommandClient       (ClusterClient(..), ClusterConfig(..), createClusterClient, runClusterCommandClient, ClusterCommandClient)
-import           ConnectionPool             (PoolConfig (..))
+import           Client                 (Client (..), ConnectionStatus (..),
+                                         PlainTextClient (NotConnectedPlainTextClient))
+import           Cluster                (ClusterNode (..), ClusterTopology (..),
+                                         NodeAddress (..), NodeRole (..))
+import           ClusterCommandClient   (ClusterClient (..),
+                                         ClusterCommandClient,
+                                         ClusterConfig (..),
+                                         createClusterClient,
+                                         runClusterCommandClient)
+import           ConnectionPool         (PoolConfig (..))
 
-import           Control.Concurrent         (threadDelay)
-import           Control.Concurrent.STM     (readTVarIO)
-import           Control.Exception          (IOException, evaluate, finally, try)
-import           Control.Monad              (void)
-import qualified Control.Monad.State        as State
-import qualified Data.ByteString            as BS
-import qualified Data.Map.Strict            as Map
-import           E2EHelpers                 (getRedisClientPath, cleanupProcess,
-                                             waitForSubstring, drainHandle)
-import           RedisCommandClient         (ClientState (..),
-                                             RedisCommandClient(..),
-                                             RedisCommands (..))
-import           Resp                       (RespData (..))
-import           System.Exit                (ExitCode (..))
-import           System.IO                  (BufferMode (..),
-                                             hClose, hFlush, hGetContents,
-                                             hPutStrLn, hSetBuffering)
-import           System.Process             (CreateProcess (..), StdStream (..),
-                                             proc, waitForProcess,
-                                             withCreateProcess)
-import           System.Timeout             (timeout)
-import           Test.Hspec                 (expectationFailure)
+import           Control.Concurrent     (threadDelay)
+import           Control.Concurrent.STM (readTVarIO)
+import           Control.Exception      (IOException, evaluate, finally, try)
+import           Control.Monad          (void)
+import qualified Control.Monad.State    as State
+import qualified Data.ByteString        as BS
+import qualified Data.Map.Strict        as Map
+import           E2EHelpers             (cleanupProcess, drainHandle,
+                                         getRedisClientPath, waitForSubstring)
+import           RedisCommandClient     (ClientState (..),
+                                         RedisCommandClient (..),
+                                         RedisCommands (..))
+import           Resp                   (RespData (..))
+import           System.Exit            (ExitCode (..))
+import           System.IO              (BufferMode (..), hClose, hFlush,
+                                         hGetContents, hPutStrLn, hSetBuffering)
+import           System.Process         (CreateProcess (..), StdStream (..),
+                                         proc, waitForProcess,
+                                         withCreateProcess)
+import           System.Timeout         (timeout)
+import           Test.Hspec             (expectationFailure)
 
 -- | Create a cluster client for testing
 createTestClusterClient :: IO (ClusterClient PlainTextClient)
@@ -63,8 +66,7 @@ createTestClusterClient = do
             },
           clusterMaxRetries = 3,
           clusterRetryDelay = 100000,
-          clusterTopologyRefreshInterval = 600,  -- 10 minutes
-          clusterUseMultiplexing = False
+          clusterTopologyRefreshInterval = 600  -- 10 minutes
         }
   createClusterClient config connector
   where
@@ -95,7 +97,7 @@ countClusterKeys client = do
     close conn
     case result of
       RespInteger n -> return n
-      _ -> return 0
+      _             -> return 0
     ) masterNodes
 
   return $ sum sizes

@@ -2,6 +2,8 @@
 
 module Main where
 
+import           AppConfig                  (RunState (..),
+                                             runCommandsAgainstPlaintextHost)
 import           Client                     (Client (..), PlainTextClient)
 import           Control.Concurrent         (threadDelay)
 import           Control.Exception          (IOException, evaluate, finally,
@@ -16,30 +18,24 @@ import           Data.List                  (isInfixOf)
 import           E2EHelpers                 (cleanupProcess, drainHandle,
                                              getRedisClientPath,
                                              waitForSubstring)
-import           AppConfig                  (RunState (..),
-                                             runCommandsAgainstPlaintextHost)
 import           RedisCommandClient         (ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),
                                              GeoSearchFrom (..),
                                              GeoSearchOption (..), GeoUnit (..),
                                              RedisCommandClient,
-                                             RedisCommands (..),
-                                             parseManyWith)
+                                             RedisCommands (..), parseManyWith)
 import           Resp                       (Encodable (encode), RespData (..),
                                              parseRespData)
 import           System.Environment         (getEnvironment)
 import           System.Exit                (ExitCode (..))
-import           System.IO                  (BufferMode (LineBuffering),
-                                             hClose, hFlush, hGetContents,
-                                             hPutStrLn,
+import           System.IO                  (BufferMode (LineBuffering), hClose,
+                                             hFlush, hGetContents, hPutStrLn,
                                              hSetBuffering)
 import           System.Process             (CreateProcess (..),
-                                             StdStream (CreatePipe),
-                                             proc,
+                                             StdStream (CreatePipe), proc,
                                              readCreateProcessWithExitCode,
-                                             waitForProcess,
-                                             withCreateProcess)
+                                             waitForProcess, withCreateProcess)
 import           System.Timeout             (timeout)
 import           Test.Hspec                 (beforeAll_, before_, describe,
                                              expectationFailure, hspec, it,
@@ -64,6 +60,9 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , pipelineBatchSize = 8192
   , numProcesses = Nothing
   , processIndex = Nothing
+  , benchOperation = "set"
+  , benchDuration = 30
+  , muxCount = 1
   })
 
 main :: IO ()
@@ -657,6 +656,9 @@ main = do
                 , pipelineBatchSize = 8192
                 , numProcesses = Nothing
                 , processIndex = Nothing
+                , benchOperation = "set"
+                , benchDuration = 30
+                , muxCount = 1
                 })
         withCreateProcess cp $ \_ mOut mErr ph ->
           case (mOut, mErr) of

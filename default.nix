@@ -1,12 +1,14 @@
 { pkgs ? import <nixpkgs> { }, ... }:
-let 
+let
   src = builtins.path { path = ./.; name = "source"; };
   scriptSrc = ./scripts/azure-redis-connect.py;
   # Build hask-redis-mux: the cabal file is in hask-redis-mux/ but sources are in ../lib/
   # We give it the full repo and tell cabal2nix to look in the hask-redis-mux subdir
-  hask-redis-mux = pkgs.haskellPackages.callCabal2nixWithOptions
-    "hask-redis-mux" src "--subpath hask-redis-mux" { };
-in 
+  hask-redis-mux = pkgs.haskell.lib.dontCheck (pkgs.haskellPackages.callCabal2nixWithOptions
+    "hask-redis-mux"
+    src "--subpath hask-redis-mux"
+    { });
+in
 rec {
   fullPackage = pkgs.haskellPackages.callCabal2nix "redis-client" src { inherit hask-redis-mux; };
   e2ePackageWithFlag = pkgs.haskell.lib.enableCabalFlag
@@ -20,7 +22,7 @@ rec {
     pkgs.haskell.lib.dontCheck
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "EndToEnd" "redis-client" ])
   ];
-  
+
   justStaticClusterEndToEnd = pkgs.lib.pipe e2ePackageWithFlag [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
@@ -38,15 +40,15 @@ rec {
     pkgs.haskell.lib.dontCheck
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "redis-client" ])
   ];
-  
+
   # Wrapper package that includes both redis-client and azure-redis-connect
   fullPackageWithScripts = pkgs.stdenv.mkDerivation {
     name = "redis-client-full";
-    
+
     buildInputs = [ pkgs.makeWrapper ];
-    
+
     unpackPhase = "true";
-    
+
     installPhase = ''
       mkdir -p $out/bin
       

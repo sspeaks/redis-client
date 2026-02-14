@@ -3,15 +3,14 @@
 
 module LibraryE2E.ResilienceTests (spec) where
 
-import           ClusterCommandClient       (ClusterConfig (..),
-                                             ClusterError (..),
-                                             closeClusterClient,
-                                             executeClusterCommand,
-                                             refreshTopology)
-import           Control.Concurrent         (threadDelay)
-import           Control.Exception          (SomeException, try)
-import           RedisCommandClient         (RedisCommands (..), showBS)
-import           Resp                       (RespData (..))
+import           ClusterCommandClient (ClusterConfig (..), ClusterError (..),
+                                       closeClusterClient,
+                                       executeKeyedClusterCommand,
+                                       refreshTopology)
+import           Control.Concurrent   (threadDelay)
+import           Control.Exception    (SomeException, try)
+import           RedisCommandClient   (showBS)
+import           Resp                 (RespData (..))
 
 import           LibraryE2E.Utils
 
@@ -33,7 +32,7 @@ spec = describe "Error Handling & Resilience" $ do
                  , ("resilience-y", "val-y")
                  ]
       results <- mapM (\(k, v) ->
-        executeClusterCommand client k (set k v)
+        executeKeyedClusterCommand client k ["SET", k, v]
         ) keys
 
       -- All should succeed (MOVED handled transparently if needed)
@@ -41,7 +40,7 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Read them back
       readResults <- mapM (\(k, _) ->
-        executeClusterCommand client k (get k)
+        executeKeyedClusterCommand client k ["GET", k]
         ) keys
 
       mapM_ (\((_, v), r) -> r `shouldBe` Right (RespBulkString v)) (zip keys readResults)
@@ -66,7 +65,7 @@ spec = describe "Error Handling & Resilience" $ do
       -- We try several keys to increase odds of hitting a down node's slots
       let tryKeys = ["maxretry-" <> showBS i | i <- [1..20 :: Int]]
       results <- mapM (\k ->
-        executeClusterCommand client k (set k "v")
+        executeKeyedClusterCommand client k ["SET", k, "v"]
         ) tryKeys
 
       -- At least some should fail (nodes 4 & 5 own some slots)
@@ -94,7 +93,7 @@ spec = describe "Error Handling & Resilience" $ do
 
       -- Warm up a connection to node 3
       -- Use hash tag to target specific node's slots
-      _ <- executeClusterCommand client "conn-close-test" (set "conn-close-test" "v")
+      _ <- executeKeyedClusterCommand client "conn-close-test" ["SET", "conn-close-test", "v"]
 
       -- Kill node 3 abruptly
       stopNode 3
@@ -103,14 +102,14 @@ spec = describe "Error Handling & Resilience" $ do
       -- Try operations — some may fail with ConnectionError
       results <- mapM (\i -> do
         let k = "connclose-" <> showBS i
-        try (executeClusterCommand client k (set k "v"))
+        try (executeKeyedClusterCommand client k ["SET", k, "v"])
           :: IO (Either SomeException (Either ClusterError RespData))
         ) [1..10 :: Int]
 
       -- Should not hang (test completing is the assertion)
       -- Any failures should be connection-related, not parse errors
       let checkResult r = case r of
-            Left _                          -> True  -- Exception is fine
+            Left _                              -> True  -- Exception is fine
             Right (Left (ConnectionError _))    -> True
             Right (Left (MaxRetriesExceeded _)) -> True
             Right (Right _)                     -> True  -- Success is fine (different node)
@@ -130,7 +129,7 @@ spec = describe "Error Handling & Resilience" $ do
       client <- createTestClient
 
       -- Establish baseline
-      r1 <- executeClusterCommand client "recovery-key" (set "recovery-key" "before")
+      r1 <- executeKeyedClusterCommand client "recovery-key" ["SET", "recovery-key", "before"]
       r1 `shouldSatisfy` isRight'
 
       -- Stop node
@@ -146,10 +145,10 @@ spec = describe "Error Handling & Resilience" $ do
       _ <- try (refreshTopology client) :: IO (Either SomeException ())
 
       -- Operations should work again
-      r2 <- executeClusterCommand client "recovery-key2" (set "recovery-key2" "after")
+      r2 <- executeKeyedClusterCommand client "recovery-key2" ["SET", "recovery-key2", "after"]
       r2 `shouldSatisfy` isRight'
 
-      r3 <- executeClusterCommand client "recovery-key2" (get "recovery-key2")
+      r3 <- executeKeyedClusterCommand client "recovery-key2" ["GET", "recovery-key2"]
       r3 `shouldBe` Right (RespBulkString "after")
 
       flushAllNodes client

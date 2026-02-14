@@ -82,6 +82,58 @@ azure-redis-connect --resource-group <rg-name>
 
 See [docs/AZURE_EXAMPLES.md](docs/AZURE_EXAMPLES.md) for detailed examples.
 
+## Library Usage
+
+### Standalone Multiplexed Client
+
+The standalone multiplexed client gives you pipelined throughput for a single (non-cluster) Redis server. Multiplexing is enabled by default.
+
+```haskell
+import Redis
+
+main :: IO ()
+main = do
+  let config = StandaloneConfig
+        { standaloneNodeAddress     = NodeAddress "localhost" 6379
+        , standaloneConnector       = clusterPlaintextConnector
+        , standaloneMultiplexerCount = 1
+        , standaloneUseMultiplexing = True   -- default
+        }
+  client <- createStandaloneClientFromConfig config
+  runStandaloneClient client $ do
+    set "mykey" "myvalue"
+    result <- get "mykey"
+    liftIO $ print result
+  closeStandaloneClient client
+```
+
+Set `standaloneUseMultiplexing = False` to fall back to sequential (non-pipelined) command execution.
+
+For TLS connections, use `clusterTLSConnector` instead of `clusterPlaintextConnector`.
+
+### Cluster Client
+
+Cluster mode uses multiplexing by default for optimal throughput. Set `clusterUseMultiplexing = False` to opt out.
+
+```haskell
+import Redis
+
+main :: IO ()
+main = do
+  let config = ClusterConfig
+        { clusterNodeAddress      = NodeAddress "localhost" 7000
+        , clusterConnector        = clusterPlaintextConnector
+        , clusterUseMultiplexing  = True   -- default
+        , clusterMultiplexerCount = 1
+        }
+  client <- createClusterClient config clusterPlaintextConnector
+  runClusterCommandClient client $ do
+    set "mykey" "myvalue"
+    result <- get "mykey"
+    liftIO $ print result
+  closeClusterClient client
+```
+
 ## Using as a Nix Overlay
 
 You can add `redis-client` to your local nixpkgs Haskell package set via the exported overlay. This lets you use it as a library dependency in other Haskell packages built with nixpkgs.
@@ -146,7 +198,7 @@ nix-build
 ```sh
 make test-unit
 # or
-cabal test RespSpec ClusterSpec ClusterCommandSpec
+cabal test RespSpec ClusterSpec ClusterCommandSpec MultiplexerSpec MultiplexPoolSpec
 ```
 
 **End-to-end tests** (requires Docker and Nix):
@@ -208,7 +260,7 @@ rm -f *.hp *.prof *.ps *.aux *.stat
 - `lib/resp/` - RESP protocol implementation
 - `lib/client/` - Connection management (plaintext and TLS)
 - `lib/redis-command-client/` - Redis command execution
-- `lib/cluster/` - Cluster support and connection pooling
+- `lib/cluster/` - Cluster support, connection pooling, multiplexer, and standalone client
 - `lib/crc16/` - CRC16 for hash slot calculation
 - `test/` - Unit and E2E tests
 

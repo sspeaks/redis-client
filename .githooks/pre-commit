@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Pre-commit hook: run stylish-haskell on staged Haskell files
+
+set -euo pipefail
+
+# Collect staged .hs files (excluding deleted files)
+staged_files=$(git diff --cached --name-only --diff-filter=d -- '*.hs')
+
+if [ -z "$staged_files" ]; then
+  exit 0
+fi
+
+# Determine how to run stylish-haskell
+run_stylish() {
+  if command -v stylish-haskell &>/dev/null; then
+    stylish-haskell -i "$1"
+  elif command -v nix-shell &>/dev/null; then
+    nix-shell -p "stylish-haskell" --run "stylish-haskell -i '$1'"
+  else
+    echo "stylish-haskell not found. Skipping formatting check."
+    exit 0
+  fi
+}
+
+# Format each staged file and re-stage it
+for file in $staged_files; do
+  run_stylish "$file"
+  # Re-stage the formatted file
+  git add "$file"
+done
+
+echo "stylish-haskell: formatted $(echo "$staged_files" | wc -l) file(s)"

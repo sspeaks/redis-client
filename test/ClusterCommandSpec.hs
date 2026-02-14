@@ -1,12 +1,35 @@
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
-import ClusterCommandClient
-import Cluster (NodeAddress (..))
-import ConnectionPool (PoolConfig (..))
-import Resp (RespData (..))
-import Test.Hspec
+import           Client                  (Client (..), ConnectionStatus (..))
+import           Cluster                 (ClusterNode (..),
+                                          ClusterTopology (..),
+                                          NodeAddress (..), NodeRole (..),
+                                          SlotRange (..))
+import           ClusterCommandClient
+import           ConnectionPool          (PoolConfig (..), createPool)
+import           Control.Concurrent      (forkIO, threadDelay)
+import           Control.Concurrent.MVar (newEmptyMVar, newMVar, putMVar,
+                                          takeMVar)
+import           Control.Concurrent.STM  (newTVarIO)
+import           Control.Monad.IO.Class  (liftIO)
+import           Data.ByteString         (ByteString)
+import qualified Data.ByteString         as BS
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy    as LBS
+import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
+                                          readIORef)
+import qualified Data.Map.Strict         as Map
+import           Data.Time.Clock         (getCurrentTime)
+import qualified Data.Vector             as V
+import           MultiplexPool           (closeMultiplexPool,
+                                          createMultiplexPool)
+import           Resp                    (Encodable (..), RespData (..))
+import           System.Timeout          (timeout)
+import           Test.Hspec
 
 main :: IO ()
 main = hspec spec
@@ -176,8 +199,7 @@ spec = do
               clusterPoolConfig = poolConfig,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
-              clusterTopologyRefreshInterval = 600,
-              clusterUseMultiplexing = False
+              clusterTopologyRefreshInterval = 600
             }
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000
@@ -202,3 +224,202 @@ spec = do
           redir3 = RedirectionInfo 4000 "127.0.0.1" 6381
       redir1 `shouldBe` redir2
       redir1 `shouldNotBe` redir3
+
+  askRedirectSpec
+
+-- ---------------------------------------------------------------------------
+-- Mock client (same pattern as MultiplexPoolSpec)
+-- ---------------------------------------------------------------------------
+
+data MockClient (a :: ConnectionStatus) where
+  MockConnected :: !(IORef ByteString)   -- sendBuf
+               -> !(IORef [ByteString]) -- recvQueue
+               -> MockClient 'Connected
+
+instance Client MockClient where
+  connect = error "MockClient: connect not supported"
+  close _ = return ()
+  send (MockConnected sendBuf _) lbs = liftIO $ do
+    let !bs = LBS.toStrict lbs
+    atomicModifyIORef' sendBuf $ \old -> (old <> bs, ())
+  receive (MockConnected sRef recvQueue) = liftIO $ recvLoop sRef recvQueue
+
+recvLoop :: IORef ByteString -> IORef [ByteString] -> IO ByteString
+recvLoop sRef recvQueue = do
+  mChunk <- atomicModifyIORef' recvQueue $ \xs ->
+    case xs of
+      []     -> ([], Nothing)
+      (y:ys) -> (ys, Just y)
+  case mChunk of
+    Just chunk -> return chunk
+    Nothing -> do
+      threadDelay 1000
+      recvLoop sRef recvQueue
+
+createMockClient :: IO (MockClient 'Connected, ByteString -> IO ())
+createMockClient = do
+  sendBuf <- newIORef BS.empty
+  recvQueue <- newIORef []
+  let client = MockConnected sendBuf recvQueue
+      addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
+  return (client, addRecv)
+
+type AddRecvMap = IORef [(NodeAddress, ByteString -> IO ())]
+
+createMockConnector :: IO (NodeAddress -> IO (MockClient 'Connected), AddRecvMap, IORef Int)
+createMockConnector = do
+  mapRef <- newIORef []
+  connCount <- newIORef 0
+  let connector addr = do
+        (client, addRecv) <- createMockClient
+        atomicModifyIORef' mapRef $ \xs -> (xs ++ [(addr, addRecv)], ())
+        atomicModifyIORef' connCount $ \n -> (n + 1, ())
+        return client
+  return (connector, mapRef, connCount)
+
+getAddRecvs :: AddRecvMap -> NodeAddress -> IO [ByteString -> IO ()]
+getAddRecvs mapRef addr = do
+  xs <- readIORef mapRef
+  return [f | (a, f) <- xs, a == addr]
+
+firstOf :: [a] -> a
+firstOf (x:_) = x
+firstOf []    = error "firstOf: empty list"
+
+encodeResp :: RespData -> ByteString
+encodeResp = LBS.toStrict . Builder.toLazyByteString . encode
+
+-- | Build a test topology where all 16384 slots map to a single node.
+mkTopology :: NodeAddress -> IO ClusterTopology
+mkTopology addr = do
+  now <- getCurrentTime
+  let nodeIdBS = "test-node-id-1"
+      node = ClusterNode nodeIdBS addr Master [SlotRange 0 16383 nodeIdBS []] []
+      slotVec = V.replicate 16384 nodeIdBS
+      addrVec = V.replicate 16384 addr
+      nodeMap = Map.singleton nodeIdBS node
+  return $ ClusterTopology slotVec addrVec nodeMap now
+
+-- | Build a ClusterClient backed by a mock connector and a given topology.
+mkClusterClient
+  :: (NodeAddress -> IO (MockClient 'Connected))
+  -> ClusterTopology
+  -> IO (ClusterClient MockClient)
+mkClusterClient connector topo = do
+  topoVar   <- newTVarIO topo
+  pool      <- createPool poolCfg
+  muxPool   <- createMultiplexPool connector 1
+  refreshLk <- newMVar ()
+  return $ ClusterClient topoVar pool clusterCfg connector refreshLk muxPool
+  where
+    poolCfg = PoolConfig
+      { maxConnectionsPerNode = 1
+      , connectionTimeout     = 5000
+      , maxRetries            = 3
+      , useTLS                = False
+      }
+    clusterCfg = ClusterConfig
+      { clusterSeedNode                = NodeAddress "127.0.0.1" 6379
+      , clusterPoolConfig              = poolCfg
+      , clusterMaxRetries              = 5
+      , clusterRetryDelay              = 1000
+      , clusterTopologyRefreshInterval = 600
+      }
+
+-- ---------------------------------------------------------------------------
+-- ASK redirect integration tests
+-- ---------------------------------------------------------------------------
+
+node1, node2 :: NodeAddress
+node1 = NodeAddress "127.0.0.1" 6379
+node2 = NodeAddress "127.0.0.2" 6380
+
+askRedirectSpec :: Spec
+askRedirectSpec = describe "ASK redirect integration (executeKeyedClusterCommand)" $ do
+  it "on ASK error, retries with ASKING prefix at the redirected node" $ do
+    result <- timeout 5000000 $ do
+      (connector, addRecvMap, _) <- createMockConnector
+      topo <- mkTopology node1  -- all slots → node1
+      client <- mkClusterClient connector topo
+
+      -- Run executeKeyedClusterCommand in a thread
+      resultMVar <- newEmptyMVar
+      _ <- forkIO $ do
+        r <- executeKeyedClusterCommand client "mykey" ["GET", "mykey"]
+        putMVar resultMVar r
+
+      -- Wait for node1 connection, then reply with ASK redirect to node2
+      threadDelay 50000
+      fns1 <- getAddRecvs addRecvMap node1
+      length fns1 `shouldSatisfy` (>= 1)
+      -- node2 should have no connections yet (not in topology)
+      fns2Before <- getAddRecvs addRecvMap node2
+      length fns2Before `shouldBe` 0
+      (firstOf fns1) (encodeResp (RespError "ASK 3999 127.0.0.2:6380"))
+
+      -- The retry should connect to node2 with ASKING + GET
+      threadDelay 50000
+      fns2 <- getAddRecvs addRecvMap node2
+      length fns2 `shouldSatisfy` (>= 1)
+      -- Feed +OK for ASKING, then the real response
+      (firstOf fns2) (encodeResp (RespSimpleString "OK"))
+      (firstOf fns2) (encodeResp (RespBulkString "myvalue"))
+
+      r <- takeMVar resultMVar
+      r `shouldBe` Right (RespBulkString "myvalue")
+
+      closeMultiplexPool (clusterMultiplexPool client)
+    result `shouldBe` Just ()
+
+  it "ASK redirect does NOT trigger topology refresh" $ do
+    result <- timeout 5000000 $ do
+      (connector, addRecvMap, connCount) <- createMockConnector
+      topo <- mkTopology node1
+      client <- mkClusterClient connector topo
+
+      resultMVar <- newEmptyMVar
+      _ <- forkIO $ do
+        r <- executeKeyedClusterCommand client "testkey" ["SET", "testkey", "val"]
+        putMVar resultMVar r
+
+      threadDelay 50000
+      fns1 <- getAddRecvs addRecvMap node1
+      (firstOf fns1) (encodeResp (RespError "ASK 100 127.0.0.2:6380"))
+
+      threadDelay 50000
+      fns2 <- getAddRecvs addRecvMap node2
+      (firstOf fns2) (encodeResp (RespSimpleString "OK"))  -- ASKING
+      (firstOf fns2) (encodeResp (RespSimpleString "OK"))  -- SET
+
+      r <- takeMVar resultMVar
+      r `shouldBe` Right (RespSimpleString "OK")
+
+      -- Exactly 2 connections total: 1 for node1 (mux) + 1 for node2 (ASK redirect).
+      -- A topology refresh would have created a 3rd connection to the seed node,
+      -- and then hung waiting for CLUSTER SLOTS data (caught by the 5s timeout).
+      totalConns <- readIORef connCount
+      totalConns `shouldBe` 2
+
+      closeMultiplexPool (clusterMultiplexPool client)
+    result `shouldBe` Just ()
+
+  it "successful command without redirection returns directly" $ do
+    result <- timeout 5000000 $ do
+      (connector, addRecvMap, _) <- createMockConnector
+      topo <- mkTopology node1
+      client <- mkClusterClient connector topo
+
+      resultMVar <- newEmptyMVar
+      _ <- forkIO $ do
+        r <- executeKeyedClusterCommand client "key1" ["GET", "key1"]
+        putMVar resultMVar r
+
+      threadDelay 50000
+      fns1 <- getAddRecvs addRecvMap node1
+      (firstOf fns1) (encodeResp (RespBulkString "directvalue"))
+
+      r <- takeMVar resultMVar
+      r `shouldBe` Right (RespBulkString "directvalue")
+
+      closeMultiplexPool (clusterMultiplexPool client)
+    result `shouldBe` Just ()

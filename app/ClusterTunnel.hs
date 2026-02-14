@@ -120,7 +120,7 @@ routeSmartProxyCommand clusterClient respData = do
       let argKeys = [k | RespBulkString k <- args]
       case classifyCommand cmd argKeys of
         KeylessRoute   -> executeKeylessCommand clusterClient respData
-        KeyedRoute key -> executeKeyedCommand clusterClient key respData
+        KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : argKeys)
         CommandError e -> return $ Left e
     _ -> return $ Left "Expected array command"
 
@@ -137,17 +137,17 @@ executeKeylessCommand clusterClient respData = do
     Left err   -> Left (show err)
     Right resp -> Right resp
 
--- | Execute a keyed command (route by slot)
+-- | Execute a keyed command (route by slot via multiplexer)
 executeKeyedCommand :: (Client client) =>
   ClusterClient client ->
   BS.ByteString ->
-  RespData ->
+  [BS.ByteString] ->
   IO (Either String RespData)
-executeKeyedCommand clusterClient key respData = do
-  result <- ClusterCommandClient.executeClusterCommand
+executeKeyedCommand clusterClient key cmdArgs = do
+  result <- ClusterCommandClient.executeKeyedClusterCommand
               clusterClient
               key
-              (sendRespCommand respData)
+              cmdArgs
   return $ case result of
     Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
     Left err                  -> Left (show err)

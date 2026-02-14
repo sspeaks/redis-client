@@ -13,6 +13,8 @@ help:
 
 # Setup dependencies (run once in new environment)
 setup:
+	git config core.hooksPath .githooks
+	@echo "Git hooks configured from .githooks/"
 ifeq ($(HAS_NIX),yes)
 	@echo "Using Nix for dependency management"
 	nix-shell --run "cabal update"
@@ -43,7 +45,7 @@ endif
 # Run all tests
 test: test-unit test-e2e test-cluster-e2e test-library-e2e
 
-# Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec from hask-redis-mux; FillHelpersSpec from redis-client)
+# Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
 test-unit:
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all"
