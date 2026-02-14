@@ -238,8 +238,8 @@ fill state = do
       else do
         printf "Flushing cache '%s'\n" (host state)
         if useTLS state
-          then runCommandsAgainstTLSHost state (void flushAll)
-          else runCommandsAgainstPlaintextHost state (void flushAll)
+          then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+          else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
     putStrLn "Flush complete"
     exitSuccess
 
@@ -279,8 +279,8 @@ spawnFillProcesses state nprocs = do
   when (flush state && not (useCluster state)) $ do
     printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
     if useTLS state
-      then runCommandsAgainstTLSHost state (void flushAll)
-      else runCommandsAgainstPlaintextHost state (void flushAll)
+      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
 
   -- Calculate data per process
   let totalGB = dataGBs state
@@ -337,8 +337,8 @@ fillStandalone state = do
   when (flush state && isNothing (numProcesses state)) $ do
     printf "Flushing cache '%s'\n" (host state)
     if useTLS state
-      then runCommandsAgainstTLSHost state (void flushAll)
-      else runCommandsAgainstPlaintextHost state (void flushAll)
+      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
   when (dataGBs state > 0) $ do
     initRandomNoise -- Ensure noise buffer is initialized once and shared
     baseSeed <- randomIO :: IO Word64

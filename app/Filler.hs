@@ -17,10 +17,11 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy    as LBS
 import           Data.Word               (Word64)
 import           FillHelpers             (generateBytes, nextLCG, randomNoise,
-                                         threadSeedSpacing)
+                                          threadSeedSpacing)
 import           RedisCommandClient      (ClientReplyValues (OFF, ON),
                                           ClientState (..), RedisCommandClient,
                                           RedisCommands (clientReply, dbsize))
+import           Resp                    (RespData)
 import           Text.Printf             (printf)
 
 -- | Forces evaluation of the noise buffer to ensure it is shared and ready.
@@ -80,7 +81,7 @@ fillCacheWithDataMB baseSeed threadIdx mb pipelineBatchSize keySize valueSize = 
   val <- clientReply ON
   case val of
     Just _ -> do
-      _ <- dbsize -- Consume the response
+      (_ :: RespData) <- dbsize -- Consume the response
       return ()
     Nothing -> error "clientReply returned an unexpected value"
 

@@ -24,19 +24,20 @@ import qualified Data.ByteString.Builder as Builder
 import           Data.ByteString.Char8   (ByteString)
 import qualified Data.ByteString.Char8   as BS8
 import qualified Data.ByteString.Lazy    as LBS
+import           Data.List               (find)
 import           Data.Map.Strict         (Map)
 import qualified Data.Map.Strict         as Map
 import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
 import           Filler                  (sendChunkedFill)
-import           Data.List               (find)
 import           FillHelpers             (generateBytes,
                                           generateBytesWithHashTag, nextLCG,
                                           threadSeedSpacing)
 import           RedisCommandClient      (ClientReplyValues (..),
                                           ClientState (..), RedisCommands (..),
                                           runRedisCommandClient)
+import           Resp                    (RespData)
 import           System.Timeout          (timeout)
 import           Text.Printf             (printf)
 
@@ -210,7 +211,7 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipeli
           _ <- clientReply OFF
           sendChunkedFill genChunk mbToFill pipelineBatchSize (keySize + valueSize) threadSeed
           _ <- clientReply ON
-          _ <- dbsize
+          (_ :: RespData) <- dbsize
           return ()
 
     result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState

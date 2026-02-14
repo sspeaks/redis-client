@@ -70,8 +70,8 @@ defaultRunState = RunState
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
 authenticate _ [] = return $ RespSimpleString "OK"
 authenticate uname pwd = do
-  _ <- auth (BS8.pack uname) (BS8.pack pwd)
-  _ <- clientSetInfo ["LIB-NAME", "seth-spaghetti"]
+  (_ :: RespData) <- auth (BS8.pack uname) (BS8.pack pwd)
+  (_ :: RespData) <- clientSetInfo ["LIB-NAME", "seth-spaghetti"]
   clientSetInfo ["LIB-VER", "0.0.0"]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a

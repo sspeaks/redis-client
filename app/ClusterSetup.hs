@@ -28,6 +28,7 @@ import           Data.Maybe             (fromMaybe)
 import qualified RedisCommandClient
 import           RedisCommandClient     (ClientState (ClientState),
                                          RedisCommands (flushAll))
+import           Resp                   (RespData)
 import           Text.Printf            (printf)
 
 -- | Authenticate a client connection if a password is configured
@@ -93,7 +94,7 @@ flushAllClusterNodes clusterClient connector = do
       printf "  Flushing node %s:%d\n" (nodeHost addr) (nodePort addr)
       CP.withConnection (clusterConnectionPool clusterClient) addr connector $ \conn -> do
         let clientState = ClientState conn BS.empty
-        _ <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
+        (_ :: RespData) <- State.evalStateT (RedisCommandClient.runRedisCommandClient flushAll) clientState
         return ()
     ) masterNodes
 
