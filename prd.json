@@ -1,0 +1,310 @@
+{
+  "project": "hask-redis-mux",
+  "branchName": "ralph/ergonomics-hackage-readiness",
+  "description": "Make hask-redis-mux ergonomic and Hackage-ready: FromResp typeclass, Database.Redis.* module naming, bracket-style resource management, and full Hackage metadata/docs",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Define FromResp typeclass and core instances",
+      "description": "As a library author, I need a FromResp typeclass in the Resp module so that Redis commands can return user-chosen types instead of raw RespData.",
+      "acceptanceCriteria": [
+        "Add 'class FromResp a where fromResp :: RespData -> Either RedisError a' to the Resp module (or a new FromResp module in lib/resp/)",
+        "Add UnexpectedResp RespData constructor to RedisError in RedisCommandClient",
+        "Implement FromResp instances for: RespData (identity), ByteString, Maybe ByteString, Integer, Bool (OK/1 -> True), [ByteString], [RespData], () (discard response), Text (UTF-8 decode), Maybe Text",
+        "Export FromResp and all instances from the module",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "ByteString is from Data.ByteString, Text is from Data.Text. RespNullBulkString maps to Nothing for Maybe instances. Bool interprets RespSimpleString 'OK' and RespInteger 1 as True, RespInteger 0 as False. () always succeeds. This module should depend on resp and bytestring and text."
+    },
+    {
+      "id": "US-002",
+      "title": "Add FromResp unit tests",
+      "description": "As a library author, I need unit tests for every FromResp instance to verify correct conversion and error cases.",
+      "acceptanceCriteria": [
+        "Add a new test suite FromRespSpec in hask-redis-mux.cabal",
+        "Test each FromResp instance: RespData, ByteString, Maybe ByteString, Integer, Bool, [ByteString], [RespData], (), Text, Maybe Text",
+        "Test error cases: wrong RespData constructor returns Left UnexpectedResp",
+        "Test Maybe instances return Nothing for RespNullBulkString",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Depends on US-001 being complete. Tests should use hspec."
+    },
+    {
+      "id": "US-003",
+      "title": "Update RedisCommands typeclass to use FromResp constraints",
+      "description": "As a library user, I want commands like get, set, incr to return polymorphic types via FromResp so I don't have to pattern-match RespData at every call site.",
+      "acceptanceCriteria": [
+        "Update the RedisCommands typeclass in RedisCommandClient so all command return types change from 'm RespData' to '(FromResp a) => ... -> m a'",
+        "Update the RedisCommandClient instance to call fromResp on the raw RespData and handle Left with throwError or liftIO . throwIO",
+        "Update the StandaloneClient instance of RedisCommands to use FromResp",
+        "Update the ClusterCommandClient instance of RedisCommands (if it exists) to use FromResp",
+        "Existing code using 'RespData' as the return type still compiles (RespData has a FromResp identity instance)",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "This is a breaking change to the typeclass. The clientReply method which returns Maybe RespData may need special handling. Ensure all instances are updated consistently."
+    },
+    {
+      "id": "US-004",
+      "title": "Update existing tests for FromResp command signatures",
+      "description": "As a library author, I need to update existing test suites to compile with the new FromResp-polymorphic command signatures.",
+      "acceptanceCriteria": [
+        "All existing test suites in hask-redis-mux (RespSpec, ClusterSpec, ClusterCommandSpec, MultiplexerSpec, MultiplexPoolSpec) compile and pass with the updated command signatures",
+        "Add type annotations where needed to resolve ambiguous FromResp types in test code",
+        "All tests pass",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Tests that used RespData return values may need explicit ':: IO RespData' annotations or similar. Also update tests in the parent redis-client.cabal if they import from hask-redis-mux."
+    },
+    {
+      "id": "US-005",
+      "title": "Rename Resp module to Database.Redis.Resp",
+      "description": "As a library author, I need to rename the Resp module to Database.Redis.Resp following Hackage hierarchical naming conventions.",
+      "acceptanceCriteria": [
+        "Rename lib/resp/Resp.hs to lib/resp/Database/Redis/Resp.hs (create directories as needed)",
+        "Update module declaration inside the file to 'module Database.Redis.Resp'",
+        "Update hask-redis-mux.cabal: change exposed-modules from Resp to Database.Redis.Resp in the resp library",
+        "Update all imports of Resp to Database.Redis.Resp across hask-redis-mux (lib/ and test/)",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "The hs-source-dirs for the resp library is lib/resp, so the file path becomes lib/resp/Database/Redis/Resp.hs. Update the reexported-modules in the main library stanza too."
+    },
+    {
+      "id": "US-006",
+      "title": "Rename Client module to Database.Redis.Client",
+      "description": "As a library author, I need to rename the Client module to Database.Redis.Client following Hackage hierarchical naming conventions.",
+      "acceptanceCriteria": [
+        "Rename lib/client/Client.hs to lib/client/Database/Redis/Client.hs",
+        "Update module declaration to 'module Database.Redis.Client'",
+        "Update hask-redis-mux.cabal for the client library",
+        "Update all imports of Client to Database.Redis.Client across hask-redis-mux",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-007",
+      "title": "Rename Crc16 module to Database.Redis.Crc16",
+      "description": "As a library author, I need to rename the Crc16 module to Database.Redis.Crc16.",
+      "acceptanceCriteria": [
+        "Rename lib/crc16/Crc16.hs to lib/crc16/Database/Redis/Crc16.hs",
+        "Update module declaration to 'module Database.Redis.Crc16'",
+        "Update hask-redis-mux.cabal for the crc16 library",
+        "Update all imports of Crc16 to Database.Redis.Crc16 across hask-redis-mux",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-008",
+      "title": "Rename RedisCommandClient to Database.Redis.Command",
+      "description": "As a library author, I need to rename the RedisCommandClient module to Database.Redis.Command.",
+      "acceptanceCriteria": [
+        "Rename lib/redis-command-client/RedisCommandClient.hs to lib/redis-command-client/Database/Redis/Command.hs",
+        "Update module declaration to 'module Database.Redis.Command'",
+        "Update hask-redis-mux.cabal for the redis-command-client library",
+        "Update all imports of RedisCommandClient to Database.Redis.Command across hask-redis-mux",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-009",
+      "title": "Rename Connector module to Database.Redis.Connector",
+      "description": "As a library author, I need to rename the Connector module to Database.Redis.Connector.",
+      "acceptanceCriteria": [
+        "Rename lib/cluster/Connector.hs to lib/cluster/Database/Redis/Connector.hs",
+        "Update module declaration to 'module Database.Redis.Connector'",
+        "Update hask-redis-mux.cabal for the cluster library",
+        "Update all imports of Connector to Database.Redis.Connector across hask-redis-mux",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-010",
+      "title": "Rename cluster modules to Database.Redis.Cluster.*",
+      "description": "As a library author, I need to rename Cluster, ClusterCommandClient, ClusterCommands, ClusterSlotMapping, and ConnectionPool under Database.Redis.Cluster.*.",
+      "acceptanceCriteria": [
+        "Rename Cluster.hs to Database/Redis/Cluster.hs with module Database.Redis.Cluster",
+        "Rename ClusterCommandClient.hs to Database/Redis/Cluster/Client.hs with module Database.Redis.Cluster.Client",
+        "Rename ClusterCommands.hs to Database/Redis/Cluster/Commands.hs with module Database.Redis.Cluster.Commands",
+        "Rename ClusterSlotMapping.hs to Database/Redis/Cluster/SlotMapping.hs with module Database.Redis.Cluster.SlotMapping",
+        "Rename ConnectionPool.hs to Database/Redis/Cluster/ConnectionPool.hs with module Database.Redis.Cluster.ConnectionPool",
+        "Update hask-redis-mux.cabal exposed-modules for the cluster library",
+        "Update all imports across hask-redis-mux lib/ and test/",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "All these files are in lib/cluster/ with hs-source-dirs: lib/cluster. Create Database/Redis/Cluster/ subdirectories as needed."
+    },
+    {
+      "id": "US-011",
+      "title": "Rename internal modules to Database.Redis.Internal.*",
+      "description": "As a library author, I need to move Multiplexer and MultiplexPool under Database.Redis.Internal.* to signal they are not part of the stable public API.",
+      "acceptanceCriteria": [
+        "Rename Multiplexer.hs to Database/Redis/Internal/Multiplexer.hs with module Database.Redis.Internal.Multiplexer",
+        "Rename MultiplexPool.hs to Database/Redis/Internal/MultiplexPool.hs with module Database.Redis.Internal.MultiplexPool",
+        "Update hask-redis-mux.cabal exposed-modules for the cluster library",
+        "Update all imports across hask-redis-mux",
+        "Typecheck passes"
+      ],
+      "priority": 11,
+      "passes": false,
+      "notes": "These are in lib/cluster/. They should still be exposed (users may need them for advanced use) but the Internal namespace signals instability."
+    },
+    {
+      "id": "US-012",
+      "title": "Rename StandaloneClient and Redis to Database.Redis.Standalone and Database.Redis",
+      "description": "As a library author, I need to rename the remaining modules: StandaloneClient to Database.Redis.Standalone and Redis to Database.Redis.",
+      "acceptanceCriteria": [
+        "Rename lib/cluster/StandaloneClient.hs to lib/cluster/Database/Redis/Standalone.hs with module Database.Redis.Standalone",
+        "Rename lib/redis/Redis.hs to lib/redis/Database/Redis.hs with module Database.Redis",
+        "Update hask-redis-mux.cabal for both libraries",
+        "Update all imports across hask-redis-mux lib/ and test/",
+        "Update reexported-modules in the main library stanza to use new module names",
+        "Typecheck passes"
+      ],
+      "priority": 12,
+      "passes": false,
+      "notes": "Database.Redis is the top-level re-export module. Update it to re-export all the newly-renamed public modules."
+    },
+    {
+      "id": "US-013",
+      "title": "Update parent redis-client.cabal for new module names",
+      "description": "As a library author, I need to update the parent redis-client.cabal file and any app/ code that imports hask-redis-mux modules to use the new Database.Redis.* names.",
+      "acceptanceCriteria": [
+        "Update all import statements in redis-client's app/ directory that reference old module names (Resp, Client, RedisCommandClient, Cluster, etc.) to use Database.Redis.* names",
+        "Update redis-client.cabal test suite imports if they reference old module names",
+        "The full project typechecks (cabal build all or nix-build)",
+        "Typecheck passes"
+      ],
+      "priority": 13,
+      "passes": false,
+      "notes": "Search for imports of the old flat module names in the parent project files outside hask-redis-mux/."
+    },
+    {
+      "id": "US-014",
+      "title": "Update all tests for new module names",
+      "description": "As a library author, I need to update all test files in both hask-redis-mux/test/ and the parent redis-client test/ to use the new Database.Redis.* module names.",
+      "acceptanceCriteria": [
+        "All test files in hask-redis-mux/test/ use Database.Redis.* imports",
+        "All test files in redis-client/test/ that import hask-redis-mux modules use Database.Redis.* imports",
+        "All test suites pass",
+        "Typecheck passes"
+      ],
+      "priority": 14,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-015",
+      "title": "Add bracket-style resource management functions",
+      "description": "As a library user, I want withStandaloneClient and withClusterClient bracket functions so my connections are automatically cleaned up on exceptions.",
+      "acceptanceCriteria": [
+        "Add 'withStandaloneClient :: StandaloneConfig client -> (StandaloneClient -> IO a) -> IO a' to Database.Redis.Standalone using Control.Exception.bracket",
+        "Add 'withClusterClient :: ClusterConfig -> Connector client -> (ClusterClient -> IO a) -> IO a' to Database.Redis.Cluster.Client using bracket",
+        "Add 'runRedis :: StandaloneConfig client -> StandaloneCommandClient a -> IO a' convenience function that creates, runs, and closes in one step",
+        "Add Haddock comments recommending bracket functions over manual create/close",
+        "Re-export new functions from Database.Redis top-level module",
+        "Typecheck passes"
+      ],
+      "priority": 15,
+      "passes": false,
+      "notes": "Use Control.Exception.bracket for exception safety. Mark createStandaloneClient and closeStandaloneClient with Haddock notes like '-- | ... Consider using withStandaloneClient instead for automatic cleanup.'"
+    },
+    {
+      "id": "US-016",
+      "title": "Add defaultStandaloneConfig",
+      "description": "As a library user, I want a default config for localhost:6379 so I can get started with zero configuration.",
+      "acceptanceCriteria": [
+        "Add 'defaultStandaloneConfig :: StandaloneConfig PlainTextClient' to Database.Redis.Standalone with host localhost, port 6379, plaintext connector, 1 multiplexer",
+        "Re-export from Database.Redis top-level module",
+        "Add Haddock example showing: runRedis defaultStandaloneConfig $ do { set key val; get key }",
+        "Typecheck passes"
+      ],
+      "priority": 16,
+      "passes": false,
+      "notes": "Uses clusterPlaintextConnector from Database.Redis.Connector. NodeAddress is from Database.Redis.Cluster."
+    },
+    {
+      "id": "US-017",
+      "title": "Add upper-bounded dependencies to cabal file",
+      "description": "As a Hackage publisher, I need upper bounds on all build-depends so the package follows PVP and cabal check passes.",
+      "acceptanceCriteria": [
+        "All build-depends in hask-redis-mux.cabal have both lower and upper bounds (e.g., attoparsec >= 0.14 && < 0.15)",
+        "Bounds are based on versions currently used in the nix build (check flake.lock or nix derivation for pinned versions)",
+        "The package still builds successfully with the bounded deps",
+        "Typecheck passes"
+      ],
+      "priority": 17,
+      "passes": false,
+      "notes": "Check current dependency versions with 'cabal freeze' or from the nix build. Be conservative with upper bounds - use the next major version."
+    },
+    {
+      "id": "US-018",
+      "title": "Add Hackage metadata to cabal file",
+      "description": "As a Hackage publisher, I need complete metadata so the package page looks professional and cabal check is clean.",
+      "acceptanceCriteria": [
+        "Add 'homepage: https://github.com/sspeaks/redis-client' to hask-redis-mux.cabal",
+        "Add 'bug-reports: https://github.com/sspeaks/redis-client/issues' to hask-redis-mux.cabal",
+        "Add 'tested-with: GHC == <version>' matching the GHC version in the nix build",
+        "Verify description field has proper Haddock-compatible markup",
+        "cabal check produces no errors or warnings",
+        "Typecheck passes"
+      ],
+      "priority": 18,
+      "passes": false,
+      "notes": "Run 'cabal check' in the hask-redis-mux directory to verify. Fix any warnings it reports."
+    },
+    {
+      "id": "US-019",
+      "title": "Add Haddock documentation to all public API",
+      "description": "As a Hackage publisher, I need complete Haddock coverage so users can browse docs on Hackage.",
+      "acceptanceCriteria": [
+        "Every exported function, type, typeclass, and typeclass method in public modules (Database.Redis.*) has a Haddock comment",
+        "Add @since 0.1.0.0 annotation to each public module",
+        "Database.Redis top-level module has usage examples showing connect, set, get, typed returns, bracket pattern",
+        "cabal haddock builds with no missing-doc warnings for public modules",
+        "Typecheck passes"
+      ],
+      "priority": 19,
+      "passes": false,
+      "notes": "Internal modules (Database.Redis.Internal.*) don't need full Haddock coverage but should have module-level docs."
+    },
+    {
+      "id": "US-020",
+      "title": "Add library-focused README for hask-redis-mux",
+      "description": "As a potential user, I want a README in the hask-redis-mux package that shows me how to get started quickly.",
+      "acceptanceCriteria": [
+        "Create or update hask-redis-mux/README.md with: quick start example (connect, set, get with typed returns, bracket pattern), feature overview (standalone, cluster, TLS, multiplexing), installation instructions (cabal dependency line), link to Haddock docs placeholder",
+        "Add badge placeholders for Hackage version, CI status, Haddock coverage",
+        "Examples use OverloadedStrings and FromResp typed returns",
+        "Add extra-doc-files: README.md to hask-redis-mux.cabal if not already present",
+        "Typecheck passes"
+      ],
+      "priority": 20,
+      "passes": false,
+      "notes": "This is the README that will appear on the Hackage package page."
+    }
+  ]
+}
