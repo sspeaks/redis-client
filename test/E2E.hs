@@ -4,7 +4,6 @@ module Main where
 
 import           AppConfig                  (RunState (..),
                                              runCommandsAgainstPlaintextHost)
-import           Client                     (Client (..), PlainTextClient)
 import           Control.Concurrent         (threadDelay)
 import           Control.Exception          (IOException, evaluate, finally,
                                              try)
@@ -15,6 +14,7 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
+import           Database.Redis.Client      (Client (..), PlainTextClient)
 import           Database.Redis.Command     (ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),

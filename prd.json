@@ -184,7 +184,7 @@
         "Typecheck passes"
       ],
       "priority": 12,
-      "passes": false,
+      "passes": true,
       "notes": "Database.Redis is the top-level re-export module. Update it to re-export all the newly-renamed public modules."
     },
     {
@@ -198,7 +198,7 @@
         "Typecheck passes"
       ],
       "priority": 13,
-      "passes": false,
+      "passes": true,
       "notes": "Search for imports of the old flat module names in the parent project files outside hask-redis-mux/."
     },
     {

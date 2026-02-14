@@ -3,12 +3,12 @@
 
 module LibraryE2E.StandaloneConcurrencyTests (spec) where
 
-import           Client                                (PlainTextClient)
 import           Control.Concurrent.Async              (mapConcurrently)
 import           Control.Exception                     (SomeException, try)
 import           Control.Monad                         (forM_)
 import           Data.IORef                            (atomicModifyIORef',
                                                         newIORef, readIORef)
+import           Database.Redis.Client                 (PlainTextClient)
 import           Database.Redis.Cluster                (NodeAddress (..))
 import           Database.Redis.Command                (RedisCommands (..),
                                                         encodeCommandBuilder,

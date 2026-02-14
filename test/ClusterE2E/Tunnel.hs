@@ -3,8 +3,6 @@
 
 module ClusterE2E.Tunnel (spec) where
 
-import           Client                        (PlainTextClient (NotConnectedPlainTextClient),
-                                                close, connect)
 import           ClusterE2E.Utils
 import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Exception             (bracket)
@@ -12,6 +10,8 @@ import           Control.Monad                 (forM_, when)
 import qualified Data.ByteString.Char8         as BS8
 import           Data.List                     (isInfixOf)
 import qualified Data.Map.Strict               as Map
+import           Database.Redis.Client         (PlainTextClient (NotConnectedPlainTextClient),
+                                                close, connect)
 import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeAddress (..), NodeRole (..))

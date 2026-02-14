@@ -2,9 +2,9 @@
 
 module ClusterE2E.TopologyRefresh (spec) where
 
-import           Client                                (PlainTextClient (NotConnectedPlainTextClient),
-                                                        connect)
 import           ClusterE2E.Utils
+import           Database.Redis.Client                 (PlainTextClient (NotConnectedPlainTextClient),
+                                                        connect)
 import           Database.Redis.Cluster                (ClusterTopology (..),
                                                         NodeAddress (..))
 import           Database.Redis.Cluster.Client         (ClusterClient (..),
