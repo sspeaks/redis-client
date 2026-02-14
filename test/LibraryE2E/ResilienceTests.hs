@@ -3,14 +3,14 @@
 
 module LibraryE2E.ResilienceTests (spec) where
 
-import           ClusterCommandClient (ClusterConfig (..), ClusterError (..),
-                                       closeClusterClient,
-                                       executeKeyedClusterCommand,
-                                       refreshTopology)
-import           Control.Concurrent   (threadDelay)
-import           Control.Exception    (SomeException, try)
-import           Database.Redis.Resp  (RespData (..))
-import           RedisCommandClient   (showBS)
+import           ClusterCommandClient   (ClusterConfig (..), ClusterError (..),
+                                         closeClusterClient,
+                                         executeKeyedClusterCommand,
+                                         refreshTopology)
+import           Control.Concurrent     (threadDelay)
+import           Control.Exception      (SomeException, try)
+import           Database.Redis.Command (showBS)
+import           Database.Redis.Resp    (RespData (..))
 
 import           LibraryE2E.Utils
 

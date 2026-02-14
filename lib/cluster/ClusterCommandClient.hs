@@ -84,12 +84,7 @@ import           Data.Time.Clock         (NominalDiffTime, diffUTCTime,
                                           getCurrentTime)
 import           Data.Word               (Word16)
 import           Database.Redis.Client   (Client (..))
-import           Database.Redis.Resp     (RespData (..))
-import           FromResp                (FromResp (..))
-import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
-                                          createMultiplexPool, submitToNode,
-                                          submitToNodeWithAsking)
-import           RedisCommandClient      (ClientState (..),
+import           Database.Redis.Command  (ClientState (..),
                                           RedisCommandClient (..),
                                           RedisCommands (..), convertResp,
                                           encodeCommandBuilder,
@@ -98,6 +93,12 @@ import           RedisCommandClient      (ClientState (..),
                                           geoSearchFromToList,
                                           geoSearchOptionToList, geoUnitKeyword,
                                           runRedisCommandClient, showBS)
+import qualified Database.Redis.Command  as RedisCommandClient
+import           Database.Redis.Resp     (RespData (..))
+import           FromResp                (FromResp (..))
+import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
+                                          createMultiplexPool, submitToNode,
+                                          submitToNodeWithAsking)
 
 -- | Error types specific to cluster operations.
 data ClusterError

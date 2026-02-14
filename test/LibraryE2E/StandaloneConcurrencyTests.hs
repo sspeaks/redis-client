@@ -11,11 +11,11 @@ import           Control.Exception        (SomeException, try)
 import           Control.Monad            (forM_)
 import           Data.IORef               (atomicModifyIORef', newIORef,
                                            readIORef)
+import           Database.Redis.Command   (RedisCommands (..),
+                                           encodeCommandBuilder, showBS)
 import           Database.Redis.Resp      (RespData (..))
 import           MultiplexPool            (MultiplexPool, closeMultiplexPool,
                                            createMultiplexPool, submitToNode)
-import           RedisCommandClient       (RedisCommands (..),
-                                           encodeCommandBuilder, showBS)
 import           StandaloneClient         (StandaloneClient,
                                            closeStandaloneClient,
                                            createStandaloneClient,

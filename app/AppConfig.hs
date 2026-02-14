@@ -9,17 +9,17 @@ module AppConfig
   , runCommandsAgainstPlaintextHost
   ) where
 
-import           Control.Exception     (bracket)
-import qualified Control.Monad.State   as State
-import qualified Data.ByteString       as BS
-import qualified Data.ByteString.Char8 as BS8
-import           Database.Redis.Client (Client (..),
-                                        PlainTextClient (NotConnectedPlainTextClient),
-                                        TLSClient (..))
-import           Database.Redis.Resp   (RespData (..))
-import           RedisCommandClient    (ClientState (..),
-                                        RedisCommandClient (..),
-                                        RedisCommands (..))
+import           Control.Exception      (bracket)
+import qualified Control.Monad.State    as State
+import qualified Data.ByteString        as BS
+import qualified Data.ByteString.Char8  as BS8
+import           Database.Redis.Client  (Client (..),
+                                         PlainTextClient (NotConnectedPlainTextClient),
+                                         TLSClient (..))
+import           Database.Redis.Command (ClientState (..),
+                                         RedisCommandClient (..),
+                                         RedisCommands (..))
+import           Database.Redis.Resp    (RespData (..))
 
 data RunState = RunState
   { host              :: String,

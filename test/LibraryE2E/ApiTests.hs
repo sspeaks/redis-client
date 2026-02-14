@@ -13,8 +13,8 @@ import           ClusterCommandClient   (ClusterClient (clusterTopology),
 import           Connector              (clusterPlaintextConnector)
 import           Control.Concurrent.STM (readTVarIO)
 import qualified Data.Map.Strict        as Map
+import           Database.Redis.Command (RedisCommands (..))
 import           Database.Redis.Resp    (RespData (..))
-import           RedisCommandClient     (RedisCommands (..))
 
 import           LibraryE2E.Utils
 

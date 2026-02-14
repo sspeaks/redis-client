@@ -15,8 +15,8 @@ import           Control.Monad          (forM_, when)
 import qualified Data.ByteString.Char8  as BS8
 import           Data.List              (isInfixOf)
 import qualified Data.Map.Strict        as Map
+import           Database.Redis.Command (RedisCommands (..))
 import           Database.Redis.Resp    (RespData (..))
-import           RedisCommandClient     (RedisCommands (..))
 import           SlotMappingHelpers     (getKeyForNode)
 import           Test.Hspec
 

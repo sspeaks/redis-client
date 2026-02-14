@@ -7,7 +7,7 @@
 -- (strings, hashes, lists, sets, sorted sets, geo), a 'RedisCommandClient' monad
 -- that manages connection state and incremental RESP parsing, and typed error handling
 -- via 'RedisError'.
-module RedisCommandClient
+module Database.Redis.Command
   ( -- * Core types
     ClientState (..)
   , RedisCommandClient (..)

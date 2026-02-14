@@ -13,8 +13,8 @@ import           Control.Exception        (SomeException, try)
 import           Control.Monad            (forM_)
 import           Data.IORef               (atomicModifyIORef', newIORef,
                                            readIORef)
+import           Database.Redis.Command   (showBS)
 import           Database.Redis.Resp      (RespData (..))
-import           RedisCommandClient       (showBS)
 
 import           LibraryE2E.Utils
 

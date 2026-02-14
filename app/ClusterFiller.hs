@@ -30,14 +30,14 @@ import qualified Data.Vector             as V
 import qualified Data.Vector.Unboxed     as VU
 import           Data.Word               (Word16, Word64)
 import           Database.Redis.Client   (Client (..), ConnectionStatus (..))
+import           Database.Redis.Command  (ClientReplyValues (..),
+                                          ClientState (..), RedisCommands (..),
+                                          runRedisCommandClient)
 import           Database.Redis.Resp     (RespData)
 import           Filler                  (sendChunkedFill)
 import           FillHelpers             (generateBytes,
                                           generateBytesWithHashTag, nextLCG,
                                           threadSeedSpacing)
-import           RedisCommandClient      (ClientReplyValues (..),
-                                          ClientState (..), RedisCommands (..),
-                                          runRedisCommandClient)
 import           System.Timeout          (timeout)
 import           Text.Printf             (printf)
 

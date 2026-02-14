@@ -9,8 +9,8 @@ import qualified Data.ByteString.Lazy             as LBS
 import           Data.Either                      (isLeft)
 import qualified Data.Map                         as M
 import qualified Data.Set                         as S
+import           Database.Redis.Command           (wrapInRay)
 import           Database.Redis.Resp
-import           RedisCommandClient               (wrapInRay)
 import           Test.Hspec
 
 main :: IO ()

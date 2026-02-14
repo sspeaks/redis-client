@@ -32,6 +32,8 @@ import           Data.List                  (isPrefixOf)
 import qualified Data.Map.Strict            as Map
 import           Data.Word                  (Word8)
 import           Database.Redis.Client      (Client (..), ConnectionStatus (..))
+import           Database.Redis.Command     (ClientState (..),
+                                             RedisCommandClient, parseWith)
 import           Database.Redis.Resp        (Encodable (encode), RespData (..))
 import qualified Database.Redis.Resp        as Resp
 import           Network.Socket             (Family (..), SockAddr (..), Socket,
@@ -41,8 +43,6 @@ import           Network.Socket             (Family (..), SockAddr (..), Socket,
                                              tupleToHostAddress)
 import qualified Network.Socket             as S
 import           Network.Socket.ByteString  (recv, sendAll)
-import           RedisCommandClient         (ClientState (..),
-                                             RedisCommandClient, parseWith)
 import           System.IO                  (BufferMode (LineBuffering), hFlush,
                                              hSetBuffering, stdout)
 import           Text.Printf                (printf)

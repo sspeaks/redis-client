@@ -15,8 +15,8 @@ import           Control.Exception      (bracket)
 import qualified Data.ByteString.Char8  as BS8
 import           Data.List              (isInfixOf)
 import qualified Data.Map.Strict        as Map
+import           Database.Redis.Command (RedisCommands (..), showBS)
 import           Database.Redis.Resp    (RespData (..))
-import           RedisCommandClient     (RedisCommands (..), showBS)
 import           SlotMappingHelpers     (getKeyForNode)
 import           System.Exit            (ExitCode (..))
 import           System.Process         (proc, readCreateProcessWithExitCode)

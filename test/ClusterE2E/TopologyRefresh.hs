@@ -19,8 +19,8 @@ import           Control.Concurrent.STM   (readTVarIO)
 import           Control.Exception        (bracket)
 
 
+import           Database.Redis.Command   (RedisCommands (..), showBS)
 import           Database.Redis.Resp      (RespData (..))
-import           RedisCommandClient       (RedisCommands (..), showBS)
 import           Test.Hspec
 
 spec :: Spec

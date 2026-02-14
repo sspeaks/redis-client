@@ -40,6 +40,10 @@ import qualified Data.Map.Strict         as Map
 import           Data.Maybe              (fromMaybe, isNothing)
 import           Data.Time.Clock         (diffUTCTime, getCurrentTime)
 import           Data.Word               (Word64, Word8)
+import           Database.Redis.Command  (ClientState (ClientState),
+                                          RedisCommandClient,
+                                          RedisCommands (..), encodeGetBuilder,
+                                          encodeSetBuilder, parseWith)
 import           Database.Redis.Resp     (Encodable (encode),
                                           RespData (RespArray, RespBulkString))
 import           Filler                  (fillCacheWithData,
@@ -48,10 +52,6 @@ import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
                                           createMultiplexPool, submitToNode,
                                           submitToNodeAsync, waitSlotResult)
 import           Numeric                 (showHex)
-import           RedisCommandClient      (ClientState (ClientState),
-                                          RedisCommandClient,
-                                          RedisCommands (..), encodeGetBuilder,
-                                          encodeSetBuilder, parseWith)
 import           System.Console.GetOpt   (ArgDescr (..), ArgOrder (..),
                                           OptDescr (Option), getOpt, usageInfo)
 import           System.Console.Readline (addHistory, readline)

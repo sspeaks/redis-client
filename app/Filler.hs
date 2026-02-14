@@ -16,12 +16,12 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy    as LBS
 import           Data.Word               (Word64)
 import           Database.Redis.Client   (Client (..))
+import           Database.Redis.Command  (ClientReplyValues (OFF, ON),
+                                          ClientState (..), RedisCommandClient,
+                                          RedisCommands (clientReply, dbsize))
 import           Database.Redis.Resp     (RespData)
 import           FillHelpers             (generateBytes, nextLCG, randomNoise,
                                           threadSeedSpacing)
-import           RedisCommandClient      (ClientReplyValues (OFF, ON),
-                                          ClientState (..), RedisCommandClient,
-                                          RedisCommands (clientReply, dbsize))
 import           Text.Printf             (printf)
 
 -- | Forces evaluation of the noise buffer to ensure it is shared and ready.

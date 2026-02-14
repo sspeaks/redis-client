@@ -46,19 +46,19 @@ import           Control.Monad.IO.Class (MonadIO (..))
 import           Control.Monad.Reader   (ReaderT, ask, runReaderT)
 import           Data.ByteString        (ByteString)
 import           Database.Redis.Client  (Client (..))
-import           Database.Redis.Resp    (RespData)
-import           FromResp               (FromResp (..))
-import           Multiplexer            (Multiplexer, SlotPool,
-                                         createMultiplexer, createSlotPool,
-                                         destroyMultiplexer,
-                                         submitCommandPooled)
-import           RedisCommandClient     (ClientReplyValues (..),
+import           Database.Redis.Command (ClientReplyValues (..),
                                          RedisCommands (..), convertResp,
                                          encodeCommandBuilder,
                                          geoRadiusFlagToList, geoSearchByToList,
                                          geoSearchFromToList,
                                          geoSearchOptionToList, geoUnitKeyword,
                                          showBS)
+import           Database.Redis.Resp    (RespData)
+import           FromResp               (FromResp (..))
+import           Multiplexer            (Multiplexer, SlotPool,
+                                         createMultiplexer, createSlotPool,
+                                         destroyMultiplexer,
+                                         submitCommandPooled)
 
 
 -- | Configuration for a standalone Redis client.

@@ -37,10 +37,10 @@ import qualified Data.ByteString        as BS
 import qualified Data.Map.Strict        as Map
 import           Database.Redis.Client  (Client (..),
                                          PlainTextClient (NotConnectedPlainTextClient))
-import           Database.Redis.Resp    (RespData (..))
-import           RedisCommandClient     (ClientState (..),
+import           Database.Redis.Command (ClientState (..),
                                          RedisCommandClient (..),
                                          RedisCommands (..))
+import           Database.Redis.Resp    (RespData (..))
 import           System.Process         (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
