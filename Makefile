@@ -45,12 +45,12 @@ endif
 # Run all tests
 test: test-unit test-e2e test-cluster-e2e test-library-e2e
 
-# Run unit tests (RespSpec, ClusterSpec, ClusterCommandSpec from hask-redis-mux; FillHelpersSpec from redis-client)
+# Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
 test-unit:
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal build all && cabal test all"
+	nix-shell --run "cabal test all"
 else
-	cabal build all && cabal test all
+	cabal test all
 endif
 
 # Run end-to-end tests with Docker

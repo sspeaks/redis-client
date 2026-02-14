@@ -16,11 +16,15 @@ extra-doc-files:    CHANGELOG.md
 
 common defaults
     default-language: GHC2021
-    ghc-options:      -Wall
+    ghc-options:      -Wall -O2
     build-depends:    base >=4.19 && <5
 
-common test-defaults
+common exe-defaults
     import:           defaults
+    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N -H1024M -A128m -n8m -qb"
+
+common test-defaults
+    import:           exe-defaults
     build-depends:    hspec
     hs-source-dirs:   test
 
@@ -53,7 +57,7 @@ flag e2e
 -- ---------------------------------------------------------------------------
 
 executable EndToEnd
-    import:           defaults
+    import:           exe-defaults
     if !flag(e2e)
         buildable: False
     main-is:          E2E.hs
@@ -71,7 +75,7 @@ executable EndToEnd
                     , process
 
 executable ClusterEndToEnd
-    import:           defaults
+    import:           exe-defaults
     if !flag(e2e)
         buildable: False
     main-is:          ClusterE2E.hs
@@ -99,10 +103,9 @@ executable ClusterEndToEnd
                     , vector
 
 executable LibraryE2E
-    import:           defaults
+    import:           exe-defaults
     if !flag(e2e)
         buildable: False
-    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N"
     main-is:          LibraryE2E.hs
     hs-source-dirs:   test
     other-modules:    LibraryE2E.Utils
@@ -125,8 +128,7 @@ executable LibraryE2E
                     , vector
 
 executable redis-client
-    import:           defaults
-    ghc-options:      -O2 -threaded -rtsopts "-with-rtsopts=-N -H1024M -A128m -n8m -qb"
+    import:           exe-defaults
     main-is:          Main.hs
     hs-source-dirs:   app
     other-modules:    AppConfig

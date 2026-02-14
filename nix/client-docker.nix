@@ -8,4 +8,4 @@ in pkgs.dockerTools.buildImage {
   config = {
     Cmd = [ "${pkgs.bash}/bin/bash" ];
   };
- }
+}

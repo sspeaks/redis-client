@@ -25,11 +25,12 @@ source-repository head
 
 common defaults
     default-language: GHC2021
-    ghc-options:      -Wall
+    ghc-options:      -Wall -O2
     build-depends:    base >=4.19 && <5
 
 common test-defaults
     import:           defaults
+    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N -H1024M -A128m -n8m -qb"
     build-depends:    hspec
     hs-source-dirs:   test
 
@@ -162,9 +163,13 @@ test-suite ClusterCommandSpec
     type:             exitcode-stdio-1.0
     main-is:          ClusterCommandSpec.hs
     build-depends:    bytestring
+                    , client
                     , cluster
+                    , containers
                     , resp
+                    , stm
                     , time
+                    , vector
 
 test-suite MultiplexerSpec
     import:           test-defaults

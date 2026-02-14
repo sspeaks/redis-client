@@ -14,7 +14,9 @@
         haskellPackages = prev.haskellPackages.override {
           overrides = hfinal: hprev: {
             hask-redis-mux = hfinal.callCabal2nixWithOptions
-              "hask-redis-mux" src "--subpath hask-redis-mux" { };
+              "hask-redis-mux"
+              src "--subpath hask-redis-mux"
+              { };
             redis-client = hfinal.callCabal2nix "redis-client" src {
               inherit (hfinal) hask-redis-mux;
             };
