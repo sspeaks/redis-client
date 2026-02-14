@@ -112,3 +112,16 @@ Started: Fri Feb 13 10:15:20 PM PST 2026
   - The cluster sub-library has internal cross-references (e.g. ClusterCommandClient imports from Cluster, ConnectionPool) that must be updated
   - `FromResp` and `RedisError` modules were NOT renamed — they remain under flat names in redis-command-client sub-library
 ---
+
+## 2026-02-14T06:55 - US-015 through US-020
+- US-015: Added `withStandaloneClient`, `withClusterClient`, `runRedis` bracket functions with Haddock docs
+- US-016: Added `defaultStandaloneConfig` for localhost:6379 with plaintext connector
+- US-017: Added version bounds to all build-depends (attoparsec, bytestring, containers, etc.)
+- US-018: Added homepage, bug-reports, tested-with metadata; cabal check passes (only -O2 style warning)
+- US-019: Added @since 0.1.0.0 to all public modules, Haddock docs for geo helpers, usage examples in Database.Redis
+- US-020: Created hask-redis-mux/README.md with quick start, typed returns, bracket patterns, custom config examples
+- All unit tests pass, full project builds
+- **Learnings for future iterations:**
+  - `cabal check` reports re-exported module docs as "missing" — this is a Haddock limitation with `module X` re-exports
+  - `file-embed` version is 0.0.16 so upper bound should be `< 0.1` not `< 0.0.17` (PVP major version)
+---

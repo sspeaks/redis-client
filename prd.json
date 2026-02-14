@@ -302,7 +302,7 @@
         "Typecheck passes"
       ],
       "priority": 20,
-      "passes": false,
+      "passes": true,
       "notes": "This is the README that will appear on the Hackage package page."
     }
   ]
