@@ -74,7 +74,7 @@ library resp
     exposed-modules:  Database.Redis.Resp
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
-                    , containers >=0.7 && <0.8
+                    , containers >=0.6 && <0.8
 
 library client
     import:           defaults
@@ -123,7 +123,7 @@ library cluster
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
                     , client
-                    , containers >=0.7 && <0.8
+                    , containers >=0.6 && <0.8
                     , crc16
                     , file-embed >=0.0.16 && <0.1
                     , mtl >=2.3 && <2.4
@@ -154,7 +154,7 @@ test-suite RespSpec
     main-is:          Spec.hs
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
-                    , containers >=0.7 && <0.8
+                    , containers >=0.6 && <0.8
                     , redis-command-client
                     , resp
 
@@ -174,7 +174,7 @@ test-suite ClusterCommandSpec
     build-depends:    bytestring >=0.12 && <0.13
                     , client
                     , cluster
-                    , containers >=0.7 && <0.8
+                    , containers >=0.6 && <0.8
                     , resp
                     , stm >=2.5 && <2.6
                     , time >=1.12 && <1.13
