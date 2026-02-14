@@ -63,13 +63,13 @@ import           Database.Redis.Command              (ClientReplyValues (..),
                                                       geoUnitKeyword, showBS)
 import           Database.Redis.Connector            (Connector,
                                                       clusterPlaintextConnector)
+import           Database.Redis.FromResp             (FromResp (..))
 import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
                                                       createMultiplexer,
                                                       createSlotPool,
                                                       destroyMultiplexer,
                                                       submitCommandPooled)
 import           Database.Redis.Resp                 (RespData)
-import           FromResp                            (FromResp (..))
 
 
 -- | Configuration for a standalone Redis client.

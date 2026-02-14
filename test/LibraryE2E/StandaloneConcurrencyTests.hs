@@ -20,6 +20,7 @@ import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
                                                         submitToNode)
 import           Database.Redis.Resp                   (RespData (..))
 import           Database.Redis.Standalone             (StandaloneClient,
+                                                        StandaloneCommandClient,
                                                         closeStandaloneClient,
                                                         createStandaloneClient,
                                                         runStandaloneClient)
@@ -35,6 +36,10 @@ createTestStandaloneClient :: IO StandaloneClient
 createTestStandaloneClient =
   createStandaloneClient clusterPlaintextConnector standaloneNode
 
+-- | Run a command that returns RespData (resolves ambiguous FromResp)
+run :: StandaloneClient -> StandaloneCommandClient RespData -> IO RespData
+run = runStandaloneClient
+
 spec :: Spec
 spec = describe "Concurrency and Stress Tests" $ do
 
@@ -42,7 +47,7 @@ spec = describe "Concurrency and Stress Tests" $ do
     it "50 threads x 100 ops SET/GET with no data corruption" $ do
       client <- createTestStandaloneClient
       -- Flush first to start clean
-      _ <- runStandaloneClient client flushAll
+      _ <- run client flushAll
 
       let threadCount = 50 :: Int
           opsPerThread = 100 :: Int
@@ -56,14 +61,14 @@ spec = describe "Concurrency and Stress Tests" $ do
               val = "v-" <> showBS tid <> "-" <> showBS i
 
           -- SET
-          sr <- try (runStandaloneClient client (set key val))
+          sr <- try (run client (set key val))
                   :: IO (Either SomeException RespData)
           case sr of
             Left _  -> atomicModifyIORef' errors (\n -> (n + 1, ()))
             Right _ -> return ()
 
           -- GET and verify
-          gr <- try (runStandaloneClient client (get key))
+          gr <- try (run client (get key))
                   :: IO (Either SomeException RespData)
           case gr of
             Right (RespBulkString v) | v == val -> return ()
@@ -79,7 +84,7 @@ spec = describe "Concurrency and Stress Tests" $ do
       let totalErrors = sum results
       totalErrors `shouldBe` 0
 
-      _ <- runStandaloneClient client flushAll
+      _ <- run client flushAll
       closeStandaloneClient client
 
   describe "MultiplexPool with count > 1" $ do
@@ -151,14 +156,14 @@ spec = describe "Concurrency and Stress Tests" $ do
     it "standalone client throws after close, does not hang" $ do
       client <- createTestStandaloneClient
       -- Verify it works before close
-      r <- runStandaloneClient client ping
+      r <- run client ping
       r `shouldBe` RespSimpleString "PONG"
 
       -- Close the client
       closeStandaloneClient client
 
       -- Submit after destroy should throw MultiplexerDead, not hang
-      result <- try (runStandaloneClient client (set "dead-key" "val"))
+      result <- try (run client (set "dead-key" "val"))
                   :: IO (Either SomeException RespData)
       result `shouldSatisfy` isLeft'
 
@@ -191,7 +196,7 @@ spec = describe "Concurrency and Stress Tests" $ do
 
       -- Rapidly attempt multiple submits after destroy
       results <- mapConcurrently (\_ -> do
-        try (runStandaloneClient client (set "dead" "val"))
+        try (run client (set "dead" "val"))
           :: IO (Either SomeException RespData)
         ) [1..20 :: Int]
 

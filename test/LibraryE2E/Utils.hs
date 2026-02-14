@@ -1,5 +1,6 @@
-{-# LANGUAGE DataKinds         #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module LibraryE2E.Utils
   ( -- * Client creation
@@ -93,9 +94,9 @@ flushAllNodes client = do
   forM_ masterNodes $ \node -> do
     let addr = nodeAddress node
     result <- try $ do
-      conn <- Client.connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-      _ <- State.evalStateT (runRedisCommandClient flushAll) (ClientState conn BS.empty)
-      Client.close conn
+      conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
+      _ <- State.evalStateT (runRedisCommandClient flushAll) (ClientState conn BS.empty) :: IO RespData
+      close conn
     case result of
       Left (_ :: SomeException) -> return ()
       Right _                   -> return ()
@@ -124,9 +125,9 @@ waitForClusterReady maxWaitSeconds = go maxWaitSeconds
     go 0 = error "Cluster did not become ready in time"
     go remaining = do
       result <- try $ do
-        conn <- Client.connect (NotConnectedPlainTextClient (nodeHost seedNode) (Just (nodePort seedNode)))
+        conn <- connect (NotConnectedPlainTextClient (nodeHost seedNode) (Just (nodePort seedNode)))
         resp <- State.evalStateT (runRedisCommandClient ping) (ClientState conn BS.empty)
-        Client.close conn
+        close conn
         return resp
         :: IO (Either SomeException RespData)
       case result of

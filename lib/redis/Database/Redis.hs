@@ -45,7 +45,7 @@ module Database.Redis
     -- * Redis Commands
   , module Database.Redis.Command
     -- * FromResp conversion
-  , module FromResp
+  , module Database.Redis.FromResp
     -- * Cluster
   , module Database.Redis.Cluster
   , module Database.Redis.Cluster.Client
@@ -101,6 +101,7 @@ import           Database.Redis.Connector              (Connector,
                                                         clusterTLSConnector,
                                                         connectPlaintext,
                                                         connectTLS)
+import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.Multiplexer   (Multiplexer,
                                                         MultiplexerException (..),
                                                         createMultiplexer,
@@ -122,4 +123,3 @@ import           Database.Redis.Standalone             (StandaloneClient,
                                                         createStandaloneClient,
                                                         createStandaloneClientFromConfig,
                                                         runStandaloneClient)
-import           FromResp                              (FromResp (..))

@@ -5,10 +5,12 @@ module LibraryE2E.ApiTests (spec) where
 
 import           Control.Concurrent.STM        (readTVarIO)
 import qualified Data.Map.Strict               as Map
+import           Database.Redis.Client         (PlainTextClient)
 import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeRole (..))
 import           Database.Redis.Cluster.Client (ClusterClient (clusterTopology),
+                                                ClusterCommandClient,
                                                 closeClusterClient,
                                                 createClusterClient,
                                                 executeKeylessClusterCommand,
@@ -20,6 +22,10 @@ import           Database.Redis.Resp           (RespData (..))
 import           LibraryE2E.Utils
 
 import           Test.Hspec
+
+-- | Run a cluster command with RespData return type (resolves ambiguous FromResp)
+runCmd' :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient RespData -> IO RespData
+runCmd' = runCmd
 
 spec :: Spec
 spec = describe "API Surface" $ do
@@ -45,7 +51,7 @@ spec = describe "API Surface" $ do
       client <- createTestClient
 
       -- Initial commands
-      _ <- runCmd client $ set "lifecycle-key1" "value1"
+      _ <- runCmd' client $ set "lifecycle-key1" "value1"
       r1 <- runCmd client $ get "lifecycle-key1"
       r1 `shouldBe` RespBulkString "value1"
 
@@ -53,12 +59,12 @@ spec = describe "API Surface" $ do
       refreshTopology client
 
       -- Commands after refresh still work
-      _ <- runCmd client $ set "lifecycle-key2" "value2"
+      _ <- runCmd' client $ set "lifecycle-key2" "value2"
       r2 <- runCmd client $ get "lifecycle-key2"
       r2 `shouldBe` RespBulkString "value2"
 
       -- Cleanup
-      _ <- runCmd client flushAll
+      _ <- runCmd' client flushAll
       closeClusterClient client
 
   describe "Topology inspection" $ do

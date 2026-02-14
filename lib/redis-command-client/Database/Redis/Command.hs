@@ -55,10 +55,10 @@ import qualified Data.ByteString.Lazy             as LBS
 import           Data.Kind                        (Type)
 import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
+import           Database.Redis.FromResp          (FromResp (..))
+import           Database.Redis.RedisError        (RedisError (..))
 import           Database.Redis.Resp              (Encodable (encode),
                                                    RespData (..), parseRespData)
-import           FromResp                         (FromResp (..))
-import           RedisError                       (RedisError (..))
 
 
 -- | Mutable state carried through a 'RedisCommandClient' session: the live connection

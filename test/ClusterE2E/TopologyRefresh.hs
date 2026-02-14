@@ -169,7 +169,7 @@ spec = describe "Topology refresh" $ do
 
         -- We can't easily force a refresh failure without breaking the cluster,
         -- so we'll just verify that normal operations work and topology is valid
-        _result <- runCmd client $ get "refresh:test:verification"
+        _result <- runCmd_ client $ get "refresh:test:verification"
 
         -- Topology should still be valid
         topology2 <- readTVarIO (clusterTopology client)

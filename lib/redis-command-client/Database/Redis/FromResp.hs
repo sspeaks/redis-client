@@ -7,15 +7,15 @@
 -- 'RespData'.
 --
 -- @since 0.1.0.0
-module FromResp
+module Database.Redis.FromResp
   ( FromResp (..)
   ) where
 
-import           Data.ByteString     (ByteString)
-import           Data.Text           (Text)
-import qualified Data.Text.Encoding  as TE
-import           Database.Redis.Resp (RespData (..))
-import           RedisError          (RedisError (..))
+import           Data.ByteString           (ByteString)
+import           Data.Text                 (Text)
+import qualified Data.Text.Encoding        as TE
+import           Database.Redis.RedisError (RedisError (..))
+import           Database.Redis.Resp       (RespData (..))
 
 -- | Convert a 'RespData' value to a Haskell type.
 --

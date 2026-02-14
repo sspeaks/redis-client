@@ -5,7 +5,9 @@ module ClusterE2E.Utils
   ( -- * Cluster test helpers
     createTestClusterClient
   , runCmd
+  , runCmd_
   , runRedisCommand
+  , runRedisCommand_
   , countClusterKeys
   , cliCommandDelayMicros
     -- * Tunnel test helpers
@@ -90,6 +92,14 @@ runCmd client = runClusterCommandClient client
 runRedisCommand :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient a -> IO a
 runRedisCommand conn cmd =
   State.evalStateT (case cmd of RedisCommandClient m -> m) (ClientState conn BS.empty)
+
+-- | Discard-variant of runCmd, fixing the return type to RespData
+runCmd_ :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient RespData -> IO RespData
+runCmd_ = runCmd
+
+-- | Discard-variant of runRedisCommand, fixing the return type to RespData
+runRedisCommand_ :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient RespData -> IO RespData
+runRedisCommand_ = runRedisCommand
 
 -- | Count total keys across all master nodes in cluster by querying each master directly
 countClusterKeys :: ClusterClient PlainTextClient -> IO Integer

@@ -115,7 +115,7 @@ spec = describe "Basic cluster operations" $ do
 
     it "returns WRONGTYPE error for wrong command on key type" $ do
       bracket createTestClusterClient closeClusterClient $ \client -> do
-        _ <- runCmd client $ set "cluster:wrongtype" "value"
+        _ <- runCmd_ client $ set "cluster:wrongtype" "value"
         result <- runCmd client $ lpush "cluster:wrongtype" ["item"]
         case result of
           RespError err -> BS8.isInfixOf "WRONGTYPE" err `shouldBe` True
@@ -123,9 +123,9 @@ spec = describe "Basic cluster operations" $ do
 
     it "DEL removes keys in cluster" $ do
       bracket createTestClusterClient closeClusterClient $ \client -> do
-        _ <- runCmd client $ set "cluster:deltest" "value"
+        _ <- runCmd_ client $ set "cluster:deltest" "value"
         getResult <- runCmd client $ get "cluster:deltest"
         getResult `shouldBe` RespBulkString "value"
-        _ <- runCmd client $ del ["cluster:deltest"]
+        _ <- runCmd_ client $ del ["cluster:deltest"]
         afterDel <- runCmd client $ get "cluster:deltest"
         afterDel `shouldBe` RespNullBulkString

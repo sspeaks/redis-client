@@ -108,13 +108,13 @@ import           Database.Redis.Command                (ClientState (..),
                                                         showBS)
 import qualified Database.Redis.Command                as RedisCommandClient
 import           Database.Redis.Connector              (Connector)
+import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
                                                         closeMultiplexPool,
                                                         createMultiplexPool,
                                                         submitToNode,
                                                         submitToNodeWithAsking)
 import           Database.Redis.Resp                   (RespData (..))
-import           FromResp                              (FromResp (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError

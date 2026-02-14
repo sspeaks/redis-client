@@ -2,12 +2,12 @@
 
 module Main where
 
-import           Data.ByteString        (ByteString)
-import           Data.Either            (isLeft)
-import           Data.Text              (Text)
-import           Database.Redis.Command (RedisError (..))
-import           Database.Redis.Resp    (RespData (..))
-import           FromResp               (FromResp (..))
+import           Data.ByteString         (ByteString)
+import           Data.Either             (isLeft)
+import           Data.Text               (Text)
+import           Database.Redis.Command  (RedisError (..))
+import           Database.Redis.FromResp (FromResp (..))
+import           Database.Redis.Resp     (RespData (..))
 import           Test.Hspec
 
 main :: IO ()

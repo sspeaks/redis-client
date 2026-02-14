@@ -44,7 +44,7 @@ spec = describe "Cluster Tunnel Mode" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           verifyResult <- runCmd client (get "smart:key1")
           verifyResult `shouldBe` RespBulkString "value1"
-          _ <- runCmd client (del ["smart:key1"])
+          _ <- runCmd_ client (del ["smart:key1"])
           pure ()
 
     it "smart mode handles commands that route to different nodes" $
@@ -62,8 +62,8 @@ spec = describe "Cluster Tunnel Mode" $ do
 
           conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
 
-          _ <- runRedisCommand conn (set key1 "value-node1")
-          _ <- runRedisCommand conn (set key2 "value-node2")
+          _ <- runRedisCommand_ conn (set key1 "value-node1")
+          _ <- runRedisCommand_ conn (set key2 "value-node2")
 
           result1 <- runRedisCommand conn (get key1)
           result1 `shouldBe` RespBulkString "value-node1"
@@ -73,8 +73,8 @@ spec = describe "Cluster Tunnel Mode" $ do
 
           close conn
 
-          _ <- runCmd client (del [key1])
-          _ <- runCmd client (del [key2])
+          _ <- runCmd_ client (del [key1])
+          _ <- runCmd_ client (del [key2])
           pure ()
 
     it "smart mode works with various keys" $
@@ -90,7 +90,7 @@ spec = describe "Cluster Tunnel Mode" $ do
         close conn
 
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          _ <- runCmd client (del ["various:test"])
+          _ <- runCmd_ client (del ["various:test"])
           pure ()
 
     it "smart mode handles multiple separate connections" $
@@ -121,8 +121,8 @@ spec = describe "Cluster Tunnel Mode" $ do
         close conn2
 
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          _ <- runCmd client (del ["multi:key1"])
-          _ <- runCmd client (del ["multi:key2"])
+          _ <- runCmd_ client (del ["multi:key1"])
+          _ <- runCmd_ client (del ["multi:key2"])
           pure ()
 
   describe "Pinned Proxy Mode" $ do
@@ -149,7 +149,7 @@ spec = describe "Cluster Tunnel Mode" $ do
 
             close conn
 
-            _ <- runCmd client (del [testKey])
+            _ <- runCmd_ client (del [testKey])
             pure ()
 
     it "pinned mode listeners forward to their respective nodes" $
@@ -173,8 +173,8 @@ spec = describe "Cluster Tunnel Mode" $ do
               conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
               conn2 <- connect (NotConnectedPlainTextClient "localhost" (Just port2))
 
-              _ <- runRedisCommand conn1 (set testKey1 "from-node1")
-              _ <- runRedisCommand conn2 (set testKey2 "from-node2")
+              _ <- runRedisCommand_ conn1 (set testKey1 "from-node1")
+              _ <- runRedisCommand_ conn2 (set testKey2 "from-node2")
 
               result1 <- runRedisCommand conn1 (get testKey1)
               result1 `shouldBe` RespBulkString "from-node1"
@@ -185,8 +185,8 @@ spec = describe "Cluster Tunnel Mode" $ do
               close conn1
               close conn2
 
-              _ <- runCmd client (del [testKey1])
-              _ <- runCmd client (del [testKey2])
+              _ <- runCmd_ client (del [testKey1])
+              _ <- runCmd_ client (del [testKey2])
               pure ()
             _ -> expectationFailure "Expected at least 2 master nodes"
 
