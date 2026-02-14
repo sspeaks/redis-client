@@ -53,8 +53,8 @@ library
       , Database.Redis.Cluster.SlotMapping
       , Database.Redis.Cluster.ConnectionPool
       , Database.Redis.Connector
-      , MultiplexPool
-      , Multiplexer
+      , Database.Redis.Internal.MultiplexPool
+      , Database.Redis.Internal.Multiplexer
       , StandaloneClient
       , Redis
     build-depends:    resp
@@ -113,8 +113,8 @@ library cluster
                     , Database.Redis.Cluster.SlotMapping
                     , Database.Redis.Cluster.ConnectionPool
                     , Database.Redis.Connector
-                    , MultiplexPool
-                    , Multiplexer
+                    , Database.Redis.Internal.MultiplexPool
+                    , Database.Redis.Internal.Multiplexer
                     , StandaloneClient
     build-depends:    attoparsec
                     , bytestring

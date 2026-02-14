@@ -3,23 +3,26 @@
 
 module LibraryE2E.StandaloneConcurrencyTests (spec) where
 
-import           Client                   (PlainTextClient)
-import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Exception        (SomeException, try)
-import           Control.Monad            (forM_)
-import           Data.IORef               (atomicModifyIORef', newIORef,
-                                           readIORef)
-import           Database.Redis.Cluster   (NodeAddress (..))
-import           Database.Redis.Command   (RedisCommands (..),
-                                           encodeCommandBuilder, showBS)
-import           Database.Redis.Connector (clusterPlaintextConnector)
-import           Database.Redis.Resp      (RespData (..))
-import           MultiplexPool            (MultiplexPool, closeMultiplexPool,
-                                           createMultiplexPool, submitToNode)
-import           StandaloneClient         (StandaloneClient,
-                                           closeStandaloneClient,
-                                           createStandaloneClient,
-                                           runStandaloneClient)
+import           Client                                (PlainTextClient)
+import           Control.Concurrent.Async              (mapConcurrently)
+import           Control.Exception                     (SomeException, try)
+import           Control.Monad                         (forM_)
+import           Data.IORef                            (atomicModifyIORef',
+                                                        newIORef, readIORef)
+import           Database.Redis.Cluster                (NodeAddress (..))
+import           Database.Redis.Command                (RedisCommands (..),
+                                                        encodeCommandBuilder,
+                                                        showBS)
+import           Database.Redis.Connector              (clusterPlaintextConnector)
+import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
+                                                        closeMultiplexPool,
+                                                        createMultiplexPool,
+                                                        submitToNode)
+import           Database.Redis.Resp                   (RespData (..))
+import           StandaloneClient                      (StandaloneClient,
+                                                        closeStandaloneClient,
+                                                        createStandaloneClient,
+                                                        runStandaloneClient)
 
 import           Test.Hspec
 

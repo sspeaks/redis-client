@@ -15,7 +15,7 @@
 -- resp <- submitCommand mux (encode [\"GET\", \"key\"])
 -- destroyMultiplexer mux
 -- @
-module Multiplexer
+module Database.Redis.Internal.Multiplexer
   ( Multiplexer
   , MultiplexerException (..)
   , SlotPool

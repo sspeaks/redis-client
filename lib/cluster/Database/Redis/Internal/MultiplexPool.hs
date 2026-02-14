@@ -11,7 +11,7 @@
 -- resp <- submitToNode pool nodeAddr cmdBytes
 -- closeMultiplexPool pool
 -- @
-module MultiplexPool
+module Database.Redis.Internal.MultiplexPool
   ( MultiplexPool
   , createMultiplexPool
   , submitToNode
@@ -21,27 +21,31 @@ module MultiplexPool
   , closeMultiplexPool
   ) where
 
-import           Control.Concurrent.MVar  (MVar, modifyMVar, newMVar)
-import           Control.Exception        (SomeException, catch, throwIO)
-import qualified Data.ByteString.Builder  as Builder
-import           Data.IORef               (IORef, atomicModifyIORef',
-                                           atomicWriteIORef, newIORef,
-                                           readIORef)
-import           Data.Map.Strict          (Map)
-import qualified Data.Map.Strict          as Map
-import           Data.Vector              (Vector)
-import qualified Data.Vector              as V
-import           Database.Redis.Client    (Client (..))
-import           Database.Redis.Cluster   (NodeAddress (..))
-import           Database.Redis.Connector (Connector)
-import           Database.Redis.Resp      (RespData)
-import           Multiplexer              (Multiplexer, ResponseSlot, SlotPool,
-                                           createMultiplexer, createSlotPool,
-                                           destroyMultiplexer,
-                                           isMultiplexerAlive,
-                                           submitCommandAsync,
-                                           submitCommandPairPooled,
-                                           submitCommandPooled, waitSlot)
+import           Control.Concurrent.MVar             (MVar, modifyMVar, newMVar)
+import           Control.Exception                   (SomeException, catch,
+                                                      throwIO)
+import qualified Data.ByteString.Builder             as Builder
+import           Data.IORef                          (IORef, atomicModifyIORef',
+                                                      atomicWriteIORef,
+                                                      newIORef, readIORef)
+import           Data.Map.Strict                     (Map)
+import qualified Data.Map.Strict                     as Map
+import           Data.Vector                         (Vector)
+import qualified Data.Vector                         as V
+import           Database.Redis.Client               (Client (..))
+import           Database.Redis.Cluster              (NodeAddress (..))
+import           Database.Redis.Connector            (Connector)
+import           Database.Redis.Internal.Multiplexer (Multiplexer, ResponseSlot,
+                                                      SlotPool,
+                                                      createMultiplexer,
+                                                      createSlotPool,
+                                                      destroyMultiplexer,
+                                                      isMultiplexerAlive,
+                                                      submitCommandAsync,
+                                                      submitCommandPairPooled,
+                                                      submitCommandPooled,
+                                                      waitSlot)
+import           Database.Redis.Resp                 (RespData)
 
 -- | Per-node multiplexer group with its own round-robin counter.
 -- Keeping the counter per-node eliminates cross-node CAS contention

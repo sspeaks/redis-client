@@ -4,19 +4,23 @@
 
 module Main (main) where
 
-import           Control.Concurrent      (forkIO, threadDelay)
-import           Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import           Control.Monad.IO.Class  (liftIO)
-import           Data.ByteString         (ByteString)
-import qualified Data.ByteString         as BS
-import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Lazy    as LBS
-import           Data.IORef              (IORef, atomicModifyIORef', newIORef,
-                                          readIORef)
-import           Database.Redis.Client   (Client (..), ConnectionStatus (..))
-import           Database.Redis.Cluster  (NodeAddress (..))
-import           Database.Redis.Resp     (Encodable (..), RespData (..))
-import           MultiplexPool
+import           Control.Concurrent                    (forkIO, threadDelay)
+import           Control.Concurrent.MVar               (newEmptyMVar, putMVar,
+                                                        takeMVar)
+import           Control.Monad.IO.Class                (liftIO)
+import           Data.ByteString                       (ByteString)
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Builder               as Builder
+import qualified Data.ByteString.Lazy                  as LBS
+import           Data.IORef                            (IORef,
+                                                        atomicModifyIORef',
+                                                        newIORef, readIORef)
+import           Database.Redis.Client                 (Client (..),
+                                                        ConnectionStatus (..))
+import           Database.Redis.Cluster                (NodeAddress (..))
+import           Database.Redis.Internal.MultiplexPool
+import           Database.Redis.Resp                   (Encodable (..),
+                                                        RespData (..))
 import           Test.Hspec
 
 -- ---------------------------------------------------------------------------

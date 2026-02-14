@@ -28,8 +28,8 @@ module Redis
   , module Database.Redis.Cluster.Client
   , module Database.Redis.Cluster.ConnectionPool
     -- * Multiplexing
-  , module Multiplexer
-  , module MultiplexPool
+  , module Database.Redis.Internal.Multiplexer
+  , module Database.Redis.Internal.MultiplexPool
     -- * Standalone Multiplexed Client
   , module StandaloneClient
     -- * Connection Helpers
@@ -78,21 +78,21 @@ import           Database.Redis.Connector              (Connector,
                                                         clusterTLSConnector,
                                                         connectPlaintext,
                                                         connectTLS)
-import           Database.Redis.Resp                   (Encodable (..),
-                                                        RespData (..),
-                                                        parseRespData,
-                                                        parseStrict)
-import           FromResp                              (FromResp (..))
-import           Multiplexer                           (Multiplexer,
+import           Database.Redis.Internal.Multiplexer   (Multiplexer,
                                                         MultiplexerException (..),
                                                         createMultiplexer,
                                                         destroyMultiplexer,
                                                         isMultiplexerAlive,
                                                         submitCommand)
-import           MultiplexPool                         (MultiplexPool,
+import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
                                                         closeMultiplexPool,
                                                         createMultiplexPool,
                                                         submitToNode)
+import           Database.Redis.Resp                   (Encodable (..),
+                                                        RespData (..),
+                                                        parseRespData,
+                                                        parseStrict)
+import           FromResp                              (FromResp (..))
 import           StandaloneClient                      (StandaloneClient,
                                                         StandaloneCommandClient,
                                                         StandaloneConfig (..),

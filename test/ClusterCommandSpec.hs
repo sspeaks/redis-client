@@ -29,10 +29,10 @@ import           Database.Redis.Cluster                (ClusterNode (..),
 import           Database.Redis.Cluster.Client
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
                                                         createPool)
+import           Database.Redis.Internal.MultiplexPool (closeMultiplexPool,
+                                                        createMultiplexPool)
 import           Database.Redis.Resp                   (Encodable (..),
                                                         RespData (..))
-import           MultiplexPool                         (closeMultiplexPool,
-                                                        createMultiplexPool)
 import           System.Timeout                        (timeout)
 import           Test.Hspec
 
