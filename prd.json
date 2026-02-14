@@ -256,7 +256,7 @@
         "Typecheck passes"
       ],
       "priority": 17,
-      "passes": false,
+      "passes": true,
       "notes": "Check current dependency versions with 'cabal freeze' or from the nix build. Be conservative with upper bounds - use the next major version."
     },
     {

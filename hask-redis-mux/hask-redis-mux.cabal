@@ -14,6 +14,9 @@ category:           Network
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 extra-source-files: lib/crc16/crc16.c
+homepage:           https://github.com/sspeaks/redis-client
+bug-reports:        https://github.com/sspeaks/redis-client/issues
+tested-with:        GHC == 9.10.3
 
 source-repository head
     type:     git
@@ -68,9 +71,9 @@ library resp
     import:           defaults
     hs-source-dirs:   lib/resp
     exposed-modules:  Database.Redis.Resp
-    build-depends:    attoparsec
-                    , bytestring
-                    , containers
+    build-depends:    attoparsec >=0.14 && <0.15
+                    , bytestring >=0.12 && <0.13
+                    , containers >=0.7 && <0.8
 
 library client
     import:           defaults
