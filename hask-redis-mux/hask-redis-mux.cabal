@@ -45,7 +45,7 @@ library
       , FromResp
       , RedisError
       , Database.Redis.Client
-      , Crc16
+      , Database.Redis.Crc16
       , RedisCommandClient
       , Cluster
       , ClusterCommandClient
@@ -87,7 +87,7 @@ library client
 library crc16
     import:           defaults
     hs-source-dirs:   lib/crc16
-    exposed-modules:  Crc16
+    exposed-modules:  Database.Redis.Crc16
     c-sources:        lib/crc16/crc16.c
     build-depends:    bytestring
 

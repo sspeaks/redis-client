@@ -19,7 +19,6 @@ module Cluster
   )
 where
 
-import           Crc16                 (crc16)
 import           Data.ByteString       (ByteString)
 import qualified Data.ByteString       as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -29,6 +28,7 @@ import           Data.Time             (UTCTime)
 import           Data.Vector           (Vector)
 import qualified Data.Vector           as V
 import           Data.Word             (Word16)
+import           Database.Redis.Crc16  (crc16)
 import           Database.Redis.Resp   (RespData (..))
 
 -- | Node role in the cluster

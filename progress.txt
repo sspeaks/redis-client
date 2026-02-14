@@ -82,3 +82,15 @@ Started: Fri Feb 13 10:15:20 PM PST 2026
   - `sed -i 's/import           Resp /import           Database.Redis.Resp /' ...` works well for bulk renaming across many files with consistent formatting
   - The cabal file has two places referencing each module: `exposed-modules` in the sub-library and `reexported-modules` in the main library stanza
 ---
+
+## 2026-02-14T06:41 - US-006
+- Renamed `Client` module to `Database.Redis.Client`
+- Created `lib/client/Database/Redis/` directory structure
+- Updated cabal `exposed-modules` and `reexported-modules`, `module Client` re-export in `Redis.hs`
+- Updated all imports across lib/, test/, and app/
+- Files changed: `lib/client/Database/Redis/Client.hs` (new), `lib/client/Client.hs` (deleted), `hask-redis-mux/hask-redis-mux.cabal`, `lib/redis/Redis.hs`, plus all files importing `Client`
+- **Learnings for future iterations:**
+  - The `Client` module is imported by sub-libraries (redis-command-client, cluster) not just top-level code — need to check all lib/ subdirectories
+  - `sed` with fixed spacing patterns can miss imports with different indentation — always verify with grep after sed
+  - `ClusterCommandClient.hs` and `StandaloneClient.hs` in lib/cluster/ have their own `Client` imports with different spacing
+---
