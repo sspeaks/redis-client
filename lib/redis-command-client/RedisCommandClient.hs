@@ -60,7 +60,7 @@ data RedisError
   = ParseError String        -- ^ RESP parse failure
   | ConnectionClosed         -- ^ Remote end closed the connection
   | UnexpectedResp RespData  -- ^ Unexpected RESP value during 'FromResp' conversion
-  deriving (Show, Typeable)
+  deriving (Eq, Show, Typeable)
 
 instance Exception RedisError
 

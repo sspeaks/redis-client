@@ -183,6 +183,15 @@ test-suite MultiplexerSpec
                     , cluster
                     , resp
 
+test-suite FromRespSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          FromRespSpec.hs
+    build-depends:    bytestring
+                    , redis-command-client
+                    , resp
+                    , text
+
 test-suite MultiplexPoolSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
