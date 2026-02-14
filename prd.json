@@ -287,7 +287,7 @@
         "Typecheck passes"
       ],
       "priority": 19,
-      "passes": false,
+      "passes": true,
       "notes": "Internal modules (Database.Redis.Internal.*) don't need full Haddock coverage but should have module-level docs."
     },
     {

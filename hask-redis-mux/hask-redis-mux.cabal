@@ -13,6 +13,7 @@ maintainer:         sspeaks610@gmail.com
 category:           Network
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
+                  , README.md
 extra-source-files: lib/crc16/crc16.c
 homepage:           https://github.com/sspeaks/redis-client
 bug-reports:        https://github.com/sspeaks/redis-client/issues
