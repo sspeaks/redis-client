@@ -12,7 +12,7 @@ module FromResp
 import           Data.ByteString    (ByteString)
 import           Data.Text          (Text)
 import qualified Data.Text.Encoding as TE
-import           RedisCommandClient (RedisError (..))
+import           RedisError         (RedisError (..))
 import           Resp               (RespData (..))
 
 -- | Convert a 'RespData' value to a Haskell type.

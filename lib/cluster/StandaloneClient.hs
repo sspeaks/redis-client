@@ -46,12 +46,13 @@ import           Control.Exception      (SomeException, catch)
 import           Control.Monad.IO.Class (MonadIO (..))
 import           Control.Monad.Reader   (ReaderT, ask, runReaderT)
 import           Data.ByteString        (ByteString)
+import           FromResp               (FromResp (..))
 import           Multiplexer            (Multiplexer, SlotPool,
                                          createMultiplexer, createSlotPool,
                                          destroyMultiplexer,
                                          submitCommandPooled)
 import           RedisCommandClient     (ClientReplyValues (..),
-                                         RedisCommands (..),
+                                         RedisCommands (..), convertResp,
                                          encodeCommandBuilder,
                                          geoRadiusFlagToList, geoSearchByToList,
                                          geoSearchFromToList,
@@ -135,43 +136,47 @@ submitMux args = do
   let cmdBuilder = encodeCommandBuilder args
   liftIO $ submitCommandPooled (standalonePool client) (standaloneMux client) cmdBuilder
 
+-- | Submit a command and convert the result via 'FromResp'.
+submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a
+submitMuxAs args = submitMux args >>= convertResp
+
 instance RedisCommands StandaloneCommandClient where
-  auth username password = submitMux ["HELLO", "3", "AUTH", username, password]
-  ping = submitMux ["PING"]
-  set k v = submitMux ["SET", k, v]
-  get k = submitMux ["GET", k]
-  mget keys = submitMux ("MGET" : keys)
-  setnx k v = submitMux ["SETNX", k, v]
-  decr k = submitMux ["DECR", k]
-  psetex k ms v = submitMux ["PSETEX", k, showBS ms, v]
-  bulkSet kvs = submitMux (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
-  flushAll = submitMux ["FLUSHALL"]
-  dbsize = submitMux ["DBSIZE"]
-  del keys = submitMux ("DEL" : keys)
-  exists keys = submitMux ("EXISTS" : keys)
-  incr k = submitMux ["INCR", k]
-  hset k f v = submitMux ["HSET", k, f, v]
-  hget k f = submitMux ["HGET", k, f]
-  hmget k fs = submitMux ("HMGET" : k : fs)
-  hexists k f = submitMux ["HEXISTS", k, f]
-  lpush k vs = submitMux ("LPUSH" : k : vs)
-  lrange k start stop = submitMux ["LRANGE", k, showBS start, showBS stop]
-  expire k secs = submitMux ["EXPIRE", k, showBS secs]
-  ttl k = submitMux ["TTL", k]
-  rpush k vs = submitMux ("RPUSH" : k : vs)
-  lpop k = submitMux ["LPOP", k]
-  rpop k = submitMux ["RPOP", k]
-  sadd k vs = submitMux ("SADD" : k : vs)
-  smembers k = submitMux ["SMEMBERS", k]
-  scard k = submitMux ["SCARD", k]
-  sismember k v = submitMux ["SISMEMBER", k, v]
-  hdel k fs = submitMux ("HDEL" : k : fs)
-  hkeys k = submitMux ["HKEYS", k]
-  hvals k = submitMux ["HVALS", k]
-  llen k = submitMux ["LLEN", k]
-  lindex k idx = submitMux ["LINDEX", k, showBS idx]
-  clientSetInfo args = submitMux (["CLIENT", "SETINFO"] ++ args)
-  clusterSlots = submitMux ["CLUSTER", "SLOTS"]
+  auth username password = submitMuxAs ["HELLO", "3", "AUTH", username, password]
+  ping = submitMuxAs ["PING"]
+  set k v = submitMuxAs ["SET", k, v]
+  get k = submitMuxAs ["GET", k]
+  mget keys = submitMuxAs ("MGET" : keys)
+  setnx k v = submitMuxAs ["SETNX", k, v]
+  decr k = submitMuxAs ["DECR", k]
+  psetex k ms v = submitMuxAs ["PSETEX", k, showBS ms, v]
+  bulkSet kvs = submitMuxAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
+  flushAll = submitMuxAs ["FLUSHALL"]
+  dbsize = submitMuxAs ["DBSIZE"]
+  del keys = submitMuxAs ("DEL" : keys)
+  exists keys = submitMuxAs ("EXISTS" : keys)
+  incr k = submitMuxAs ["INCR", k]
+  hset k f v = submitMuxAs ["HSET", k, f, v]
+  hget k f = submitMuxAs ["HGET", k, f]
+  hmget k fs = submitMuxAs ("HMGET" : k : fs)
+  hexists k f = submitMuxAs ["HEXISTS", k, f]
+  lpush k vs = submitMuxAs ("LPUSH" : k : vs)
+  lrange k start stop = submitMuxAs ["LRANGE", k, showBS start, showBS stop]
+  expire k secs = submitMuxAs ["EXPIRE", k, showBS secs]
+  ttl k = submitMuxAs ["TTL", k]
+  rpush k vs = submitMuxAs ("RPUSH" : k : vs)
+  lpop k = submitMuxAs ["LPOP", k]
+  rpop k = submitMuxAs ["RPOP", k]
+  sadd k vs = submitMuxAs ("SADD" : k : vs)
+  smembers k = submitMuxAs ["SMEMBERS", k]
+  scard k = submitMuxAs ["SCARD", k]
+  sismember k v = submitMuxAs ["SISMEMBER", k, v]
+  hdel k fs = submitMuxAs ("HDEL" : k : fs)
+  hkeys k = submitMuxAs ["HKEYS", k]
+  hvals k = submitMuxAs ["HVALS", k]
+  llen k = submitMuxAs ["LLEN", k]
+  lindex k idx = submitMuxAs ["LINDEX", k, showBS idx]
+  clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
+  clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
 
   clientReply val = do
     case val of
@@ -185,42 +190,42 @@ instance RedisCommands StandaloneCommandClient where
 
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members
-    in submitMux ("ZADD" : k : payload)
+    in submitMuxAs ("ZADD" : k : payload)
 
   zrange k start stop withScores =
     let base = ["ZRANGE", k, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
-    in submitMux command
+    in submitMuxAs command
 
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
-    in submitMux ("GEOADD" : k : payload)
+    in submitMuxAs ("GEOADD" : k : payload)
 
   geodist k m1 m2 unit =
     let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
-    in submitMux (["GEODIST", k, m1, m2] ++ unitPart)
+    in submitMuxAs (["GEODIST", k, m1, m2] ++ unitPart)
 
-  geohash k members = submitMux ("GEOHASH" : k : members)
-  geopos k members = submitMux ("GEOPOS" : k : members)
+  geohash k members = submitMuxAs ("GEOHASH" : k : members)
+  geopos k members = submitMuxAs ("GEOPOS" : k : members)
 
   georadius k lon lat radius unit flags =
     let base = ["GEORADIUS", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in submitMux (base ++ concatMap geoRadiusFlagToList flags)
+    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusRo k lon lat radius unit flags =
     let base = ["GEORADIUS_RO", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in submitMux (base ++ concatMap geoRadiusFlagToList flags)
+    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusByMember k member radius unit flags =
     let base = ["GEORADIUSBYMEMBER", k, member, showBS radius, geoUnitKeyword unit]
-    in submitMux (base ++ concatMap geoRadiusFlagToList flags)
+    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
 
   georadiusByMemberRo k member radius unit flags =
     let base = ["GEORADIUSBYMEMBER_RO", k, member, showBS radius, geoUnitKeyword unit]
-    in submitMux (base ++ concatMap geoRadiusFlagToList flags)
+    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
 
   geosearch k fromSpec bySpec options =
-    submitMux (["GEOSEARCH", k]
+    submitMuxAs (["GEOSEARCH", k]
       ++ geoSearchFromToList fromSpec
       ++ geoSearchByToList bySpec
       ++ concatMap geoSearchOptionToList options)
@@ -231,4 +236,4 @@ instance RedisCommands StandaloneCommandClient where
             ++ geoSearchByToList bySpec
             ++ concatMap geoSearchOptionToList options
         command = if storeDist then base ++ ["STOREDIST"] else base
-    in submitMux command
+    in submitMuxAs command

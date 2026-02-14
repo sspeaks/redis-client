@@ -43,6 +43,7 @@ library
     reexported-modules:
         Resp
       , FromResp
+      , RedisError
       , Client
       , Crc16
       , RedisCommandClient
@@ -95,6 +96,7 @@ library redis-command-client
     hs-source-dirs:   lib/redis-command-client
     exposed-modules:  RedisCommandClient
                     , FromResp
+                    , RedisError
     build-depends:    attoparsec
                     , bytestring
                     , client

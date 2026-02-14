@@ -84,12 +84,13 @@ import qualified Data.Map.Strict         as Map
 import           Data.Time.Clock         (NominalDiffTime, diffUTCTime,
                                           getCurrentTime)
 import           Data.Word               (Word16)
+import           FromResp                (FromResp (..))
 import           MultiplexPool           (MultiplexPool, closeMultiplexPool,
                                           createMultiplexPool, submitToNode,
                                           submitToNodeWithAsking)
 import           RedisCommandClient      (ClientState (..),
                                           RedisCommandClient (..),
-                                          RedisCommands (..),
+                                          RedisCommands (..), convertResp,
                                           encodeCommandBuilder,
                                           geoRadiusFlagToList,
                                           geoSearchByToList,
@@ -425,6 +426,10 @@ executeKeyed key cmdArgs = do
   result <- liftIO $ executeKeyedClusterCommand client key cmdArgs
   unwrapClusterResult result
 
+-- | Execute a keyed command, unwrap, and convert via 'FromResp'.
+executeKeyedAs :: (Client client, FromResp a) => ByteString -> [ByteString] -> ClusterCommandClient client a
+executeKeyedAs key cmdArgs = executeKeyed key cmdArgs >>= convertResp
+
 -- | Execute a keyless command and unwrap the result
 executeKeyless :: (Client client) => RedisCommandClient client a -> ClusterCommandClient client a
 executeKeyless action = do
@@ -502,77 +507,77 @@ executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
   auth username password = executeKeyless (RedisCommandClient.auth username password)
   ping = executeKeyless RedisCommandClient.ping
-  set k v = executeKeyed k ["SET", k, v]
-  get k = executeKeyed k ["GET", k]
+  set k v = executeKeyedAs k ["SET", k, v]
+  get k = executeKeyedAs k ["GET", k]
   mget keys = case keys of
     []    -> executeKeyless (RedisCommandClient.mget [])
-    (k:_) -> executeKeyed k ("MGET" : keys)
-  setnx k v = executeKeyed k ["SETNX", k, v]
-  decr k = executeKeyed k ["DECR", k]
-  psetex k ms v = executeKeyed k ["PSETEX", k, showBS ms, v]
+    (k:_) -> executeKeyedAs k ("MGET" : keys)
+  setnx k v = executeKeyedAs k ["SETNX", k, v]
+  decr k = executeKeyedAs k ["DECR", k]
+  psetex k ms v = executeKeyedAs k ["PSETEX", k, showBS ms, v]
   bulkSet kvs = case kvs of
     []         -> executeKeyless (RedisCommandClient.bulkSet [])
-    ((k, _):_) -> executeKeyed k (["MSET"] <> concatMap (\(k', v') -> [k', v']) kvs)
+    ((k, _):_) -> executeKeyedAs k (["MSET"] <> concatMap (\(k', v') -> [k', v']) kvs)
   flushAll = executeKeyless RedisCommandClient.flushAll
   dbsize = executeKeyless RedisCommandClient.dbsize
   del keys = case keys of
     []    -> executeKeyless (RedisCommandClient.del [])
-    (k:_) -> executeKeyed k ("DEL" : keys)
+    (k:_) -> executeKeyedAs k ("DEL" : keys)
   exists keys = case keys of
     []    -> executeKeyless (RedisCommandClient.exists [])
-    (k:_) -> executeKeyed k ("EXISTS" : keys)
-  incr k = executeKeyed k ["INCR", k]
-  hset k f v = executeKeyed k ["HSET", k, f, v]
-  hget k f = executeKeyed k ["HGET", k, f]
-  hmget k fs = executeKeyed k ("HMGET" : k : fs)
-  hexists k f = executeKeyed k ["HEXISTS", k, f]
-  lpush k vs = executeKeyed k ("LPUSH" : k : vs)
-  lrange k start stop = executeKeyed k ["LRANGE", k, showBS start, showBS stop]
-  expire k secs = executeKeyed k ["EXPIRE", k, showBS secs]
-  ttl k = executeKeyed k ["TTL", k]
-  rpush k vs = executeKeyed k ("RPUSH" : k : vs)
-  lpop k = executeKeyed k ["LPOP", k]
-  rpop k = executeKeyed k ["RPOP", k]
-  sadd k vs = executeKeyed k ("SADD" : k : vs)
-  smembers k = executeKeyed k ["SMEMBERS", k]
-  scard k = executeKeyed k ["SCARD", k]
-  sismember k v = executeKeyed k ["SISMEMBER", k, v]
-  hdel k fs = executeKeyed k ("HDEL" : k : fs)
-  hkeys k = executeKeyed k ["HKEYS", k]
-  hvals k = executeKeyed k ["HVALS", k]
-  llen k = executeKeyed k ["LLEN", k]
-  lindex k idx = executeKeyed k ["LINDEX", k, showBS idx]
+    (k:_) -> executeKeyedAs k ("EXISTS" : keys)
+  incr k = executeKeyedAs k ["INCR", k]
+  hset k f v = executeKeyedAs k ["HSET", k, f, v]
+  hget k f = executeKeyedAs k ["HGET", k, f]
+  hmget k fs = executeKeyedAs k ("HMGET" : k : fs)
+  hexists k f = executeKeyedAs k ["HEXISTS", k, f]
+  lpush k vs = executeKeyedAs k ("LPUSH" : k : vs)
+  lrange k start stop = executeKeyedAs k ["LRANGE", k, showBS start, showBS stop]
+  expire k secs = executeKeyedAs k ["EXPIRE", k, showBS secs]
+  ttl k = executeKeyedAs k ["TTL", k]
+  rpush k vs = executeKeyedAs k ("RPUSH" : k : vs)
+  lpop k = executeKeyedAs k ["LPOP", k]
+  rpop k = executeKeyedAs k ["RPOP", k]
+  sadd k vs = executeKeyedAs k ("SADD" : k : vs)
+  smembers k = executeKeyedAs k ["SMEMBERS", k]
+  scard k = executeKeyedAs k ["SCARD", k]
+  sismember k v = executeKeyedAs k ["SISMEMBER", k, v]
+  hdel k fs = executeKeyedAs k ("HDEL" : k : fs)
+  hkeys k = executeKeyedAs k ["HKEYS", k]
+  hvals k = executeKeyedAs k ["HVALS", k]
+  llen k = executeKeyedAs k ["LLEN", k]
+  lindex k idx = executeKeyedAs k ["LINDEX", k, showBS idx]
   clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
   clientReply val = executeKeyless (RedisCommandClient.clientReply val)
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members
-    in executeKeyed k ("ZADD" : k : payload)
+    in executeKeyedAs k ("ZADD" : k : payload)
   zrange k start stop withScores =
     let base = ["ZRANGE", k, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
-    in executeKeyed k command
+    in executeKeyedAs k command
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
-    in executeKeyed k ("GEOADD" : k : payload)
+    in executeKeyedAs k ("GEOADD" : k : payload)
   geodist k m1 m2 unit =
     let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
-    in executeKeyed k (["GEODIST", k, m1, m2] ++ unitPart)
-  geohash k members = executeKeyed k ("GEOHASH" : k : members)
-  geopos k members = executeKeyed k ("GEOPOS" : k : members)
+    in executeKeyedAs k (["GEODIST", k, m1, m2] ++ unitPart)
+  geohash k members = executeKeyedAs k ("GEOHASH" : k : members)
+  geopos k members = executeKeyedAs k ("GEOPOS" : k : members)
   georadius k lon lat radius unit flags =
     let base = ["GEORADIUS", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
   georadiusRo k lon lat radius unit flags =
     let base = ["GEORADIUS_RO", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
   georadiusByMember k member radius unit flags =
     let base = ["GEORADIUSBYMEMBER", k, member, showBS radius, geoUnitKeyword unit]
-    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
   georadiusByMemberRo k member radius unit flags =
     let base = ["GEORADIUSBYMEMBER_RO", k, member, showBS radius, geoUnitKeyword unit]
-    in executeKeyed k (base ++ concatMap geoRadiusFlagToList flags)
+    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
   geosearch k fromSpec bySpec options =
-    executeKeyed k (["GEOSEARCH", k]
+    executeKeyedAs k (["GEOSEARCH", k]
       ++ geoSearchFromToList fromSpec
       ++ geoSearchByToList bySpec
       ++ concatMap geoSearchOptionToList options)
@@ -582,5 +587,5 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
             ++ geoSearchByToList bySpec
             ++ concatMap geoSearchOptionToList options
         command = if storeDist then base ++ ["STOREDIST"] else base
-    in executeKeyed dest command
+    in executeKeyedAs dest command
   clusterSlots = executeKeyless RedisCommandClient.clusterSlots

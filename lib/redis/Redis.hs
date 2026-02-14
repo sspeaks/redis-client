@@ -21,6 +21,8 @@ module Redis
   , module Client
     -- * Redis Commands
   , module RedisCommandClient
+    -- * FromResp conversion
+  , module FromResp
     -- * Cluster
   , module Cluster
   , module ClusterCommandClient
@@ -36,14 +38,40 @@ module Redis
   , ByteString
   ) where
 
-import Data.ByteString (ByteString)
-import Resp (RespData (..), Encodable (..), parseRespData, parseStrict)
-import Client (Client (..), PlainTextClient (..), TLSClient (..), ConnectionStatus (..))
-import RedisCommandClient (RedisCommandClient (..), RedisCommands (..), ClientState (..), RedisError (..), ClientReplyValues (..), showBS, encodeCommand, encodeCommandBuilder, encodeSetBuilder, encodeGetBuilder, encodeBulkArg, parseWith, parseManyWith)
-import Cluster (NodeAddress (..), ClusterNode (..), SlotRange (..), ClusterTopology (..), NodeRole (..))
-import ClusterCommandClient (ClusterClient (..), ClusterConfig (..), ClusterError (..), ClusterCommandClient, createClusterClient, closeClusterClient, refreshTopology, runClusterCommandClient)
-import ConnectionPool (ConnectionPool (..), PoolConfig (..), withConnection, createPool, closePool)
-import Multiplexer (Multiplexer, MultiplexerException (..), createMultiplexer, submitCommand, destroyMultiplexer, isMultiplexerAlive)
-import MultiplexPool (MultiplexPool, createMultiplexPool, submitToNode, closeMultiplexPool)
-import StandaloneClient (StandaloneConfig (..), StandaloneClient, StandaloneCommandClient, createStandaloneClient, createStandaloneClientFromConfig, closeStandaloneClient, runStandaloneClient)
-import Connector (Connector, connectPlaintext, connectTLS, clusterPlaintextConnector, clusterTLSConnector)
+import           Client               (Client (..), ConnectionStatus (..),
+                                       PlainTextClient (..), TLSClient (..))
+import           Cluster              (ClusterNode (..), ClusterTopology (..),
+                                       NodeAddress (..), NodeRole (..),
+                                       SlotRange (..))
+import           ClusterCommandClient (ClusterClient (..), ClusterCommandClient,
+                                       ClusterConfig (..), ClusterError (..),
+                                       closeClusterClient, createClusterClient,
+                                       refreshTopology, runClusterCommandClient)
+import           ConnectionPool       (ConnectionPool (..), PoolConfig (..),
+                                       closePool, createPool, withConnection)
+import           Connector            (Connector, clusterPlaintextConnector,
+                                       clusterTLSConnector, connectPlaintext,
+                                       connectTLS)
+import           Data.ByteString      (ByteString)
+import           FromResp             (FromResp (..))
+import           Multiplexer          (Multiplexer, MultiplexerException (..),
+                                       createMultiplexer, destroyMultiplexer,
+                                       isMultiplexerAlive, submitCommand)
+import           MultiplexPool        (MultiplexPool, closeMultiplexPool,
+                                       createMultiplexPool, submitToNode)
+import           RedisCommandClient   (ClientReplyValues (..), ClientState (..),
+                                       RedisCommandClient (..),
+                                       RedisCommands (..), RedisError (..),
+                                       convertResp, encodeBulkArg,
+                                       encodeCommand, encodeCommandBuilder,
+                                       encodeGetBuilder, encodeSetBuilder,
+                                       parseManyWith, parseWith, showBS)
+import           Resp                 (Encodable (..), RespData (..),
+                                       parseRespData, parseStrict)
+import           StandaloneClient     (StandaloneClient,
+                                       StandaloneCommandClient,
+                                       StandaloneConfig (..),
+                                       closeStandaloneClient,
+                                       createStandaloneClient,
+                                       createStandaloneClientFromConfig,
+                                       runStandaloneClient)
