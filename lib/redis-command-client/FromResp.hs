@@ -5,6 +5,8 @@
 -- This module provides 'FromResp' together with a collection of instances for
 -- common types so that Redis commands can return typed values instead of raw
 -- 'RespData'.
+--
+-- @since 0.1.0.0
 module FromResp
   ( FromResp (..)
   ) where

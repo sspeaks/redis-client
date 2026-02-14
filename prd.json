@@ -272,7 +272,7 @@
         "Typecheck passes"
       ],
       "priority": 18,
-      "passes": false,
+      "passes": true,
       "notes": "Run 'cabal check' in the hask-redis-mux directory to verify. Fix any warnings it reports."
     },
     {

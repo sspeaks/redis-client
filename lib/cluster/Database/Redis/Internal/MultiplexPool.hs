@@ -11,6 +11,8 @@
 -- resp <- submitToNode pool nodeAddr cmdBytes
 -- closeMultiplexPool pool
 -- @
+--
+-- @since 0.1.0.0
 module Database.Redis.Internal.MultiplexPool
   ( MultiplexPool
   , createMultiplexPool

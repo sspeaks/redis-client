@@ -32,6 +32,8 @@
 -- For advanced use (e.g.\ forwarding raw RESP commands), the low-level
 -- 'executeKeyedClusterCommand' and 'executeKeylessClusterCommand' are also
 -- available but are not re-exported by the convenience "Redis" module.
+--
+-- @since 0.1.0.0
 module Database.Redis.Cluster.Client
   ( -- * Client Types
     ClusterClient (..),

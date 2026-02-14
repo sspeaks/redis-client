@@ -11,6 +11,8 @@
 --
 -- When the pool is at capacity, callers block until a connection becomes
 -- available rather than creating unbounded overflow connections.
+--
+-- @since 0.1.0.0
 module Database.Redis.Cluster.ConnectionPool
   ( ConnectionPool (..),
     PoolConfig (..),

@@ -1,19 +1,42 @@
--- | Convenience re-export module for redis-client library consumers.
+-- | Convenience re-export module for the hask-redis-mux library.
 --
--- Importing this single module gives you everything needed for both
--- standalone and cluster Redis usage.
+-- Import this single module for both standalone and cluster Redis usage.
+--
+-- __Standalone usage with bracket pattern (recommended):__
 --
 -- @
--- import Redis
+-- {-# LANGUAGE OverloadedStrings #-}
+-- import Database.Redis
 --
 -- main :: IO ()
 -- main = do
---   client <- createClusterClient config connector
+--   result <- runRedis defaultStandaloneConfig $ do
+--     set \"mykey\" \"myvalue\"
+--     (val :: ByteString) <- get \"mykey\"
+--     return val
+--   print result
+-- @
+--
+-- __Typed returns via 'FromResp':__
+--
+-- @
+-- runRedis defaultStandaloneConfig $ do
+--   set \"counter\" \"42\"
+--   (n :: Integer) <- get \"counter\"  -- automatically parsed
+--   (bs :: ByteString) <- get \"counter\"  -- raw bytes
+--   (mt :: Maybe Text) <- get \"missing\"  -- Nothing for missing keys
+-- @
+--
+-- __Cluster usage with bracket pattern:__
+--
+-- @
+-- withClusterClient clusterConfig connector $ \\client ->
 --   runClusterCommandClient client $ do
 --     set \"mykey\" \"myvalue\"
---     result <- get \"mykey\"
---     ...
+--     get \"mykey\"
 -- @
+--
+-- @since 0.1.0.0
 module Database.Redis
   ( -- * RESP Protocol
     module Database.Redis.Resp

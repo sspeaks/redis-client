@@ -21,6 +21,8 @@
 --   client <- createClusterClient config connector
 --   ...
 -- @
+--
+-- @since 0.1.0.0
 module Database.Redis.Connector
   ( -- * Connector type
     Connector

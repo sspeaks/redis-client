@@ -7,6 +7,8 @@
 -- (strings, hashes, lists, sets, sorted sets, geo), a 'RedisCommandClient' monad
 -- that manages connection state and incremental RESP parsing, and typed error handling
 -- via 'RedisError'.
+--
+-- @since 0.1.0.0
 module Database.Redis.Command
   ( -- * Core types
     ClientState (..)
@@ -228,6 +230,7 @@ data GeoUnit
   | Feet
   deriving (Eq, Show)
 
+-- | Convert a 'GeoUnit' to its Redis protocol keyword.
 geoUnitKeyword :: GeoUnit -> ByteString
 geoUnitKeyword unit =
   case unit of
@@ -248,6 +251,7 @@ data GeoRadiusFlag
   | GeoRadiusStoreDist ByteString
   deriving (Eq, Show)
 
+-- | Convert a 'GeoRadiusFlag' to its Redis protocol argument list.
 geoRadiusFlagToList :: GeoRadiusFlag -> [ByteString]
 geoRadiusFlagToList flag =
   case flag of
@@ -266,6 +270,7 @@ data GeoSearchFrom
   | GeoFromMember ByteString
   deriving (Eq, Show)
 
+-- | Convert a 'GeoSearchFrom' to its Redis protocol argument list.
 geoSearchFromToList :: GeoSearchFrom -> [ByteString]
 geoSearchFromToList fromSpec =
   case fromSpec of
@@ -278,6 +283,7 @@ data GeoSearchBy
   | GeoByBox Double Double GeoUnit
   deriving (Eq, Show)
 
+-- | Convert a 'GeoSearchBy' to its Redis protocol argument list.
 geoSearchByToList :: GeoSearchBy -> [ByteString]
 geoSearchByToList bySpec =
   case bySpec of
@@ -295,6 +301,7 @@ data GeoSearchOption
   | GeoSearchDesc
   deriving (Eq, Show)
 
+-- | Convert a 'GeoSearchOption' to its Redis protocol argument list.
 geoSearchOptionToList :: GeoSearchOption -> [ByteString]
 geoSearchOptionToList opt =
   case opt of

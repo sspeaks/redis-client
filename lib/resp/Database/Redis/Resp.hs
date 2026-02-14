@@ -4,6 +4,8 @@
 
 -- | Serialization and parsing for the Redis Serialization Protocol (RESP).
 -- Supports RESP2 and RESP3 wire types including bulk strings, arrays, maps, and sets.
+--
+-- @since 0.1.0.0
 module Database.Redis.Resp
   ( RespData (..)
   , Encodable (..)

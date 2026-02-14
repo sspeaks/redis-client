@@ -3,6 +3,8 @@
 -- | Static mapping from Redis cluster hash slots to hash tags.
 -- The mapping is fully resolved at compile time via Template Haskell,
 -- so no parsing or file I/O occurs at runtime.
+--
+-- @since 0.1.0.0
 module Database.Redis.Cluster.SlotMapping
   ( SlotMapping
   , slotMappings

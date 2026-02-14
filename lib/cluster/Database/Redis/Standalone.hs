@@ -24,6 +24,8 @@
 --       result <- get \"key\"
 --       ...
 -- @
+--
+-- @since 0.1.0.0
 module Database.Redis.Standalone
   ( -- * Configuration
     StandaloneConfig (..)

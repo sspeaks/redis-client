@@ -2,6 +2,8 @@
 
 -- | Shared command classification for cluster routing
 -- This module provides lists of Redis commands categorized by their routing requirements
+--
+-- @since 0.1.0.0
 module Database.Redis.Cluster.Commands
   ( keylessCommands,
     requiresKeyCommands,

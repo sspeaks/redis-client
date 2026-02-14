@@ -15,6 +15,8 @@
 -- resp <- submitCommand mux (encode [\"GET\", \"key\"])
 -- destroyMultiplexer mux
 -- @
+--
+-- @since 0.1.0.0
 module Database.Redis.Internal.Multiplexer
   ( Multiplexer
   , MultiplexerException (..)

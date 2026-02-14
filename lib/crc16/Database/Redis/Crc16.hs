@@ -2,6 +2,8 @@
 -- Wraps a C implementation via FFI. The FFI call is safe to treat as pure
 -- (deterministic, no side effects), so we use 'unsafeDupablePerformIO' to
 -- avoid forcing callers into IO on the hot path.
+--
+-- @since 0.1.0.0
 module Database.Redis.Crc16  ( crc16 ) where
 
 import           Data.Bits             ((.&.))

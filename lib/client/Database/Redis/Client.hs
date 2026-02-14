@@ -8,6 +8,8 @@
 -- connection state at compile time: you can only 'send' and 'receive' on a
 -- @client \'Connected@, and only 'connect' a @client \'NotConnected@. This prevents
 -- use-after-close and send-before-connect bugs statically.
+--
+-- @since 0.1.0.0
 module Database.Redis.Client
   ( Client (..)
   , serve
