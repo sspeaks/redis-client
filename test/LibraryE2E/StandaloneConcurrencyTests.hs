@@ -19,7 +19,7 @@ import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
                                                         createMultiplexPool,
                                                         submitToNode)
 import           Database.Redis.Resp                   (RespData (..))
-import           StandaloneClient                      (StandaloneClient,
+import           Database.Redis.Standalone             (StandaloneClient,
                                                         closeStandaloneClient,
                                                         createStandaloneClient,
                                                         runStandaloneClient)

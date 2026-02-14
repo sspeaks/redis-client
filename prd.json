@@ -168,7 +168,7 @@
         "Typecheck passes"
       ],
       "priority": 11,
-      "passes": false,
+      "passes": true,
       "notes": "These are in lib/cluster/. They should still be exposed (users may need them for advanced use) but the Internal namespace signals instability."
     },
     {

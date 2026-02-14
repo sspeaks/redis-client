@@ -14,7 +14,7 @@
 --     result <- get \"mykey\"
 --     ...
 -- @
-module Redis
+module Database.Redis
   ( -- * RESP Protocol
     module Database.Redis.Resp
     -- * Transport
@@ -31,7 +31,7 @@ module Redis
   , module Database.Redis.Internal.Multiplexer
   , module Database.Redis.Internal.MultiplexPool
     -- * Standalone Multiplexed Client
-  , module StandaloneClient
+  , module Database.Redis.Standalone
     -- * Connection Helpers
   , module Database.Redis.Connector
     -- * ByteString (re-exported for convenience)
@@ -92,11 +92,11 @@ import           Database.Redis.Resp                   (Encodable (..),
                                                         RespData (..),
                                                         parseRespData,
                                                         parseStrict)
-import           FromResp                              (FromResp (..))
-import           StandaloneClient                      (StandaloneClient,
+import           Database.Redis.Standalone             (StandaloneClient,
                                                         StandaloneCommandClient,
                                                         StandaloneConfig (..),
                                                         closeStandaloneClient,
                                                         createStandaloneClient,
                                                         createStandaloneClientFromConfig,
                                                         runStandaloneClient)
+import           FromResp                              (FromResp (..))

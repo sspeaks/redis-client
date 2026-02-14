@@ -25,7 +25,7 @@
 --     ...
 --   closeStandaloneClient client
 -- @
-module StandaloneClient
+module Database.Redis.Standalone
   ( -- * Configuration
     StandaloneConfig (..)
     -- * Client type

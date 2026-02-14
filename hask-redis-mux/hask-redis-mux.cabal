@@ -55,8 +55,8 @@ library
       , Database.Redis.Connector
       , Database.Redis.Internal.MultiplexPool
       , Database.Redis.Internal.Multiplexer
-      , StandaloneClient
-      , Redis
+      , Database.Redis.Standalone
+      , Database.Redis
     build-depends:    resp
                     , client
                     , crc16
@@ -115,7 +115,7 @@ library cluster
                     , Database.Redis.Connector
                     , Database.Redis.Internal.MultiplexPool
                     , Database.Redis.Internal.Multiplexer
-                    , StandaloneClient
+                    , Database.Redis.Standalone
     build-depends:    attoparsec
                     , bytestring
                     , client
@@ -133,7 +133,7 @@ library redis
     import:           defaults
     visibility:       public
     hs-source-dirs:   lib/redis
-    exposed-modules:  Redis
+    exposed-modules:  Database.Redis
     build-depends:    bytestring
                     , client
                     , cluster
