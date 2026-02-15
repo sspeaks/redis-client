@@ -2,7 +2,7 @@
 let
   src = builtins.path { path = ./.; name = "source"; };
   scriptSrc = ./scripts/azure-redis-connect.py;
-  # Build hask-redis-mux: the cabal file is in hask-redis-mux/ but sources are in ../lib/
+  # Build hask-redis-mux: sources are self-contained in hask-redis-mux/
   # We give it the full repo and tell cabal2nix to look in the hask-redis-mux subdir
   hask-redis-mux = pkgs.haskell.lib.dontCheck (pkgs.haskellPackages.callCabal2nixWithOptions
     "hask-redis-mux"
