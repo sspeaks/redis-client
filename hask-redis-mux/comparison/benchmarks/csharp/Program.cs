@@ -9,8 +9,8 @@ class Program
 {
     static void Main(string[] args)
     {
-        string connString = args.Length > 0 ? args[0] : "localhost:6379";
-        Console.Error.WriteLine($"Connecting to {connString}");
+        string connString = args.Length > 0 ? args[0] : "localhost:7000,localhost:7001,localhost:7002,localhost:7003,localhost:7004";
+        Console.Error.WriteLine($"Connecting to cluster: {connString}");
 
         var options = ConfigurationOptions.Parse(connString);
         options.AbortOnConnectFail = false;
@@ -19,7 +19,7 @@ class Program
         using var connection = ConnectionMultiplexer.Connect(options);
         var db = connection.GetDatabase();
 
-        Console.Error.WriteLine("Starting benchmarks...");
+        Console.Error.WriteLine("Starting cluster benchmarks...");
 
         var results = new Dictionary<string, object>();
 
@@ -54,23 +54,36 @@ class Program
             System.Threading.Tasks.Task.WaitAll(tasks.ToArray());
         });
 
-        // MGET benchmarks
+        // MGET replacement: sequential GETs (cluster-safe, no cross-slot)
         for (int i = 1; i <= 1000; i++)
             db.StringSet($"bench:mget:{i}", $"val{i}");
 
-        RedisKey[] MgetKeys(int n) => Enumerable.Range(1, n).Select(i => (RedisKey)$"bench:mget:{i}").ToArray();
+        results["get_10"] = RunBenchmark("get_10", 5000, () =>
+        {
+            for (int i = 1; i <= 10; i++) db.StringGet($"bench:mget:{i}");
+        });
+        results["get_100"] = RunBenchmark("get_100", 2000, () =>
+        {
+            for (int i = 1; i <= 100; i++) db.StringGet($"bench:mget:{i}");
+        });
+        results["get_1000"] = RunBenchmark("get_1000", 500, () =>
+        {
+            for (int i = 1; i <= 1000; i++) db.StringGet($"bench:mget:{i}");
+        });
 
-        results["mget_10"] = RunBenchmark("mget_10", 5000, () => db.StringGet(MgetKeys(10)));
-        results["mget_100"] = RunBenchmark("mget_100", 2000, () => db.StringGet(MgetKeys(100)));
-        results["mget_1000"] = RunBenchmark("mget_1000", 500, () => db.StringGet(MgetKeys(1000)));
-
-        // MSET benchmarks
-        KeyValuePair<RedisKey, RedisValue>[] MsetPairs(int n) =>
-            Enumerable.Range(1, n).Select(i => new KeyValuePair<RedisKey, RedisValue>($"bench:mset:{i}", $"val{i}")).ToArray();
-
-        results["mset_10"] = RunBenchmark("mset_10", 5000, () => db.StringSet(MsetPairs(10)));
-        results["mset_100"] = RunBenchmark("mset_100", 2000, () => db.StringSet(MsetPairs(100)));
-        results["mset_1000"] = RunBenchmark("mset_1000", 500, () => db.StringSet(MsetPairs(1000)));
+        // MSET replacement: sequential SETs (cluster-safe)
+        results["set_10"] = RunBenchmark("set_10", 5000, () =>
+        {
+            for (int i = 1; i <= 10; i++) db.StringSet($"bench:mset:{i}", $"val{i}");
+        });
+        results["set_100"] = RunBenchmark("set_100", 2000, () =>
+        {
+            for (int i = 1; i <= 100; i++) db.StringSet($"bench:mset:{i}", $"val{i}");
+        });
+        results["set_1000"] = RunBenchmark("set_1000", 500, () =>
+        {
+            for (int i = 1; i <= 1000; i++) db.StringSet($"bench:mset:{i}", $"val{i}");
+        });
 
         // GC stats
         results["gc"] = new Dictionary<string, object>

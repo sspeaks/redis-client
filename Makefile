@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop redis-cluster-host-start redis-cluster-host-stop profile comparison comparison-bench setup
 
 # Default target
 help:
@@ -103,6 +103,14 @@ redis-stop:
 redis-cluster-stop:
 	@cd docker/cluster && docker compose down
 
+# Start Redis Cluster with host networking (ports 7000-7004)
+redis-cluster-host-start:
+	@cd docker/cluster-host && ./make_cluster.sh
+
+# Stop Redis Cluster (host networking)
+redis-cluster-host-stop:
+	@cd docker/cluster-host && docker compose down
+
 # Build with profiling enabled (both packages)
 profile:
 ifeq ($(HAS_NIX),yes)
@@ -125,6 +133,13 @@ endif
 comparison:
 	./hask-redis-mux/comparison/generate_comparison.py --skip-benchmarks
 
-# Regenerate comparison HTML document with benchmarks (requires Redis + toolchains)
-comparison-bench:
-	./hask-redis-mux/comparison/generate_comparison.py
+# Regenerate comparison HTML document with benchmarks
+# Starts cluster-host Redis, runs benchmarks, stops cluster
+comparison-bench: redis-cluster-host-start
+ifeq ($(HAS_NIX),yes)
+	nix-shell --run "python3 hask-redis-mux/comparison/generate_comparison.py" ; \
+	cd docker/cluster-host && docker compose down
+else
+	python3 hask-redis-mux/comparison/generate_comparison.py ; \
+	cd docker/cluster-host && docker compose down
+endif

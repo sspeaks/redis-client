@@ -3,15 +3,15 @@
 
 module Main where
 
-import qualified Data.ByteString.Char8     as BS
+import qualified Data.ByteString.Char8         as BS
 import           Data.IORef
-import           Data.List                 (sort)
+import           Data.List                     (sort)
 import           Database.Redis
-import           Database.Redis.Standalone (withStandaloneClient)
+import           Database.Redis.Cluster.Client (withClusterClient)
 import           System.Clock
-import           System.Environment        (getArgs)
-import           System.IO                 (hFlush, hPutStrLn, stderr)
-import           Text.Printf               (hPrintf, printf)
+import           System.Environment            (getArgs)
+import           System.IO                     (hFlush, hPutStrLn, stderr)
+import           Text.Printf                   (hPrintf, printf)
 
 -- | Convert TimeSpec to microseconds
 toMicroseconds :: TimeSpec -> Double
@@ -74,91 +74,97 @@ main = do
   args <- getArgs
   let connStr = case args of
         (x:_) -> x
-        []    -> "localhost:6379"
+        []    -> "localhost:7000"
       (host, port) = parseConnString connStr
 
-  hPrintf stderr "Connecting to %s:%d\n" host port
+  hPrintf stderr "Connecting to cluster seed %s:%d\n" host port
   hFlush stderr
 
-  let config = StandaloneConfig
-        { standaloneNodeAddress     = NodeAddress host port
-        , standaloneConnector       = clusterPlaintextConnector
-        , standaloneMultiplexerCount = 1
+  let config = ClusterConfig
+        { clusterSeedNode                = NodeAddress host port
+        , clusterPoolConfig              = PoolConfig
+            { maxConnectionsPerNode = 4
+            , connectionTimeout     = 5000000
+            , maxRetries            = 3
+            , useTLS                = False
+            }
+        , clusterMaxRetries              = 3
+        , clusterRetryDelay              = 100000
+        , clusterTopologyRefreshInterval = 600
         }
 
-  withStandaloneClient config $ \client -> do
-    let run :: StandaloneCommandClient a -> IO a
-        run = runStandaloneClient client
+  withClusterClient config clusterPlaintextConnector $ \client -> do
+    let run :: ClusterCommandClient PlainTextClient a -> IO a
+        run = runClusterCommandClient client
 
-    hPutStrLn stderr "Starting benchmarks..."
+    hPutStrLn stderr "Starting cluster benchmarks..."
     hFlush stderr
 
     putStrLn "{"
 
     -- PING benchmark
-    benchmark "ping" 10000 (run (ping :: StandaloneCommandClient ByteString) >> return ())
+    benchmark "ping" 10000 (run (ping :: ClusterCommandClient PlainTextClient ByteString) >> return ())
     putStrLn ","
 
     -- SET benchmark
-    benchmark "set" 10000 (run (set "bench:key" "bench:value" :: StandaloneCommandClient Bool) >> return ())
+    benchmark "set" 10000 (run (set "bench:key" "bench:value" :: ClusterCommandClient PlainTextClient Bool) >> return ())
     putStrLn ","
 
     -- GET benchmark
-    _ <- run (set "bench:key" "bench:value" :: StandaloneCommandClient Bool)
-    benchmark "get" 10000 (run (get "bench:key" :: StandaloneCommandClient ByteString) >> return ())
+    _ <- run (set "bench:key" "bench:value" :: ClusterCommandClient PlainTextClient Bool)
+    benchmark "get" 10000 (run (get "bench:key" :: ClusterCommandClient PlainTextClient ByteString) >> return ())
     putStrLn ","
 
     -- DEL benchmark
     benchmark "del" 10000 (do
-      _ <- run (set "bench:delkey" "v" :: StandaloneCommandClient Bool)
-      _ <- run (del ["bench:delkey"] :: StandaloneCommandClient Integer)
+      _ <- run (set "bench:delkey" "v" :: ClusterCommandClient PlainTextClient Bool)
+      _ <- run (del ["bench:delkey"] :: ClusterCommandClient PlainTextClient Integer)
       return ()
       )
     putStrLn ","
 
-    -- Pipeline benchmark (sequential gets via multiplexer auto-pipelining)
+    -- Pipeline benchmark (sequential gets via cluster routing)
     do
-      mapM_ (\i -> run (set (BS.pack $ "bench:pipe:" <> show i) (BS.pack $ "val" <> show i) :: StandaloneCommandClient Bool)) [1..100 :: Int]
+      mapM_ (\i -> run (set (BS.pack $ "bench:pipe:" <> show i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [1..100 :: Int]
       benchmark "pipeline_100_gets" 1000 (do
-        mapM_ (\i -> run (get (BS.pack $ "bench:pipe:" <> show i) :: StandaloneCommandClient ByteString)) [1..100 :: Int]
+        mapM_ (\i -> run (get (BS.pack $ "bench:pipe:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..100 :: Int]
         )
     putStrLn ","
 
-    -- MGET benchmarks for batch sizes
+    -- Single-key GET benchmarks for batch sizes (MGET not usable cross-slot in cluster)
     do
-      mapM_ (\i -> run (set (BS.pack $ "bench:mget:" <> show i) (BS.pack $ "val" <> show i) :: StandaloneCommandClient Bool)) [1..1000 :: Int]
+      mapM_ (\i -> run (set (BS.pack $ "bench:mget:" <> show i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [1..1000 :: Int]
 
-      let mgetKeys n = map (\i -> BS.pack $ "bench:mget:" <> show i) [1..n :: Int]
-
-      benchmark "mget_10" 5000 (run (mget (mgetKeys 10) :: StandaloneCommandClient [ByteString]) >> return ())
+      benchmark "get_10" 5000 (mapM_ (\i -> run (get (BS.pack $ "bench:mget:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..10 :: Int])
       putStrLn ","
 
-      benchmark "mget_100" 2000 (run (mget (mgetKeys 100) :: StandaloneCommandClient [ByteString]) >> return ())
+      benchmark "get_100" 2000 (mapM_ (\i -> run (get (BS.pack $ "bench:mget:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..100 :: Int])
       putStrLn ","
 
-      benchmark "mget_1000" 500 (run (mget (mgetKeys 1000) :: StandaloneCommandClient [ByteString]) >> return ())
+      benchmark "get_1000" 500 (mapM_ (\i -> run (get (BS.pack $ "bench:mget:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..1000 :: Int])
     putStrLn ","
 
-    -- MSET equivalent (sequential sets, auto-pipelined)
+    -- Sequential SET batches
     do
-      let msetBatch n = mapM_ (\i -> run (set (BS.pack $ "bench:mset:" <> show i) (BS.pack $ "val" <> show i) :: StandaloneCommandClient Bool)) [1..n :: Int]
+      let msetBatch n = mapM_ (\i -> run (set (BS.pack $ "bench:mset:" <> show i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [1..n :: Int]
 
-      benchmark "mset_equiv_10" 5000 (msetBatch (10 :: Int))
+      benchmark "set_10" 5000 (msetBatch (10 :: Int))
       putStrLn ","
 
-      benchmark "mset_equiv_100" 2000 (msetBatch (100 :: Int))
+      benchmark "set_100" 2000 (msetBatch (100 :: Int))
       putStrLn ","
 
-      benchmark "mset_equiv_1000" 500 (msetBatch (1000 :: Int))
+      benchmark "set_1000" 500 (msetBatch (1000 :: Int))
 
     putStrLn ""
     putStrLn "}"
 
-    -- Cleanup
-    _ <- run (del ["bench:key", "bench:delkey"] :: StandaloneCommandClient Integer)
-    mapM_ (\i -> run (del [BS.pack $ "bench:pipe:" <> show i] :: StandaloneCommandClient Integer)) [1..100 :: Int]
-    mapM_ (\i -> run (del [BS.pack $ "bench:mget:" <> show i] :: StandaloneCommandClient Integer)) [1..1000 :: Int]
-    mapM_ (\i -> run (del [BS.pack $ "bench:mset:" <> show i] :: StandaloneCommandClient Integer)) [1..1000 :: Int]
+    -- Cleanup (individual deletes to avoid CROSSSLOT errors)
+    _ <- run (del ["bench:key"] :: ClusterCommandClient PlainTextClient Integer)
+    _ <- run (del ["bench:delkey"] :: ClusterCommandClient PlainTextClient Integer)
+    mapM_ (\i -> run (del [BS.pack $ "bench:pipe:" <> show i] :: ClusterCommandClient PlainTextClient Integer)) [1..100 :: Int]
+    mapM_ (\i -> run (del [BS.pack $ "bench:mget:" <> show i] :: ClusterCommandClient PlainTextClient Integer)) [1..1000 :: Int]
+    mapM_ (\i -> run (del [BS.pack $ "bench:mset:" <> show i] :: ClusterCommandClient PlainTextClient Integer)) [1..1000 :: Int]
 
     hPutStrLn stderr "Benchmarks complete. Use +RTS -s for memory/GC stats."
     hFlush stderr

@@ -54,28 +54,39 @@ def _check_redis(host: str, port: int) -> bool:
 
 
 def _start_redis_docker() -> bool:
-    """Try to start Redis via Docker."""
-    _log("Redis not reachable. Attempting to start via Docker...")
+    """Try to start a Redis cluster via Docker using the project's cluster-host setup."""
+    _log("Redis not reachable. Attempting to start cluster via Docker...")
+    cluster_dir = SCRIPT_DIR.parent.parent / "docker" / "cluster-host"
+    if not cluster_dir.exists():
+        _log(f"Cluster docker dir not found at {cluster_dir}")
+        return False
+
+    make_cluster = cluster_dir / "make_cluster.sh"
+    if not make_cluster.exists():
+        _log(f"make_cluster.sh not found at {make_cluster}")
+        return False
+
     try:
         result = subprocess.run(
-            ["docker", "run", "-d", "-p", "6379:6379", "--name", "redis-comparison-bench",
-             "redis:latest"],
-            capture_output=True, text=True, timeout=30,
+            ["bash", str(make_cluster)],
+            cwd=str(cluster_dir),
+            capture_output=True, text=True, timeout=120,
         )
-        if result.returncode == 0:
-            _log("Redis started via Docker.")
-            # Wait for it to be ready
-            import time
-            for _ in range(10):
-                if _check_redis("localhost", 6379):
-                    return True
-                time.sleep(1)
-        else:
-            _log(f"Docker start failed: {result.stderr.strip()}")
+        if result.returncode != 0:
+            _log(f"Cluster start failed: {result.stderr.strip()}")
+            return False
+
+        _log("Redis cluster started via Docker (host networking, ports 7000-7004).")
+        if _check_redis("localhost", 7000):
+            return True
+
+        _log("Redis cluster started but seed node not yet reachable.")
     except FileNotFoundError:
-        _log("Docker not found in PATH.")
+        _log("Docker or bash not found in PATH.")
+    except subprocess.TimeoutExpired:
+        _log("Cluster start timed out (120s).")
     except Exception as e:
-        _log(f"Failed to start Redis via Docker: {e}")
+        _log(f"Failed to start Redis cluster via Docker: {e}")
     return False
 
 
@@ -168,7 +179,7 @@ def main():
         if not redis_available:
             redis_available = _start_redis_docker()
             if redis_available:
-                host, port = "localhost", 6379
+                host, port = "localhost", 7000
 
         if not redis_available:
             _log("WARNING: Redis is not reachable. Benchmarks will be skipped.")

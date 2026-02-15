@@ -14,6 +14,7 @@ pkgs.haskellPackages.shellFor {
     cabal-install
     stylish-haskell
     pkgs.zlib
+    pkgs.dotnet-sdk_8
     (pkgs.python3.withPackages (ps: [ ps.markdown ps.pygments ]))
   ];
   shellHook = ''
