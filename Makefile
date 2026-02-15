@@ -86,22 +86,22 @@ test-library-e2e:
 
 # Start Redis with Docker Compose
 redis-start:
-	@docker compose -f docker/docker-compose.yml up -d redis
+	@docker compose -f docker/standalone/docker-compose.yml up -d redis
 	@sleep 2
 
 # Start Redis Cluster with Docker Compose
 redis-cluster-start:
-	@cd docker-cluster && docker compose up -d
+	@cd docker/cluster && docker compose up -d
 	@sleep 5
-	@cd docker-cluster && ./make_cluster.sh
+	@cd docker/cluster && ./make_cluster.sh
 
 # Stop Redis
 redis-stop:
-	@docker compose -f docker/docker-compose.yml stop redis
+	@docker compose -f docker/standalone/docker-compose.yml stop redis
 
 # Stop Redis Cluster
 redis-cluster-stop:
-	@cd docker-cluster && docker compose down
+	@cd docker/cluster && docker compose down
 
 # Build with profiling enabled (both packages)
 profile:
