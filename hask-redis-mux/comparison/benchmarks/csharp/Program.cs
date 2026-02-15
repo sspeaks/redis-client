@@ -1,12 +1,16 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using StackExchange.Redis;
 
 class Program
 {
+    static int NumThreads = Environment.ProcessorCount;
+
     static void Main(string[] args)
     {
         string connString = args.Length > 0 ? args[0] : "localhost:7000,localhost:7001,localhost:7002,localhost:7003,localhost:7004";
@@ -19,70 +23,71 @@ class Program
         using var connection = ConnectionMultiplexer.Connect(options);
         var db = connection.GetDatabase();
 
-        Console.Error.WriteLine("Starting cluster benchmarks...");
+        Console.Error.WriteLine($"Starting cluster benchmarks ({NumThreads} threads)...");
 
         var results = new Dictionary<string, object>();
 
-        // PING
-        results["ping"] = RunBenchmark("ping", 10000, () => db.Ping());
+        // PING - distributed across threads
+        results["ping"] = RunBenchmark("ping", 10000, i => db.Ping());
 
-        // SET
-        results["set"] = RunBenchmark("set", 10000, () => db.StringSet("bench:key", "bench:value"));
+        // SET with distributed unique keys (matching Haskell's mkKey pattern)
+        results["set"] = RunBenchmark("set", 10000, i => db.StringSet($"bench:set:{i}", "bench:value"));
 
-        // GET
-        db.StringSet("bench:key", "bench:value");
-        results["get"] = RunBenchmark("get", 10000, () => db.StringGet("bench:key"));
+        // Pre-populate read key pool (matching Haskell's readKeyPool)
+        int readKeyPool = 10000;
+        Console.Error.WriteLine("  Pre-populating read key pool...");
+        Parallel.For(0, readKeyPool, new ParallelOptions { MaxDegreeOfParallelism = NumThreads },
+            i => db.StringSet($"bench:r:{i}", $"val{i}"));
 
-        // DEL
-        results["del"] = RunBenchmark("del", 10000, () =>
+        // GET with distributed keys from pool
+        results["get"] = RunBenchmark("get", 10000, i =>
+            db.StringGet($"bench:r:{i % readKeyPool}"));
+
+        // DEL with unique keys per iteration
+        results["del"] = RunBenchmark("del", 10000, i =>
         {
-            db.StringSet("bench:delkey", "v");
-            db.KeyDelete("bench:delkey");
+            var key = $"bench:del:{i}";
+            db.StringSet(key, "v");
+            db.KeyDelete(key);
         });
 
-        // Pipeline (batch) benchmark
-        for (int i = 1; i <= 100; i++)
-            db.StringSet($"bench:pipe:{i}", $"val{i}");
-
-        results["pipeline_100_gets"] = RunBenchmark("pipeline_100_gets", 1000, () =>
+        // Pipeline (batch) benchmark - keys from pool
+        results["pipeline_100_gets"] = RunBenchmark("pipeline_100_gets", 1000, i =>
         {
             var batch = db.CreateBatch();
-            var tasks = new List<System.Threading.Tasks.Task<RedisValue>>();
-            for (int i = 1; i <= 100; i++)
-                tasks.Add(batch.StringGetAsync($"bench:pipe:{i}"));
+            var tasks = new List<Task<RedisValue>>();
+            for (int j = 0; j < 100; j++)
+                tasks.Add(batch.StringGetAsync($"bench:r:{(i * 100 + j) % readKeyPool}"));
             batch.Execute();
-            System.Threading.Tasks.Task.WaitAll(tasks.ToArray());
+            Task.WaitAll(tasks.ToArray());
         });
 
-        // MGET replacement: sequential GETs (cluster-safe, no cross-slot)
-        for (int i = 1; i <= 1000; i++)
-            db.StringSet($"bench:mget:{i}", $"val{i}");
-
-        results["get_10"] = RunBenchmark("get_10", 5000, () =>
+        // GET batch benchmarks (keys from pool distribute across all slots)
+        results["get_10"] = RunBenchmark("get_10", 5000, i =>
         {
-            for (int i = 1; i <= 10; i++) db.StringGet($"bench:mget:{i}");
+            for (int j = 0; j < 10; j++) db.StringGet($"bench:r:{(i * 10 + j) % readKeyPool}");
         });
-        results["get_100"] = RunBenchmark("get_100", 2000, () =>
+        results["get_100"] = RunBenchmark("get_100", 2000, i =>
         {
-            for (int i = 1; i <= 100; i++) db.StringGet($"bench:mget:{i}");
+            for (int j = 0; j < 100; j++) db.StringGet($"bench:r:{(i * 100 + j) % readKeyPool}");
         });
-        results["get_1000"] = RunBenchmark("get_1000", 500, () =>
+        results["get_1000"] = RunBenchmark("get_1000", 500, i =>
         {
-            for (int i = 1; i <= 1000; i++) db.StringGet($"bench:mget:{i}");
+            for (int j = 0; j < 1000; j++) db.StringGet($"bench:r:{(i * 1000 + j) % readKeyPool}");
         });
 
-        // MSET replacement: sequential SETs (cluster-safe)
-        results["set_10"] = RunBenchmark("set_10", 5000, () =>
+        // SET batch benchmarks with distributed keys
+        results["set_10"] = RunBenchmark("set_10", 5000, i =>
         {
-            for (int i = 1; i <= 10; i++) db.StringSet($"bench:mset:{i}", $"val{i}");
+            for (int j = 0; j < 10; j++) db.StringSet($"bench:mset:{i * 10 + j}", $"val{j}");
         });
-        results["set_100"] = RunBenchmark("set_100", 2000, () =>
+        results["set_100"] = RunBenchmark("set_100", 2000, i =>
         {
-            for (int i = 1; i <= 100; i++) db.StringSet($"bench:mset:{i}", $"val{i}");
+            for (int j = 0; j < 100; j++) db.StringSet($"bench:mset:{i * 100 + j}", $"val{j}");
         });
-        results["set_1000"] = RunBenchmark("set_1000", 500, () =>
+        results["set_1000"] = RunBenchmark("set_1000", 500, i =>
         {
-            for (int i = 1; i <= 1000; i++) db.StringSet($"bench:mset:{i}", $"val{i}");
+            for (int j = 0; j < 1000; j++) db.StringSet($"bench:mset:{i * 1000 + j}", $"val{j}");
         });
 
         // GC stats
@@ -99,46 +104,71 @@ class Program
         var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
         Console.WriteLine(JsonSerializer.Serialize(results, jsonOptions));
 
-        // Cleanup
-        db.KeyDelete("bench:key");
-        db.KeyDelete("bench:delkey");
-        for (int i = 1; i <= 100; i++) db.KeyDelete($"bench:pipe:{i}");
-        for (int i = 1; i <= 1000; i++) db.KeyDelete($"bench:mget:{i}");
-        for (int i = 1; i <= 1000; i++) db.KeyDelete($"bench:mset:{i}");
+        // Cleanup benchmark keys
+        Console.Error.WriteLine("Cleaning up benchmark keys...");
+        Parallel.For(0, readKeyPool, new ParallelOptions { MaxDegreeOfParallelism = NumThreads },
+            i => db.KeyDelete($"bench:r:{i}"));
 
         Console.Error.WriteLine("Benchmarks complete.");
     }
 
-    static Dictionary<string, object> RunBenchmark(string name, int iterations, Action action)
+    static Dictionary<string, object> RunBenchmark(string name, int iterations, Action<int> action)
     {
-        Console.Error.WriteLine($"  Running {name} ({iterations} iterations)...");
+        int perThread = iterations / NumThreads;
+        int actualIterations = perThread * NumThreads;
+        int warmupPerThread = Math.Max(10, perThread / 10);
+        int stride = warmupPerThread + perThread;
 
-        // Warm-up
-        int warmup = Math.Max(10, iterations / 10);
-        for (int i = 0; i < warmup; i++) action();
+        Console.Error.WriteLine($"  Running {name} ({actualIterations} iterations, {NumThreads} threads)...");
 
-        var latencies = new List<double>(iterations);
-        var sw = new Stopwatch();
+        // Thread-local latency lists
+        var threadLatencies = new List<double>[NumThreads];
+        for (int t = 0; t < NumThreads; t++)
+            threadLatencies[t] = new List<double>(perThread);
 
-        for (int i = 0; i < iterations; i++)
+        // Warm-up (concurrent, per-thread at 10% of iterations)
+        Parallel.For(0, NumThreads, new ParallelOptions { MaxDegreeOfParallelism = NumThreads }, t =>
         {
-            sw.Restart();
-            action();
-            sw.Stop();
-            latencies.Add(sw.Elapsed.TotalMicroseconds);
-        }
+            int baseIdx = t * stride;
+            for (int i = 0; i < warmupPerThread; i++)
+                action(baseIdx + i);
+        });
 
-        latencies.Sort();
-        double totalUs = latencies.Sum();
-        double opsPerSec = iterations / (totalUs / 1_000_000.0);
+        // Measured phase - wall-clock timed
+        var wallClock = Stopwatch.StartNew();
+        Parallel.For(0, NumThreads, new ParallelOptions { MaxDegreeOfParallelism = NumThreads }, t =>
+        {
+            var lats = threadLatencies[t];
+            var sw = new Stopwatch();
+            int baseIdx = t * stride + warmupPerThread;
+            for (int i = 0; i < perThread; i++)
+            {
+                sw.Restart();
+                action(baseIdx + i);
+                sw.Stop();
+                lats.Add(sw.Elapsed.TotalMicroseconds);
+            }
+        });
+        wallClock.Stop();
+
+        // Merge thread-local latencies
+        var allLatencies = new List<double>(actualIterations);
+        foreach (var lats in threadLatencies)
+            allLatencies.AddRange(lats);
+
+        allLatencies.Sort();
+
+        // Throughput from wall-clock time (matching Haskell methodology)
+        double wallClockSeconds = wallClock.Elapsed.TotalSeconds;
+        double opsPerSec = actualIterations / wallClockSeconds;
 
         return new Dictionary<string, object>
         {
-            ["p50_us"] = Math.Round(Percentile(latencies, 50), 1),
-            ["p95_us"] = Math.Round(Percentile(latencies, 95), 1),
-            ["p99_us"] = Math.Round(Percentile(latencies, 99), 1),
+            ["p50_us"] = Math.Round(Percentile(allLatencies, 50), 1),
+            ["p95_us"] = Math.Round(Percentile(allLatencies, 95), 1),
+            ["p99_us"] = Math.Round(Percentile(allLatencies, 99), 1),
             ["ops_per_sec"] = Math.Round(opsPerSec),
-            ["iterations"] = iterations,
+            ["iterations"] = actualIterations,
         };
     }
 
