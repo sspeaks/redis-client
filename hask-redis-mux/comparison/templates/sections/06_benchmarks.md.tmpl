@@ -1,0 +1,288 @@
+"""
+Section 6: Benchmark Results Template
+
+Python string template that accepts benchmark data and renders:
+- 6a: Raw Operation Benchmarks
+- 6b: REST Cache-Aside Benchmarks
+- 6c: Memory & GC Profiling
+
+Includes Chart.js snippets for HTML output.
+"""
+
+BENCHMARK_TEMPLATE = """# 6. Benchmark Results
+
+> **Methodology:** Each operation was measured over multiple iterations with a 10%
+> warm-up phase. Latency percentiles (p50, p95, p99) are computed from individual
+> operation timings. Throughput is calculated as operations per second from total
+> elapsed time. All benchmarks run sequentially on a single connection.
+
+{benchmark_content}
+"""
+
+BENCHMARKS_SKIPPED_TEMPLATE = """# 6. Benchmark Results
+
+> **Benchmarks skipped:** {reason}
+>
+> To run benchmarks, ensure Redis is accessible and the required toolchains
+> (GHC + Cabal for Haskell, .NET 8 SDK for C#) are installed.
+"""
+
+SECTION_6A_HEADER = """## 6a. Raw Operation Benchmarks
+
+### Latency (microseconds)
+
+| Operation | hask-redis-mux p50 | hask-redis-mux p95 | hask-redis-mux p99 | SE.Redis p50 | SE.Redis p95 | SE.Redis p99 |
+|---|---:|---:|---:|---:|---:|---:|
+"""
+
+SECTION_6B_HEADER = """## 6b. Throughput Comparison
+
+### Operations per Second
+
+| Operation | hask-redis-mux ops/sec | SE.Redis ops/sec |
+|---|---:|---:|
+"""
+
+SECTION_6C_HEADER = """## 6c. Memory & GC Profiling
+
+### Haskell (GHC RTS)
+
+| Metric | Value |
+|---|---:|
+"""
+
+SECTION_6C_CSHARP = """
+### C# (.NET GC)
+
+| Metric | Value |
+|---|---:|
+"""
+
+# Chart.js snippets for HTML rendering
+CHART_JS_LATENCY = """
+<div class="chart-container">
+<canvas id="latencyChart"></canvas>
+</div>
+<script>
+(function() {
+  var data = $LATENCY_DATA$;
+  var ctx = document.getElementById('latencyChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: 'hask-redis-mux p50 (μs)', data: data.haskell_p50, backgroundColor: 'rgba(94,80,134,0.7)' },
+        { label: 'SE.Redis p50 (μs)', data: data.csharp_p50, backgroundColor: 'rgba(23,134,0,0.7)' }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { title: { display: true, text: 'Latency Comparison (p50, lower is better)' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Microseconds' } } }
+    }
+  });
+})();
+</script>
+"""
+
+CHART_JS_THROUGHPUT = """
+<div class="chart-container">
+<canvas id="throughputChart"></canvas>
+</div>
+<script>
+(function() {
+  var data = $THROUGHPUT_DATA$;
+  var ctx = document.getElementById('throughputChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: 'hask-redis-mux ops/sec', data: data.haskell, backgroundColor: 'rgba(94,80,134,0.7)' },
+        { label: 'SE.Redis ops/sec', data: data.csharp, backgroundColor: 'rgba(23,134,0,0.7)' }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { title: { display: true, text: 'Throughput Comparison (higher is better)' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Operations / second' } } }
+    }
+  });
+})();
+</script>
+"""
+
+CHART_JS_MEMORY = """
+<div class="chart-container">
+<canvas id="memoryChart"></canvas>
+</div>
+<script>
+(function() {
+  var data = $MEMORY_DATA$;
+  var ctx = document.getElementById('memoryChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: 'hask-redis-mux', data: data.haskell, backgroundColor: 'rgba(94,80,134,0.7)' },
+        { label: 'SE.Redis', data: data.csharp, backgroundColor: 'rgba(23,134,0,0.7)' }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { title: { display: true, text: 'Memory Usage Comparison' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Bytes' } } }
+    }
+  });
+})();
+</script>
+"""
+
+# Operations to compare
+OPERATIONS = [
+    "ping", "set", "get", "del",
+    "pipeline_100_gets",
+    "mget_10", "mget_100", "mget_1000",
+    "mset_equiv_10", "mset_equiv_100", "mset_equiv_1000",
+    "mset_10", "mset_100", "mset_1000",
+]
+
+
+def _fmt(val, default="-"):
+    """Format a numeric value or return default."""
+    if val is None:
+        return default
+    if isinstance(val, float):
+        return f"{val:,.1f}"
+    return f"{val:,}"
+
+
+def _get_bench(data, op, field):
+    """Safely get a benchmark field."""
+    if data and "benchmarks" in data:
+        b = data["benchmarks"].get(op)
+        if b and isinstance(b, dict):
+            return b.get(field)
+    return None
+
+
+def render_benchmarks(haskell_data=None, csharp_data=None, reason=None):
+    """
+    Render Section 6 from benchmark data.
+
+    Args:
+        haskell_data: Dict from run_haskell_benchmarks() or None
+        csharp_data: Dict from run_csharp_benchmarks() or None
+        reason: Reason benchmarks were skipped (if both are None)
+
+    Returns:
+        Tuple of (markdown_str, chart_data_dict)
+        chart_data_dict contains JSON-serializable data for Chart.js.
+    """
+    if haskell_data is None and csharp_data is None:
+        skip_reason = reason or "No benchmark data available"
+        return BENCHMARKS_SKIPPED_TEMPLATE.format(reason=skip_reason), {}
+
+    # Determine which operations have data
+    ops_with_data = []
+    for op in OPERATIONS:
+        h = _get_bench(haskell_data, op, "p50_us")
+        c = _get_bench(csharp_data, op, "p50_us")
+        if h is not None or c is not None:
+            ops_with_data.append(op)
+
+    # Build Section 6a: Latency table
+    md = SECTION_6A_HEADER
+    for op in ops_with_data:
+        hp50 = _fmt(_get_bench(haskell_data, op, "p50_us"))
+        hp95 = _fmt(_get_bench(haskell_data, op, "p95_us"))
+        hp99 = _fmt(_get_bench(haskell_data, op, "p99_us"))
+        cp50 = _fmt(_get_bench(csharp_data, op, "p50_us"))
+        cp95 = _fmt(_get_bench(csharp_data, op, "p95_us"))
+        cp99 = _fmt(_get_bench(csharp_data, op, "p99_us"))
+        md += f"| {op} | {hp50} | {hp95} | {hp99} | {cp50} | {cp95} | {cp99} |\n"
+
+    # Build Section 6b: Throughput table
+    md += "\n" + SECTION_6B_HEADER
+    for op in ops_with_data:
+        h_ops = _fmt(_get_bench(haskell_data, op, "ops_per_sec"))
+        c_ops = _fmt(_get_bench(csharp_data, op, "ops_per_sec"))
+        md += f"| {op} | {h_ops} | {c_ops} |\n"
+
+    # Build Section 6c: Memory tables
+    md += "\n" + SECTION_6C_HEADER
+    if haskell_data and haskell_data.get("memory"):
+        mem = haskell_data["memory"]
+        for key in ["max_residency_bytes", "total_alloc_bytes", "gc_pause_max_ms",
+                     "productivity_pct", "total_gc_time_s", "total_elapsed_s"]:
+            if key in mem:
+                md += f"| {key} | {_fmt(mem[key])} |\n"
+    else:
+        md += "| _(no data)_ | - |\n"
+
+    md += SECTION_6C_CSHARP
+    if csharp_data and csharp_data.get("memory"):
+        mem = csharp_data["memory"]
+        for key in ["gen0_collections", "gen1_collections", "gen2_collections",
+                     "total_allocated_bytes", "peak_working_set_bytes"]:
+            if key in mem:
+                md += f"| {key} | {_fmt(mem[key])} |\n"
+    else:
+        md += "| _(no data)_ | - |\n"
+
+    # Build Chart.js data
+    chart_data = {
+        "latency": {
+            "labels": ops_with_data,
+            "haskell_p50": [_get_bench(haskell_data, op, "p50_us") or 0 for op in ops_with_data],
+            "csharp_p50": [_get_bench(csharp_data, op, "p50_us") or 0 for op in ops_with_data],
+        },
+        "throughput": {
+            "labels": ops_with_data,
+            "haskell": [_get_bench(haskell_data, op, "ops_per_sec") or 0 for op in ops_with_data],
+            "csharp": [_get_bench(csharp_data, op, "ops_per_sec") or 0 for op in ops_with_data],
+        },
+        "memory": {
+            "labels": ["Peak/Max Residency (bytes)"],
+            "haskell": [
+                (haskell_data.get("memory", {}) or {}).get("max_residency_bytes", 0)
+                if haskell_data else 0
+            ],
+            "csharp": [
+                (csharp_data.get("memory", {}) or {}).get("peak_working_set_bytes", 0)
+                if csharp_data else 0
+            ],
+        },
+    }
+
+    full_md = BENCHMARK_TEMPLATE.format(benchmark_content=md)
+    return full_md, chart_data
+
+
+def render_chart_js_snippets(chart_data):
+    """
+    Render Chart.js HTML snippets from chart data.
+
+    Returns a string of HTML/JS to embed in the final HTML document.
+    """
+    import json
+
+    if not chart_data:
+        return ""
+
+    snippets = []
+    if "latency" in chart_data:
+        snippets.append(
+            CHART_JS_LATENCY.replace("$LATENCY_DATA$", json.dumps(chart_data["latency"]))
+        )
+    if "throughput" in chart_data:
+        snippets.append(
+            CHART_JS_THROUGHPUT.replace("$THROUGHPUT_DATA$", json.dumps(chart_data["throughput"]))
+        )
+    if "memory" in chart_data:
+        snippets.append(
+            CHART_JS_MEMORY.replace("$MEMORY_DATA$", json.dumps(chart_data["memory"]))
+        )
+    return "\n".join(snippets)
