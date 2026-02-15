@@ -12,6 +12,7 @@ Produces:
 """
 
 import argparse
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -34,6 +35,9 @@ def _log(msg: str) -> None:
 def _load_module(name: str, path: Path):
     """Dynamically load a Python module from a file path."""
     spec = importlib.util.spec_from_file_location(name, str(path))
+    if spec is None or spec.loader is None:
+        loader = importlib.machinery.SourceFileLoader(name, str(path))
+        spec = importlib.util.spec_from_loader(name, loader)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

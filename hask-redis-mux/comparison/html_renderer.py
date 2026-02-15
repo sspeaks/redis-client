@@ -152,15 +152,16 @@ def render_html(
     # Generate Chart.js scripts
     chart_scripts = ""
     if benchmark_data:
-        # Import the template module for chart snippets
         try:
-            sys.path.insert(0, str(Path(__file__).parent / "templates" / "sections"))
-            # The template is a Python file
+            import importlib.machinery
+            import importlib.util as ilu
             tmpl_path = Path(__file__).parent / "templates" / "sections" / "06_benchmarks.md.tmpl"
             if tmpl_path.exists():
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("benchmarks_tmpl", str(tmpl_path))
-                tmpl_mod = importlib.util.module_from_spec(spec)
+                spec = ilu.spec_from_file_location("benchmarks_tmpl", str(tmpl_path))
+                if spec is None or spec.loader is None:
+                    loader = importlib.machinery.SourceFileLoader("benchmarks_tmpl", str(tmpl_path))
+                    spec = ilu.spec_from_loader("benchmarks_tmpl", loader)
+                tmpl_mod = ilu.module_from_spec(spec)
                 spec.loader.exec_module(tmpl_mod)
                 chart_scripts = tmpl_mod.render_chart_js_snippets(benchmark_data)
         except Exception as e:

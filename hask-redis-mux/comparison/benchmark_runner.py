@@ -102,7 +102,7 @@ def run_haskell_benchmarks(connection_string: str) -> Optional[dict]:
     _log(f"Running Haskell benchmark against {connection_string}...")
     try:
         run_result = subprocess.run(
-            [exe_path, connection_string, "+RTS", "-s", "-p"],
+            [exe_path, connection_string],
             capture_output=True,
             text=True,
             timeout=600,
