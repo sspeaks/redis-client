@@ -58,3 +58,16 @@ Started: Sun Feb 15 11:49:08 AM PST 2026
   - When the original hask-redis-mux/test was a symlink to ../test, E2E files appeared in both locations. Breaking the symlink in US-003 and selectively copying only unit tests automatically satisfied US-004.
   - Always check if previous stories already accomplished the work before making changes.
 ---
+
+## 2026-02-15T20:04 - US-005
+- Consolidated Docker directories under docker/
+- Moved docker/ contents (certs/, docker-compose.yml, redis.conf) to docker/standalone/
+- Moved docker-cluster/ to docker/cluster/
+- Moved docker-cluster-host/ to docker/cluster-host/
+- Used git mv for all moves to preserve history
+- Files changed: 23 file renames (all via git mv)
+- **Learnings for future iterations:**
+  - When renaming docker/ to docker/standalone/, you can't just `git mv docker docker/standalone` because docker/ is the parent. Instead, create `docker/standalone/` and move individual contents into it.
+  - The directory moves are purely structural; no file contents changed. Subsequent stories (US-006, US-007) handle path reference updates.
+  - `cabal build all` is unaffected by Docker directory moves since cabal doesn't reference docker paths.
+---

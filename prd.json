@@ -75,7 +75,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "This story only moves the directories. Path reference updates happen in subsequent stories. Use git mv for history preservation."
     },
     {
