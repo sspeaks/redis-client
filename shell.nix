@@ -14,6 +14,7 @@ pkgs.haskellPackages.shellFor {
     cabal-install
     stylish-haskell
     pkgs.zlib
+    (pkgs.python3.withPackages (ps: [ ps.markdown ps.pygments ]))
   ];
   shellHook = ''
     git config core.hooksPath .githooks
