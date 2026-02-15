@@ -66,7 +66,7 @@ if [ "$CLUSTER_READY" = false ]; then
 fi
 
 # Go back to root directory
-cd ..
+cd ../..
 
 # Build the Docker image
 echo "Building library E2E test Docker image..."
