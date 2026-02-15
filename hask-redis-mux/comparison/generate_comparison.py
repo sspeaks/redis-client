@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env nix-shell
+#!nix-shell -i python3 -p "python3.withPackages (ps: [ ps.markdown ps.pygments ])"
 """
 Generate a comprehensive comparison document between hask-redis-mux and
 StackExchange.Redis.
@@ -131,8 +132,8 @@ def main():
     parser.add_argument(
         "connection_string",
         nargs="?",
-        default="localhost:6379",
-        help="Redis connection string (default: localhost:6379)",
+        default="localhost:7000",
+        help="Redis connection string (default: localhost:7000 for cluster seed node)",
     )
     parser.add_argument(
         "--skip-benchmarks",

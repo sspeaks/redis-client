@@ -9,7 +9,7 @@ HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile comparison clean"
+	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile comparison comparison-bench clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -123,8 +123,8 @@ endif
 
 # Regenerate comparison HTML document
 comparison:
-ifeq ($(HAS_NIX),yes)
-	nix-shell --run "python3 hask-redis-mux/comparison/generate_comparison.py --skip-benchmarks"
-else
-	python3 hask-redis-mux/comparison/generate_comparison.py --skip-benchmarks
-endif
+	./hask-redis-mux/comparison/generate_comparison.py --skip-benchmarks
+
+# Regenerate comparison HTML document with benchmarks (requires Redis + toolchains)
+comparison-bench:
+	./hask-redis-mux/comparison/generate_comparison.py
