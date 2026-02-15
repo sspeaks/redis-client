@@ -10,6 +10,8 @@ Started: Sun Feb 15 11:49:08 AM PST 2026
 - ripgrep (`rg`) has jemalloc issues on this system; use `grep -rn` instead.
 - Cabal supports `../` relative paths in `hs-source-dirs` and `c-sources` in a multi-package project; generates sdist warnings but works.
 - `hask-redis-mux/lib` was a symlink (now removed); `../lib/` paths in hask-redis-mux.cabal reference root `lib/` directly.
+- `hask-redis-mux/test` was a symlink to `../test` (now removed); hask-redis-mux/test/ is a real directory with unit tests only.
+- All three hask-redis-mux subdirs (data, lib, test) originally used symlinks to root; all have been converted to real dirs/paths.
 
 ## 2026-02-15T19:49 - US-001
 - Removed redundant root `data/` directory
@@ -32,4 +34,27 @@ Started: Sun Feb 15 11:49:08 AM PST 2026
   - Cabal supports `../` relative paths in `hs-source-dirs` and `c-sources` within a cabal.project multi-package setup. It generates warnings about sdist but works correctly.
   - The root `lib/` files were previously deleted from disk but still tracked by git — needed `git checkout -- lib/` to restore them before the `../lib/` paths would resolve.
   - Always verify root `lib/` exists on disk before changing hask-redis-mux.cabal paths, as previous cleanup iterations may have removed files.
+---
+
+## 2026-02-15T20:00 - US-003
+- Removed duplicate unit test files from root test/ by breaking the hask-redis-mux/test -> ../test symlink
+- Created hask-redis-mux/test/ as a real directory containing unit test files (Spec.hs, ClusterSpec.hs, ClusterCommandSpec.hs, MultiplexerSpec.hs, FromRespSpec.hs, MultiplexPoolSpec.hs)
+- Root test/ now only contains E2E files (E2E.hs, ClusterE2E.hs, LibraryE2E.hs, E2EHelpers.hs, ClusterE2E/, LibraryE2E/) and FillHelpersSpec.hs
+- Files changed: hask-redis-mux/test (symlink deleted, real dir created), test/ (6 unit test files removed)
+- **Learnings for future iterations:**
+  - `hask-redis-mux/test` was a symlink to `../test`, just like `lib/` and `data/` were. All three followed the same pattern.
+  - When removing files from root `test/`, they also disappear from `hask-redis-mux/test/` because of the symlink. Must break the symlink first.
+  - The correct approach is: remove symlink → create real directory → copy files to new location → git rm originals.
+  - redis-client.cabal only references E2E and FillHelpersSpec test files; all other unit tests belong to hask-redis-mux.
+---
+
+## 2026-02-15T20:02 - US-004
+- Verified E2E files are already absent from hask-redis-mux/test/ (US-003 broke the symlink and only copied unit tests)
+- Verified hask-redis-mux.cabal has no E2E references
+- cabal build all succeeds, cabal test all passes
+- No code changes needed; all acceptance criteria already satisfied by US-003's symlink → real directory conversion
+- Files changed: prd.json (passes: true), progress.txt
+- **Learnings for future iterations:**
+  - When the original hask-redis-mux/test was a symlink to ../test, E2E files appeared in both locations. Breaking the symlink in US-003 and selectively copying only unit tests automatically satisfied US-004.
+  - Always check if previous stories already accomplished the work before making changes.
 ---

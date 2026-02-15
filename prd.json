@@ -45,7 +45,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "Root test/ has copies of unit test files that are owned by hask-redis-mux. Only remove files that are exact duplicates AND are not referenced by redis-client.cabal. Check redis-client.cabal hs-source-dirs carefully before removing."
     },
     {
@@ -60,7 +60,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "E2E tests are defined as executables in redis-client.cabal, not hask-redis-mux.cabal. The copies in hask-redis-mux/test/ are unused duplicates."
     },
     {
