@@ -1,0 +1,126 @@
+{
+  "project": "redis-client",
+  "branchName": "ralph/repo-reorganization",
+  "description": "Reorganize the redis-client repository to eliminate duplicate files between root and hask-redis-mux/, consolidate Docker directories, and improve project clarity for new contributors.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Remove redundant root data/ directory",
+      "description": "As a contributor, I want a single canonical location for reference data so that I know where to update it.",
+      "acceptanceCriteria": [
+        "Root-level data/ directory is deleted",
+        "hask-redis-mux/data/cluster_slot_mapping.txt remains unchanged",
+        "cabal build all succeeds with no missing file errors",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "The root data/cluster_slot_mapping.txt is an exact duplicate of hask-redis-mux/data/cluster_slot_mapping.txt. Only the hask-redis-mux copy is used (via embedFile in SlotMapping.hs)."
+    },
+    {
+      "id": "US-002",
+      "title": "Deduplicate lib/ by updating hask-redis-mux.cabal hs-source-dirs",
+      "description": "As a contributor, I want library source code to exist in exactly one location so that changes are never inconsistent.",
+      "acceptanceCriteria": [
+        "hask-redis-mux.cabal hs-source-dirs for all internal libraries (resp, client, crc16, redis-command-client, cluster, redis) point to ../lib/ instead of lib/",
+        "hask-redis-mux.cabal c-sources for crc16 points to ../lib/crc16/crc16.c",
+        "hask-redis-mux/lib/ directory is deleted entirely",
+        "cabal build all succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "The root lib/ and hask-redis-mux/lib/ contain identical source files. After this change, root lib/ is the single source of truth. Verify cabal supports ../ relative paths in hs-source-dirs within a cabal.project multi-package setup."
+    },
+    {
+      "id": "US-003",
+      "title": "Remove duplicate unit test files from root test/",
+      "description": "As a contributor, I want each test file to exist in only one place so that test changes are never lost.",
+      "acceptanceCriteria": [
+        "Unit test files that belong to hask-redis-mux (Spec.hs, ClusterSpec.hs, ClusterCommandSpec.hs, MultiplexerSpec.hs, FromRespSpec.hs, MultiplexPoolSpec.hs) are removed from root test/ only if they are duplicates of hask-redis-mux/test/ versions",
+        "E2E test files (E2E.hs, ClusterE2E.hs, LibraryE2E.hs, E2EHelpers.hs, ClusterE2E/, LibraryE2E/) remain in root test/",
+        "FillHelpersSpec.hs remains in root test/ (belongs to redis-client)",
+        "redis-client.cabal test and executable components still resolve all their source files",
+        "cabal test all succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Root test/ has copies of unit test files that are owned by hask-redis-mux. Only remove files that are exact duplicates AND are not referenced by redis-client.cabal. Check redis-client.cabal hs-source-dirs carefully before removing."
+    },
+    {
+      "id": "US-004",
+      "title": "Remove duplicate E2E test files from hask-redis-mux/test/",
+      "description": "As a contributor, I want E2E tests to exist only in the redis-client package where they belong.",
+      "acceptanceCriteria": [
+        "E2E files in hask-redis-mux/test/ (E2E.hs, ClusterE2E.hs, LibraryE2E.hs, and any ClusterE2E/ or LibraryE2E/ subdirectories) are removed",
+        "hask-redis-mux.cabal does not reference any E2E files (verify no test-suite or executable uses them)",
+        "cabal build all succeeds",
+        "cabal test all succeeds",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "E2E tests are defined as executables in redis-client.cabal, not hask-redis-mux.cabal. The copies in hask-redis-mux/test/ are unused duplicates."
+    },
+    {
+      "id": "US-005",
+      "title": "Consolidate Docker directories under docker/",
+      "description": "As a contributor, I want all Docker infrastructure grouped under one parent directory so it's easy to find.",
+      "acceptanceCriteria": [
+        "docker/ is renamed to docker/standalone/",
+        "docker-cluster/ is moved to docker/cluster/",
+        "docker-cluster-host/ is moved to docker/cluster-host/",
+        "git mv is used to preserve file history",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "This story only moves the directories. Path reference updates happen in subsequent stories. Use git mv for history preservation."
+    },
+    {
+      "id": "US-006",
+      "title": "Update Makefile Docker path references",
+      "description": "As a contributor, I want the Makefile to work after Docker directories are reorganized.",
+      "acceptanceCriteria": [
+        "All Makefile references to docker/ (standalone), docker-cluster/, and docker-cluster-host/ are updated to docker/standalone/, docker/cluster/, docker/cluster-host/",
+        "make targets that invoke docker-compose still work (dry-run or syntax check if Docker unavailable)",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Depends on US-005 completing the directory moves first."
+    },
+    {
+      "id": "US-007",
+      "title": "Update scripts and Nix Docker path references",
+      "description": "As a contributor, I want all scripts and Nix configs to reference the correct Docker paths.",
+      "acceptanceCriteria": [
+        "All scripts in scripts/ that reference docker-cluster/ or docker-cluster-host/ are updated",
+        "All Nix files in nix/ that reference docker paths are updated",
+        "Any .github/ workflow files referencing docker paths are updated",
+        "Any references in flake.nix or default.nix to docker paths are updated",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Depends on US-005. Search all files for old docker path strings to ensure nothing is missed."
+    },
+    {
+      "id": "US-008",
+      "title": "Verify full build and test pipeline",
+      "description": "As a contributor, I want confidence that the reorganization didn't break anything.",
+      "acceptanceCriteria": [
+        "cabal build all succeeds",
+        "cabal test all succeeds",
+        "nix-build succeeds (if network available; otherwise cabal build is sufficient)",
+        "make test succeeds (if Docker and network available)",
+        "No profiling artifacts or temp files are left behind",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Final verification story. Run the full build and test pipeline to confirm nothing is broken."
+    }
+  ]
+}

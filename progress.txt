@@ -1,0 +1,35 @@
+# Ralph Progress Log
+Started: Sun Feb 15 11:49:08 AM PST 2026
+---
+
+## Codebase Patterns
+- `hask-redis-mux/data` was originally a symlink to `../data`. TH `embedFile` paths resolve relative to the CWD at compile time, which cabal sets to the package directory.
+- The `cabal.project` has two packages: root `redis-client.cabal` and `hask-redis-mux/` subdir.
+- `nix-shell --run "cabal build all"` is the way to build when `cabal` is not on PATH directly.
+- `cabal clean` may be needed when changing file layout to clear stale TH caches.
+- ripgrep (`rg`) has jemalloc issues on this system; use `grep -rn` instead.
+- Cabal supports `../` relative paths in `hs-source-dirs` and `c-sources` in a multi-package project; generates sdist warnings but works.
+- `hask-redis-mux/lib` was a symlink (now removed); `../lib/` paths in hask-redis-mux.cabal reference root `lib/` directly.
+
+## 2026-02-15T19:49 - US-001
+- Removed redundant root `data/` directory
+- Replaced the symlink `hask-redis-mux/data -> ../data` with a real directory containing `cluster_slot_mapping.txt`
+- Files changed: `data/cluster_slot_mapping.txt` (deleted), `hask-redis-mux/data` (symlink → real dir)
+- **Learnings for future iterations:**
+  - `hask-redis-mux/data` was a symlink to `../data`, not a real directory. Simply deleting root `data/` broke the build.
+  - TH `embedFile` resolves paths relative to the CWD at compile time. Cabal sets CWD to the package directory when building.
+  - After file layout changes, `cabal clean` + rebuild is needed to clear stale TH caches.
+---
+
+## 2026-02-15T19:53 - US-002
+- Updated all hask-redis-mux.cabal hs-source-dirs from `lib/X` to `../lib/X` for all 6 internal libraries (resp, client, crc16, redis-command-client, cluster, redis)
+- Updated c-sources for crc16 from `lib/crc16/crc16.c` to `../lib/crc16/crc16.c`
+- Updated extra-source-files from `lib/crc16/crc16.c` to `../lib/crc16/crc16.c`
+- Removed `hask-redis-mux/lib` symlink (was `-> ../lib`)
+- Files changed: `hask-redis-mux/hask-redis-mux.cabal`, `hask-redis-mux/lib` (deleted symlink)
+- **Learnings for future iterations:**
+  - `hask-redis-mux/lib` was a symlink to `../lib`, not a real directory with duplicated files. The "duplication" was via symlink.
+  - Cabal supports `../` relative paths in `hs-source-dirs` and `c-sources` within a cabal.project multi-package setup. It generates warnings about sdist but works correctly.
+  - The root `lib/` files were previously deleted from disk but still tracked by git — needed `git checkout -- lib/` to restore them before the `../lib/` paths would resolve.
+  - Always verify root `lib/` exists on disk before changing hask-redis-mux.cabal paths, as previous cleanup iterations may have removed files.
+---
