@@ -51,6 +51,7 @@ import qualified Data.ByteString.Lazy             as LBS
 import           Data.IORef                       (IORef, atomicModifyIORef',
                                                    atomicWriteIORef, newIORef,
                                                    readIORef, writeIORef)
+import           Data.List                        (foldl')
 import           Data.Sequence                    (Seq)
 import qualified Data.Sequence                    as Seq
 import           Data.Typeable                    (Typeable)
