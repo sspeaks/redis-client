@@ -88,7 +88,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "Depends on US-005 completing the directory moves first."
     },
     {
@@ -103,7 +103,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Depends on US-005. Search all files for old docker path strings to ensure nothing is missed."
     },
     {

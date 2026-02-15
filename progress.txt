@@ -71,3 +71,28 @@ Started: Sun Feb 15 11:49:08 AM PST 2026
   - The directory moves are purely structural; no file contents changed. Subsequent stories (US-006, US-007) handle path reference updates.
   - `cabal build all` is unaffected by Docker directory moves since cabal doesn't reference docker paths.
 ---
+
+## 2026-02-15T20:05 - US-006
+- Updated all Makefile Docker path references after US-005 directory consolidation
+- `docker/docker-compose.yml` → `docker/standalone/docker-compose.yml` (redis-start, redis-stop)
+- `docker-cluster` → `docker/cluster` (redis-cluster-start, redis-cluster-stop)
+- Files changed: Makefile
+- **Learnings for future iterations:**
+  - The Makefile had no references to `docker-cluster-host/`, only `docker-cluster/` and `docker/docker-compose.yml`
+  - All docker-compose file paths in the Makefile used either `-f` flag or `cd` into directory; both patterns needed updating
+  - Build/typecheck is unaffected by Makefile-only changes, but verifying that referenced files exist at new paths is important
+---
+
+## 2026-02-15T20:06 - US-007
+- Updated all scripts and Nix files with old Docker path references after US-005 directory consolidation
+- `scripts/run-e2e-tests.sh`: `docker/docker-compose.yml` → `docker/standalone/docker-compose.yml`
+- `scripts/run-library-e2e-tests.sh`: `docker-cluster` → `docker/cluster` (cleanup path and cd target)
+- `scripts/run-cluster-e2e-tests.sh`: `docker-cluster` → `docker/cluster` (cleanup path and cd target)
+- `nix/client-docker.nix`: Updated comment network name from `docker-cluster_redis-cluster-net` → `cluster_redis-cluster-net`
+- Verified no references to old docker paths remain in scripts/, nix/, flake.nix, default.nix, or .github/
+- Files changed: scripts/run-e2e-tests.sh, scripts/run-library-e2e-tests.sh, scripts/run-cluster-e2e-tests.sh, nix/client-docker.nix
+- **Learnings for future iterations:**
+  - Docker Compose network names are derived from the directory name. When `docker-cluster/` becomes `docker/cluster/`, the network prefix changes from `docker-cluster_` to `cluster_`.
+  - GitHub workflow files (.github/workflows/) had no docker path references in this project.
+  - flake.nix and default.nix had no docker path references either; only scripts/ and nix/client-docker.nix needed updates.
+---
