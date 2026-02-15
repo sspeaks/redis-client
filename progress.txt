@@ -8,6 +8,7 @@ Started: Sun Feb 15 11:49:08 AM PST 2026
 - `nix-shell --run "cabal build all"` is the way to build when `cabal` is not on PATH directly.
 - `cabal clean` may be needed when changing file layout to clear stale TH caches.
 - ripgrep (`rg`) has jemalloc issues on this system; use `grep -rn` instead.
+- When moving directories deeper (e.g., `X/` → `Y/X/`), audit all `cd ..` in scripts that previously navigated back to root.
 - Cabal supports `../` relative paths in `hs-source-dirs` and `c-sources` in a multi-package project; generates sdist warnings but works.
 - `hask-redis-mux/lib` was a symlink (now removed); `../lib/` paths in hask-redis-mux.cabal reference root `lib/` directly.
 - `hask-redis-mux/test` was a symlink to `../test` (now removed); hask-redis-mux/test/ is a real directory with unit tests only.
@@ -95,4 +96,16 @@ Started: Sun Feb 15 11:49:08 AM PST 2026
   - Docker Compose network names are derived from the directory name. When `docker-cluster/` becomes `docker/cluster/`, the network prefix changes from `docker-cluster_` to `cluster_`.
   - GitHub workflow files (.github/workflows/) had no docker path references in this project.
   - flake.nix and default.nix had no docker path references either; only scripts/ and nix/client-docker.nix needed updates.
+---
+
+## 2026-02-15T20:08 - US-008
+- Verified full build and test pipeline after repository reorganization
+- Fixed bug in `scripts/run-cluster-e2e-tests.sh` and `scripts/run-library-e2e-tests.sh`: `cd ..` needed to be `cd ../..` after US-005 moved `docker-cluster/` to `docker/cluster/`
+- All checks pass: `cabal build all`, `cabal test all`, `nix-build`, `make test`
+- No profiling artifacts or temp files left behind
+- Files changed: scripts/run-cluster-e2e-tests.sh, scripts/run-library-e2e-tests.sh
+- **Learnings for future iterations:**
+  - When moving directories deeper (e.g., `docker-cluster/` → `docker/cluster/`), all `cd ..` navigation that previously returned to the root must be updated to `cd ../..`
+  - US-007 updated the docker path references in `cd` and cleanup commands but missed the `cd ..` that navigated back to root
+  - `make test` is the most comprehensive check — it runs nix-build, docker-based E2E tests, and catches path issues that `cabal build/test` alone won't find
 ---
