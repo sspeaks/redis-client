@@ -14,7 +14,15 @@ BENCHMARK_TEMPLATE = """# 6. Benchmark Results
 > **Methodology:** Each operation was measured over multiple iterations with a 10%
 > warm-up phase. Latency percentiles (p50, p95, p99) are computed from individual
 > operation timings. Throughput is calculated as operations per second from total
-> elapsed time. All benchmarks run sequentially on a single connection.
+> elapsed time. All benchmarks run against a local 5-node Redis cluster.
+> MGET/MSET are replaced with sequential GET/SET batches due to cross-slot
+> restrictions in cluster mode.
+>
+> **Pipeline note:** The pipeline benchmarks use each library's native pipelining
+> mechanism. C# (StackExchange.Redis) uses `CreateBatch` for client-side pipelining
+> with deferred execution. Haskell (hask-redis-mux) uses multiplexed command
+> submission through the cluster mux pool. These test different architectural
+> approaches and results reflect real-world usage patterns for each library.
 
 {benchmark_content}
 """
@@ -144,9 +152,8 @@ CHART_JS_MEMORY = """
 OPERATIONS = [
     "ping", "set", "get", "del",
     "pipeline_100_gets",
-    "mget_10", "mget_100", "mget_1000",
-    "mset_equiv_10", "mset_equiv_100", "mset_equiv_1000",
-    "mset_10", "mset_100", "mset_1000",
+    "get_10", "get_100", "get_1000",
+    "set_10", "set_100", "set_1000",
 ]
 
 
