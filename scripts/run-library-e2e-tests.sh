@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 cleanup() {
   echo "Cleaning up containers..."
-  docker compose -f "$SCRIPT_DIR/docker-cluster/docker-compose.yml" down 2>/dev/null || true
+  docker compose -f "$SCRIPT_DIR/docker/cluster/docker-compose.yml" down 2>/dev/null || true
   # shellcheck disable=SC2046
   docker rmi $(docker images "librarye2etests:*" -q) 2>/dev/null || true
   rm -f "$SCRIPT_DIR/result"
@@ -16,8 +16,8 @@ trap cleanup EXIT
 
 echo "Starting Library E2E Tests..."
 
-# Navigate to docker-cluster directory
-cd docker-cluster
+# Navigate to docker/cluster directory
+cd docker/cluster
 
 # Start the cluster
 echo "Starting Redis cluster nodes..."
