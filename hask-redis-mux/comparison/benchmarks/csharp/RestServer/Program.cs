@@ -28,12 +28,12 @@ var app = builder.Build();
 
 app.MapGet("/health", () => "OK");
 
-app.MapGet("/item/{id}", (string id, HttpContext ctx) =>
+app.MapGet("/item/{id}", async (string id, HttpContext ctx) =>
 {
     var cacheKey = $"cache:item:{id}";
 
     // Cache-aside: check Redis first
-    var cached = db.StringGet(cacheKey);
+    var cached = await db.StringGetAsync(cacheKey);
     if (cached.HasValue)
     {
         ctx.Response.Headers["X-Cache"] = "HIT";
@@ -49,7 +49,7 @@ app.MapGet("/item/{id}", (string id, HttpContext ctx) =>
     var jsonData = JsonSerializer.Serialize(new { id = numericId, name = $"Item {numericId}" });
 
     // Populate cache with 60s TTL
-    db.StringSet(cacheKey, jsonData, TimeSpan.FromSeconds(60));
+    await db.StringSetAsync(cacheKey, jsonData, TimeSpan.FromSeconds(60));
 
     ctx.Response.Headers["X-Cache"] = "MISS";
     return Results.Content(jsonData, "application/json");
