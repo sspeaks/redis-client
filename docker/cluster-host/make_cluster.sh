@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p redis
 set -euo pipefail
 
 cd "$(dirname "$0")"

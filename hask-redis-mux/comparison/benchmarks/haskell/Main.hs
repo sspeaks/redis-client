@@ -3,9 +3,14 @@
 
 module Main where
 
+import           Control.Concurrent            (getNumCapabilities)
+import           Control.Concurrent.Async      (forConcurrently_)
+import           Control.Concurrent.STM        (readTVarIO)
+import           Control.Monad                 (replicateM, void)
 import qualified Data.ByteString.Char8         as BS
 import           Data.IORef
 import           Data.List                     (sort)
+import qualified Data.Map.Strict               as Map
 import           Database.Redis
 import           Database.Redis.Cluster.Client (withClusterClient)
 import           System.Clock
@@ -32,35 +37,50 @@ percentile sorted p =
       idx = max 0 (min (n - 1) (floor (p / 100.0 * fromIntegral n :: Double)))
   in sorted !! idx
 
--- | Run an operation many times, collect latencies
-benchmark :: String -> Int -> IO () -> IO ()
-benchmark name iterations action = do
-  hPrintf stderr "  Running %s (%d iterations)...\n" name iterations
+-- | Build a key from a prefix and index, distributing across cluster slots
+mkKey :: BS.ByteString -> Int -> BS.ByteString
+mkKey prefix i = prefix <> BS.pack (show i)
+
+-- | Run an operation concurrently across threads, collect latencies.
+-- The action receives a globally unique iteration index for key generation.
+-- Throughput is measured from wall-clock time; latency from per-op timing.
+benchmark :: String -> Int -> Int -> (Int -> IO ()) -> IO ()
+benchmark name iterations numThreads action = do
+  let perThread = iterations `div` numThreads
+      warmupPerThread = max 10 (perThread `div` 10)
+      stride = warmupPerThread + perThread
+  hPrintf stderr "  Running %s (%d iterations, %d threads)...\n" name (perThread * numThreads) numThreads
   hFlush stderr
 
-  latencies <- newIORef ([] :: [Double])
+  latencyRefs <- replicateM numThreads (newIORef ([] :: [Double]))
 
-  -- Warm-up: 10% of iterations
-  let warmup = max 10 (iterations `div` 10)
-  mapM_ (\_ -> action) [1..warmup]
+  -- Warm-up (concurrent)
+  forConcurrently_ [0..numThreads-1] $ \tIdx -> do
+    let base = tIdx * stride
+    mapM_ (\i -> action (base + i)) [0..warmupPerThread-1]
 
-  -- Measured iterations
-  mapM_ (\_ -> do
-    elapsed <- timeOp action
-    modifyIORef' latencies (elapsed :)
-    ) [1..iterations]
+  -- Measured (concurrent, timed by wall clock)
+  wallStart <- getTime Monotonic
+  forConcurrently_ (zip [0..numThreads-1] latencyRefs) $ \(tIdx, ref) -> do
+    let base = tIdx * stride + warmupPerThread
+    mapM_ (\i -> do
+      elapsed <- timeOp (action (base + i))
+      modifyIORef' ref (elapsed :)
+      ) [0..perThread-1]
+  wallEnd <- getTime Monotonic
 
-  lats <- readIORef latencies
-  let sorted = sort lats
+  allLats <- concat <$> mapM readIORef latencyRefs
+  let sorted = sort allLats
+      actualIters = length sorted
       p50 = percentile sorted 50
       p95 = percentile sorted 95
       p99 = percentile sorted 99
-      totalUs = sum sorted
-      opsPerSec = fromIntegral iterations / (totalUs / 1e6) :: Double
+      wallTimeUs = toMicroseconds (diffTimeSpec wallEnd wallStart)
+      opsPerSec = fromIntegral actualIters / (wallTimeUs / 1e6) :: Double
 
   -- Output JSON fragment
   printf "    \"%s\": {\"p50_us\": %.1f, \"p95_us\": %.1f, \"p99_us\": %.1f, \"ops_per_sec\": %.0f, \"iterations\": %d}"
-    name p50 p95 p99 opsPerSec iterations
+    name p50 p95 p99 opsPerSec actualIters
 
 -- | Parse host:port from a connection string
 parseConnString :: String -> (String, Int)
@@ -93,6 +113,10 @@ main = do
         , clusterTopologyRefreshInterval = 600
         }
 
+  numThreads <- getNumCapabilities
+  hPrintf stderr "Using %d threads (from +RTS -N)\n" numThreads
+  hFlush stderr
+
   withClusterClient config clusterPlaintextConnector $ \client -> do
     let run :: ClusterCommandClient PlainTextClient a -> IO a
         run = runClusterCommandClient client
@@ -100,71 +124,91 @@ main = do
     hPutStrLn stderr "Starting cluster benchmarks..."
     hFlush stderr
 
+    -- Get topology for mux-routed PING
+    topology <- readTVarIO (clusterTopology client)
+    let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+        muxPool = clusterMultiplexPool client
+
     putStrLn "{"
 
-    -- PING benchmark
-    benchmark "ping" 10000 (run (ping :: ClusterCommandClient PlainTextClient ByteString) >> return ())
+    -- PING via multiplexer
+    case masterNodes of
+      [] -> hPutStrLn stderr "ERROR: No master nodes found for ping benchmark"
+      (node:_) -> do
+        let addr = nodeAddress node
+            pingCmd = encodeCommandBuilder ["PING"]
+        benchmark "ping" 10000 numThreads $ \_i ->
+          void $ submitToNode muxPool addr pingCmd
     putStrLn ","
 
-    -- SET benchmark
-    benchmark "set" 10000 (run (set "bench:key" "bench:value" :: ClusterCommandClient PlainTextClient Bool) >> return ())
+    -- SET with distributed keys
+    benchmark "set" 10000 numThreads $ \i ->
+      void $ run (set (mkKey "bench:set:" i) "bench:value" :: ClusterCommandClient PlainTextClient Bool)
     putStrLn ","
 
-    -- GET benchmark
-    _ <- run (set "bench:key" "bench:value" :: ClusterCommandClient PlainTextClient Bool)
-    benchmark "get" 10000 (run (get "bench:key" :: ClusterCommandClient PlainTextClient ByteString) >> return ())
+    -- Pre-populate a shared key pool for all read benchmarks
+    let readKeyPool = 10000 :: Int
+    hPutStrLn stderr "  Pre-populating read key pool..."
+    hFlush stderr
+    forConcurrently_ [0..numThreads-1] $ \t -> do
+      let chunk = readKeyPool `div` numThreads
+          lo = t * chunk
+          hi = if t == numThreads - 1 then readKeyPool - 1 else (t + 1) * chunk - 1
+      mapM_ (\i -> void $ run (set (mkKey "bench:r:" i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [lo..hi]
+
+    -- GET with distributed keys from pool
+    benchmark "get" 10000 numThreads $ \i ->
+      void $ run (get (mkKey "bench:r:" (i `mod` readKeyPool)) :: ClusterCommandClient PlainTextClient ByteString)
     putStrLn ","
 
-    -- DEL benchmark
-    benchmark "del" 10000 (do
-      _ <- run (set "bench:delkey" "v" :: ClusterCommandClient PlainTextClient Bool)
-      _ <- run (del ["bench:delkey"] :: ClusterCommandClient PlainTextClient Integer)
-      return ()
-      )
+    -- DEL with unique keys per iteration
+    benchmark "del" 10000 numThreads $ \i -> do
+      let key = mkKey "bench:del:" i
+      void $ run (set key "v" :: ClusterCommandClient PlainTextClient Bool)
+      void $ run (del [key] :: ClusterCommandClient PlainTextClient Integer)
     putStrLn ","
 
-    -- Pipeline benchmark (sequential gets via cluster routing)
-    do
-      mapM_ (\i -> run (set (BS.pack $ "bench:pipe:" <> show i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [1..100 :: Int]
-      benchmark "pipeline_100_gets" 1000 (do
-        mapM_ (\i -> run (get (BS.pack $ "bench:pipe:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..100 :: Int]
-        )
+    -- Pipeline 100 gets - concurrent batches reading from pool
+    benchmark "pipeline_100_gets" 1000 numThreads $ \i ->
+      mapM_ (\j -> void $ run (get (mkKey "bench:r:" ((i * 100 + j) `mod` readKeyPool)) :: ClusterCommandClient PlainTextClient ByteString)) [0..99 :: Int]
     putStrLn ","
 
-    -- Single-key GET benchmarks for batch sizes (MGET not usable cross-slot in cluster)
-    do
-      mapM_ (\i -> run (set (BS.pack $ "bench:mget:" <> show i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [1..1000 :: Int]
-
-      benchmark "get_10" 5000 (mapM_ (\i -> run (get (BS.pack $ "bench:mget:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..10 :: Int])
-      putStrLn ","
-
-      benchmark "get_100" 2000 (mapM_ (\i -> run (get (BS.pack $ "bench:mget:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..100 :: Int])
-      putStrLn ","
-
-      benchmark "get_1000" 500 (mapM_ (\i -> run (get (BS.pack $ "bench:mget:" <> show i) :: ClusterCommandClient PlainTextClient ByteString)) [1..1000 :: Int])
+    -- GET batch benchmarks (keys from pool distribute across all slots)
+    benchmark "get_10" 5000 numThreads $ \i ->
+      mapM_ (\j -> void $ run (get (mkKey "bench:r:" ((i * 10 + j) `mod` readKeyPool)) :: ClusterCommandClient PlainTextClient ByteString)) [0..9 :: Int]
     putStrLn ","
 
-    -- Sequential SET batches
-    do
-      let msetBatch n = mapM_ (\i -> run (set (BS.pack $ "bench:mset:" <> show i) (BS.pack $ "val" <> show i) :: ClusterCommandClient PlainTextClient Bool)) [1..n :: Int]
+    benchmark "get_100" 2000 numThreads $ \i ->
+      mapM_ (\j -> void $ run (get (mkKey "bench:r:" ((i * 100 + j) `mod` readKeyPool)) :: ClusterCommandClient PlainTextClient ByteString)) [0..99 :: Int]
+    putStrLn ","
 
-      benchmark "set_10" 5000 (msetBatch (10 :: Int))
-      putStrLn ","
+    benchmark "get_1000" 500 numThreads $ \i ->
+      mapM_ (\j -> void $ run (get (mkKey "bench:r:" ((i * 1000 + j) `mod` readKeyPool)) :: ClusterCommandClient PlainTextClient ByteString)) [0..999 :: Int]
+    putStrLn ","
 
-      benchmark "set_100" 2000 (msetBatch (100 :: Int))
-      putStrLn ","
+    -- SET batch benchmarks with distributed keys
+    benchmark "set_10" 5000 numThreads $ \i ->
+      mapM_ (\j -> void $ run (set (mkKey "bench:mset:" (i * 10 + j)) (BS.pack $ "val" <> show j) :: ClusterCommandClient PlainTextClient Bool)) [0..9 :: Int]
+    putStrLn ","
 
-      benchmark "set_1000" 500 (msetBatch (1000 :: Int))
+    benchmark "set_100" 2000 numThreads $ \i ->
+      mapM_ (\j -> void $ run (set (mkKey "bench:mset:" (i * 100 + j)) (BS.pack $ "val" <> show j) :: ClusterCommandClient PlainTextClient Bool)) [0..99 :: Int]
+    putStrLn ","
+
+    benchmark "set_1000" 500 numThreads $ \i ->
+      mapM_ (\j -> void $ run (set (mkKey "bench:mset:" (i * 1000 + j)) (BS.pack $ "val" <> show j) :: ClusterCommandClient PlainTextClient Bool)) [0..999 :: Int]
 
     putStrLn ""
     putStrLn "}"
 
-    -- Cleanup (individual deletes to avoid CROSSSLOT errors)
-    _ <- run (del ["bench:key"] :: ClusterCommandClient PlainTextClient Integer)
-    _ <- run (del ["bench:delkey"] :: ClusterCommandClient PlainTextClient Integer)
-    mapM_ (\i -> run (del [BS.pack $ "bench:pipe:" <> show i] :: ClusterCommandClient PlainTextClient Integer)) [1..100 :: Int]
-    mapM_ (\i -> run (del [BS.pack $ "bench:mget:" <> show i] :: ClusterCommandClient PlainTextClient Integer)) [1..1000 :: Int]
-    mapM_ (\i -> run (del [BS.pack $ "bench:mset:" <> show i] :: ClusterCommandClient PlainTextClient Integer)) [1..1000 :: Int]
+    -- Cleanup pre-populated key pool
+    hPutStrLn stderr "Cleaning up benchmark keys..."
+    hFlush stderr
+    forConcurrently_ [0..numThreads-1] $ \t -> do
+      let chunk = readKeyPool `div` numThreads
+          lo = t * chunk
+          hi = if t == numThreads - 1 then readKeyPool - 1 else (t + 1) * chunk - 1
+      mapM_ (\i -> void $ run (del [mkKey "bench:r:" i] :: ClusterCommandClient PlainTextClient Integer)) [lo..hi]
 
     hPutStrLn stderr "Benchmarks complete. Use +RTS -s for memory/GC stats."
     hFlush stderr
