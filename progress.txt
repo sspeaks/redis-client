@@ -58,3 +58,15 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - Haskell `mapM_` over 100 GETs is sequential (each waits for response), NOT pipelining — honest naming matters
   - Template is a Python file (.tmpl extension) — verify with `python3 -c "exec(open(...)...)"` in nix-shell
 ---
+
+## 2026-02-16T02:22 - US-005
+- Fixed C# REST server to use async Redis calls instead of sync
+- Replaced `db.StringGet(cacheKey)` with `await db.StringGetAsync(cacheKey)`
+- Replaced `db.StringSet(cacheKey, jsonData, TimeSpan)` with `await db.StringSetAsync(cacheKey, jsonData, TimeSpan)`
+- Marked handler lambda as `async`
+- Files changed: `hask-redis-mux/comparison/benchmarks/csharp/RestServer/Program.cs`
+- **Learnings for future iterations:**
+  - The REST server fix is a 3-line change (sync→async for StringGet, StringSet, and async lambda) but prevents thread pool starvation that caused 11 req/sec throughput
+  - RestServer builds independently with `dotnet build` in its own directory via nix-shell
+  - ASP.NET Core MapGet handlers support async lambdas natively — just add `async` keyword and use `await`
+---

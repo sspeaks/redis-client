@@ -83,7 +83,7 @@
         "Typecheck passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "The current sync calls cause thread pool starvation in ASP.NET Core, explaining the 11 req/sec throughput and missing cache-hit data. This is a 3-line change but has massive impact on REST benchmark results."
     },
     {
