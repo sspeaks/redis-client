@@ -81,3 +81,27 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - `peak_working_set_bytes` includes runtime, JIT code, GC regions, stacks — not comparable to Haskell's max_residency
   - Single-line dictionary addition — minimal change, high impact for fair memory comparison
 ---
+
+## 2026-02-16T02:28 - US-007
+- Added SECTION_6C_CONTEXT explanatory text above Section 6c Memory tables
+- Explains: Haskell max_residency_bytes = max live heap at GC points (excludes stack/code/GC working memory)
+- Explains: C# peak_working_set_bytes = total process memory; managed_heap_bytes = managed heap only (comparable to Haskell)
+- Added managed_heap_bytes to C# memory rendering key list (between total_allocated_bytes and peak_working_set_bytes)
+- Context text inserted via `SECTION_6C_CONTEXT + SECTION_6C_HEADER` in render_benchmarks()
+- Files changed: `hask-redis-mux/comparison/templates/sections/06_benchmarks.md.tmpl`
+- **Learnings for future iterations:**
+  - SECTION_6C_CONTEXT is a separate constant from SECTION_6C_HEADER — context goes before the Haskell memory table
+  - The C# memory keys list order determines render order in the table — managed_heap_bytes placed before peak_working_set_bytes for logical grouping
+  - Template constants use triple-quoted strings with leading newlines — match existing style
+---
+
+## 2026-02-16T02:33 - US-008
+- Changed `_fmt()` default parameter from `'-'` to `'N/A'` in 06_benchmarks.md.tmpl
+- Changed two "no data" memory table rows from `- |` to `N/A |`
+- Verified rendered output contains no bare `-` placeholders in any benchmark table
+- Files changed: `hask-redis-mux/comparison/templates/sections/06_benchmarks.md.tmpl`
+- **Learnings for future iterations:**
+  - The `_fmt()` function is the single point of control for missing-value placeholders — changing its default propagates to all benchmark tables (latency, throughput, REST)
+  - Memory "no data" rows are separate hardcoded strings, not routed through `_fmt()` — must be updated independently
+  - `make test` runs full E2E tests requiring Docker and nix-build — takes ~3 minutes
+---

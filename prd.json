@@ -113,7 +113,7 @@
         "Typecheck passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Add managed_heap_bytes to the key list in the C# memory rendering section alongside the existing keys. Add a SECTION_6C_CONTEXT string constant with the explanatory markdown."
     },
     {
@@ -128,7 +128,7 @@
         "Typecheck passes"
       ],
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "notes": "Simple change to the _fmt() function default parameter. Also check if REST rendering code passes the default through correctly."
     },
     {
