@@ -7,6 +7,9 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
 - The comparison infrastructure lives on branch `ralph/comparison-fairness-and-rest-benchmarks` (not on main)
 - Use `nix-shell shell.nix --run "dotnet build"` in the csharp dir for building
 - RunBenchmark pattern: accepts `Func<int, Task>`, uses `Task.Run` + async lambdas + `Task.WhenAll` for concurrency
+- Haskell benchmark: `Database.Redis.Command` exports typed `ping`, `set`, `get`, `del` etc. — prefer over raw `executeCommand`
+- Haskell benchmark: `withClusterClient` needs explicit import from `Database.Redis.Cluster.Client`
+- Pre-commit hook runs `stylish-haskell` on `.hs` files automatically
 
 ---
 
@@ -31,4 +34,16 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
 - **Learnings for future iterations:**
   - US-001 was thorough enough to convert ALL benchmarks including pipeline_100_gets, so US-002 was already satisfied
   - Always check if a prior story already covered the work before implementing
+---
+
+## 2026-02-16T02:12 - US-003
+- Fixed Haskell PING benchmark to use cluster client (`run (ping)`) instead of direct `submitToNode` bypass
+- Removed topology/masterNodes/muxPool/pingCmd special-case code (lines 127-141)
+- Removed unused imports: `Control.Concurrent.STM (readTVarIO)`, `Data.Map.Strict`
+- PING now goes through full ClusterCommandClient with MOVED/ASK handling, same as SET/GET/DEL
+- Files changed: `hask-redis-mux/comparison/benchmarks/haskell/Main.hs`
+- **Learnings for future iterations:**
+  - `Database.Redis.Command` exports `ping :: (FromResp a) => m a` — no need for raw executeCommand
+  - `withClusterClient` is NOT re-exported from `Database.Redis`, needs separate import from `Database.Redis.Cluster.Client`
+  - The pre-commit hook runs `stylish-haskell` formatter automatically
 ---

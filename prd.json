@@ -53,7 +53,7 @@
         "Typecheck passes"
       ],
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "notes": "Check if Database.Redis exports a 'ping' command. If not, use executeCommand. The key insight: currently Haskell PING bypasses cluster routing (topology, MOVED/ASK) giving it an unfair ~3x latency advantage over C# db.Ping() which goes through full ConnectionMultiplexer. Remove imports: Control.Concurrent.STM (readTVarIO), Data.Map.Strict, and the topology-related code."
     },
     {
