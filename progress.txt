@@ -22,3 +22,13 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - CreateBatch already returns Task from StringGetAsync — wrapping in async RunBenchmark is trivial
   - The branch `ralph/benchmark-fairness-v2` was created from `ralph/comparison-fairness-and-rest-benchmarks` (not main) since comparison files only exist there
 ---
+
+## 2026-02-16T02:11 - US-002
+- Pipeline benchmark was already converted to async as part of US-001's comprehensive async conversion
+- batch.StringGetAsync() + batch.Execute() + await Task.WhenAll(tasks) already in place
+- Verified build passes with `dotnet build` in nix-shell
+- Files changed: `prd.json` (marked passes: true)
+- **Learnings for future iterations:**
+  - US-001 was thorough enough to convert ALL benchmarks including pipeline_100_gets, so US-002 was already satisfied
+  - Always check if a prior story already covered the work before implementing
+---
