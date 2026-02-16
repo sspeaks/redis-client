@@ -237,72 +237,99 @@ def _wait_for_health(url: str, timeout: int = 15) -> bool:
     return False
 
 
-def _run_rest_load_test(base_url: str, num_requests: int = 1000, num_threads: int = 10) -> Optional[dict]:
+def _run_rest_scenario(base_url: str, scenario: str, make_path,
+                       num_requests: int = 500, num_threads: int = 8) -> Optional[dict]:
     """
-    Run a REST load test against a server, measuring cache-hit and cache-miss latency.
+    Run a single REST load test scenario against a server.
 
-    Returns dict with 'cache_hit' and 'cache_miss' sub-dicts, or None on failure.
+    Returns dict with p50/p95/p99/ops_per_sec, or None on failure.
     """
     import time
+    import http.client
     import urllib.request
-    import urllib.error
+    from urllib.parse import urlparse
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _measure_request(url: str) -> float:
-        """Make a single request, return latency in microseconds."""
-        start = time.perf_counter()
-        req = urllib.request.urlopen(url, timeout=10)
-        req.read()
-        req.close()
-        elapsed = (time.perf_counter() - start) * 1_000_000
-        return elapsed
+    parsed = urlparse(base_url)
+    host = parsed.hostname
+    port = parsed.port or 80
 
     def _percentile(sorted_list: list, p: float) -> float:
         idx = max(0, min(len(sorted_list) - 1, int(p / 100.0 * len(sorted_list))))
         return sorted_list[idx]
 
-    results = {}
+    # Warmup: ensure backend connections (Redis, DB, etc.) are established
+    _log("  Warming up server connections...")
+    for i in range(10):
+        try:
+            urllib.request.urlopen(f"{base_url}/item/{i}", timeout=15).read()
+        except Exception:
+            time.sleep(1)
+    time.sleep(1)
 
-    for scenario, make_url in [
-        ("cache_miss", lambda i: f"{base_url}/item/{10000 + i}"),
-        ("cache_hit", lambda i: f"{base_url}/item/1"),
-    ]:
-        # Pre-populate for cache_hit scenario
-        if scenario == "cache_hit":
+    # Pre-populate for cache_hit scenario
+    if scenario == "cache_hit":
+        try:
+            urllib.request.urlopen(f"{base_url}/item/1", timeout=5).read()
+        except Exception:
+            pass
+
+    def _run_thread_batch(thread_id: int) -> list:
+        """Each thread uses a single keep-alive connection for its batch."""
+        batch_latencies = []
+        batch_size = num_requests // num_threads
+        start_idx = thread_id * batch_size
+        conn = http.client.HTTPConnection(host, port, timeout=3)
+        try:
+            for i in range(start_idx, start_idx + batch_size):
+                try:
+                    path = make_path(i)
+                    t0 = time.perf_counter()
+                    conn.request("GET", path)
+                    resp = conn.getresponse()
+                    resp.read()
+                    elapsed_us = (time.perf_counter() - t0) * 1_000_000
+                    if resp.status == 200:
+                        batch_latencies.append(elapsed_us)
+                except Exception:
+                    # Reconnect on failure
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = http.client.HTTPConnection(host, port, timeout=3)
+        finally:
+            conn.close()
+        return batch_latencies
+
+    latencies = []
+    wall_start = time.perf_counter()
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(_run_thread_batch, t) for t in range(num_threads)]
+        for future in as_completed(futures):
             try:
-                urllib.request.urlopen(f"{base_url}/item/1", timeout=5).read()
+                latencies.extend(future.result())
             except Exception:
                 pass
 
-        latencies = []
-        wall_start = time.perf_counter()
+    wall_elapsed = time.perf_counter() - wall_start
 
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(_measure_request, make_url(i)) for i in range(num_requests)]
-            for future in as_completed(futures):
-                try:
-                    latencies.append(future.result())
-                except Exception:
-                    pass
+    if not latencies:
+        _log(f"  WARNING: No successful requests for {scenario}")
+        return None
 
-        wall_elapsed = time.perf_counter() - wall_start
+    latencies.sort()
+    ops_per_sec = len(latencies) / wall_elapsed
 
-        if not latencies:
-            _log(f"  WARNING: No successful requests for {scenario}")
-            continue
-
-        latencies.sort()
-        ops_per_sec = len(latencies) / wall_elapsed
-
-        results[scenario] = {
-            "p50_us": round(_percentile(latencies, 50), 1),
-            "p95_us": round(_percentile(latencies, 95), 1),
-            "p99_us": round(_percentile(latencies, 99), 1),
-            "ops_per_sec": round(ops_per_sec),
-        }
-        _log(f"  {scenario}: p50={results[scenario]['p50_us']}us, ops/sec={results[scenario]['ops_per_sec']}")
-
-    return results if results else None
+    result = {
+        "p50_us": round(_percentile(latencies, 50), 1),
+        "p95_us": round(_percentile(latencies, 95), 1),
+        "p99_us": round(_percentile(latencies, 99), 1),
+        "ops_per_sec": round(ops_per_sec),
+    }
+    _log(f"  {scenario}: p50={result['p50_us']}us, ops/sec={result['ops_per_sec']}")
+    return result
 
 
 def run_haskell_rest_benchmarks(connection_string: str) -> Optional[dict]:
@@ -364,7 +391,15 @@ def run_haskell_rest_benchmarks(connection_string: str) -> Optional[dict]:
             return None
 
         _log("Haskell REST server ready, running load test...")
-        return _run_rest_load_test(f"http://localhost:{port}")
+        results = {}
+        for scenario, make_path in [
+            ("cache_hit", lambda i: "/item/1"),
+            ("cache_miss", lambda i: f"/item/{10000 + i}"),
+        ]:
+            data = _run_rest_scenario(f"http://localhost:{port}", scenario, make_path)
+            if data:
+                results[scenario] = data
+        return results if results else None
     except Exception as e:
         _log(f"ERROR: Haskell REST benchmark failed: {e}")
         return None
@@ -375,6 +410,34 @@ def run_haskell_rest_benchmarks(connection_string: str) -> Optional[dict]:
                 server_proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 server_proc.kill()
+
+
+def _expand_cluster_endpoints(connection_string: str) -> str:
+    """
+    Expand a single cluster seed to all known cluster endpoints.
+
+    SE.Redis connects faster and more reliably when given all cluster endpoints
+    upfront, rather than discovering them from a single seed node.
+    """
+    host, port_str = connection_string.split(":")
+    port = int(port_str)
+
+    try:
+        import socket
+        # Try connecting to ports 7000-7004 (standard cluster-host setup)
+        endpoints = []
+        for p in range(7000, 7005):
+            try:
+                with socket.create_connection((host, p), timeout=1):
+                    endpoints.append(f"{host}:{p}")
+            except (socket.error, OSError):
+                pass
+        if len(endpoints) >= 3:
+            return ",".join(endpoints)
+    except Exception:
+        pass
+
+    return connection_string
 
 
 def run_csharp_rest_benchmarks(connection_string: str) -> Optional[dict]:
@@ -405,33 +468,46 @@ def run_csharp_rest_benchmarks(connection_string: str) -> Optional[dict]:
         return None
 
     port = 3001
-    _log(f"Starting C# REST server on port {port}...")
-    server_proc = None
-    try:
-        server_proc = subprocess.Popen(
-            [dotnet, "run", "-c", "Release", "--no-build",
-             "--project", str(CSHARP_REST_DIR),
-             "--", "--port", str(port), "--redis", connection_string],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+    # Expand seed node to all cluster endpoints for faster connection setup
+    cluster_conn = _expand_cluster_endpoints(connection_string)
 
-        if not _wait_for_health(f"http://localhost:{port}/health"):
-            _log("ERROR: C# REST server failed to start (health check timeout)")
-            return None
+    results = {}
+    scenarios = [
+        ("cache_hit", lambda i: "/item/1"),
+        ("cache_miss", lambda i: f"/item/{10000 + i}"),
+    ]
 
-        _log("C# REST server ready, running load test...")
-        return _run_rest_load_test(f"http://localhost:{port}")
-    except Exception as e:
-        _log(f"ERROR: C# REST benchmark failed: {e}")
-        return None
-    finally:
-        if server_proc:
-            server_proc.terminate()
-            try:
-                server_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                server_proc.kill()
+    for scenario, make_path in scenarios:
+        _log(f"Starting C# REST server on port {port} for {scenario} (Redis: {cluster_conn})...")
+        server_proc = None
+        try:
+            server_proc = subprocess.Popen(
+                [dotnet, "run", "-c", "Release", "--no-build",
+                 "--project", str(CSHARP_REST_DIR),
+                 "--", "--port", str(port), "--redis", cluster_conn],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            if not _wait_for_health(f"http://localhost:{port}/health"):
+                _log(f"ERROR: C# REST server failed to start for {scenario}")
+                continue
+
+            _log(f"C# REST server ready, running {scenario}...")
+            data = _run_rest_scenario(f"http://localhost:{port}", scenario, make_path)
+            if data:
+                results[scenario] = data
+        except Exception as e:
+            _log(f"ERROR: C# REST {scenario} failed: {e}")
+        finally:
+            if server_proc:
+                server_proc.terminate()
+                try:
+                    server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server_proc.kill()
+
+    return results if results else None
 
 
 if __name__ == "__main__":
