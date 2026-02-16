@@ -156,8 +156,8 @@ main = do
       void $ run (del [key] :: ClusterCommandClient PlainTextClient Integer)
     putStrLn ","
 
-    -- Pipeline 100 gets - concurrent batches reading from pool
-    benchmark "pipeline_100_gets" 1000 numThreads $ \i ->
+    -- Sequential 100 gets - each GET waits for response before sending next
+    benchmark "sequential_100_gets" 1000 numThreads $ \i ->
       mapM_ (\j -> void $ run (get (mkKey "bench:r:" ((i * 100 + j) `mod` readKeyPool)) :: ClusterCommandClient PlainTextClient ByteString)) [0..99 :: Int]
     putStrLn ","
 

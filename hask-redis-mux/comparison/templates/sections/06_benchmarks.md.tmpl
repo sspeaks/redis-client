@@ -18,11 +18,12 @@ BENCHMARK_TEMPLATE = """# 6. Benchmark Results
 > MGET/MSET are replaced with sequential GET/SET batches due to cross-slot
 > restrictions in cluster mode.
 >
-> **Pipeline note:** The pipeline benchmarks use each library's native pipelining
-> mechanism. C# (StackExchange.Redis) uses `CreateBatch` for client-side pipelining
-> with deferred execution. Haskell (hask-redis-mux) uses multiplexed command
-> submission through the cluster mux pool. These test different architectural
-> approaches and results reflect real-world usage patterns for each library.
+> **Pipeline methodology:** C# `pipeline_100_gets` uses `CreateBatch` for true
+> client-side pipelining — all 100 GETs are sent in a single batch before awaiting
+> any responses. Haskell `sequential_100_gets` sends 100 individual GETs through
+> the cluster multiplexer, each awaiting its response before sending the next.
+> These test fundamentally different approaches: explicit batching vs. sequential
+> operations over a multiplexed connection.
 
 {benchmark_content}
 """
@@ -233,6 +234,7 @@ CHART_JS_REST_THROUGHPUT = """
 OPERATIONS = [
     "ping", "set", "get", "del",
     "pipeline_100_gets",
+    "sequential_100_gets",
     "get_10", "get_100", "get_1000",
     "set_10", "set_100", "set_1000",
 ]
