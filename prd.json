@@ -68,7 +68,7 @@
         "Typecheck passes"
       ],
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "notes": "The Haskell benchmark uses mapM_ with 100 sequential get calls — each waits for response before sending next. This is NOT pipelining. C# CreateBatch sends all 100 at once. Renaming makes this honest. The OPERATIONS list in the template controls which ops appear in tables."
     },
     {

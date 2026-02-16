@@ -47,3 +47,14 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - `withClusterClient` is NOT re-exported from `Database.Redis`, needs separate import from `Database.Redis.Cluster.Client`
   - The pre-commit hook runs `stylish-haskell` formatter automatically
 ---
+
+## 2026-02-16T02:15 - US-004
+- Renamed Haskell pipeline benchmark from `pipeline_100_gets` to `sequential_100_gets` in Main.hs
+- Added `sequential_100_gets` to OPERATIONS list in 06_benchmarks.md.tmpl (kept `pipeline_100_gets` for C# only)
+- Updated pipeline methodology note to honestly explain: C# uses CreateBatch (true pipelining), Haskell sends 100 sequential GETs
+- Files changed: `hask-redis-mux/comparison/benchmarks/haskell/Main.hs`, `hask-redis-mux/comparison/templates/sections/06_benchmarks.md.tmpl`
+- **Learnings for future iterations:**
+  - The OPERATIONS list in the template controls which ops appear in comparison tables — both libraries' data is rendered for all ops, with missing data showing default placeholder
+  - Haskell `mapM_` over 100 GETs is sequential (each waits for response), NOT pipelining — honest naming matters
+  - Template is a Python file (.tmpl extension) — verify with `python3 -c "exec(open(...)...)"` in nix-shell
+---
