@@ -169,6 +169,8 @@ def main():
     chart_data = {}
     haskell_data = None
     csharp_data = None
+    haskell_rest_data = None
+    csharp_rest_data = None
 
     if args.skip_benchmarks:
         _log("Benchmarks skipped (--skip-benchmarks flag)")
@@ -206,6 +208,21 @@ def main():
                 else:
                     _log("C# benchmarks failed or skipped.")
 
+                # REST cache-aside benchmarks
+                _log("Running Haskell REST benchmarks...")
+                haskell_rest_data = runner.run_haskell_rest_benchmarks(conn_str)
+                if haskell_rest_data:
+                    _log("Haskell REST benchmarks completed successfully.")
+                else:
+                    _log("Haskell REST benchmarks failed or skipped.")
+
+                _log("Running C# REST benchmarks...")
+                csharp_rest_data = runner.run_csharp_rest_benchmarks(conn_str)
+                if csharp_rest_data:
+                    _log("C# REST benchmarks completed successfully.")
+                else:
+                    _log("C# REST benchmarks failed or skipped.")
+
             except Exception as e:
                 _log(f"ERROR loading benchmark runner: {e}")
                 skip_reason = f"Benchmark runner error: {e}"
@@ -216,7 +233,11 @@ def main():
         tmpl = _load_module("benchmarks_tmpl",
                             TEMPLATES_DIR / "06_benchmarks.md.tmpl")
         if haskell_data or csharp_data:
-            benchmark_md, chart_data = tmpl.render_benchmarks(haskell_data, csharp_data)
+            benchmark_md, chart_data = tmpl.render_benchmarks(
+                haskell_data, csharp_data,
+                haskell_rest_data=haskell_rest_data,
+                csharp_rest_data=csharp_rest_data,
+            )
         else:
             benchmark_md, chart_data = tmpl.render_benchmarks(
                 reason=skip_reason or "No benchmark data available"
