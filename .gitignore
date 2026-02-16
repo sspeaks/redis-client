@@ -21,3 +21,7 @@ __pycache__
 *.pyonode_modules
 node_modules
 bench.db
+
+# .NET build artifacts
+**/bin/
+**/obj/
