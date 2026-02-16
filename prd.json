@@ -146,7 +146,7 @@
         "Typecheck passes"
       ],
       "priority": 9,
-      "passes": false,
+      "passes": true,
       "notes": "Use the throughput data (ops_per_sec) to determine winners per category. Group operations: single-op (ping/set/get/del), batch (get_10/get_100/get_1000, set_10/set_100/set_1000), pipeline. The function receives haskell_data and csharp_data dicts."
     },
     {

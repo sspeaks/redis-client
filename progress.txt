@@ -105,3 +105,18 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - Memory "no data" rows are separate hardcoded strings, not routed through `_fmt()` — must be updated independently
   - `make test` runs full E2E tests requiring Docker and nix-build — takes ~3 minutes
 ---
+
+## 2026-02-16T02:39 - US-009
+- Added `render_results_analysis()` function to 06_benchmarks.md.tmpl
+- Function groups operations into single-op, batch, and pipeline categories
+- Compares throughput (ops_per_sec) and identifies which library leads per category
+- Adds "Architectural Context" section explaining: GHC green threads for hask-redis-mux, CreateBatch pipelining for SE.Redis, memory metric comparisons
+- Gracefully handles missing data (shows "No throughput data available" when both libs have no data)
+- Called from `render_benchmarks()` after Section 6d, output appended as Section 6e
+- Files changed: `hask-redis-mux/comparison/templates/sections/06_benchmarks.md.tmpl`
+- **Learnings for future iterations:**
+  - The template is pure Python executed via `exec()` — no import system, all functions must be defined in the same file
+  - `_get_bench()` helper is the standard way to safely access nested benchmark data
+  - Operation groupings: single-op (ping/set/get/del), batch (get_10-1000, set_10-1000), pipeline (pipeline_100_gets, sequential_100_gets)
+  - `make test` runs full E2E with Docker Redis cluster — ~3 min, 45 tests
+---
