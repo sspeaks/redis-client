@@ -1,0 +1,16 @@
+# Ralph Progress Log
+Started: Sun Feb 15 11:39:00 PM UTC 2026
+
+## Codebase Patterns
+- Build with `nix-build` from repo root (`/home/sspeaks/redis-client`), not from `hask-redis-mux/`
+- The `hask-redis-mux/` subdir is the working directory; comparison files go under `comparison/`
+- Git operations run from `hask-redis-mux/` directory
+- `Database.Redis` re-exports don't include `defaultStandaloneConfig`, `withStandaloneClient`, or `runRedis` — import from `Database.Redis.Standalone`
+- StandaloneCommandClient is the monad type for standalone commands, not RedisCommand
+- NodeAddress takes String host (not ByteString)
+- `FromResp` has instances for: ByteString, Maybe ByteString, Integer, Bool, [ByteString], [RespData], (), Text, Maybe Text
+- For Python with non-.py extensions, use importlib.machinery.SourceFileLoader fallback
+- The benchmark.cabal already bakes in +RTS -N -s, so don't pass additional RTS flags from the runner
+- Cluster client uses withClusterClient + runClusterCommandClient pattern
+- Commands are in RedisCommands typeclass: get, set, del, ping, mget, expire, ttl, etc.
+---

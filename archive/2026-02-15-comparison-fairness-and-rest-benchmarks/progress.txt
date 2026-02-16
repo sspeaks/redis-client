@@ -1,0 +1,19 @@
+# Ralph Progress Log
+Started: Sun Feb 16 01:43:00 AM UTC 2026
+
+## Codebase Patterns
+- C# benchmark lives at `hask-redis-mux/comparison/benchmarks/csharp/Program.cs`, build with `dotnet build` inside nix-shell
+- Haskell benchmark at `hask-redis-mux/comparison/benchmarks/haskell/Main.hs` uses `mkKey` for distributed key generation
+- Both benchmarks must produce identical JSON output schema: `{operation: {p50_us, p95_us, p99_us, ops_per_sec, iterations}}`
+- Use `nix-shell /home/sspeaks/redis-client/shell.nix --run "..."` to access dotnet, python3, cabal
+- `make test` runs full E2E test suite (takes ~5 min); only tests the Haskell library, not comparison benchmarks
+- When adding .NET projects as subdirectories, use DefaultItemExcludes in parent .csproj to prevent cross-compilation
+- Import Web.Scotty qualified to avoid name clash with Database.Redis.get
+- REST benchmark functions are in benchmark_runner.py; REST template sections in 06_benchmarks.md.tmpl
+- Template .tmpl files are loaded via exec/compile or SourceFileLoader, not standard import
+- dotnet is only available inside nix-shell, not on the system PATH
+- The stride pattern (warmupPerThread + perThread per thread) ensures unique key indices across warmup and measured phases
+- DefaultItemExcludes in .csproj is needed when a child directory contains another .NET project
+- C# REST server needs the cluster connection string with all nodes, not just the seed
+
+---

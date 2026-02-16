@@ -1,0 +1,114 @@
+# Ralph Progress Log
+Started: Sun Feb 15 03:49:07 PM PST 2026
+
+## Codebase Patterns
+- C# benchmark lives at `hask-redis-mux/comparison/benchmarks/csharp/Program.cs`, build with `dotnet build` inside nix-shell
+- Haskell benchmark at `hask-redis-mux/comparison/benchmarks/haskell/Main.hs` uses `mkKey` for distributed key generation
+- Both benchmarks must produce identical JSON output schema: `{operation: {p50_us, p95_us, p99_us, ops_per_sec, iterations}}`
+- Use `nix-shell /home/sspeaks/redis-client/shell.nix --run "..."` to access dotnet, python3, cabal
+- `make test` runs full E2E test suite (takes ~5 min); only tests the Haskell library, not comparison benchmarks
+- The branch for this PRD was created from `ralph/redis-comparison-doc-generator` which has the comparison framework
+- When adding .NET projects as subdirectories, use DefaultItemExcludes in parent .csproj to prevent cross-compilation
+- Import Web.Scotty qualified to avoid name clash with Database.Redis.get
+- REST benchmark functions are in benchmark_runner.py; REST template sections in 06_benchmarks.md.tmpl
+- Template .tmpl files are loaded via exec/compile or SourceFileLoader, not standard import
+
+---
+
+## 2026-02-15T23:49 - US-001
+- Rewrote C# benchmark Program.cs to use multi-threaded execution with Parallel.For
+- RunBenchmark now takes `Action<int>` instead of `Action`, receiving globally unique iteration index
+- Each thread collects latencies in thread-local lists, merged after completion
+- Distributed unique keys per iteration (bench:set:{i}, bench:r:{i}, bench:del:{i}) matching Haskell patterns
+- Pre-populates 10,000-key read pool before GET benchmarks
+- Throughput computed from wall-clock time (not sum of latencies)
+- Warm-up phase per-thread at 10% of iterations
+- Files changed: `hask-redis-mux/comparison/benchmarks/csharp/Program.cs`
+- **Learnings for future iterations:**
+  - dotnet is only available inside nix-shell, not on the system PATH
+  - The stride pattern (warmupPerThread + perThread per thread) ensures unique key indices across warmup and measured phases
+  - Environment.ProcessorCount is the C# equivalent of Haskell's getNumCapabilities
+---
+
+## 2026-02-15T23:55 - US-002
+- Added pipeline methodology note to BENCHMARK_TEMPLATE in 06_benchmarks.md.tmpl
+- Note explains C# CreateBatch vs Haskell multiplexed submission approaches
+- Verified render_benchmarks() and render_chart_js_snippets() still work correctly
+- Files changed: `hask-redis-mux/comparison/templates/sections/06_benchmarks.md.tmpl`
+- **Learnings for future iterations:**
+  - The .tmpl files are Python source loaded via exec/compile, not importlib (extension not recognized)
+  - Template uses {benchmark_content} placeholder - don't break it
+  - Test rendering by exec'ing the file and calling render_benchmarks with sample data
+---
+
+## 2026-02-15T23:58 - US-003
+- Created RestServer.hs with Scotty web server implementing cache-aside pattern
+- GET /item/:id checks Redis cache, on miss returns mock JSON and populates cache with 60s TTL
+- GET /health for readiness checking
+- Added rest-server executable and scotty/http-types/optparse-applicative deps to benchmark.cabal
+- Files changed: `hask-redis-mux/comparison/benchmarks/haskell/RestServer.hs`, `hask-redis-mux/comparison/benchmarks/haskell/benchmark.cabal`
+- **Learnings for future iterations:**
+  - Import Web.Scotty qualified to avoid name clash with Database.Redis.get
+  - Need http-types dependency for status404 (not re-exported by scotty)
+  - scotty has many transitive deps; first cabal build can take several minutes downloading
+  - optparse-applicative is listed as dep but hand-rolled arg parsing used instead (simpler for 2 flags)
+---
+
+## 2026-02-16T00:05 - US-004
+- Created RestServer/ directory with RestServer.csproj and Program.cs
+- ASP.NET Core minimal API with identical cache-aside logic to Haskell version
+- GET /item/{id} and GET /health endpoints
+- Added .gitignore entries for bin/obj to prevent build artifacts in repo
+- Files changed: `hask-redis-mux/comparison/benchmarks/csharp/RestServer/Program.cs`, `RestServer.csproj`, `.gitignore`
+- **Learnings for future iterations:**
+  - Use Microsoft.NET.Sdk.Web for ASP.NET Core minimal API projects
+  - dotnet build generates bin/obj directories that should be gitignored
+  - HttpContext parameter injection for setting response headers in minimal APIs
+---
+
+## 2026-02-16T00:10 - US-005
+- Added run_haskell_rest_benchmarks() and run_csharp_rest_benchmarks() to benchmark_runner.py
+- Added _wait_for_health() helper and _run_rest_load_test() shared load test function
+- Uses concurrent.futures.ThreadPoolExecutor with urllib for HTTP load testing
+- Server subprocess management with proper cleanup in finally blocks
+- Files changed: `hask-redis-mux/comparison/benchmark_runner.py`
+- **Learnings for future iterations:**
+  - CSHARP_REST_DIR path constant added alongside CSHARP_DIR for the new RestServer project
+  - Load test uses wall-clock time for throughput, per-request timing for latency percentiles
+  - cache_miss test uses unique IDs (10000+i), cache_hit pre-populates item/1
+---
+
+## 2026-02-16T00:15 - US-006
+- Added SECTION_6D templates for REST cache-aside benchmarks (hit/miss latency + throughput)
+- Added CHART_JS_REST_LATENCY and CHART_JS_REST_THROUGHPUT chart snippets with canvas IDs
+- Updated render_benchmarks() with optional haskell_rest_data/csharp_rest_data params
+- Updated render_chart_js_snippets() to emit REST charts when rest data is present
+- REST section renders gracefully as "skipped" when REST data is None
+- Files changed: `hask-redis-mux/comparison/templates/sections/06_benchmarks.md.tmpl`
+- **Learnings for future iterations:**
+  - _get_rest helper defined as local function inside render_benchmarks (used in both md and chart_data sections)
+  - REST chart data keys are 'rest_latency' and 'rest_throughput' in chart_data dict
+---
+
+## 2026-02-16T00:20 - US-007
+- Updated generate_comparison.py to call REST benchmark functions after raw benchmarks
+- Added haskell_rest_data/csharp_rest_data variables and passed to render_benchmarks()
+- REST calls are within the same try/except block, skipped with --skip-benchmarks
+- Files changed: `hask-redis-mux/comparison/generate_comparison.py`
+- **Learnings for future iterations:**
+  - REST benchmark calls are independent; failures of one don't affect the other
+  - The conn_str variable is reused for REST benchmarks (same Redis cluster)
+---
+
+## 2026-02-16T00:35 - US-008
+- Fixed Benchmark.csproj with DefaultItemExcludes to prevent RestServer/ from being compiled into raw benchmark
+- Ran full pipeline: python3 generate_comparison.py localhost:7000
+- All benchmarks completed: Haskell raw, C# raw, Haskell REST, C# REST
+- Output validation: comparison.md has Section 6d, Pipeline note; comparison.html has REST chart canvases
+- Cleaned stale obj/Release artifacts that caused build conflicts
+- Files changed: `hask-redis-mux/comparison/benchmarks/csharp/Benchmark.csproj`, `hask-redis-mux/comparison/benchmarks/haskell/Main.hs`, `docker/cluster-host/make_cluster.sh`
+- **Learnings for future iterations:**
+  - DefaultItemExcludes in .csproj is needed when a child directory contains another .NET project
+  - Output files are gitignored by design (generated artifacts)
+  - C# REST server needs the cluster connection string with all nodes, not just the seed
+---

@@ -1,0 +1,152 @@
+{
+  "project": "hask-redis-mux",
+  "branchName": "ralph/comparison-fairness-and-rest-benchmarks",
+  "description": "Fix benchmark fairness issues in the hask-redis-mux vs StackExchange.Redis comparison (concurrency, key distribution, throughput formula) and add live REST cache-aside benchmarks to the HTML page",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Make C# benchmark multi-threaded with distributed keys",
+      "description": "As a benchmark runner, I need the C# benchmark to use multi-threaded execution and distributed unique keys so it matches the Haskell benchmark methodology.",
+      "acceptanceCriteria": [
+        "Program.cs RunBenchmark() uses Parallel.For or Task.Run with thread count from Environment.ProcessorCount (matching Haskell's getNumCapabilities)",
+        "Each thread collects latencies in a thread-local list (no shared contention), merged after completion",
+        "Replace single fixed key 'bench:key' with distributed unique keys per iteration using pattern 'bench:set:{i}', 'bench:r:{i}', etc. matching Haskell's mkKey pattern",
+        "Pre-populate a 10,000-key read pool ('bench:r:0' through 'bench:r:9999') before read benchmarks, matching Haskell's readKeyPool",
+        "DEL benchmark uses unique keys per iteration (not reusing 'bench:delkey')",
+        "Throughput computed from wall-clock time: ops_per_sec = totalIterations / wallClockSeconds (not sum of individual latencies)",
+        "Warm-up phase runs per-thread at 10% of iterations (matching Haskell)",
+        "Benchmark keys cleaned up after all benchmarks complete",
+        "Program builds with dotnet build",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Reference Haskell Main.hs for the exact key patterns, iteration counts, and concurrency model. The C# benchmark must produce the same JSON output schema as before (operation -> {p50_us, p95_us, p99_us, ops_per_sec, iterations})."
+    },
+    {
+      "id": "US-002",
+      "title": "Add pipeline methodology notes to benchmark template",
+      "description": "As a reader, I want to understand that the pipeline benchmarks use each library's native pipelining mechanism so the results are contextualized.",
+      "acceptanceCriteria": [
+        "Add a methodology note to 06_benchmarks.md.tmpl in the BENCHMARK_TEMPLATE explaining pipeline comparison approach",
+        "Note states: C# uses CreateBatch (client-side pipelining with deferred execution), Haskell uses multiplexed command submission through the cluster mux pool",
+        "Note clarifies these test different architectural approaches and results reflect real-world usage patterns for each library",
+        "Existing benchmark rendering logic (render_benchmarks, render_chart_js_snippets) still works correctly",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Only modify the BENCHMARK_TEMPLATE string constant in 06_benchmarks.md.tmpl. Do not change the Python rendering functions."
+    },
+    {
+      "id": "US-003",
+      "title": "Create Haskell REST server for cache-aside benchmarking",
+      "description": "As a benchmark runner, I need a Haskell REST server implementing the cache-aside pattern so I can benchmark it against the C# equivalent.",
+      "acceptanceCriteria": [
+        "Create comparison/benchmarks/haskell/RestServer.hs with a Scotty web server",
+        "GET /item/:id endpoint implements cache-aside: check Redis cache -> on miss return mock JSON data -> populate cache with 60s TTL -> return result",
+        "GET /health endpoint returns 200 OK for readiness checking",
+        "Accepts --port PORT and --redis HOST:PORT CLI args (defaults: port 3000, redis localhost:7000)",
+        "Uses hask-redis-mux cluster client (withClusterClient + runClusterCommandClient)",
+        "Mock data source returns JSON like '{\"id\":N,\"name\":\"Item N\"}' for any numeric ID, Nothing for non-numeric",
+        "Add scotty and optparse-applicative dependencies to benchmark.cabal",
+        "Add rest-server executable section to benchmark.cabal",
+        "Program builds with cabal build rest-server",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Use the same ClusterConfig pattern as Main.hs. Import from Database.Redis and Database.Redis.Cluster.Client. The scotty package provides Web.Scotty module."
+    },
+    {
+      "id": "US-004",
+      "title": "Create C# REST server for cache-aside benchmarking",
+      "description": "As a benchmark runner, I need a C# REST server implementing the identical cache-aside pattern so I can benchmark it against Haskell.",
+      "acceptanceCriteria": [
+        "Create comparison/benchmarks/csharp/RestServer/ directory with RestServer.csproj and Program.cs",
+        "GET /item/{id} endpoint implements cache-aside with identical logic to Haskell version",
+        "GET /health endpoint returns 200 OK for readiness checking",
+        "Accepts --port PORT and --redis HOST:PORT CLI args via command line (defaults: port 3001, redis localhost:7000,localhost:7001,localhost:7002)",
+        "Uses StackExchange.Redis ConnectionMultiplexer with cluster connection string",
+        "Mock data source returns same JSON format as Haskell version",
+        "RestServer.csproj targets net8.0 with StackExchange.Redis dependency",
+        "Program builds with dotnet build",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Use ASP.NET Core minimal API pattern. Keep the implementation as close to the Haskell version as possible for fair comparison."
+    },
+    {
+      "id": "US-005",
+      "title": "Add REST benchmark functions to benchmark_runner.py",
+      "description": "As the generator script, I need functions that build, start, load-test, and collect results from both REST servers.",
+      "acceptanceCriteria": [
+        "Add run_haskell_rest_benchmarks(connection_string) function to benchmark_runner.py",
+        "Add run_csharp_rest_benchmarks(connection_string) function to benchmark_runner.py",
+        "Each function: builds the REST server, starts it as a subprocess, waits for /health to return 200, runs load test, stops server",
+        "Load test uses Python concurrent.futures.ThreadPoolExecutor with urllib to send HTTP requests",
+        "Measures cache-hit latency (pre-populated key, p50/p95/p99), cache-miss latency (unique keys, p50/p95/p99), and throughput (req/sec)",
+        "Default: 1000 requests per scenario, 10 concurrent threads",
+        "Returns dict with 'cache_hit' and 'cache_miss' sub-dicts each containing p50_us/p95_us/p99_us/ops_per_sec, or None on failure",
+        "Handles server startup failure gracefully (returns None, logs error to stderr)",
+        "Server subprocess is always killed in a finally block even if load test fails",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Depends on US-003 and US-004 for the REST server programs. Use subprocess.Popen for server, time.sleep + urllib health check loop for readiness."
+    },
+    {
+      "id": "US-006",
+      "title": "Add REST benchmark section to template and Chart.js charts",
+      "description": "As a reader, I want REST cache-aside benchmark results displayed in the HTML comparison page with interactive charts.",
+      "acceptanceCriteria": [
+        "Add Section 6d REST Cache-Aside Benchmarks to 06_benchmarks.md.tmpl with tables for cache-hit latency, cache-miss latency, and throughput",
+        "Add CHART_JS_REST_LATENCY and CHART_JS_REST_THROUGHPUT chart snippets with canvas IDs 'restLatencyChart' and 'restThroughputChart'",
+        "Charts use existing color scheme: hask-redis-mux purple rgba(94,80,134,0.7), SE.Redis green rgba(23,134,0,0.7)",
+        "render_benchmarks() accepts optional haskell_rest_data and csharp_rest_data parameters",
+        "REST section renders gracefully when REST data is None (shows 'REST benchmarks skipped' message)",
+        "render_chart_js_snippets() includes REST charts when rest data is present in chart_data",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "Follow the existing pattern in 06_benchmarks.md.tmpl for table formatting and Chart.js snippet structure. The REST data dict format: {'cache_hit': {p50_us, p95_us, p99_us, ops_per_sec}, 'cache_miss': {p50_us, p95_us, p99_us, ops_per_sec}}."
+    },
+    {
+      "id": "US-007",
+      "title": "Update generate_comparison.py to run REST benchmarks",
+      "description": "As a user, I want the generator script to run REST benchmarks and include results in the output.",
+      "acceptanceCriteria": [
+        "generate_comparison.py calls benchmark_runner.run_haskell_rest_benchmarks() and run_csharp_rest_benchmarks() after raw benchmarks",
+        "REST benchmark data is passed to tmpl.render_benchmarks() via the new haskell_rest_data and csharp_rest_data parameters",
+        "REST benchmarks are skipped when --skip-benchmarks flag is used",
+        "REST benchmark failures do not prevent raw benchmark data from being rendered",
+        "Progress logged to stderr for REST benchmark phases",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": true,
+      "notes": "Minimal changes to generate_comparison.py. Add REST calls after the existing Haskell/C# benchmark calls."
+    },
+    {
+      "id": "US-008",
+      "title": "Regenerate comparison output and validate end-to-end",
+      "description": "As a developer, I want to verify the full pipeline works with all fairness fixes and REST benchmarks producing correct output.",
+      "acceptanceCriteria": [
+        "Delete existing comparison/output/comparison.md and comparison/output/comparison.html",
+        "Running python3 comparison/generate_comparison.py produces both output files without errors",
+        "comparison.md contains Section 6d REST Cache-Aside Benchmarks (with data or skip message)",
+        "comparison.html includes REST benchmark charts (restLatencyChart, restThroughputChart canvas elements)",
+        "C# raw benchmarks use multi-threaded execution (visible in stderr output showing thread count)",
+        "Pipeline methodology note appears in Section 6 of the output",
+        "No temporary build artifacts left after generation",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": true,
+      "notes": "Ensure Docker Redis cluster is running before validation. Use --skip-benchmarks flag if Redis or toolchains are unavailable to at least validate template rendering."
+    }
+  ]
+}

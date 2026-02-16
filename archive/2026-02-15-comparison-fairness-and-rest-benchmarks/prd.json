@@ -1,0 +1,173 @@
+{
+  "project": "hask-redis-mux",
+  "branchName": "ralph/benchmark-fairness-v2",
+  "description": "Ground-up fairness overhaul of hask-redis-mux vs StackExchange.Redis benchmarks: convert C# to async/await, fix Haskell PING bypass, clarify pipeline methodology, fix REST server, add memory context, handle missing data gracefully, and add architectural narrative",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Convert C# raw benchmark to async Redis calls",
+      "description": "As a benchmark author, I need the C# benchmark to use async/await for all Redis operations so that StackExchange.Redis is tested idiomatically (the way it's designed to be used in production).",
+      "acceptanceCriteria": [
+        "All sync Redis calls in Program.cs are replaced with async equivalents: db.PingAsync(), db.StringGetAsync(), db.StringSetAsync(), db.KeyDeleteAsync()",
+        "RunBenchmark method is async, uses Task.Run with async lambdas instead of Parallel.For with sync lambdas",
+        "Each concurrent task uses 'await' for Redis calls — no .Result or .GetAwaiter().GetResult() blocking",
+        "Main method is async (static async Task Main)",
+        "Pre-population loop uses StringSetAsync with await",
+        "Thread count (Environment.ProcessorCount), warmup (10%), wall-clock throughput, and per-op Stopwatch latency measurement are preserved",
+        "JSON output schema is unchanged: {operation: {p50_us, p95_us, p99_us, ops_per_sec, iterations}}",
+        "Program builds with 'dotnet build' inside nix-shell",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": "This is the highest-impact fairness fix. StackExchange.Redis sync methods internally do async+block, causing thread pool starvation under Parallel.For. The async pattern: var tasks = Enumerable.Range(0, NumThreads).Select(t => Task.Run(async () => { await db.StringGetAsync(...); })); await Task.WhenAll(tasks); Use Stopwatch around each await for per-op timing."
+    },
+    {
+      "id": "US-002",
+      "title": "Convert C# raw benchmark pipeline test to async",
+      "description": "As a benchmark author, I need the pipeline_100_gets benchmark in C# to also use async Redis calls within CreateBatch for consistency.",
+      "acceptanceCriteria": [
+        "The pipeline_100_gets benchmark uses batch.StringGetAsync() (already async by nature of CreateBatch)",
+        "batch.Execute() is called, then await Task.WhenAll(tasks) collects results",
+        "The batch benchmark is wrapped in the same async RunBenchmark pattern as other operations",
+        "Pipeline benchmark still measures the same thing: send 100 GETs in one batch, wait for all responses",
+        "JSON output for pipeline_100_gets has same schema as before",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": "CreateBatch already returns Task<RedisValue> from StringGetAsync, so the change is minimal — just ensure the outer RunBenchmark is async and the action lambda is async."
+    },
+    {
+      "id": "US-003",
+      "title": "Fix Haskell PING to use cluster client",
+      "description": "As a benchmark author, I need the Haskell PING benchmark to go through the cluster client (run) instead of raw submitToNode, so it uses the same abstraction level as all other operations.",
+      "acceptanceCriteria": [
+        "PING benchmark calls 'run' with a ping command through ClusterCommandClient, same as SET/GET/DEL",
+        "The masterNodes, muxPool, pingCmd, and submitToNode special-case code is removed from Main.hs",
+        "The topology/masterNodes/encodeCommandBuilder imports are removed if no longer needed",
+        "If 'ping' is not available as a typed command in RedisCommands, use executeCommand [\"PING\"] through the cluster client",
+        "PING benchmark still measures latency and throughput with same iteration count (10000)",
+        "JSON output for ping has same schema as before",
+        "Program builds with 'cabal build' inside nix-shell",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Check if Database.Redis exports a 'ping' command. If not, use executeCommand. The key insight: currently Haskell PING bypasses cluster routing (topology, MOVED/ASK) giving it an unfair ~3x latency advantage over C# db.Ping() which goes through full ConnectionMultiplexer. Remove imports: Control.Concurrent.STM (readTVarIO), Data.Map.Strict, and the topology-related code."
+    },
+    {
+      "id": "US-004",
+      "title": "Rename Haskell pipeline benchmark to sequential_100_gets",
+      "description": "As a reader, I need the benchmark names to honestly reflect what each library is doing, since Haskell does 100 sequential GETs while C# does true client-side pipelining.",
+      "acceptanceCriteria": [
+        "In Main.hs, rename 'pipeline_100_gets' to 'sequential_100_gets' in the benchmark call",
+        "In 06_benchmarks.md.tmpl, add 'sequential_100_gets' to the OPERATIONS list",
+        "The template renders both pipeline_100_gets (C# only) and sequential_100_gets (Haskell only) in the comparison table, with the other library's column showing N/A where applicable",
+        "Update the pipeline methodology note to explain: C# pipeline_100_gets uses CreateBatch (true pipelining), Haskell sequential_100_gets sends 100 individual GETs through the multiplexer",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "The Haskell benchmark uses mapM_ with 100 sequential get calls — each waits for response before sending next. This is NOT pipelining. C# CreateBatch sends all 100 at once. Renaming makes this honest. The OPERATIONS list in the template controls which ops appear in tables."
+    },
+    {
+      "id": "US-005",
+      "title": "Fix C# REST server to use async Redis calls",
+      "description": "As a benchmark author, I need the C# REST server to use async Redis methods so it doesn't suffer thread pool starvation under load.",
+      "acceptanceCriteria": [
+        "In RestServer/Program.cs, db.StringGet(cacheKey) is replaced with await db.StringGetAsync(cacheKey)",
+        "db.StringSet(cacheKey, jsonData, TimeSpan) is replaced with await db.StringSetAsync(cacheKey, jsonData, TimeSpan)",
+        "The MapGet handler lambda is marked async: async (string id, HttpContext ctx) => { ... }",
+        "RestServer builds with 'dotnet build' inside nix-shell",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "The current sync calls cause thread pool starvation in ASP.NET Core, explaining the 11 req/sec throughput and missing cache-hit data. This is a 3-line change but has massive impact on REST benchmark results."
+    },
+    {
+      "id": "US-006",
+      "title": "Add managed heap metric to C# benchmark GC stats",
+      "description": "As a reader, I need comparable memory metrics between Haskell and C# — currently Haskell reports live heap (4.9MB) while C# reports total process memory (81MB), which are not equivalent.",
+      "acceptanceCriteria": [
+        "C# Program.cs GC stats dict includes 'managed_heap_bytes': GC.GetTotalMemory(true) — this is the managed heap size comparable to Haskell's max_residency_bytes",
+        "The existing peak_working_set_bytes is kept (for total process comparison)",
+        "JSON output gc section now has both managed_heap_bytes and peak_working_set_bytes",
+        "Typecheck passes"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "GC.GetTotalMemory(true) forces a GC then returns managed heap size. This is the closest C# equivalent to Haskell's max_residency_bytes from RTS -s stats."
+    },
+    {
+      "id": "US-007",
+      "title": "Add memory metric context to benchmark template",
+      "description": "As a reader, I need the memory comparison section to explain what each metric measures so the numbers aren't misleading.",
+      "acceptanceCriteria": [
+        "In 06_benchmarks.md.tmpl, add explanatory text above or below Section 6c Memory tables",
+        "Text explains: Haskell max_residency_bytes = max live heap at any GC point (excludes stack, code, GC working memory)",
+        "Text explains: C# peak_working_set_bytes = total process memory (runtime, JIT code, GC regions, stacks); managed_heap_bytes = managed heap only (comparable to Haskell max_residency)",
+        "If managed_heap_bytes is present in C# data, render it in the C# memory table",
+        "The render_benchmarks() function handles the new managed_heap_bytes field in the memory rendering loop",
+        "Typecheck passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "Add managed_heap_bytes to the key list in the C# memory rendering section alongside the existing keys. Add a SECTION_6C_CONTEXT string constant with the explanatory markdown."
+    },
+    {
+      "id": "US-008",
+      "title": "Replace bare dash placeholders with meaningful N/A text",
+      "description": "As a reader, I need missing benchmark data to show a clear explanation instead of bare '-' dashes that look like the library can't perform the operation.",
+      "acceptanceCriteria": [
+        "The _fmt() function in 06_benchmarks.md.tmpl uses default='N/A' instead of default='-'",
+        "When rendering REST benchmark tables, if one library has no data, cells show 'N/A' not '-'",
+        "If an entire REST scenario (cache_hit or cache_miss) has no data for one library, the table still renders with N/A",
+        "No bare '-' appears in any benchmark table in the rendered output",
+        "Typecheck passes"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": "Simple change to the _fmt() function default parameter. Also check if REST rendering code passes the default through correctly."
+    },
+    {
+      "id": "US-009",
+      "title": "Add architectural context narrative after benchmark tables",
+      "description": "As a reader, I want a 'Results Analysis' section after the benchmark data that honestly explains where each library excels and the architectural reasons why.",
+      "acceptanceCriteria": [
+        "Add a render_results_analysis() function to 06_benchmarks.md.tmpl that generates a 'Results Analysis' subsection",
+        "The analysis compares throughput data and identifies which library wins each category",
+        "For operations where SE.Redis wins (e.g., pipelining), explains: dedicated CreateBatch API, optimized async multiplexer",
+        "For operations where hask-redis-mux wins (e.g., single-op concurrency), explains: GHC green threads, implicit multiplexing",
+        "The narrative is factual and balanced — no marketing language",
+        "render_benchmarks() calls render_results_analysis() and appends it after Section 6c/6d",
+        "Analysis gracefully handles missing data (skips categories without data)",
+        "Typecheck passes"
+      ],
+      "priority": 9,
+      "passes": false,
+      "notes": "Use the throughput data (ops_per_sec) to determine winners per category. Group operations: single-op (ping/set/get/del), batch (get_10/get_100/get_1000, set_10/set_100/set_1000), pipeline. The function receives haskell_data and csharp_data dicts."
+    },
+    {
+      "id": "US-010",
+      "title": "Regenerate comparison output and validate fairness",
+      "description": "As a developer, I need to regenerate all comparison output with the fairness fixes applied and validate the results are credible.",
+      "acceptanceCriteria": [
+        "Delete existing comparison/output/comparison.md and comparison/output/comparison.html",
+        "Run python3 generate_comparison.py and it produces both output files without errors",
+        "comparison.md Section 6a shows SE.Redis with competitive latency numbers (not 3x worse across the board)",
+        "comparison.md Section 6d REST shows data for BOTH libraries (no '-' dashes for cache-hit)",
+        "comparison.md Section 6c Memory includes explanatory context about metric differences",
+        "comparison.md contains a Results Analysis subsection with architectural context",
+        "Haskell pipeline benchmark appears as 'sequential_100_gets' (not 'pipeline_100_gets')",
+        "comparison.html renders with all Chart.js charts populated",
+        "No temporary build artifacts left after generation",
+        "Typecheck passes"
+      ],
+      "priority": 10,
+      "passes": false,
+      "notes": "Ensure Docker Redis cluster is running before regeneration. Use 'nix-shell shell.nix --run \"python3 hask-redis-mux/comparison/generate_comparison.py\"' to run with all toolchains available. If SE.Redis still loses every metric after async conversion, investigate further — the goal is honest results, not artificially balanced ones."
+    }
+  ]
+}
