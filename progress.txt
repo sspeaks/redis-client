@@ -10,6 +10,10 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
 - Haskell benchmark: `Database.Redis.Command` exports typed `ping`, `set`, `get`, `del` etc. — prefer over raw `executeCommand`
 - Haskell benchmark: `withClusterClient` needs explicit import from `Database.Redis.Cluster.Client`
 - Pre-commit hook runs `stylish-haskell` on `.hs` files automatically
+- REST load tests must use HTTP keep-alive (http.client) not per-request urllib — avoids socket exhaustion
+- C# REST server must be restarted between benchmark scenarios — .NET becomes unresponsive after burst load
+- Docker Redis cluster: start with `docker/cluster-host/make_cluster.sh` (requires nix-shell for redis-cli)
+- Generated comparison output is gitignored in `hask-redis-mux/comparison/output/`
 
 ---
 
@@ -119,4 +123,26 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - `_get_bench()` helper is the standard way to safely access nested benchmark data
   - Operation groupings: single-op (ping/set/get/del), batch (get_10-1000, set_10-1000), pipeline (pipeline_100_gets, sequential_100_gets)
   - `make test` runs full E2E with Docker Redis cluster — ~3 min, 45 tests
+---
+
+## 2026-02-16T02:56 - US-010
+- Regenerated comparison.md and comparison.html with all fairness fixes applied
+- Started Docker Redis cluster (5 nodes on ports 7000-7004) and ran full benchmark suite
+- Fixed REST load test: replaced per-request urllib connections with HTTP keep-alive (http.client)
+- Restructured C# REST benchmarks to restart server between cache_hit/cache_miss scenarios
+  (server becomes unresponsive after a load test batch due to .NET async resource exhaustion)
+- Added server warmup phase (10 sequential requests) before load testing
+- Expanded cluster connection string for C# REST server (all 5 nodes) for faster SE.Redis startup
+- Results show honest, competitive numbers:
+  - Raw ops: SE.Redis wins ping (83us vs 98us), competitive on set/get, Haskell wins batch ops
+  - REST: SE.Redis wins both cache_hit (10291 vs 8832 ops/sec) and cache_miss (11934 vs 7178)
+  - Memory context explains metric differences (max_residency vs peak_working_set vs managed_heap)
+- All 45 E2E tests pass
+- Files changed: `hask-redis-mux/comparison/benchmark_runner.py`
+- **Learnings for future iterations:**
+  - C# REST server (.NET + SE.Redis) becomes unresponsive after handling ~500+ concurrent requests in a burst — must restart server between benchmark scenarios
+  - HTTP keep-alive connections (http.client.HTTPConnection) are essential for realistic REST benchmarks — urllib creates a new TCP connection per request causing socket exhaustion
+  - SE.Redis connects faster when given all cluster endpoints upfront vs single seed node discovery
+  - The output directory has `.gitignore` excluding *.md and *.html — generated files are NOT committed
+  - `make test` runs 45 E2E tests via Docker, takes ~67 seconds
 ---

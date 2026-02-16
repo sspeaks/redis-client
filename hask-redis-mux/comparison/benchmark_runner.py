@@ -471,43 +471,41 @@ def run_csharp_rest_benchmarks(connection_string: str) -> Optional[dict]:
     # Expand seed node to all cluster endpoints for faster connection setup
     cluster_conn = _expand_cluster_endpoints(connection_string)
 
-    results = {}
-    scenarios = [
-        ("cache_hit", lambda i: "/item/1"),
-        ("cache_miss", lambda i: f"/item/{10000 + i}"),
-    ]
+    _log(f"Starting C# REST server on port {port} (Redis: {cluster_conn})...")
+    server_proc = None
+    try:
+        server_proc = subprocess.Popen(
+            [dotnet, "run", "-c", "Release", "--no-build",
+             "--project", str(CSHARP_REST_DIR),
+             "--", "--port", str(port), "--redis", cluster_conn],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-    for scenario, make_path in scenarios:
-        _log(f"Starting C# REST server on port {port} for {scenario} (Redis: {cluster_conn})...")
-        server_proc = None
-        try:
-            server_proc = subprocess.Popen(
-                [dotnet, "run", "-c", "Release", "--no-build",
-                 "--project", str(CSHARP_REST_DIR),
-                 "--", "--port", str(port), "--redis", cluster_conn],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+        if not _wait_for_health(f"http://localhost:{port}/health"):
+            _log("ERROR: C# REST server failed to start (health check timeout)")
+            return None
 
-            if not _wait_for_health(f"http://localhost:{port}/health"):
-                _log(f"ERROR: C# REST server failed to start for {scenario}")
-                continue
-
-            _log(f"C# REST server ready, running {scenario}...")
+        _log("C# REST server ready, running load test...")
+        results = {}
+        for scenario, make_path in [
+            ("cache_hit", lambda i: "/item/1"),
+            ("cache_miss", lambda i: f"/item/{10000 + i}"),
+        ]:
             data = _run_rest_scenario(f"http://localhost:{port}", scenario, make_path)
             if data:
                 results[scenario] = data
-        except Exception as e:
-            _log(f"ERROR: C# REST {scenario} failed: {e}")
-        finally:
-            if server_proc:
-                server_proc.terminate()
-                try:
-                    server_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    server_proc.kill()
-
-    return results if results else None
+        return results if results else None
+    except Exception as e:
+        _log(f"ERROR: C# REST benchmark failed: {e}")
+        return None
+    finally:
+        if server_proc:
+            server_proc.terminate()
+            try:
+                server_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server_proc.kill()
 
 
 if __name__ == "__main__":

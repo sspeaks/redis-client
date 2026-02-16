@@ -166,7 +166,7 @@
         "Typecheck passes"
       ],
       "priority": 10,
-      "passes": false,
+      "passes": true,
       "notes": "Ensure Docker Redis cluster is running before regeneration. Use 'nix-shell shell.nix --run \"python3 hask-redis-mux/comparison/generate_comparison.py\"' to run with all toolchains available. If SE.Redis still loses every metric after async conversion, investigate further — the goal is honest results, not artificially balanced ones."
     }
   ]

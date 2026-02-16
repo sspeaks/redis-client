@@ -1,6 +1,10 @@
 using System.Text.Json;
 using StackExchange.Redis;
 
+// Pre-size thread pool to avoid starvation under burst async load
+// (.NET default is low and ramps up ~1 thread per 500ms)
+ThreadPool.SetMinThreads(50, 50);
+
 var port = 3001;
 var redisConn = "localhost:7000,localhost:7001,localhost:7002";
 
@@ -18,6 +22,8 @@ Console.Error.WriteLine($"Redis cluster: {redisConn}");
 var options = ConfigurationOptions.Parse(redisConn);
 options.AbortOnConnectFail = false;
 options.ConnectTimeout = 5000;
+options.AsyncTimeout = 3000;
+options.SyncTimeout = 3000;
 
 using var connection = ConnectionMultiplexer.Connect(options);
 var db = connection.GetDatabase();
