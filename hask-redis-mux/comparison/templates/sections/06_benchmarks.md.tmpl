@@ -406,8 +406,102 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None,
             "csharp": [_get_rest(csharp_rest_data, s, "ops_per_sec") or 0 for s in rest_scenarios],
         }
 
+    # Build Section 6e: Results Analysis
+    md += render_results_analysis(haskell_data, csharp_data)
+
     full_md = BENCHMARK_TEMPLATE.format(benchmark_content=md)
     return full_md, chart_data
+
+
+RESULTS_ANALYSIS_HEADER = """
+## 6e. Results Analysis
+
+"""
+
+# Operation groupings for analysis
+_SINGLE_OPS = ["ping", "set", "get", "del"]
+_BATCH_OPS = ["get_10", "get_100", "get_1000", "set_10", "set_100", "set_1000"]
+_PIPELINE_OPS = ["pipeline_100_gets", "sequential_100_gets"]
+
+
+def render_results_analysis(haskell_data=None, csharp_data=None):
+    """
+    Render a Results Analysis subsection comparing throughput data
+    and providing architectural context for the results.
+
+    Returns a markdown string.
+    """
+    md = RESULTS_ANALYSIS_HEADER
+
+    # Collect per-operation winners
+    categories = [
+        ("Single-operation (ping, set, get, del)", _SINGLE_OPS),
+        ("Batch (get_10–1000, set_10–1000)", _BATCH_OPS),
+        ("Pipeline / sequential batch (pipeline_100_gets, sequential_100_gets)", _PIPELINE_OPS),
+    ]
+
+    any_data = False
+    for cat_name, ops in categories:
+        h_wins = []
+        c_wins = []
+        ties = []
+        for op in ops:
+            h_tput = _get_bench(haskell_data, op, "ops_per_sec")
+            c_tput = _get_bench(csharp_data, op, "ops_per_sec")
+            if h_tput is None and c_tput is None:
+                continue
+            any_data = True
+            if h_tput is not None and c_tput is not None:
+                if h_tput > c_tput:
+                    h_wins.append(op)
+                elif c_tput > h_tput:
+                    c_wins.append(op)
+                else:
+                    ties.append(op)
+            elif h_tput is not None:
+                h_wins.append(op)
+            else:
+                c_wins.append(op)
+
+        if not h_wins and not c_wins and not ties:
+            continue
+
+        md += f"**{cat_name}:**\n\n"
+        if h_wins:
+            md += f"- hask-redis-mux leads in: {', '.join(h_wins)}\n"
+        if c_wins:
+            md += f"- SE.Redis leads in: {', '.join(c_wins)}\n"
+        if ties:
+            md += f"- Tied: {', '.join(ties)}\n"
+        md += "\n"
+
+    if not any_data:
+        md += "_No throughput data available for analysis._\n"
+        return md
+
+    # Architectural context
+    md += "### Architectural Context\n\n"
+    md += (
+        "- **hask-redis-mux** leverages GHC's lightweight green threads and an implicit "
+        "multiplexing layer over a shared connection pool. Each concurrent operation is a "
+        "cheap green thread, so high fan-out on single-operation workloads incurs minimal "
+        "scheduling overhead.\n"
+    )
+    md += (
+        "- **SE.Redis (StackExchange.Redis)** provides an optimized async multiplexer with "
+        "a dedicated `CreateBatch` API for true client-side pipelining — all commands in a "
+        "batch are written to the socket in one syscall before awaiting any responses, "
+        "reducing round-trip overhead for bulk operations.\n"
+    )
+    md += (
+        "- **Memory:** Haskell's GHC runtime typically shows lower managed-heap residency "
+        "due to compact data representations and generational GC. .NET's peak working set "
+        "includes JIT-compiled code and runtime metadata, making direct byte-for-byte "
+        "comparison misleading — compare `max_residency_bytes` (Haskell) with "
+        "`managed_heap_bytes` (C#) for the closest equivalent.\n"
+    )
+
+    return md
 
 
 def render_chart_js_snippets(chart_data):
