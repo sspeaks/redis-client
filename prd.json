@@ -35,7 +35,7 @@
         "Typecheck passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "CreateBatch already returns Task<RedisValue> from StringGetAsync, so the change is minimal — just ensure the outer RunBenchmark is async and the action lambda is async."
     },
     {
