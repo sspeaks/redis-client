@@ -1,0 +1,24 @@
+# Ralph Progress Log
+Started: Sun Feb 15 06:07:16 PM PST 2026
+
+## Codebase Patterns
+- C# benchmark is at `hask-redis-mux/comparison/benchmarks/csharp/Program.cs`, build with `dotnet build` in nix-shell
+- C# REST server is at `hask-redis-mux/comparison/benchmarks/csharp/RestServer/`
+- The comparison infrastructure lives on branch `ralph/comparison-fairness-and-rest-benchmarks` (not on main)
+- Use `nix-shell shell.nix --run "dotnet build"` in the csharp dir for building
+- RunBenchmark pattern: accepts `Func<int, Task>`, uses `Task.Run` + async lambdas + `Task.WhenAll` for concurrency
+
+---
+
+## 2026-02-16T02:07 - US-001
+- Converted all sync StackExchange.Redis calls to async/await in Program.cs
+- Main → `static async Task Main`, RunBenchmark → `async Task<Dictionary<string, object>>` with `Func<int, Task>`
+- Replaced `Parallel.For` with `Task.Run` + async lambdas + `Task.WhenAll`
+- Pre-population and cleanup now use `Enumerable.Range(...).Select(i => db.StringSetAsync(...))` + `Task.WhenAll`
+- No .Result or .GetAwaiter().GetResult() anywhere
+- Files changed: `hask-redis-mux/comparison/benchmarks/csharp/Program.cs`
+- **Learnings for future iterations:**
+  - StackExchange.Redis sync methods internally do async+block, causing thread pool starvation under Parallel.For — async/await avoids this
+  - CreateBatch already returns Task from StringGetAsync — wrapping in async RunBenchmark is trivial
+  - The branch `ralph/benchmark-fairness-v2` was created from `ralph/comparison-fairness-and-rest-benchmarks` (not main) since comparison files only exist there
+---
