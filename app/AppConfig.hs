@@ -71,7 +71,7 @@ authenticate :: (Client client) => String -> String -> RedisCommandClient client
 authenticate _ [] = return $ RespSimpleString "OK"
 authenticate uname pwd = do
   (_ :: RespData) <- auth (BS8.pack uname) (BS8.pack pwd)
-  (_ :: RespData) <- clientSetInfo ["LIB-NAME", "seth-spaghetti"]
+  (_ :: RespData) <- clientSetInfo ["LIB-NAME", "hask-redis-mux"]
   clientSetInfo ["LIB-VER", "0.0.0"]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
