@@ -250,7 +250,7 @@ OPERATIONS = [
 ]
 
 
-def _fmt(val, default="-"):
+def _fmt(val, default="N/A"):
     """Format a numeric value or return default."""
     if val is None:
         return default
@@ -323,7 +323,7 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None,
             if key in mem:
                 md += f"| {key} | {_fmt(mem[key])} |\n"
     else:
-        md += "| _(no data)_ | - |\n"
+        md += "| _(no data)_ | N/A |\n"
 
     md += SECTION_6C_CSHARP
     if csharp_data and csharp_data.get("memory"):
@@ -333,7 +333,7 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None,
             if key in mem:
                 md += f"| {key} | {_fmt(mem[key])} |\n"
     else:
-        md += "| _(no data)_ | - |\n"
+        md += "| _(no data)_ | N/A |\n"
 
     # Build Section 6d: REST Cache-Aside Benchmarks
     if haskell_rest_data is not None or csharp_rest_data is not None:
