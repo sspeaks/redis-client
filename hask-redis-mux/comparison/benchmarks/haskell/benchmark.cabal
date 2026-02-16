@@ -11,5 +11,19 @@ executable redis-benchmark
     ghc-options:      -Wall -O2 -threaded -rtsopts "-with-rtsopts=-N -s"
     build-depends:    base >=4.19 && <4.22
                     , hask-redis-mux
+                    , async
                     , bytestring >=0.12 && <0.13
                     , clock >=0.8 && <0.9
+                    , containers
+                    , stm
+
+executable rest-server
+    default-language: GHC2021
+    main-is:          RestServer.hs
+    ghc-options:      -Wall -O2 -threaded -rtsopts "-with-rtsopts=-N"
+    build-depends:    base >=4.19 && <4.22
+                    , hask-redis-mux
+                    , bytestring >=0.12 && <0.13
+                    , http-types >=0.12 && <0.13
+                    , scotty >=0.21 && <0.23
+                    , optparse-applicative >=0.18 && <0.19
