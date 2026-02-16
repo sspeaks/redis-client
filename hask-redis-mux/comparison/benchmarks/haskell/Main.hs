@@ -5,12 +5,10 @@ module Main where
 
 import           Control.Concurrent            (getNumCapabilities)
 import           Control.Concurrent.Async      (forConcurrently_)
-import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Monad                 (replicateM, void)
 import qualified Data.ByteString.Char8         as BS
 import           Data.IORef
 import           Data.List                     (sort)
-import qualified Data.Map.Strict               as Map
 import           Database.Redis
 import           Database.Redis.Cluster.Client (withClusterClient)
 import           System.Clock
@@ -124,21 +122,11 @@ main = do
     hPutStrLn stderr "Starting cluster benchmarks..."
     hFlush stderr
 
-    -- Get topology for mux-routed PING
-    topology <- readTVarIO (clusterTopology client)
-    let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-        muxPool = clusterMultiplexPool client
-
     putStrLn "{"
 
-    -- PING via multiplexer
-    case masterNodes of
-      [] -> hPutStrLn stderr "ERROR: No master nodes found for ping benchmark"
-      (node:_) -> do
-        let addr = nodeAddress node
-            pingCmd = encodeCommandBuilder ["PING"]
-        benchmark "ping" 10000 numThreads $ \_i ->
-          void $ submitToNode muxPool addr pingCmd
+    -- PING via cluster client (same abstraction as SET/GET/DEL)
+    benchmark "ping" 10000 numThreads $ \_i ->
+      void $ run (ping :: ClusterCommandClient PlainTextClient ByteString)
     putStrLn ","
 
     -- SET with distributed keys
