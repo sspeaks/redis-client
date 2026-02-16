@@ -98,6 +98,7 @@ class Program
             ["gen1_collections"] = GC.CollectionCount(1),
             ["gen2_collections"] = GC.CollectionCount(2),
             ["total_allocated_bytes"] = GC.GetTotalAllocatedBytes(),
+            ["managed_heap_bytes"] = GC.GetTotalMemory(true),
             ["peak_working_set_bytes"] = Process.GetCurrentProcess().PeakWorkingSet64,
         };
 
