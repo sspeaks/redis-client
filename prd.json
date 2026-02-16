@@ -97,7 +97,7 @@
         "Typecheck passes"
       ],
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "notes": "GC.GetTotalMemory(true) forces a GC then returns managed heap size. This is the closest C# equivalent to Haskell's max_residency_bytes from RTS -s stats."
     },
     {

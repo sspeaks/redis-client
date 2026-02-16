@@ -70,3 +70,14 @@ Started: Sun Feb 15 06:07:16 PM PST 2026
   - RestServer builds independently with `dotnet build` in its own directory via nix-shell
   - ASP.NET Core MapGet handlers support async lambdas natively — just add `async` keyword and use `await`
 ---
+
+## 2026-02-16T02:27 - US-006
+- Added `managed_heap_bytes` field to C# benchmark GC stats using `GC.GetTotalMemory(true)`
+- This metric forces a GC collection then returns managed heap size, comparable to Haskell's `max_residency_bytes`
+- Existing `peak_working_set_bytes` preserved for total process memory comparison
+- Files changed: `hask-redis-mux/comparison/benchmarks/csharp/Program.cs`
+- **Learnings for future iterations:**
+  - `GC.GetTotalMemory(true)` is the C# equivalent of Haskell's `max_residency_bytes` — both measure live managed/GC heap
+  - `peak_working_set_bytes` includes runtime, JIT code, GC regions, stacks — not comparable to Haskell's max_residency
+  - Single-line dictionary addition — minimal change, high impact for fair memory comparison
+---
