@@ -60,6 +60,16 @@ SECTION_6C_HEADER = """## 6c. Memory & GC Profiling
 |---|---:|
 """
 
+SECTION_6C_CONTEXT = """
+> **Memory metric context:** Haskell `max_residency_bytes` reports the maximum live
+> heap size observed at any GC point — it excludes stack, code, and GC working memory.
+> C# `peak_working_set_bytes` is total process memory including the runtime, JIT-compiled
+> code, GC regions, and thread stacks. C# `managed_heap_bytes` (via `GC.GetTotalMemory`)
+> reports the managed heap size after a full GC, which is the closest equivalent to
+> Haskell's `max_residency_bytes`.
+
+"""
+
 SECTION_6C_CSHARP = """
 ### C# (.NET GC)
 
@@ -305,7 +315,7 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None,
         md += f"| {op} | {h_ops} | {c_ops} |\n"
 
     # Build Section 6c: Memory tables
-    md += "\n" + SECTION_6C_HEADER
+    md += "\n" + SECTION_6C_CONTEXT + SECTION_6C_HEADER
     if haskell_data and haskell_data.get("memory"):
         mem = haskell_data["memory"]
         for key in ["max_residency_bytes", "total_alloc_bytes", "gc_pause_max_ms",
@@ -319,7 +329,7 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None,
     if csharp_data and csharp_data.get("memory"):
         mem = csharp_data["memory"]
         for key in ["gen0_collections", "gen1_collections", "gen2_collections",
-                     "total_allocated_bytes", "peak_working_set_bytes"]:
+                     "total_allocated_bytes", "managed_heap_bytes", "peak_working_set_bytes"]:
             if key in mem:
                 md += f"| {key} | {_fmt(mem[key])} |\n"
     else:
