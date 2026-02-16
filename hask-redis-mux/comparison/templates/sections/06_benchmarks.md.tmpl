@@ -66,6 +66,33 @@ SECTION_6C_CSHARP = """
 |---|---:|
 """
 
+SECTION_6D_HEADER = """## 6d. REST Cache-Aside Benchmarks
+
+### Cache-Hit Latency (microseconds)
+
+| Metric | hask-redis-mux | SE.Redis |
+|---|---:|---:|
+"""
+
+SECTION_6D_MISS_HEADER = """
+### Cache-Miss Latency (microseconds)
+
+| Metric | hask-redis-mux | SE.Redis |
+|---|---:|---:|
+"""
+
+SECTION_6D_THROUGHPUT_HEADER = """
+### REST Throughput (requests/second)
+
+| Scenario | hask-redis-mux | SE.Redis |
+|---|---:|---:|
+"""
+
+REST_SKIPPED_MESSAGE = """## 6d. REST Cache-Aside Benchmarks
+
+> REST benchmarks skipped.
+"""
+
 # Chart.js snippets for HTML rendering
 CHART_JS_LATENCY = """
 <div class="chart-container">
@@ -148,6 +175,60 @@ CHART_JS_MEMORY = """
 </script>
 """
 
+CHART_JS_REST_LATENCY = """
+<div class="chart-container">
+<canvas id="restLatencyChart"></canvas>
+</div>
+<script>
+(function() {
+  var data = $REST_LATENCY_DATA$;
+  var ctx = document.getElementById('restLatencyChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: 'hask-redis-mux p50 (μs)', data: data.haskell_p50, backgroundColor: 'rgba(94,80,134,0.7)' },
+        { label: 'SE.Redis p50 (μs)', data: data.csharp_p50, backgroundColor: 'rgba(23,134,0,0.7)' }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { title: { display: true, text: 'REST Cache-Aside Latency (p50, lower is better)' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Microseconds' } } }
+    }
+  });
+})();
+</script>
+"""
+
+CHART_JS_REST_THROUGHPUT = """
+<div class="chart-container">
+<canvas id="restThroughputChart"></canvas>
+</div>
+<script>
+(function() {
+  var data = $REST_THROUGHPUT_DATA$;
+  var ctx = document.getElementById('restThroughputChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.labels,
+      datasets: [
+        { label: 'hask-redis-mux req/sec', data: data.haskell, backgroundColor: 'rgba(94,80,134,0.7)' },
+        { label: 'SE.Redis req/sec', data: data.csharp, backgroundColor: 'rgba(23,134,0,0.7)' }
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { title: { display: true, text: 'REST Throughput Comparison (higher is better)' } },
+      scales: { y: { beginAtZero: true, title: { display: true, text: 'Requests / second' } } }
+    }
+  });
+})();
+</script>
+"""
+
 # Operations to compare
 OPERATIONS = [
     "ping", "set", "get", "del",
@@ -175,7 +256,8 @@ def _get_bench(data, op, field):
     return None
 
 
-def render_benchmarks(haskell_data=None, csharp_data=None, reason=None):
+def render_benchmarks(haskell_data=None, csharp_data=None, reason=None,
+                      haskell_rest_data=None, csharp_rest_data=None):
     """
     Render Section 6 from benchmark data.
 
@@ -183,6 +265,8 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None):
         haskell_data: Dict from run_haskell_benchmarks() or None
         csharp_data: Dict from run_csharp_benchmarks() or None
         reason: Reason benchmarks were skipped (if both are None)
+        haskell_rest_data: Dict from run_haskell_rest_benchmarks() or None
+        csharp_rest_data: Dict from run_csharp_rest_benchmarks() or None
 
     Returns:
         Tuple of (markdown_str, chart_data_dict)
@@ -239,6 +323,33 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None):
     else:
         md += "| _(no data)_ | - |\n"
 
+    # Build Section 6d: REST Cache-Aside Benchmarks
+    if haskell_rest_data is not None or csharp_rest_data is not None:
+        def _get_rest(data, scenario, field):
+            if data and scenario in data:
+                return data[scenario].get(field)
+            return None
+
+        md += "\n" + SECTION_6D_HEADER
+        for metric in ["p50_us", "p95_us", "p99_us"]:
+            h_val = _fmt(_get_rest(haskell_rest_data, "cache_hit", metric))
+            c_val = _fmt(_get_rest(csharp_rest_data, "cache_hit", metric))
+            md += f"| {metric} | {h_val} | {c_val} |\n"
+
+        md += SECTION_6D_MISS_HEADER
+        for metric in ["p50_us", "p95_us", "p99_us"]:
+            h_val = _fmt(_get_rest(haskell_rest_data, "cache_miss", metric))
+            c_val = _fmt(_get_rest(csharp_rest_data, "cache_miss", metric))
+            md += f"| {metric} | {h_val} | {c_val} |\n"
+
+        md += SECTION_6D_THROUGHPUT_HEADER
+        for scenario in ["cache_hit", "cache_miss"]:
+            h_val = _fmt(_get_rest(haskell_rest_data, scenario, "ops_per_sec"))
+            c_val = _fmt(_get_rest(csharp_rest_data, scenario, "ops_per_sec"))
+            md += f"| {scenario} | {h_val} | {c_val} |\n"
+    else:
+        md += "\n" + REST_SKIPPED_MESSAGE
+
     # Build Chart.js data
     chart_data = {
         "latency": {
@@ -263,6 +374,25 @@ def render_benchmarks(haskell_data=None, csharp_data=None, reason=None):
             ],
         },
     }
+
+    # Add REST chart data if available
+    if haskell_rest_data is not None or csharp_rest_data is not None:
+        def _get_rest(data, scenario, field):
+            if data and scenario in data:
+                return data[scenario].get(field)
+            return None
+
+        rest_scenarios = ["cache_hit", "cache_miss"]
+        chart_data["rest_latency"] = {
+            "labels": rest_scenarios,
+            "haskell_p50": [_get_rest(haskell_rest_data, s, "p50_us") or 0 for s in rest_scenarios],
+            "csharp_p50": [_get_rest(csharp_rest_data, s, "p50_us") or 0 for s in rest_scenarios],
+        }
+        chart_data["rest_throughput"] = {
+            "labels": rest_scenarios,
+            "haskell": [_get_rest(haskell_rest_data, s, "ops_per_sec") or 0 for s in rest_scenarios],
+            "csharp": [_get_rest(csharp_rest_data, s, "ops_per_sec") or 0 for s in rest_scenarios],
+        }
 
     full_md = BENCHMARK_TEMPLATE.format(benchmark_content=md)
     return full_md, chart_data
@@ -291,5 +421,13 @@ def render_chart_js_snippets(chart_data):
     if "memory" in chart_data:
         snippets.append(
             CHART_JS_MEMORY.replace("$MEMORY_DATA$", json.dumps(chart_data["memory"]))
+        )
+    if "rest_latency" in chart_data:
+        snippets.append(
+            CHART_JS_REST_LATENCY.replace("$REST_LATENCY_DATA$", json.dumps(chart_data["rest_latency"]))
+        )
+    if "rest_throughput" in chart_data:
+        snippets.append(
+            CHART_JS_REST_THROUGHPUT.replace("$REST_THROUGHPUT_DATA$", json.dumps(chart_data["rest_throughput"]))
         )
     return "\n".join(snippets)
