@@ -15,6 +15,7 @@ build-type:         Simple
 extra-doc-files:    CHANGELOG.md
                   , README.md
 extra-source-files: lib/crc16/crc16.c
+                  , data/cluster_slot_mapping.txt
 homepage:           https://github.com/sspeaks/redis-client
 bug-reports:        https://github.com/sspeaks/redis-client/issues
 tested-with:        GHC == 9.10.3
