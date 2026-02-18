@@ -1,0 +1,33 @@
+name: Publish Docker Image
+
+on:
+  push:
+    branches: [ "main" ]
+  release:
+    types: [ created ]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - uses: cachix/install-nix-action@v31
+      with:
+        nix_path: nixpkgs=channel:nixos-25.05
+
+    - name: Build Docker image
+      run: nix build .#dockerImage
+
+    - name: Log in to GHCR
+      run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+    - name: Load and push image
+      run: |
+        docker load < result
+        docker push ghcr.io/sspeaks/redis-client:latest
