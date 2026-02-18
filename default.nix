@@ -41,6 +41,15 @@ rec {
     (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "redis-client" ])
   ];
 
+  dockerImage = pkgs.dockerTools.buildLayeredImage {
+    name = "ghcr.io/sspeaks/redis-client";
+    tag = "latest";
+    contents = [ justClient pkgs.cacert ];
+    config = {
+      Entrypoint = [ "/bin/redis-client" ];
+    };
+  };
+
   # Wrapper package that includes both redis-client and azure-redis-connect
   fullPackageWithScripts = pkgs.stdenv.mkDerivation {
     name = "redis-client-full";

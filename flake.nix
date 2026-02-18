@@ -35,6 +35,7 @@
       in
       {
         defaultPackage = (import ./default.nix { inherit pkgs; }).fullPackageWithScripts;
+        packages.dockerImage = (import ./default.nix { inherit pkgs; }).dockerImage;
         devShell = import ./shell.nix { inherit pkgs; };
         formatter = pkgs.nixpkgs-fmt;
       });
