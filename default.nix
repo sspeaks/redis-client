@@ -44,7 +44,7 @@ rec {
   dockerImage = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/sspeaks/redis-client";
     tag = "latest";
-    contents = [ justClient pkgs.cacert pkgs.jq pkgs.curl pkgs.wget ];
+    contents = [ justClient pkgs.cacert pkgs.jq pkgs.curl pkgs.bash ];
     config = {
       Entrypoint = [ "/bin/redis-client" ];
     };
