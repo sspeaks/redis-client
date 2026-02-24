@@ -1,7 +1,7 @@
 # hask-redis-mux
 
 [![Hackage](https://img.shields.io/hackage/v/hask-redis-mux.svg)](https://hackage.haskell.org/package/hask-redis-mux)
-[![CI](https://github.com/sspeaks/redis-client/actions/workflows/ci.yml/badge.svg)](https://github.com/sspeaks/redis-client/actions)
+[![CI](https://github.com/sspeaks/redis-client/actions/workflows/runTests.yml/badge.svg)](https://github.com/sspeaks/redis-client/actions/workflows/runTests.yml)
 
 A multiplexed Redis client library for Haskell with full RESP protocol support,
 Redis Cluster topology discovery, connection pooling, and TLS.
