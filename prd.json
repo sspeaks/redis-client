@@ -1,0 +1,86 @@
+{
+  "projectName": "redis-client",
+  "branchName": "feature/missing-redis-commands",
+  "stories": [
+    {
+      "id": "string-commands-basic",
+      "title": "Add APPEND, STRLEN, SETEX, INCRBY, DECRBY string commands",
+      "description": "Add 5 basic string commands to the RedisCommands typeclass, RedisCommandClient instance, and ClusterCommandClient instance.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (between line 123 incr and line 124 hset):\n   append :: (FromResp a) => ByteString -> ByteString -> m a\n   strlen :: (FromResp a) => ByteString -> m a\n   setex :: (FromResp a) => ByteString -> Int -> ByteString -> m a\n   incrby :: (FromResp a) => ByteString -> Int -> m a\n   decrby :: (FromResp a) => ByteString -> Int -> m a\n\n2. Add to RedisCommandClient instance (after decr, around line 325):\n   append key value = executeCommandAs [\"APPEND\", key, value]\n   strlen key = executeCommandAs [\"STRLEN\", key]\n   setex key seconds value = executeCommandAs [\"SETEX\", key, showBS seconds, value]\n   incrby key amount = executeCommandAs [\"INCRBY\", key, showBS amount]\n   decrby key amount = executeCommandAs [\"DECRBY\", key, showBS amount]\n\n3. Add to ClusterCommandClient instance in hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (after decr around line 558):\n   append k v = executeKeyedAs k [\"APPEND\", k, v]\n   strlen k = executeKeyedAs k [\"STRLEN\", k]\n   setex k secs v = executeKeyedAs k [\"SETEX\", k, showBS secs, v]\n   incrby k amt = executeKeyedAs k [\"INCRBY\", k, showBS amt]\n   decrby k amt = executeKeyedAs k [\"DECRBY\", k, showBS amt]\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 1,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "string-commands-advanced",
+      "title": "Add INCRBYFLOAT, GETDEL, GETEX string commands",
+      "description": "Add 3 more string commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after the decrby line added in previous story):\n   incrbyfloat :: (FromResp a) => ByteString -> Double -> m a\n   getdel :: (FromResp a) => ByteString -> m a\n   getex :: (FromResp a) => ByteString -> [ByteString] -> m a\n   Note: getex takes a key and optional args like [\"EX\", \"60\"] or [\"PERSIST\"] so the caller controls the options.\n\n2. Add to RedisCommandClient instance:\n   incrbyfloat key amount = executeCommandAs [\"INCRBYFLOAT\", key, showBS amount]\n   getdel key = executeCommandAs [\"GETDEL\", key]\n   getex key opts = executeCommandAs ([\"GETEX\", key] ++ opts)\n\n3. Add to ClusterCommandClient instance:\n   incrbyfloat k amt = executeKeyedAs k [\"INCRBYFLOAT\", k, showBS amt]\n   getdel k = executeKeyedAs k [\"GETDEL\", k]\n   getex k opts = executeKeyedAs k ([\"GETEX\", k] ++ opts)\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 2,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "hash-commands",
+      "title": "Add HGETALL, HLEN, HSETNX, HINCRBY, HINCRBYFLOAT hash commands",
+      "description": "Add 5 hash commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after hvals line):\n   hgetall :: (FromResp a) => ByteString -> m a\n   hlen :: (FromResp a) => ByteString -> m a\n   hsetnx :: (FromResp a) => ByteString -> ByteString -> ByteString -> m a\n   hincrby :: (FromResp a) => ByteString -> ByteString -> Int -> m a\n   hincrbyfloat :: (FromResp a) => ByteString -> ByteString -> Double -> m a\n\n2. Add to RedisCommandClient instance (after hvals):\n   hgetall key = executeCommandAs [\"HGETALL\", key]\n   hlen key = executeCommandAs [\"HLEN\", key]\n   hsetnx key field value = executeCommandAs [\"HSETNX\", key, field, value]\n   hincrby key field amount = executeCommandAs [\"HINCRBY\", key, field, showBS amount]\n   hincrbyfloat key field amount = executeCommandAs [\"HINCRBYFLOAT\", key, field, showBS amount]\n\n3. Add to ClusterCommandClient instance (after hvals):\n   hgetall k = executeKeyedAs k [\"HGETALL\", k]\n   hlen k = executeKeyedAs k [\"HLEN\", k]\n   hsetnx k f v = executeKeyedAs k [\"HSETNX\", k, f, v]\n   hincrby k f amt = executeKeyedAs k [\"HINCRBY\", k, f, showBS amt]\n   hincrbyfloat k f amt = executeKeyedAs k [\"HINCRBYFLOAT\", k, f, showBS amt]\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 3,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "list-commands",
+      "title": "Add LINSERT, LSET, LTRIM, LREM list commands",
+      "description": "Add 4 list commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after lindex line):\n   linsert :: (FromResp a) => ByteString -> ByteString -> ByteString -> ByteString -> m a\n   -- linsert key position(BEFORE/AFTER) pivot element\n   lset :: (FromResp a) => ByteString -> Int -> ByteString -> m a\n   ltrim :: (FromResp a) => ByteString -> Int -> Int -> m a\n   lrem :: (FromResp a) => ByteString -> Int -> ByteString -> m a\n\n2. Add to RedisCommandClient instance (after lindex):\n   linsert key pos pivot element = executeCommandAs [\"LINSERT\", key, pos, pivot, element]\n   lset key index element = executeCommandAs [\"LSET\", key, showBS index, element]\n   ltrim key start stop = executeCommandAs [\"LTRIM\", key, showBS start, showBS stop]\n   lrem key count element = executeCommandAs [\"LREM\", key, showBS count, element]\n\n3. Add to ClusterCommandClient instance (after lindex):\n   linsert k pos pivot element = executeKeyedAs k [\"LINSERT\", k, pos, pivot, element]\n   lset k idx element = executeKeyedAs k [\"LSET\", k, showBS idx, element]\n   ltrim k start stop = executeKeyedAs k [\"LTRIM\", k, showBS start, showBS stop]\n   lrem k cnt element = executeKeyedAs k [\"LREM\", k, showBS cnt, element]\n\nNote: linsert uses ByteString for the position arg (\"BEFORE\" or \"AFTER\") to match the existing pattern of letting callers pass Redis keywords directly.\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 4,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "set-commands",
+      "title": "Add SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER set commands",
+      "description": "Add 6 set commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after sismember line):\n   srem :: (FromResp a) => ByteString -> [ByteString] -> m a\n   sdiff :: (FromResp a) => [ByteString] -> m a\n   sinter :: (FromResp a) => [ByteString] -> m a\n   sunion :: (FromResp a) => [ByteString] -> m a\n   spop :: (FromResp a) => ByteString -> m a\n   srandmember :: (FromResp a) => ByteString -> m a\n\n2. Add to RedisCommandClient instance (after sismember):\n   srem key members = executeCommandAs (\"SREM\" : key : members)\n   sdiff keys = executeCommandAs (\"SDIFF\" : keys)\n   sinter keys = executeCommandAs (\"SINTER\" : keys)\n   sunion keys = executeCommandAs (\"SUNION\" : keys)\n   spop key = executeCommandAs [\"SPOP\", key]\n   srandmember key = executeCommandAs [\"SRANDMEMBER\", key]\n\n3. Add to ClusterCommandClient instance (after sismember):\n   srem k members = executeKeyedAs k (\"SREM\" : k : members)\n   sdiff keys = case keys of\n     []    -> executeKeyless (RedisCommandClient.sdiff [])\n     (k:_) -> executeKeyedAs k (\"SDIFF\" : keys)\n   sinter keys = case keys of\n     []    -> executeKeyless (RedisCommandClient.sinter [])\n     (k:_) -> executeKeyedAs k (\"SINTER\" : keys)\n   sunion keys = case keys of\n     []    -> executeKeyless (RedisCommandClient.sunion [])\n     (k:_) -> executeKeyedAs k (\"SUNION\" : keys)\n   spop k = executeKeyedAs k [\"SPOP\", k]\n   srandmember k = executeKeyedAs k [\"SRANDMEMBER\", k]\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 5,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "sorted-set-commands-basic",
+      "title": "Add ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK sorted set commands",
+      "description": "Add 5 basic sorted set commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after zrange line):\n   zrem :: (FromResp a) => ByteString -> [ByteString] -> m a\n   zcard :: (FromResp a) => ByteString -> m a\n   zscore :: (FromResp a) => ByteString -> ByteString -> m a\n   zrank :: (FromResp a) => ByteString -> ByteString -> m a\n   zrevrank :: (FromResp a) => ByteString -> ByteString -> m a\n\n2. Add to RedisCommandClient instance (after zrange):\n   zrem key members = executeCommandAs (\"ZREM\" : key : members)\n   zcard key = executeCommandAs [\"ZCARD\", key]\n   zscore key member = executeCommandAs [\"ZSCORE\", key, member]\n   zrank key member = executeCommandAs [\"ZRANK\", key, member]\n   zrevrank key member = executeCommandAs [\"ZREVRANK\", key, member]\n\n3. Add to ClusterCommandClient instance (after zrange):\n   zrem k members = executeKeyedAs k (\"ZREM\" : k : members)\n   zcard k = executeKeyedAs k [\"ZCARD\", k]\n   zscore k member = executeKeyedAs k [\"ZSCORE\", k, member]\n   zrank k member = executeKeyedAs k [\"ZRANK\", k, member]\n   zrevrank k member = executeKeyedAs k [\"ZREVRANK\", k, member]\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 6,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "sorted-set-commands-advanced",
+      "title": "Add ZCOUNT, ZINCRBY, ZRANGESTORE sorted set commands",
+      "description": "Add 3 more sorted set commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after zrevrank):\n   zcount :: (FromResp a) => ByteString -> ByteString -> ByteString -> m a\n   -- zcount uses ByteString for min/max to support -inf/+inf/( syntax\n   zincrby :: (FromResp a) => ByteString -> Double -> ByteString -> m a\n   zrangestore :: (FromResp a) => ByteString -> ByteString -> ByteString -> ByteString -> [ByteString] -> m a\n   -- zrangestore dst src min max [optional args like BYSCORE, REV, LIMIT offset count]\n\n2. Add to RedisCommandClient instance:\n   zcount key minScore maxScore = executeCommandAs [\"ZCOUNT\", key, minScore, maxScore]\n   zincrby key increment member = executeCommandAs [\"ZINCRBY\", key, showBS increment, member]\n   zrangestore dst src minVal maxVal opts = executeCommandAs ([\"ZRANGESTORE\", dst, src, minVal, maxVal] ++ opts)\n\n3. Add to ClusterCommandClient instance:\n   zcount k minScore maxScore = executeKeyedAs k [\"ZCOUNT\", k, minScore, maxScore]\n   zincrby k increment member = executeKeyedAs k [\"ZINCRBY\", k, showBS increment, member]\n   zrangestore dst src minVal maxVal opts = executeKeyedAs dst ([\"ZRANGESTORE\", dst, src, minVal, maxVal] ++ opts)\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 7,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "key-commands",
+      "title": "Add PERSIST, TYPE, RENAME, RENAMENX, UNLINK key commands",
+      "description": "Add 5 key management commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after ttl line):\n   persist :: (FromResp a) => ByteString -> m a\n   keyType :: (FromResp a) => ByteString -> m a\n   -- Named keyType instead of 'type' since type is a Haskell keyword\n   rename :: (FromResp a) => ByteString -> ByteString -> m a\n   renamenx :: (FromResp a) => ByteString -> ByteString -> m a\n   unlink :: (FromResp a) => [ByteString] -> m a\n\n2. Add to RedisCommandClient instance (after ttl):\n   persist key = executeCommandAs [\"PERSIST\", key]\n   keyType key = executeCommandAs [\"TYPE\", key]\n   rename key newkey = executeCommandAs [\"RENAME\", key, newkey]\n   renamenx key newkey = executeCommandAs [\"RENAMENX\", key, newkey]\n   unlink keys = executeCommandAs (\"UNLINK\" : keys)\n\n3. Add to ClusterCommandClient instance (after ttl):\n   persist k = executeKeyedAs k [\"PERSIST\", k]\n   keyType k = executeKeyedAs k [\"TYPE\", k]\n   rename k newk = executeKeyedAs k [\"RENAME\", k, newk]\n   renamenx k newk = executeKeyedAs k [\"RENAMENX\", k, newk]\n   unlink keys = case keys of\n     []    -> executeKeyless (RedisCommandClient.unlink [])\n     (k:_) -> executeKeyedAs k (\"UNLINK\" : keys)\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 8,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "hyperloglog-commands",
+      "title": "Add PFADD, PFCOUNT, PFMERGE HyperLogLog commands",
+      "description": "Add 3 HyperLogLog commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after unlink, before clientSetInfo):\n   pfadd :: (FromResp a) => ByteString -> [ByteString] -> m a\n   pfcount :: (FromResp a) => [ByteString] -> m a\n   pfmerge :: (FromResp a) => ByteString -> [ByteString] -> m a\n\n2. Add to RedisCommandClient instance:\n   pfadd key elements = executeCommandAs (\"PFADD\" : key : elements)\n   pfcount keys = executeCommandAs (\"PFCOUNT\" : keys)\n   pfmerge destkey sourcekeys = executeCommandAs (\"PFMERGE\" : destkey : sourcekeys)\n\n3. Add to ClusterCommandClient instance:\n   pfadd k elements = executeKeyedAs k (\"PFADD\" : k : elements)\n   pfcount keys = case keys of\n     []    -> executeKeyless (RedisCommandClient.pfcount [])\n     (k:_) -> executeKeyedAs k (\"PFCOUNT\" : keys)\n   pfmerge destk srckeys = executeKeyedAs destk (\"PFMERGE\" : destk : srckeys)\n\nBuild with: nix-shell --run 'cabal build all'",
+      "priority": 9,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all'"
+    },
+    {
+      "id": "update-exports",
+      "title": "Update module exports and re-export module for new commands",
+      "description": "Ensure all newly added commands are properly exported. Also update the CHANGELOG.md in hask-redis-mux/ to document the new commands.\n\nThe RedisCommands typeclass is already exported from Command.hs module, so its new methods are automatically visible. But verify:\n\n1. Check that hask-redis-mux/lib/redis/Database/Redis.hs re-exports everything needed. It should already re-export RedisCommands(..) which includes all methods.\n\n2. Update hask-redis-mux/CHANGELOG.md to add an entry documenting all 39 new commands added:\n   - String: append, strlen, setex, incrby, decrby, incrbyfloat, getdel, getex\n   - Hash: hgetall, hlen, hsetnx, hincrby, hincrbyfloat\n   - List: linsert, lset, ltrim, lrem\n   - Set: srem, sdiff, sinter, sunion, spop, srandmember\n   - Sorted Set: zrem, zcard, zscore, zrank, zrevrank, zcount, zincrby, zrangestore\n   - Key: persist, keyType, rename, renamenx, unlink\n   - HyperLogLog: pfadd, pfcount, pfmerge\n\n3. Run the build one final time and ensure all tests pass:\n   nix-shell --run 'cabal build all && cabal test all'\n\nBuild with: nix-shell --run 'cabal build all && cabal test all'",
+      "priority": 10,
+      "passes": false,
+      "testCommand": "nix-shell --run 'cabal build all && cabal test all'"
+    }
+  ]
+}

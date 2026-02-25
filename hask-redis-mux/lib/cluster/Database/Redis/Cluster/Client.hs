@@ -554,6 +554,11 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
     (k:_) -> executeKeyedAs k ("MGET" : keys)
   setnx k v = executeKeyedAs k ["SETNX", k, v]
   decr k = executeKeyedAs k ["DECR", k]
+  append k v = executeKeyedAs k ["APPEND", k, v]
+  strlen k = executeKeyedAs k ["STRLEN", k]
+  setex k secs v = executeKeyedAs k ["SETEX", k, showBS secs, v]
+  incrby k amt = executeKeyedAs k ["INCRBY", k, showBS amt]
+  decrby k amt = executeKeyedAs k ["DECRBY", k, showBS amt]
   psetex k ms v = executeKeyedAs k ["PSETEX", k, showBS ms, v]
   bulkSet kvs = case kvs of
     []         -> executeKeyless (RedisCommandClient.bulkSet [])
