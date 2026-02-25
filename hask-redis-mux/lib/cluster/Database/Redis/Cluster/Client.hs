@@ -630,6 +630,9 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   zscore k member = executeKeyedAs k ["ZSCORE", k, member]
   zrank k member = executeKeyedAs k ["ZRANK", k, member]
   zrevrank k member = executeKeyedAs k ["ZREVRANK", k, member]
+  zcount k minScore maxScore = executeKeyedAs k ["ZCOUNT", k, minScore, maxScore]
+  zincrby k increment member = executeKeyedAs k ["ZINCRBY", k, showBS increment, member]
+  zrangestore dst src minVal maxVal opts = executeKeyedAs dst (["ZRANGESTORE", dst, src, minVal, maxVal] ++ opts)
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
     in executeKeyedAs k ("GEOADD" : k : payload)

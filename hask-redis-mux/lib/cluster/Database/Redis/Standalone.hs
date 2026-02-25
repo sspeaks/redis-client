@@ -290,6 +290,9 @@ instance RedisCommands StandaloneCommandClient where
   zscore k member = submitMuxAs ["ZSCORE", k, member]
   zrank k member = submitMuxAs ["ZRANK", k, member]
   zrevrank k member = submitMuxAs ["ZREVRANK", k, member]
+  zcount k minScore maxScore = submitMuxAs ["ZCOUNT", k, minScore, maxScore]
+  zincrby k increment member = submitMuxAs ["ZINCRBY", k, showBS increment, member]
+  zrangestore dst src minVal maxVal opts = submitMuxAs (["ZRANGESTORE", dst, src, minVal, maxVal] ++ opts)
 
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
