@@ -97,3 +97,16 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - zscore, zrank, zrevrank are simple key+member commands
   - Build succeeded cleanly with no warnings; stylish-haskell auto-formatted 3 files on commit
 ---
+
+## 2026-02-25T21:01 - key-commands
+- Implemented PERSIST, TYPE (as keyType), RENAME, RENAMENX, UNLINK in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - keyType is named to avoid conflict with Haskell's `type` keyword, but sends "TYPE" to Redis
+  - unlink takes a list of keys and needs the empty-list pattern in cluster (same as sdiff/sinter/sunion)
+  - rename/renamenx are simple two-key commands; in cluster they're keyed on the first key
+  - Pattern remains: 4 places (typeclass, Command.hs, Client.hs, Standalone.hs), stylish-haskell auto-formats on commit
+---

@@ -590,6 +590,11 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   unlink keys = case keys of
     []    -> executeKeyless (RedisCommandClient.unlink [])
     (k:_) -> executeKeyedAs k ("UNLINK" : keys)
+  pfadd k elements = executeKeyedAs k ("PFADD" : k : elements)
+  pfcount keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.pfcount [])
+    (k:_) -> executeKeyedAs k ("PFCOUNT" : keys)
+  pfmerge destk srckeys = executeKeyedAs destk ("PFMERGE" : destk : srckeys)
   rpush k vs = executeKeyedAs k ("RPUSH" : k : vs)
   lpop k = executeKeyedAs k ["LPOP", k]
   rpop k = executeKeyedAs k ["RPOP", k]

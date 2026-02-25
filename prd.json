@@ -63,7 +63,7 @@
       "title": "Add PERSIST, TYPE, RENAME, RENAMENX, UNLINK key commands",
       "description": "Add 5 key management commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after ttl line):\n   persist :: (FromResp a) => ByteString -> m a\n   keyType :: (FromResp a) => ByteString -> m a\n   -- Named keyType instead of 'type' since type is a Haskell keyword\n   rename :: (FromResp a) => ByteString -> ByteString -> m a\n   renamenx :: (FromResp a) => ByteString -> ByteString -> m a\n   unlink :: (FromResp a) => [ByteString] -> m a\n\n2. Add to RedisCommandClient instance (after ttl):\n   persist key = executeCommandAs [\"PERSIST\", key]\n   keyType key = executeCommandAs [\"TYPE\", key]\n   rename key newkey = executeCommandAs [\"RENAME\", key, newkey]\n   renamenx key newkey = executeCommandAs [\"RENAMENX\", key, newkey]\n   unlink keys = executeCommandAs (\"UNLINK\" : keys)\n\n3. Add to ClusterCommandClient instance (after ttl):\n   persist k = executeKeyedAs k [\"PERSIST\", k]\n   keyType k = executeKeyedAs k [\"TYPE\", k]\n   rename k newk = executeKeyedAs k [\"RENAME\", k, newk]\n   renamenx k newk = executeKeyedAs k [\"RENAMENX\", k, newk]\n   unlink keys = case keys of\n     []    -> executeKeyless (RedisCommandClient.unlink [])\n     (k:_) -> executeKeyedAs k (\"UNLINK\" : keys)\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 8,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {

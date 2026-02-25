@@ -241,6 +241,9 @@ instance RedisCommands StandaloneCommandClient where
   rename k newk = submitMuxAs ["RENAME", k, newk]
   renamenx k newk = submitMuxAs ["RENAMENX", k, newk]
   unlink keys = submitMuxAs ("UNLINK" : keys)
+  pfadd k elements = submitMuxAs ("PFADD" : k : elements)
+  pfcount keys = submitMuxAs ("PFCOUNT" : keys)
+  pfmerge destk srckeys = submitMuxAs ("PFMERGE" : destk : srckeys)
   rpush k vs = submitMuxAs ("RPUSH" : k : vs)
   lpop k = submitMuxAs ["LPOP", k]
   rpop k = submitMuxAs ["RPOP", k]
