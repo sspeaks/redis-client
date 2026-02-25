@@ -140,3 +140,44 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - New describe blocks go at the end of the spec, inside the outermost "Standalone Multiplexed Client" describe
   - stylish-haskell auto-formats on commit via pre-commit hook
 ---
+
+## 2026-02-25T21:35 - test-hash-commands
+- Added E2E tests for HGETALL, HLEN, HSETNX, HINCRBY, HINCRBYFLOAT in test/LibraryE2E/StandaloneTests.hs
+- Added new "New hash commands" describe block at end of spec with 5 test cases
+- All 57 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 53 lines of tests)
+- **Learnings for future iterations:**
+  - HINCRBYFLOAT with 10.5 + 1.5 returns "12" (not "12.0") — Redis strips trailing zeros
+  - Hash test patterns: use unique key names per test (e.g., "hgetall-hash", "hlen-hash") to avoid collisions
+  - HGETALL returns flat array of alternating field/value pairs, so length is 2x number of fields
+  - The E2E test suite takes ~220 seconds total including Docker container setup/teardown
+---
+
+## 2026-02-25T21:41 - test-list-commands
+- Added E2E tests for LINSERT, LSET, LTRIM, LREM in test/LibraryE2E/StandaloneTests.hs
+- Added new "New list commands" describe block at end of spec with 4 test cases
+- All 61 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 44 lines of tests)
+- **Learnings for future iterations:**
+  - LINSERT takes 4 args: key, position ("BEFORE"/"AFTER"), pivot, element — returns new list length
+  - LSET returns RespSimpleString "OK" on success
+  - LTRIM returns RespSimpleString "OK" on success
+  - LREM with count=2 removes the first 2 occurrences from head, leaving the last one
+  - E2E test suite now has 61 tests total and takes ~255 seconds including Docker setup/teardown
+---
+
+## 2026-02-25T21:48 - test-set-commands
+- Added E2E tests for SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER in test/LibraryE2E/StandaloneTests.hs
+- Added new "New set commands" describe block at end of spec with 6 test cases
+- All 67 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 72 lines of tests)
+- **Learnings for future iterations:**
+  - Set commands with non-deterministic ordering (SINTER, SUNION) should use `shouldSatisfy (elem ...)` instead of exact array comparison
+  - SDIFF returns a deterministic single-element result in our test case so exact comparison works
+  - SPOP with a single-element set is deterministic, good for testing
+  - SRANDMEMBER only checks that the result is a RespBulkString (any member), doesn't check exact value
+  - E2E test suite now has 67 tests total and takes ~245 seconds including Docker setup/teardown
+---
