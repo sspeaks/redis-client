@@ -71,3 +71,16 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - srem takes a list of members like sadd does
   - Pattern is fully established: 4 places to update (typeclass, Command.hs instance, Client.hs cluster instance, Standalone.hs instance)
 ---
+
+## 2026-02-25T20:57 - sorted-set-commands-basic
+- Implemented ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - Sorted set commands follow the same 4-place pattern (typeclass, Command.hs, Client.hs, Standalone.hs)
+  - zrem takes a list of members like srem/sadd pattern
+  - zscore, zrank, zrevrank are simple key+member commands
+  - Build succeeded cleanly with no warnings; stylish-haskell auto-formatted 3 files on commit
+---

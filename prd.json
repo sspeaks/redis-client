@@ -47,7 +47,7 @@
       "title": "Add ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK sorted set commands",
       "description": "Add 5 basic sorted set commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after zrange line):\n   zrem :: (FromResp a) => ByteString -> [ByteString] -> m a\n   zcard :: (FromResp a) => ByteString -> m a\n   zscore :: (FromResp a) => ByteString -> ByteString -> m a\n   zrank :: (FromResp a) => ByteString -> ByteString -> m a\n   zrevrank :: (FromResp a) => ByteString -> ByteString -> m a\n\n2. Add to RedisCommandClient instance (after zrange):\n   zrem key members = executeCommandAs (\"ZREM\" : key : members)\n   zcard key = executeCommandAs [\"ZCARD\", key]\n   zscore key member = executeCommandAs [\"ZSCORE\", key, member]\n   zrank key member = executeCommandAs [\"ZRANK\", key, member]\n   zrevrank key member = executeCommandAs [\"ZREVRANK\", key, member]\n\n3. Add to ClusterCommandClient instance (after zrange):\n   zrem k members = executeKeyedAs k (\"ZREM\" : k : members)\n   zcard k = executeKeyedAs k [\"ZCARD\", k]\n   zscore k member = executeKeyedAs k [\"ZSCORE\", k, member]\n   zrank k member = executeKeyedAs k [\"ZRANK\", k, member]\n   zrevrank k member = executeKeyedAs k [\"ZREVRANK\", k, member]\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 6,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {
