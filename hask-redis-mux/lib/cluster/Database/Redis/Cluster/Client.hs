@@ -590,6 +590,18 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   smembers k = executeKeyedAs k ["SMEMBERS", k]
   scard k = executeKeyedAs k ["SCARD", k]
   sismember k v = executeKeyedAs k ["SISMEMBER", k, v]
+  srem k members = executeKeyedAs k ("SREM" : k : members)
+  sdiff keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.sdiff [])
+    (k:_) -> executeKeyedAs k ("SDIFF" : keys)
+  sinter keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.sinter [])
+    (k:_) -> executeKeyedAs k ("SINTER" : keys)
+  sunion keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.sunion [])
+    (k:_) -> executeKeyedAs k ("SUNION" : keys)
+  spop k = executeKeyedAs k ["SPOP", k]
+  srandmember k = executeKeyedAs k ["SRANDMEMBER", k]
   hdel k fs = executeKeyedAs k ("HDEL" : k : fs)
   hkeys k = executeKeyedAs k ["HKEYS", k]
   hvals k = executeKeyedAs k ["HVALS", k]

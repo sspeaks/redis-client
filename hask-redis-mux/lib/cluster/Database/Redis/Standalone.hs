@@ -243,6 +243,12 @@ instance RedisCommands StandaloneCommandClient where
   smembers k = submitMuxAs ["SMEMBERS", k]
   scard k = submitMuxAs ["SCARD", k]
   sismember k v = submitMuxAs ["SISMEMBER", k, v]
+  srem k members = submitMuxAs ("SREM" : k : members)
+  sdiff keys = submitMuxAs ("SDIFF" : keys)
+  sinter keys = submitMuxAs ("SINTER" : keys)
+  sunion keys = submitMuxAs ("SUNION" : keys)
+  spop k = submitMuxAs ["SPOP", k]
+  srandmember k = submitMuxAs ["SRANDMEMBER", k]
   hdel k fs = submitMuxAs ("HDEL" : k : fs)
   hkeys k = submitMuxAs ["HKEYS", k]
   hvals k = submitMuxAs ["HVALS", k]
