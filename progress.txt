@@ -1,3 +1,23 @@
 # Ralph Progress Log
 Started: Wed Feb 25 12:48:19 PST 2026
+
+## Codebase Patterns
+- New Redis commands require changes in 3 places: typeclass in Command.hs, RedisCommandClient instance in Command.hs, ClusterCommandClient instance in Client.hs
+- Single-node commands use `executeCommandAs [args]`, cluster keyed commands use `executeKeyedAs key [args]`
+- Use `showBS` to convert Int/Double to ByteString for Redis args
+- Cluster multi-key commands (lists of keys) need a `case keys of [] -> executeKeyless ...; (k:_) -> executeKeyedAs k ...` pattern
+- Build with `nix-shell --run 'cabal build all'` to verify changes
+- A pre-commit hook runs stylish-haskell on changed .hs files
+
+---
+
+## 2026-02-25T20:48 - string-commands-basic
+- Implemented APPEND, STRLEN, SETEX, INCRBY, DECRBY in RedisCommands typeclass, RedisCommandClient instance, and ClusterCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+- **Learnings for future iterations:**
+  - New typeclass methods go between existing methods in alphabetical/logical groups (string cmds near incr/decr)
+  - Instance implementations follow the same order as the typeclass declaration
+  - The pre-commit hook auto-formats with stylish-haskell
 ---

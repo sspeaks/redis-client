@@ -7,7 +7,7 @@
       "title": "Add APPEND, STRLEN, SETEX, INCRBY, DECRBY string commands",
       "description": "Add 5 basic string commands to the RedisCommands typeclass, RedisCommandClient instance, and ClusterCommandClient instance.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (between line 123 incr and line 124 hset):\n   append :: (FromResp a) => ByteString -> ByteString -> m a\n   strlen :: (FromResp a) => ByteString -> m a\n   setex :: (FromResp a) => ByteString -> Int -> ByteString -> m a\n   incrby :: (FromResp a) => ByteString -> Int -> m a\n   decrby :: (FromResp a) => ByteString -> Int -> m a\n\n2. Add to RedisCommandClient instance (after decr, around line 325):\n   append key value = executeCommandAs [\"APPEND\", key, value]\n   strlen key = executeCommandAs [\"STRLEN\", key]\n   setex key seconds value = executeCommandAs [\"SETEX\", key, showBS seconds, value]\n   incrby key amount = executeCommandAs [\"INCRBY\", key, showBS amount]\n   decrby key amount = executeCommandAs [\"DECRBY\", key, showBS amount]\n\n3. Add to ClusterCommandClient instance in hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (after decr around line 558):\n   append k v = executeKeyedAs k [\"APPEND\", k, v]\n   strlen k = executeKeyedAs k [\"STRLEN\", k]\n   setex k secs v = executeKeyedAs k [\"SETEX\", k, showBS secs, v]\n   incrby k amt = executeKeyedAs k [\"INCRBY\", k, showBS amt]\n   decrby k amt = executeKeyedAs k [\"DECRBY\", k, showBS amt]\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {
