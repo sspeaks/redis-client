@@ -496,3 +496,57 @@ spec = describe "Standalone Multiplexed Client" $ do
       r2 `shouldBe` RespInteger 3  -- not removed
       _ <- run client $ del ["srand-set"]
       closeStandaloneClient client
+
+  -- | Tests for new sorted set commands: ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY
+  describe "New sorted set commands" $ do
+    it "ZREM removes members and returns count" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zrem-zset" [(1, "a"), (2, "b"), (3, "c")]
+      r1 <- run client $ zrem "zrem-zset" ["a", "c", "nonexistent"]
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ zrange "zrem-zset" 0 (-1) False
+      r2 `shouldBe` RespArray [RespBulkString "b"]
+      _ <- run client $ del ["zrem-zset"]
+      closeStandaloneClient client
+
+    it "ZCARD returns cardinality" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zcard-zset" [(1, "a"), (2, "b"), (3, "c")]
+      result <- run client $ zcard "zcard-zset"
+      result `shouldBe` RespInteger 3
+      _ <- run client $ del ["zcard-zset"]
+      closeStandaloneClient client
+
+    it "ZSCORE returns member score" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zscore-zset" [(42, "member")]
+      result <- run client $ zscore "zscore-zset" "member"
+      result `shouldBe` RespBulkString "42"
+      _ <- run client $ del ["zscore-zset"]
+      closeStandaloneClient client
+
+    it "ZRANK and ZREVRANK return rank" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zrank-zset" [(1, "a"), (2, "b"), (3, "c")]
+      r1 <- run client $ zrank "zrank-zset" "b"
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ zrevrank "zrank-zset" "b"
+      r2 `shouldBe` RespInteger 1
+      _ <- run client $ del ["zrank-zset"]
+      closeStandaloneClient client
+
+    it "ZCOUNT counts members in score range" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zcount-zset" [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
+      result <- run client $ zcount "zcount-zset" "2" "3"
+      result `shouldBe` RespInteger 2
+      _ <- run client $ del ["zcount-zset"]
+      closeStandaloneClient client
+
+    it "ZINCRBY increments member score" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zincrby-zset" [(10, "member")]
+      result <- run client $ zincrby "zincrby-zset" 5.0 "member"
+      result `shouldBe` RespBulkString "15"
+      _ <- run client $ del ["zincrby-zset"]
+      closeStandaloneClient client
