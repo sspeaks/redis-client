@@ -246,6 +246,11 @@ instance RedisCommands StandaloneCommandClient where
   hdel k fs = submitMuxAs ("HDEL" : k : fs)
   hkeys k = submitMuxAs ["HKEYS", k]
   hvals k = submitMuxAs ["HVALS", k]
+  hgetall k = submitMuxAs ["HGETALL", k]
+  hlen k = submitMuxAs ["HLEN", k]
+  hsetnx k f v = submitMuxAs ["HSETNX", k, f, v]
+  hincrby k f amt = submitMuxAs ["HINCRBY", k, f, showBS amt]
+  hincrbyfloat k f amt = submitMuxAs ["HINCRBYFLOAT", k, f, showBS amt]
   llen k = submitMuxAs ["LLEN", k]
   lindex k idx = submitMuxAs ["LINDEX", k, showBS idx]
   clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
