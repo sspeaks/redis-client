@@ -8,6 +8,7 @@ Started: Wed Feb 25 12:48:19 PST 2026
 - Cluster multi-key commands (lists of keys) need a `case keys of [] -> executeKeyless ...; (k:_) -> executeKeyedAs k ...` pattern
 - Build with `nix-shell --run 'cabal build all'` to verify changes
 - A pre-commit hook runs stylish-haskell on changed .hs files
+- New typeclass methods also need implementations in StandaloneCommandClient (Standalone.hs), not just Command.hs and Cluster/Client.hs
 
 ---
 
@@ -20,4 +21,40 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - New typeclass methods go between existing methods in alphabetical/logical groups (string cmds near incr/decr)
   - Instance implementations follow the same order as the typeclass declaration
   - The pre-commit hook auto-formats with stylish-haskell
+---
+
+## 2026-02-25T20:51 - string-commands-advanced
+- Implemented INCRBYFLOAT, GETDEL, GETEX in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - StandaloneCommandClient in Standalone.hs also implements RedisCommands and needs new methods (uses `submitMuxAs` instead of `executeCommandAs` or `executeKeyedAs`)
+  - Previous story left Standalone.hs missing methods (append, strlen, setex, incrby, decrby); added them here to clear warnings
+  - The `getex` command takes optional args as `[ByteString]` so callers control options like `["EX", "60"]` or `["PERSIST"]`
+---
+
+## 2026-02-25T20:53 - hash-commands
+- Implemented HGETALL, HLEN, HSETNX, HINCRBY, HINCRBYFLOAT in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - Hash commands with numeric args (hincrby, hincrbyfloat) need showBS for the amount parameter
+  - All 3 files (Command.hs, Client.hs, Standalone.hs) must be updated together — the pattern is well established now
+  - The pre-commit hook runs stylish-haskell automatically on changed files
+---
+
+## 2026-02-25T20:54 - list-commands
+- Implemented LINSERT, LSET, LTRIM, LREM in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - linsert uses ByteString for position arg ("BEFORE"/"AFTER") matching the pattern of letting callers pass Redis keywords directly
+  - All 4 list commands added after lindex in each file — maintains logical grouping
+  - Pattern is now very well established: add to typeclass, then 3 instances (Command.hs, Client.hs, Standalone.hs)
 ---

@@ -15,7 +15,7 @@
       "title": "Add INCRBYFLOAT, GETDEL, GETEX string commands",
       "description": "Add 3 more string commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after the decrby line added in previous story):\n   incrbyfloat :: (FromResp a) => ByteString -> Double -> m a\n   getdel :: (FromResp a) => ByteString -> m a\n   getex :: (FromResp a) => ByteString -> [ByteString] -> m a\n   Note: getex takes a key and optional args like [\"EX\", \"60\"] or [\"PERSIST\"] so the caller controls the options.\n\n2. Add to RedisCommandClient instance:\n   incrbyfloat key amount = executeCommandAs [\"INCRBYFLOAT\", key, showBS amount]\n   getdel key = executeCommandAs [\"GETDEL\", key]\n   getex key opts = executeCommandAs ([\"GETEX\", key] ++ opts)\n\n3. Add to ClusterCommandClient instance:\n   incrbyfloat k amt = executeKeyedAs k [\"INCRBYFLOAT\", k, showBS amt]\n   getdel k = executeKeyedAs k [\"GETDEL\", k]\n   getex k opts = executeKeyedAs k ([\"GETEX\", k] ++ opts)\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {
@@ -23,7 +23,7 @@
       "title": "Add HGETALL, HLEN, HSETNX, HINCRBY, HINCRBYFLOAT hash commands",
       "description": "Add 5 hash commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after hvals line):\n   hgetall :: (FromResp a) => ByteString -> m a\n   hlen :: (FromResp a) => ByteString -> m a\n   hsetnx :: (FromResp a) => ByteString -> ByteString -> ByteString -> m a\n   hincrby :: (FromResp a) => ByteString -> ByteString -> Int -> m a\n   hincrbyfloat :: (FromResp a) => ByteString -> ByteString -> Double -> m a\n\n2. Add to RedisCommandClient instance (after hvals):\n   hgetall key = executeCommandAs [\"HGETALL\", key]\n   hlen key = executeCommandAs [\"HLEN\", key]\n   hsetnx key field value = executeCommandAs [\"HSETNX\", key, field, value]\n   hincrby key field amount = executeCommandAs [\"HINCRBY\", key, field, showBS amount]\n   hincrbyfloat key field amount = executeCommandAs [\"HINCRBYFLOAT\", key, field, showBS amount]\n\n3. Add to ClusterCommandClient instance (after hvals):\n   hgetall k = executeKeyedAs k [\"HGETALL\", k]\n   hlen k = executeKeyedAs k [\"HLEN\", k]\n   hsetnx k f v = executeKeyedAs k [\"HSETNX\", k, f, v]\n   hincrby k f amt = executeKeyedAs k [\"HINCRBY\", k, f, showBS amt]\n   hincrbyfloat k f amt = executeKeyedAs k [\"HINCRBYFLOAT\", k, f, showBS amt]\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 3,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {
@@ -31,7 +31,7 @@
       "title": "Add LINSERT, LSET, LTRIM, LREM list commands",
       "description": "Add 4 list commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after lindex line):\n   linsert :: (FromResp a) => ByteString -> ByteString -> ByteString -> ByteString -> m a\n   -- linsert key position(BEFORE/AFTER) pivot element\n   lset :: (FromResp a) => ByteString -> Int -> ByteString -> m a\n   ltrim :: (FromResp a) => ByteString -> Int -> Int -> m a\n   lrem :: (FromResp a) => ByteString -> Int -> ByteString -> m a\n\n2. Add to RedisCommandClient instance (after lindex):\n   linsert key pos pivot element = executeCommandAs [\"LINSERT\", key, pos, pivot, element]\n   lset key index element = executeCommandAs [\"LSET\", key, showBS index, element]\n   ltrim key start stop = executeCommandAs [\"LTRIM\", key, showBS start, showBS stop]\n   lrem key count element = executeCommandAs [\"LREM\", key, showBS count, element]\n\n3. Add to ClusterCommandClient instance (after lindex):\n   linsert k pos pivot element = executeKeyedAs k [\"LINSERT\", k, pos, pivot, element]\n   lset k idx element = executeKeyedAs k [\"LSET\", k, showBS idx, element]\n   ltrim k start stop = executeKeyedAs k [\"LTRIM\", k, showBS start, showBS stop]\n   lrem k cnt element = executeKeyedAs k [\"LREM\", k, showBS cnt, element]\n\nNote: linsert uses ByteString for the position arg (\"BEFORE\" or \"AFTER\") to match the existing pattern of letting callers pass Redis keywords directly.\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 4,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {
