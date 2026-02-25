@@ -327,3 +327,56 @@ spec = describe "Standalone Multiplexed Client" $ do
         _ -> expectationFailure $ "Expected RespInteger, got: " ++ show r2
       _ <- run client $ del ["getex-key"]
       closeStandaloneClient client
+
+  describe "New hash commands" $ do
+    it "HGETALL returns all fields and values" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hgetall-hash" "f1" "v1"
+      _ <- run client $ hset "hgetall-hash" "f2" "v2"
+      result <- run client $ hgetall "hgetall-hash"
+      case result of
+        RespArray items -> do
+          length items `shouldBe` 4  -- 2 field-value pairs
+          items `shouldSatisfy` (elem (RespBulkString "f1"))
+          items `shouldSatisfy` (elem (RespBulkString "v1"))
+          items `shouldSatisfy` (elem (RespBulkString "f2"))
+          items `shouldSatisfy` (elem (RespBulkString "v2"))
+        _ -> expectationFailure $ "Expected RespArray, got: " ++ show result
+      _ <- run client $ del ["hgetall-hash"]
+      closeStandaloneClient client
+
+    it "HLEN returns number of fields" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hlen-hash" "f1" "v1"
+      _ <- run client $ hset "hlen-hash" "f2" "v2"
+      result <- run client $ hlen "hlen-hash"
+      result `shouldBe` RespInteger 2
+      _ <- run client $ del ["hlen-hash"]
+      closeStandaloneClient client
+
+    it "HSETNX sets only when field does not exist" $ do
+      client <- createTestStandaloneClient
+      r1 <- run client $ hsetnx "hsetnx-hash" "field" "original"
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ hsetnx "hsetnx-hash" "field" "new"
+      r2 `shouldBe` RespInteger 0
+      r3 <- run client $ hget "hsetnx-hash" "field"
+      r3 `shouldBe` RespBulkString "original"
+      _ <- run client $ del ["hsetnx-hash"]
+      closeStandaloneClient client
+
+    it "HINCRBY increments hash field integer" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hincrby-hash" "count" "10"
+      result <- run client $ hincrby "hincrby-hash" "count" 5
+      result `shouldBe` RespInteger 15
+      _ <- run client $ del ["hincrby-hash"]
+      closeStandaloneClient client
+
+    it "HINCRBYFLOAT increments hash field float" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hincrbyfloat-hash" "price" "10.5"
+      result <- run client $ hincrbyfloat "hincrbyfloat-hash" "price" 1.5
+      result `shouldBe` RespBulkString "12"
+      _ <- run client $ del ["hincrbyfloat-hash"]
+      closeStandaloneClient client
