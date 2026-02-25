@@ -213,6 +213,14 @@ instance RedisCommands StandaloneCommandClient where
   mget keys = submitMuxAs ("MGET" : keys)
   setnx k v = submitMuxAs ["SETNX", k, v]
   decr k = submitMuxAs ["DECR", k]
+  append k v = submitMuxAs ["APPEND", k, v]
+  strlen k = submitMuxAs ["STRLEN", k]
+  setex k secs v = submitMuxAs ["SETEX", k, showBS secs, v]
+  incrby k amt = submitMuxAs ["INCRBY", k, showBS amt]
+  decrby k amt = submitMuxAs ["DECRBY", k, showBS amt]
+  incrbyfloat k amt = submitMuxAs ["INCRBYFLOAT", k, showBS amt]
+  getdel k = submitMuxAs ["GETDEL", k]
+  getex k opts = submitMuxAs (["GETEX", k] ++ opts)
   psetex k ms v = submitMuxAs ["PSETEX", k, showBS ms, v]
   bulkSet kvs = submitMuxAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
   flushAll = submitMuxAs ["FLUSHALL"]
