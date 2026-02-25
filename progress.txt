@@ -58,3 +58,16 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - All 4 list commands added after lindex in each file — maintains logical grouping
   - Pattern is now very well established: add to typeclass, then 3 instances (Command.hs, Client.hs, Standalone.hs)
 ---
+
+## 2026-02-25T20:56 - set-commands
+- Implemented SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - Multi-key set commands (sdiff, sinter, sunion) need the empty-list pattern in cluster: `case keys of [] -> executeKeyless ...; (k:_) -> executeKeyedAs k ...`
+  - Single-key set commands (srem, spop, srandmember) use the standard keyed pattern
+  - srem takes a list of members like sadd does
+  - Pattern is fully established: 4 places to update (typeclass, Command.hs instance, Client.hs cluster instance, Standalone.hs instance)
+---

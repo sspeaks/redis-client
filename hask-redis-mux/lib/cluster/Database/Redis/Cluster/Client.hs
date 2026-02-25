@@ -625,6 +625,11 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
     let base = ["ZRANGE", k, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
     in executeKeyedAs k command
+  zrem k members = executeKeyedAs k ("ZREM" : k : members)
+  zcard k = executeKeyedAs k ["ZCARD", k]
+  zscore k member = executeKeyedAs k ["ZSCORE", k, member]
+  zrank k member = executeKeyedAs k ["ZRANK", k, member]
+  zrevrank k member = executeKeyedAs k ["ZREVRANK", k, member]
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
     in executeKeyedAs k ("GEOADD" : k : payload)

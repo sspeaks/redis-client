@@ -168,6 +168,11 @@ class (MonadIO m) => RedisCommands m where
   clientReply :: ClientReplyValues -> m (Maybe RespData)
   zadd :: (FromResp a) => ByteString -> [(Int, ByteString)] -> m a
   zrange :: (FromResp a) => ByteString -> Int -> Int -> Bool -> m a
+  zrem :: (FromResp a) => ByteString -> [ByteString] -> m a
+  zcard :: (FromResp a) => ByteString -> m a
+  zscore :: (FromResp a) => ByteString -> ByteString -> m a
+  zrank :: (FromResp a) => ByteString -> ByteString -> m a
+  zrevrank :: (FromResp a) => ByteString -> ByteString -> m a
   geoadd :: (FromResp a) => ByteString -> [(Double, Double, ByteString)] -> m a
   geodist :: (FromResp a) => ByteString -> ByteString -> ByteString -> Maybe GeoUnit -> m a
   geohash :: (FromResp a) => ByteString -> [ByteString] -> m a
@@ -415,6 +420,12 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
     let base = ["ZRANGE", key, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
     in executeCommandAs command
+
+  zrem key members = executeCommandAs ("ZREM" : key : members)
+  zcard key = executeCommandAs ["ZCARD", key]
+  zscore key member = executeCommandAs ["ZSCORE", key, member]
+  zrank key member = executeCommandAs ["ZRANK", key, member]
+  zrevrank key member = executeCommandAs ["ZREVRANK", key, member]
 
   geoadd key entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries

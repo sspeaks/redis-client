@@ -285,6 +285,12 @@ instance RedisCommands StandaloneCommandClient where
         command = if withScores then base ++ ["WITHSCORES"] else base
     in submitMuxAs command
 
+  zrem k members = submitMuxAs ("ZREM" : k : members)
+  zcard k = submitMuxAs ["ZCARD", k]
+  zscore k member = submitMuxAs ["ZSCORE", k, member]
+  zrank k member = submitMuxAs ["ZRANK", k, member]
+  zrevrank k member = submitMuxAs ["ZREVRANK", k, member]
+
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
     in submitMuxAs ("GEOADD" : k : payload)
