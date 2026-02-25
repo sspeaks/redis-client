@@ -55,7 +55,7 @@
       "title": "Add ZCOUNT, ZINCRBY, ZRANGESTORE sorted set commands",
       "description": "Add 3 more sorted set commands.\n\nIn hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs:\n1. Add to typeclass (after zrevrank):\n   zcount :: (FromResp a) => ByteString -> ByteString -> ByteString -> m a\n   -- zcount uses ByteString for min/max to support -inf/+inf/( syntax\n   zincrby :: (FromResp a) => ByteString -> Double -> ByteString -> m a\n   zrangestore :: (FromResp a) => ByteString -> ByteString -> ByteString -> ByteString -> [ByteString] -> m a\n   -- zrangestore dst src min max [optional args like BYSCORE, REV, LIMIT offset count]\n\n2. Add to RedisCommandClient instance:\n   zcount key minScore maxScore = executeCommandAs [\"ZCOUNT\", key, minScore, maxScore]\n   zincrby key increment member = executeCommandAs [\"ZINCRBY\", key, showBS increment, member]\n   zrangestore dst src minVal maxVal opts = executeCommandAs ([\"ZRANGESTORE\", dst, src, minVal, maxVal] ++ opts)\n\n3. Add to ClusterCommandClient instance:\n   zcount k minScore maxScore = executeKeyedAs k [\"ZCOUNT\", k, minScore, maxScore]\n   zincrby k increment member = executeKeyedAs k [\"ZINCRBY\", k, showBS increment, member]\n   zrangestore dst src minVal maxVal opts = executeKeyedAs dst ([\"ZRANGESTORE\", dst, src, minVal, maxVal] ++ opts)\n\nBuild with: nix-shell --run 'cabal build all'",
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "testCommand": "nix-shell --run 'cabal build all'"
     },
     {

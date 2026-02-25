@@ -72,6 +72,19 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - Pattern is fully established: 4 places to update (typeclass, Command.hs instance, Client.hs cluster instance, Standalone.hs instance)
 ---
 
+## 2026-02-25T20:59 - sorted-set-commands-advanced
+- Implemented ZCOUNT, ZINCRBY, ZRANGESTORE in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - zcount uses ByteString for min/max to support Redis -inf/+inf/( syntax
+  - zrangestore takes optional args as [ByteString] for BYSCORE, REV, LIMIT etc — same pattern as getex
+  - zincrby uses Double for increment, needs showBS conversion
+  - Pattern remains consistent: 4 places (typeclass, Command.hs, Client.hs, Standalone.hs), stylish-haskell auto-formats on commit
+---
+
 ## 2026-02-25T20:57 - sorted-set-commands-basic
 - Implemented ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
 - Files changed:
