@@ -583,6 +583,13 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   lrange k start stop = executeKeyedAs k ["LRANGE", k, showBS start, showBS stop]
   expire k secs = executeKeyedAs k ["EXPIRE", k, showBS secs]
   ttl k = executeKeyedAs k ["TTL", k]
+  persist k = executeKeyedAs k ["PERSIST", k]
+  keyType k = executeKeyedAs k ["TYPE", k]
+  rename k newk = executeKeyedAs k ["RENAME", k, newk]
+  renamenx k newk = executeKeyedAs k ["RENAMENX", k, newk]
+  unlink keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.unlink [])
+    (k:_) -> executeKeyedAs k ("UNLINK" : keys)
   rpush k vs = executeKeyedAs k ("RPUSH" : k : vs)
   lpop k = executeKeyedAs k ["LPOP", k]
   rpop k = executeKeyedAs k ["RPOP", k]

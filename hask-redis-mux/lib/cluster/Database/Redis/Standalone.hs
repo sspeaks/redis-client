@@ -236,6 +236,11 @@ instance RedisCommands StandaloneCommandClient where
   lrange k start stop = submitMuxAs ["LRANGE", k, showBS start, showBS stop]
   expire k secs = submitMuxAs ["EXPIRE", k, showBS secs]
   ttl k = submitMuxAs ["TTL", k]
+  persist k = submitMuxAs ["PERSIST", k]
+  keyType k = submitMuxAs ["TYPE", k]
+  rename k newk = submitMuxAs ["RENAME", k, newk]
+  renamenx k newk = submitMuxAs ["RENAMENX", k, newk]
+  unlink keys = submitMuxAs ("UNLINK" : keys)
   rpush k vs = submitMuxAs ("RPUSH" : k : vs)
   lpop k = submitMuxAs ["LPOP", k]
   rpop k = submitMuxAs ["RPOP", k]
