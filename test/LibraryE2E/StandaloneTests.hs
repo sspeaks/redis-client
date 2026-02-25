@@ -255,3 +255,75 @@ spec = describe "Standalone Multiplexed Client" $ do
       result `shouldBe` RespInteger 2
       _ <- run client flushAll
       closeStandaloneClient client
+
+  describe "New string commands" $ do
+    it "APPEND appends to string and returns new length" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "append-key" "hello"
+      r1 <- run client $ append "append-key" " world"
+      r1 `shouldBe` RespInteger 11
+      r2 <- run client $ get "append-key"
+      r2 `shouldBe` RespBulkString "hello world"
+      _ <- run client $ del ["append-key"]
+      closeStandaloneClient client
+
+    it "STRLEN returns string length" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "strlen-key" "hello"
+      result <- run client $ strlen "strlen-key"
+      result `shouldBe` RespInteger 5
+      _ <- run client $ del ["strlen-key"]
+      closeStandaloneClient client
+
+    it "SETEX sets with expiry" $ do
+      client <- createTestStandaloneClient
+      r1 <- run client $ setex "setex-key" 100 "value"
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ get "setex-key"
+      r2 `shouldBe` RespBulkString "value"
+      r3 <- run client $ ttl "setex-key"
+      -- TTL should be positive (close to 100)
+      case r3 of
+        RespInteger t -> t `shouldSatisfy` (> 0)
+        _ -> expectationFailure $ "Expected RespInteger, got: " ++ show r3
+      _ <- run client $ del ["setex-key"]
+      closeStandaloneClient client
+
+    it "INCRBY and DECRBY adjust by arbitrary amount" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "incrby-key" "10"
+      r1 <- run client $ incrby "incrby-key" 5
+      r1 `shouldBe` RespInteger 15
+      r2 <- run client $ decrby "incrby-key" 3
+      r2 `shouldBe` RespInteger 12
+      _ <- run client $ del ["incrby-key"]
+      closeStandaloneClient client
+
+    it "INCRBYFLOAT increments by float" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "floatkey" "10.5"
+      r1 <- run client $ incrbyfloat "floatkey" 0.1
+      r1 `shouldBe` RespBulkString "10.6"
+      _ <- run client $ del ["floatkey"]
+      closeStandaloneClient client
+
+    it "GETDEL gets and deletes" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "getdel-key" "myval"
+      r1 <- run client $ getdel "getdel-key"
+      r1 `shouldBe` RespBulkString "myval"
+      r2 <- run client $ get "getdel-key"
+      r2 `shouldBe` RespNullBulkString
+      closeStandaloneClient client
+
+    it "GETEX gets value and sets expiry" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "getex-key" "val"
+      r1 <- run client $ getex "getex-key" ["EX", "100"]
+      r1 `shouldBe` RespBulkString "val"
+      r2 <- run client $ ttl "getex-key"
+      case r2 of
+        RespInteger t -> t `shouldSatisfy` (> 0)
+        _ -> expectationFailure $ "Expected RespInteger, got: " ++ show r2
+      _ <- run client $ del ["getex-key"]
+      closeStandaloneClient client
