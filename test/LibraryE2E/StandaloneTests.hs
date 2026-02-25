@@ -380,3 +380,47 @@ spec = describe "Standalone Multiplexed Client" $ do
       result `shouldBe` RespBulkString "12"
       _ <- run client $ del ["hincrbyfloat-hash"]
       closeStandaloneClient client
+
+  -- | Tests for LINSERT, LSET, LTRIM, LREM list commands added in
+  -- the missing-redis-commands feature branch. Validates that each
+  -- command behaves correctly against a real Redis instance.
+  describe "New list commands" $ do
+    it "LINSERT inserts before and after pivot" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "linsert-list" ["a", "c"]
+      r1 <- run client $ linsert "linsert-list" "BEFORE" "c" "b"
+      r1 `shouldBe` RespInteger 3
+      r2 <- run client $ lrange "linsert-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "a", RespBulkString "b", RespBulkString "c"]
+      _ <- run client $ del ["linsert-list"]
+      closeStandaloneClient client
+
+    it "LSET updates element at index" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "lset-list" ["a", "b", "c"]
+      r1 <- run client $ lset "lset-list" 1 "B"
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ lrange "lset-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "a", RespBulkString "B", RespBulkString "c"]
+      _ <- run client $ del ["lset-list"]
+      closeStandaloneClient client
+
+    it "LTRIM trims list to range" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "ltrim-list" ["a", "b", "c", "d", "e"]
+      r1 <- run client $ ltrim "ltrim-list" 1 3
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ lrange "ltrim-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "b", RespBulkString "c", RespBulkString "d"]
+      _ <- run client $ del ["ltrim-list"]
+      closeStandaloneClient client
+
+    it "LREM removes elements" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "lrem-list" ["a", "b", "a", "c", "a"]
+      r1 <- run client $ lrem "lrem-list" 2 "a"
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ lrange "lrem-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "b", RespBulkString "c", RespBulkString "a"]
+      _ <- run client $ del ["lrem-list"]
+      closeStandaloneClient client
