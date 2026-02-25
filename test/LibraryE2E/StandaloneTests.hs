@@ -424,3 +424,75 @@ spec = describe "Standalone Multiplexed Client" $ do
       r2 `shouldBe` RespArray [RespBulkString "b", RespBulkString "c", RespBulkString "a"]
       _ <- run client $ del ["lrem-list"]
       closeStandaloneClient client
+
+  -- | Tests for new set commands: SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER
+  describe "New set commands" $ do
+    it "SREM removes members and returns count" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "srem-set" ["a", "b", "c"]
+      r1 <- run client $ srem "srem-set" ["a", "b", "nonexistent"]
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ smembers "srem-set"
+      r2 `shouldBe` RespArray [RespBulkString "c"]
+      _ <- run client $ del ["srem-set"]
+      closeStandaloneClient client
+
+    it "SDIFF returns set difference" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "sdiff-s1" ["a", "b", "c"]
+      _ <- run client $ sadd "sdiff-s2" ["b", "c", "d"]
+      result <- run client $ sdiff ["sdiff-s1", "sdiff-s2"]
+      result `shouldBe` RespArray [RespBulkString "a"]
+      _ <- run client $ del ["sdiff-s1", "sdiff-s2"]
+      closeStandaloneClient client
+
+    it "SINTER returns set intersection" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "sinter-s1" ["a", "b", "c"]
+      _ <- run client $ sadd "sinter-s2" ["b", "c", "d"]
+      result <- run client $ sinter ["sinter-s1", "sinter-s2"]
+      case result of
+        RespArray items -> do
+          length items `shouldBe` 2
+          items `shouldSatisfy` (elem (RespBulkString "b"))
+          items `shouldSatisfy` (elem (RespBulkString "c"))
+        _ -> expectationFailure $ "Expected RespArray, got: " ++ show result
+      _ <- run client $ del ["sinter-s1", "sinter-s2"]
+      closeStandaloneClient client
+
+    it "SUNION returns set union" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "sunion-s1" ["a", "b"]
+      _ <- run client $ sadd "sunion-s2" ["b", "c"]
+      result <- run client $ sunion ["sunion-s1", "sunion-s2"]
+      case result of
+        RespArray items -> do
+          length items `shouldBe` 3
+          items `shouldSatisfy` (elem (RespBulkString "a"))
+          items `shouldSatisfy` (elem (RespBulkString "b"))
+          items `shouldSatisfy` (elem (RespBulkString "c"))
+        _ -> expectationFailure $ "Expected RespArray, got: " ++ show result
+      _ <- run client $ del ["sunion-s1", "sunion-s2"]
+      closeStandaloneClient client
+
+    it "SPOP removes and returns a random member" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "spop-set" ["only"]
+      result <- run client $ spop "spop-set"
+      result `shouldBe` RespBulkString "only"
+      r2 <- run client $ scard "spop-set"
+      r2 `shouldBe` RespInteger 0
+      _ <- run client $ del ["spop-set"]
+      closeStandaloneClient client
+
+    it "SRANDMEMBER returns a random member without removing" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "srand-set" ["a", "b", "c"]
+      result <- run client $ srandmember "srand-set"
+      case result of
+        RespBulkString _ -> pure ()  -- any member is fine
+        _ -> expectationFailure $ "Expected RespBulkString, got: " ++ show result
+      r2 <- run client $ scard "srand-set"
+      r2 `shouldBe` RespInteger 3  -- not removed
+      _ <- run client $ del ["srand-set"]
+      closeStandaloneClient client
