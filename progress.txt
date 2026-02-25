@@ -9,6 +9,9 @@ Started: Wed Feb 25 12:48:19 PST 2026
 - Build with `nix-shell --run 'cabal build all'` to verify changes
 - A pre-commit hook runs stylish-haskell on changed .hs files
 - New typeclass methods also need implementations in StandaloneCommandClient (Standalone.hs), not just Command.hs and Cluster/Client.hs
+- When adding new keyed commands, also update `requiresKeyCommands` in Cluster/Commands.hs for proper cluster routing
+- The Database.Redis re-export module uses explicit import lists — new types/functions from sub-modules must be explicitly added there
+- E2E tests go in test/LibraryE2E/StandaloneTests.hs; build with `nix-shell --run 'cabal build all -fe2e'`; new describe blocks at end of spec inside outermost describe
 
 ---
 
@@ -109,4 +112,31 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - unlink takes a list of keys and needs the empty-list pattern in cluster (same as sdiff/sinter/sunion)
   - rename/renamenx are simple two-key commands; in cluster they're keyed on the first key
   - Pattern remains: 4 places (typeclass, Command.hs, Client.hs, Standalone.hs), stylish-haskell auto-formats on commit
+---
+
+## 2026-02-25T21:12 - update-exports
+- Updated requiresKeyCommands in Database.Redis.Cluster.Commands to include all 29 new keyed commands, organized by category (string, key, hash, list, set, sorted set, HyperLogLog)
+- Updated Database.Redis re-export module to include missing Geo types (GeoUnit, GeoRadiusFlag, GeoSearchFrom, GeoSearchBy, GeoSearchOption), missing Standalone exports (defaultStandaloneConfig, runRedis, withStandaloneClient), and missing Cluster.Client export (withClusterClient)
+- Files changed:
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Commands.hs (requiresKeyCommands list)
+  - hask-redis-mux/lib/redis/Database/Redis.hs (re-export imports)
+- **Learnings for future iterations:**
+  - When adding new Redis commands, also update requiresKeyCommands in Cluster/Commands.hs for proper cluster routing
+  - The Database.Redis module uses explicit import lists (not wildcard imports), so new types/functions from sub-modules must be explicitly added
+  - RedisCommands (..) already covers all typeclass methods, so new command methods don't need separate import entries
+  - The module's doc comments reference runRedis, defaultStandaloneConfig, withClusterClient which must be imported for the re-export to work
+  - stylish-haskell auto-formats on commit via pre-commit hook
+---
+
+## 2026-02-25T21:18 - test-string-commands
+- Added E2E tests for APPEND, STRLEN, SETEX, INCRBY, DECRBY, INCRBYFLOAT, GETDEL, GETEX in test/LibraryE2E/StandaloneTests.hs
+- Added new "New string commands" describe block at end of spec with 7 test cases
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 72 lines of tests)
+- **Learnings for future iterations:**
+  - E2E tests follow the pattern: createTestStandaloneClient, run commands, assert with shouldBe against RespData constructors, cleanup with del, closeStandaloneClient
+  - Build E2E tests with `nix-shell --run 'cabal build all -fe2e'` (the -fe2e flag enables the e2e build targets)
+  - TTL assertions use `shouldSatisfy (> 0)` since exact value depends on timing
+  - New describe blocks go at the end of the spec, inside the outermost "Standalone Multiplexed Client" describe
+  - stylish-haskell auto-formats on commit via pre-commit hook
 ---
