@@ -154,6 +154,10 @@ class (MonadIO m) => RedisCommands m where
   hincrbyfloat :: (FromResp a) => ByteString -> ByteString -> Double -> m a
   llen :: (FromResp a) => ByteString -> m a
   lindex :: (FromResp a) => ByteString -> Int -> m a
+  linsert :: (FromResp a) => ByteString -> ByteString -> ByteString -> ByteString -> m a
+  lset :: (FromResp a) => ByteString -> Int -> ByteString -> m a
+  ltrim :: (FromResp a) => ByteString -> Int -> Int -> m a
+  lrem :: (FromResp a) => ByteString -> Int -> ByteString -> m a
   clientSetInfo :: (FromResp a) => [ByteString] -> m a
   clientReply :: ClientReplyValues -> m (Maybe RespData)
   zadd :: (FromResp a) => ByteString -> [(Int, ByteString)] -> m a
@@ -377,6 +381,10 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   hincrbyfloat key field amount = executeCommandAs ["HINCRBYFLOAT", key, field, showBS amount]
   llen key = executeCommandAs ["LLEN", key]
   lindex key index = executeCommandAs ["LINDEX", key, showBS index]
+  linsert key pos pivot element = executeCommandAs ["LINSERT", key, pos, pivot, element]
+  lset key index element = executeCommandAs ["LSET", key, showBS index, element]
+  ltrim key start stop = executeCommandAs ["LTRIM", key, showBS start, showBS stop]
+  lrem key count element = executeCommandAs ["LREM", key, showBS count, element]
   clientSetInfo info = executeCommandAs (["CLIENT", "SETINFO"] ++ info)
   clusterSlots = executeCommandAs ["CLUSTER", "SLOTS"]
 

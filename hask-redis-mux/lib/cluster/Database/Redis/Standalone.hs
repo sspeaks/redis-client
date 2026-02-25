@@ -253,6 +253,10 @@ instance RedisCommands StandaloneCommandClient where
   hincrbyfloat k f amt = submitMuxAs ["HINCRBYFLOAT", k, f, showBS amt]
   llen k = submitMuxAs ["LLEN", k]
   lindex k idx = submitMuxAs ["LINDEX", k, showBS idx]
+  linsert k pos pivot element = submitMuxAs ["LINSERT", k, pos, pivot, element]
+  lset k idx element = submitMuxAs ["LSET", k, showBS idx, element]
+  ltrim k start stop = submitMuxAs ["LTRIM", k, showBS start, showBS stop]
+  lrem k cnt element = submitMuxAs ["LREM", k, showBS cnt, element]
   clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
   clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
 
