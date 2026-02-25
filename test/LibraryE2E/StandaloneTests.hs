@@ -550,3 +550,90 @@ spec = describe "Standalone Multiplexed Client" $ do
       result `shouldBe` RespBulkString "15"
       _ <- run client $ del ["zincrby-zset"]
       closeStandaloneClient client
+
+  -- | Tests for new key commands: PERSIST, TYPE, RENAME, RENAMENX, UNLINK
+  describe "New key commands" $ do
+    it "PERSIST removes expiry" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ setex "persist-key" 100 "val"
+      r1 <- run client $ persist "persist-key"
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ ttl "persist-key"
+      r2 `shouldBe` RespInteger (-1)  -- no expiry
+      _ <- run client $ del ["persist-key"]
+      closeStandaloneClient client
+
+    it "TYPE returns key type" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "type-str" "val"
+      r1 <- run client $ keyType "type-str"
+      r1 `shouldBe` RespSimpleString "string"
+      _ <- run client $ lpush "type-list" ["a"]
+      r2 <- run client $ keyType "type-list"
+      r2 `shouldBe` RespSimpleString "list"
+      _ <- run client $ del ["type-str", "type-list"]
+      closeStandaloneClient client
+
+    it "RENAME renames a key" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "rename-src" "val"
+      r1 <- run client $ rename "rename-src" "rename-dst"
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ get "rename-dst"
+      r2 `shouldBe` RespBulkString "val"
+      r3 <- run client $ get "rename-src"
+      r3 `shouldBe` RespNullBulkString
+      _ <- run client $ del ["rename-dst"]
+      closeStandaloneClient client
+
+    it "RENAMENX renames only if dest does not exist" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "rnx-src" "val"
+      _ <- run client $ set "rnx-dst" "existing"
+      r1 <- run client $ renamenx "rnx-src" "rnx-dst"
+      r1 `shouldBe` RespInteger 0  -- dest exists, no rename
+      _ <- run client $ del ["rnx-dst"]
+      r2 <- run client $ renamenx "rnx-src" "rnx-dst"
+      r2 `shouldBe` RespInteger 1
+      _ <- run client $ del ["rnx-dst"]
+      closeStandaloneClient client
+
+    it "UNLINK asynchronously deletes keys" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "unlink-k1" "v1"
+      _ <- run client $ set "unlink-k2" "v2"
+      r1 <- run client $ unlink ["unlink-k1", "unlink-k2"]
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ get "unlink-k1"
+      r2 `shouldBe` RespNullBulkString
+      closeStandaloneClient client
+
+  -- | Tests for HyperLogLog commands: PFADD, PFCOUNT, PFMERGE
+  describe "HyperLogLog commands" $ do
+    it "PFADD adds elements" $ do
+      client <- createTestStandaloneClient
+      r1 <- run client $ pfadd "hll-key" ["a", "b", "c"]
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ pfadd "hll-key" ["a", "b"]  -- duplicates
+      r2 `shouldBe` RespInteger 0
+      _ <- run client $ del ["hll-key"]
+      closeStandaloneClient client
+
+    it "PFCOUNT returns approximate cardinality" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ pfadd "pfcount-key" ["a", "b", "c"]
+      result <- run client $ pfcount ["pfcount-key"]
+      result `shouldBe` RespInteger 3
+      _ <- run client $ del ["pfcount-key"]
+      closeStandaloneClient client
+
+    it "PFMERGE merges HyperLogLogs" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ pfadd "hll1" ["a", "b"]
+      _ <- run client $ pfadd "hll2" ["b", "c"]
+      r1 <- run client $ pfmerge "hll-merged" ["hll1", "hll2"]
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ pfcount ["hll-merged"]
+      r2 `shouldBe` RespInteger 3
+      _ <- run client $ del ["hll1", "hll2", "hll-merged"]
+      closeStandaloneClient client
