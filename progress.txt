@@ -181,3 +181,33 @@ Started: Wed Feb 25 12:48:19 PST 2026
   - SRANDMEMBER only checks that the result is a RespBulkString (any member), doesn't check exact value
   - E2E test suite now has 67 tests total and takes ~245 seconds including Docker setup/teardown
 ---
+
+## 2026-02-25T21:55 - test-sorted-set-commands
+- Added E2E tests for ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY in test/LibraryE2E/StandaloneTests.hs
+- Added new "New sorted set commands" describe block at end of spec with 6 test cases
+- All 73 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 54 lines of tests)
+- **Learnings for future iterations:**
+  - ZSCORE returns score as RespBulkString (e.g., "42"), not RespInteger
+  - ZINCRBY also returns result as RespBulkString (e.g., "15"), same pattern as ZSCORE
+  - ZRANK/ZREVRANK return 0-based rank as RespInteger
+  - ZCOUNT takes min/max as ByteString to support Redis range syntax (-inf/+inf/(exclusive)
+  - E2E test suite now has 73 tests total and takes ~256 seconds including Docker setup/teardown
+---
+
+## 2026-02-25T22:02 - test-key-and-hyperloglog-commands
+- Added E2E tests for PERSIST, TYPE, RENAME, RENAMENX, UNLINK, PFADD, PFCOUNT, PFMERGE in test/LibraryE2E/StandaloneTests.hs
+- Added two new describe blocks: "New key commands" (5 tests) and "HyperLogLog commands" (3 tests)
+- All 81 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 87 lines of tests)
+- **Learnings for future iterations:**
+  - PERSIST returns RespInteger 1 on success (expiry removed), TTL becomes -1
+  - keyType returns RespSimpleString with type name ("string", "list", etc.)
+  - RENAME returns RespSimpleString "OK"; source key becomes RespNullBulkString after rename
+  - RENAMENX returns RespInteger 0 if dest exists, RespInteger 1 if rename succeeded
+  - PFADD returns RespInteger 1 if cardinality changed, 0 if not (duplicates)
+  - PFMERGE returns RespSimpleString "OK"
+  - E2E test suite now has 81 tests total and takes ~251 seconds including Docker setup/teardown
+---
