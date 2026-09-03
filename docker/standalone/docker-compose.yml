@@ -2,9 +2,12 @@ services:
   redis:
     image: redis
     hostname: redis.local
+    user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
     volumes:
       - ./redis.conf:/usr/local/etc/redis/redis.conf
-      - ./certs:/certs:ro
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}/redis-ca.crt:/certs/redis-ca.crt:ro
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}/redis-server.crt:/certs/redis-server.crt:ro
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}/redis-server.key:/certs/redis-server.key:ro
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     ports:
       - 6379:6379
@@ -16,7 +19,8 @@ services:
     image: e2etests:latest
     depends_on: [redis]
     volumes:
-      - ./certs:/certs:ro
+      # This ephemeral CA is test-only trust material and must never be reused.
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}/redis-ca.crt:/certs/redis-ca.crt:ro
     networks:
       default:
         aliases:

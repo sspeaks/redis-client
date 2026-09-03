@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-tls-fixtures test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
@@ -53,8 +53,12 @@ else
 	cabal build all && cabal test all
 endif
 
+# Validate ephemeral TLS credential generation without starting Docker.
+test-tls-fixtures:
+	./scripts/test-tls-fixtures.sh
+
 # Run end-to-end tests with Docker
-test-e2e:
+test-e2e: test-tls-fixtures
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "Error: docker is not installed or not in PATH"; \
 		exit 1; \
@@ -86,8 +90,7 @@ test-library-e2e:
 
 # Start Redis with Docker Compose
 redis-start:
-	@docker compose -f docker/standalone/docker-compose.yml up -d redis
-	@sleep 2
+	@./scripts/start-standalone-redis.sh
 
 # Start Redis Cluster with Docker Compose
 redis-cluster-start:
@@ -97,7 +100,7 @@ redis-cluster-start:
 
 # Stop Redis
 redis-stop:
-	@docker compose -f docker/standalone/docker-compose.yml stop redis
+	@./scripts/stop-standalone-redis.sh
 
 # Stop Redis Cluster
 redis-cluster-stop:
