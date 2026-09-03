@@ -4,6 +4,7 @@
 module AppConfig
   ( RunState (..)
   , defaultRunState
+  , resolveRunStateCredentials
   , authenticate
   , runCommandsAgainstTLSHost
   , runCommandsAgainstPlaintextHost
@@ -11,6 +12,7 @@ module AppConfig
 
 import           Control.Exception      (bracket)
 import qualified Control.Monad.State    as State
+import           CredentialConfig       (resolveRedisPassword)
 import qualified Data.ByteString        as BS
 import qualified Data.ByteString.Char8  as BS8
 import           Database.Redis.Client  (Client (..),
@@ -42,7 +44,6 @@ data RunState = RunState
     benchDuration     :: Int,
     muxCount          :: Int
   }
-  deriving (Show)
 
 defaultRunState :: RunState
 defaultRunState = RunState
@@ -66,6 +67,11 @@ defaultRunState = RunState
   , benchDuration = 30
   , muxCount = 1
   }
+
+resolveRunStateCredentials :: RunState -> IO RunState
+resolveRunStateCredentials state = do
+  resolvedPassword <- resolveRedisPassword
+  pure state {password = resolvedPassword}
 
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
 authenticate _ [] = return $ RespSimpleString "OK"

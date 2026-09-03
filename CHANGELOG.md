@@ -1,5 +1,14 @@
 # Revision history for redis-client
 
+## Unreleased
+
+*   **Breaking credential handling**
+    *   Removed `-a/--password`; use `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
+    *   Credential files take precedence over direct environment values.
+    *   Parallel fill children and the Azure helper no longer carry live credentials in argv.
+    *   Saved Azure command files contain no live credential and are created with owner-only permissions.
+    *   Subprocess failures no longer format credential-bearing command arguments.
+
 ## 0.6.0.0 -- 2026-02-13
 
 *   **Multiplexing Now Default**

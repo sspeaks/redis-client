@@ -145,9 +145,11 @@ Flush the cache before filling? (y/n): y
 
 Launching redis-client with command:
   redis-client fill -h my-cache.redis.cache.windows.net -p 10000 -t -c \
-    -a <token> -d 10 -f -P 8 -n 6 \
+    -d 10 -f -P 8 -n 6 \
     --key-size 512 --value-size 262144 --pipeline 8192
 ```
+
+The Azure helper supplies the token or access key through the child environment, not through command arguments.
 
 These optimized parameters were determined through comprehensive GHC runtime and concurrency testing,
 achieving 99% performance improvement (4.7 Gbps → 9.4 Gbps) on Azure Redis Premium tier clusters.
@@ -161,7 +163,7 @@ Example usage:
 Select mode (1-3): 2
 
 Launching redis-client with command:
-  redis-client cli -h my-cache.redis.cache.windows.net -t -a <token>
+  redis-client cli -h my-cache.redis.cache.windows.net -t
 
 Starting CLI mode
 > PING
@@ -182,7 +184,7 @@ Example:
 Select mode (1-3): 3
 
 Launching redis-client with command:
-  redis-client tunn -h my-cache.redis.cache.windows.net -t -a <token>
+  redis-client tunn -h my-cache.redis.cache.windows.net -t
 
 Starting tunnel mode
 Tunnel listening on localhost:6379
@@ -199,7 +201,7 @@ When a cache uses Entra authentication (access keys disabled), the script:
 2. If access policy assignments exist, determines that Entra authentication is required
 3. Uses `az account get-access-token --resource https://redis.azure.com` to obtain an OAuth token
 4. Retrieves the Object ID (OID) of the signed-in user via `az ad signed-in-user show`
-5. Passes both the Object ID (as username) and the token (as password) to redis-client
+5. Passes the Object ID as the username and supplies the token through `REDIS_CLIENT_PASSWORD`
 
 **Fallback:** If the access policy assignment check fails, the script attempts to retrieve access keys via `az redis list-keys` as a fallback method.
 
@@ -221,7 +223,7 @@ The script automatically retrieves the Object ID and passes it to redis-client u
 
 When a cache uses traditional access keys:
 1. Retrieves the primary access key using `az redis list-keys`
-2. Passes the key as the password to redis-client
+2. Supplies the key to redis-client through `REDIS_CLIENT_PASSWORD`
 
 ## Troubleshooting
 
@@ -275,11 +277,15 @@ You can script the selection process (though interactive mode is recommended):
 
 1. **Token lifetime**: Entra tokens obtained via Azure CLI typically have a lifetime of 1 hour (3600 seconds). If your session runs longer than this, the token will expire and you'll need to re-run the script to obtain a fresh token. For long-running operations like large fill jobs, monitor for authentication errors.
 
-2. **Token storage**: The script does not persist tokens. They are only used for the current session.
+2. **Token storage**: The script does not persist tokens. They are placed only in the launched process environment for the current session.
 
-3. **Access keys**: When using access key authentication, the keys are passed as command-line arguments (visible in process listings).
+3. **Saved commands**: Generated command files contain no live credential, require `REDIS_CLIENT_PASSWORD_FILE` or `REDIS_CLIENT_PASSWORD` at execution, and are created with owner-only `0700` permissions.
 
-4. **Network security**: Always use TLS (`-t` flag) when connecting to Azure Redis caches.
+4. **Process inspection**: Credentials are absent from argv. Privileged users may still inspect process environments, so prefer `REDIS_CLIENT_PASSWORD_FILE` for manual CLI usage.
+
+5. **Breaking behavior**: `redis-client` rejects `-a/--password`. Existing automation must migrate to `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
+
+6. **Network security**: Always use TLS (`-t` flag) when connecting to Azure Redis caches.
 
 ## Performance Tips
 

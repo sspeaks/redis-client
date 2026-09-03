@@ -43,6 +43,18 @@ test-suite FillHelpersSpec
                     , hask-redis-mux
                     , mtl
 
+test-suite CredentialSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          CredentialSpec.hs
+    other-modules:    AppConfig
+                    , CredentialConfig
+                    , FillProcess
+    hs-source-dirs:   app
+    build-depends:    bytestring
+                    , hask-redis-mux
+                    , mtl
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------
@@ -65,6 +77,7 @@ executable EndToEnd
                     , app
     other-modules:    E2EHelpers
                     , AppConfig
+                    , CredentialConfig
     build-depends:    attoparsec
                     , bytestring
                     , directory
@@ -136,7 +149,9 @@ executable redis-client
                     , ClusterFiller
                     , ClusterSetup
                     , ClusterTunnel
+                    , CredentialConfig
                     , FillHelpers
+                    , FillProcess
                     , Filler
                     , SlotMappingHelpers
     build-depends:    attoparsec

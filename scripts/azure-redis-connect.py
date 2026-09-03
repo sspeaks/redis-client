@@ -13,12 +13,17 @@ Usage:
 
 import argparse
 import json
+import re
+import shlex
 import subprocess
 import sys
 import os
 import time
 import atexit
 from typing import List, Dict, Optional
+
+PASSWORD_ENVIRONMENT_VARIABLE = "REDIS_CLIENT_PASSWORD"
+PASSWORD_FILE_ENVIRONMENT_VARIABLE = "REDIS_CLIENT_PASSWORD_FILE"
 
 # Save terminal settings at startup
 _original_terminal_settings = None
@@ -54,13 +59,63 @@ class AzureRedisConnector:
         """Obfuscate access keys and tokens in text for display."""
         if not text:
             return text
-        # Look for patterns that might be access keys or tokens
-        # Azure Redis access keys are typically 43 characters base64
-        # Tokens can be much longer (JWT format)
-        import re
-        # Pattern for base64-like strings (likely access keys)
-        text = re.sub(r'\b[A-Za-z0-9+/]{40,}={0,2}\b', '***REDACTED***', text)
+        text = re.sub(
+            r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b',
+            '***REDACTED***',
+            text
+        )
+        text = re.sub(
+            r'(?<![A-Za-z0-9_+/\-])[A-Za-z0-9_+/\-]{40,}={0,2}(?![A-Za-z0-9_+/\-=])',
+            '***REDACTED***',
+            text
+        )
         return text
+
+    def build_redis_client_environment(self, credential: Optional[str]) -> Dict[str, str]:
+        """Build the child environment without placing credentials in argv."""
+        child_environment = os.environ.copy()
+        if credential:
+            child_environment[PASSWORD_ENVIRONMENT_VARIABLE] = credential
+            child_environment.pop(PASSWORD_FILE_ENVIRONMENT_VARIABLE, None)
+        return child_environment
+
+    def format_redis_client_failure(self, return_code: int) -> str:
+        """Format a child failure without including its command arguments."""
+        return f"Error running redis-client (exit code {return_code})"
+
+    def save_command_file(self, command: List[str], cache_name: str, hostname: str, port: int) -> str:
+        """Save a credential-free command that requires a secure credential channel at execution."""
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_cache_name = re.sub(r'[^A-Za-z0-9._-]+', '_', cache_name)
+        filename = f"redis-command_{safe_cache_name}_{timestamp}.sh"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(filename, flags, 0o700)
+        try:
+            with os.fdopen(fd, 'w') as command_file:
+                command_file.write("#!/usr/bin/env bash\n")
+                command_file.write("set -euo pipefail\n")
+                command_file.write(f"# Redis client command for {cache_name}\n")
+                command_file.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                command_file.write(f"# Host: {hostname}:{port}\n\n")
+                command_file.write(
+                    f'if [[ -z "${{{PASSWORD_ENVIRONMENT_VARIABLE}:-}}" '
+                    f'&& -z "${{{PASSWORD_FILE_ENVIRONMENT_VARIABLE}:-}}" ]]; then\n'
+                )
+                command_file.write(
+                    f'  echo "Set {PASSWORD_FILE_ENVIRONMENT_VARIABLE} or '
+                    f'{PASSWORD_ENVIRONMENT_VARIABLE} before running this command." >&2\n'
+                )
+                command_file.write("  exit 1\n")
+                command_file.write("fi\n\n")
+                command_file.write("exec " + shlex.join(command) + "\n")
+        except Exception:
+            try:
+                os.unlink(filename)
+            except OSError:
+                pass
+            raise
+        os.chmod(filename, 0o700)
+        return filename
     
     def run_az_command(self, command: List[str], obfuscate_output: bool = False, raise_on_error: bool = False) -> str:
         """Execute an Azure CLI command and return output.
@@ -495,7 +550,7 @@ class AzureRedisConnector:
                 ], obfuscate_output=True, raise_on_error=True)
                 keys = json.loads(keys_output)
                 return keys.get('primaryKey')
-        except Exception as e:
+        except Exception:
             # Access keys may be disabled (Enterprise caches with Entra auth)
             # This is normal and not an error - we'll use Entra auth instead
             return None
@@ -523,8 +578,9 @@ class AzureRedisConnector:
         # Check authentication method
         is_entra = self.check_entra_auth(cache)
         
-        # Build command
+        # Build command and keep the credential exclusively in the child environment.
         command = ['redis-client', mode, '-h', hostname, '-p', str(ssl_port), '-t']
+        credential = None
         
         # Add tunnel mode type if specified
         if mode == 'tunn' and tunnel_type:
@@ -545,14 +601,13 @@ class AzureRedisConnector:
         if is_entra:
             # Get Entra token and user Object ID
             token, object_id = self.get_entra_token(hostname)
+            credential = token
             if object_id:
                 # Pass the Object ID as username for Entra authentication
-                command.extend(['-u', object_id, '-a', token])
+                command.extend(['-u', object_id])
                 print(f"\n✓ Using Entra authentication with Object ID: {object_id}")
                 print(f"  (Access token hidden for security)")
             else:
-                # Fallback if we couldn't get the Object ID
-                command.extend(['-a', token])
                 print(f"\n✓ Using Entra authentication (username will default to 'default')")
                 print(f"  (Access token hidden for security)")
                 print(f"⚠ Warning: Could not retrieve Object ID; authentication may fail")
@@ -560,7 +615,7 @@ class AzureRedisConnector:
             # Get access key
             access_key = self.get_access_key(cache)
             if access_key:
-                command.extend(['-a', access_key])
+                credential = access_key
                 print(f"\n✓ Using access key authentication")
                 print(f"  (Access key hidden for security)")
             else:
@@ -628,19 +683,8 @@ class AzureRedisConnector:
                     print("Invalid input. Please enter a valid number.")
         
         print(f"\nLaunching redis-client with command:")
-        # Create a safe version of the command for display
-        safe_command = []
-        skip_next = False
-        for i, arg in enumerate(command):
-            if skip_next:
-                safe_command.append('***REDACTED***')
-                skip_next = False
-            elif arg in ['-a', '--password']:
-                safe_command.append(arg)
-                skip_next = True
-            else:
-                safe_command.append(arg)
-        print(f"  {' '.join(safe_command)}")
+        print(f"  {shlex.join(command)}")
+        child_environment = self.build_redis_client_environment(credential)
         
         # Ask if user wants to save the full command to a file
         try:
@@ -648,23 +692,7 @@ class AzureRedisConnector:
             save_cmd = input("\nSave full command to file for manual execution? (y/n): ")
             save_cmd = save_cmd.replace('\r', '').replace('\n', '').strip().lower()
             if save_cmd == 'y':
-                # Generate filename based on cache name and timestamp
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = f"redis-command_{name.replace(' ', '_')}_{timestamp}.sh"
-                
-                # Build the full command as a shell script
-                shell_cmd = ' '.join([f"'{arg}'" if ' ' in arg else arg for arg in command])
-                
-                with open(filename, 'w') as f:
-                    f.write("#!/bin/bash\n")
-                    f.write(f"# Redis client command for {name}\n")
-                    f.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"# Host: {hostname}:{ssl_port}\n")
-                    f.write("\n")
-                    f.write(shell_cmd + "\n")
-                
-                # Make it executable
-                os.chmod(filename, 0o755)
+                filename = self.save_command_file(command, name, hostname, ssl_port)
                 
                 print(f"\n✓ Command saved to: {filename}")
                 print(f"  Run with: ./{filename}")
@@ -679,7 +707,7 @@ class AzureRedisConnector:
         # Execute the redis-client with timing
         start_time = time.time()
         try:
-            subprocess.run(command, check=True)
+            subprocess.run(command, env=child_environment, check=True)
             
             # Display timing information for fill operations
             if mode == 'fill':
@@ -695,8 +723,7 @@ class AzureRedisConnector:
                 print("=" * 80)
                 
         except subprocess.CalledProcessError as e:
-            safe_error = self.obfuscate_sensitive_data(str(e))
-            print(f"\nError running redis-client: {safe_error}", file=sys.stderr)
+            print(f"\n{self.format_redis_client_failure(e.returncode)}", file=sys.stderr)
             restore_terminal()
             sys.exit(1)
         except KeyboardInterrupt:

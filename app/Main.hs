@@ -22,6 +22,7 @@ import           Control.Concurrent                    (forkIO, newEmptyMVar,
 
 import           AppConfig                             (RunState (..),
                                                         defaultRunState,
+                                                        resolveRunStateCredentials,
                                                         runCommandsAgainstPlaintextHost,
                                                         runCommandsAgainstTLSHost)
 import           ClusterCli                            (routeAndExecuteCommand)
@@ -29,6 +30,9 @@ import           Control.Concurrent.STM                (readTVarIO)
 import           Control.Monad                         (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State                   as State
+import           CredentialConfig                      (passwordEnvironmentVariable,
+                                                        passwordFileEnvironmentVariable,
+                                                        rejectCredentialArguments)
 import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Builder               as Builder
 import qualified Data.ByteString.Char8                 as BS8
@@ -63,6 +67,7 @@ import           Database.Redis.Resp                   (Encodable (encode),
 import           Filler                                (fillCacheWithData,
                                                         fillCacheWithDataMB,
                                                         initRandomNoise)
+import           FillProcess                           (buildChildArgs)
 import           Numeric                               (showHex)
 import           System.Console.GetOpt                 (ArgDescr (..),
                                                         ArgOrder (..),
@@ -87,7 +92,6 @@ options =
   [ Option ['h'] ["host"] (ReqArg (\arg opt -> return $ opt {host = arg}) "HOST") "Host to connect to",
     Option ['p'] ["port"] (ReqArg (\arg opt -> return $ opt {port = Just . read $ arg}) "PORT") "Port to connect to. Will default to 6379 for plaintext and 6380 for TLS",
     Option ['u'] ["username"] (ReqArg (\arg opt -> return $ opt {username = arg}) "USERNAME") "Username to authenticate with (default: 'default')",
-    Option ['a'] ["password"] (ReqArg (\arg opt -> return $ opt {password = arg}) "PASSWORD") "Password to authenticate with",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
@@ -141,28 +145,15 @@ handleArgs args = do
 main :: IO ()
 main = do
   args' <- getArgs
+  case rejectCredentialArguments args' of
+    Left message -> hPutStrLn stderr message >> exitFailure
+    Right ()     -> pure ()
   case args' of
-    [] -> do
-      putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
-      putStrLn ""
-      putStrLn "Modes:"
-      putStrLn "  cli     Interactive Redis command-line interface"
-      putStrLn "  fill    Fill Redis cache with random data for testing"
-      putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
-      putStrLn "  bench   Benchmark cluster throughput (requires -c flag)"
-      putStrLn ""
-      putStrLn "Cluster Mode:"
-      putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
-      putStrLn ""
-      putStrLn "Examples:"
-      putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
-      putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
-      putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
-      putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
-      putStrLn "  redis-client fill ... --pipeline 4096                   # Use 4096 commands per pipeline"
-      exitFailure
+    [] -> printUsage >> exitFailure
+    ["--help"] -> printUsage >> exitSuccess
     (mode : args) -> do
-      (state, _) <- handleArgs args
+      (parsedState, _) <- handleArgs args
+      state <- resolveRunStateCredentials parsedState
       unless (mode `elem` ["cli", "fill", "tunn", "bench"]) $ do
         printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', 'tunn', and 'bench'\n" mode
         putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
@@ -175,6 +166,32 @@ main = do
       when (mode == "cli") $ cli state
       when (mode == "fill") $ fill state
       when (mode == "bench") $ bench state
+
+printUsage :: IO ()
+printUsage = do
+  putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
+  putStrLn ""
+  putStrLn "Credentials:"
+  putStrLn $ "  " ++ passwordFileEnvironmentVariable ++ "  Path to a credential file (highest precedence)"
+  putStrLn $ "  " ++ passwordEnvironmentVariable ++ "       Credential value used when no file is configured"
+  putStrLn "  Command-line password options are rejected to keep credentials out of process listings."
+  putStrLn ""
+  putStrLn "Modes:"
+  putStrLn "  cli     Interactive Redis command-line interface"
+  putStrLn "  fill    Fill Redis cache with random data for testing"
+  putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
+  putStrLn "  bench   Benchmark cluster throughput (requires -c flag)"
+  putStrLn ""
+  putStrLn "Cluster Mode:"
+  putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h localhost"
+  putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
+  putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
+  putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
+  putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
+  putStrLn "  redis-client fill ... --pipeline 4096                   # Use 4096 commands per pipeline"
 
 
 tunn :: RunState -> IO ()
@@ -325,29 +342,6 @@ spawnChildProcess exePath state baseGB remainder idx = do
 
   (_, _, _, ph) <- createProcess (proc exePath args)
   return ph
-
--- | Build command-line arguments for a child process
-buildChildArgs :: RunState -> Int -> Int -> [String]
-buildChildArgs state idx dataGB =
-  [ "fill"
-  , "-h", host state
-  , "-d", show dataGB
-  , "--process-index", show idx
-  , "--key-size", show (keySize state)
-  , "--value-size", show (valueSize state)
-  , "--pipeline", show (pipelineBatchSize state)
-  ]
-  ++ (["-t" | useTLS state])
-  ++ (["-c" | useCluster state])
-  ++ (["-s" | serial state])
-  ++ (case port state of
-        Just p  -> ["-p", show p]
-        Nothing -> [])
-  ++ (if null (password state) then [] else ["-a", password state])
-  ++ (if username state /= "default" then ["-u", username state] else [])
-  ++ (case numConnections state of
-        Just n  -> ["-n", show n]
-        Nothing -> [])
 
 fillStandalone :: RunState -> IO ()
 fillStandalone state = do
@@ -654,4 +648,3 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
           s <- submitToNodeAsync muxPool addr cmd
           fireBatch topology (counter + 1) (remaining - 1) (s : acc)
         Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
-
