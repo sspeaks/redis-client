@@ -1,10 +1,9 @@
 # Redis Test Stacks
 
 The default standalone and cluster Compose stacks publish Redis client ports
-only on `127.0.0.1`. Cluster-bus ports remain private to internal Docker
-networks and are not published to the host. Containers that need Redis must
-join the applicable Compose network rather than connect through a host LAN
-address.
+only on `127.0.0.1`. Cluster-bus ports remain private to Docker bridge networks
+and are not published to the host. Containers that need Redis must join the
+applicable Compose network rather than connect through a host LAN address.
 
 Render and verify these network policies without starting containers:
 

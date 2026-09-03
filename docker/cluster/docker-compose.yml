@@ -74,4 +74,3 @@ services:
 networks:
   redis-cluster-net:
     driver: bridge
-    internal: true

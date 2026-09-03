@@ -69,13 +69,13 @@ def assert_loopback_port(service, expected_port):
 
 
 standalone = load("standalone")
-require(standalone["networks"]["default"]["internal"] is True, "standalone network must be internal")
+require(standalone["networks"]["default"]["driver"] == "bridge", "standalone network must use a bridge")
 require("network_mode" not in standalone["services"]["redis"], "standalone Redis must not use host networking")
 assert_loopback_port(standalone["services"]["redis"], 6379)
 
 cluster = load("cluster")
 cluster_network = next(iter(cluster["networks"].values()))
-require(cluster_network["internal"] is True, "cluster network must be internal")
+require(cluster_network["driver"] == "bridge", "cluster network must use a bridge")
 expected_cluster_ports = {
     "redis1": 6379,
     "redis2": 6380,

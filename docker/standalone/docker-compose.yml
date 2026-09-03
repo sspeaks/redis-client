@@ -28,4 +28,4 @@ services:
 
 networks:
   default:
-    internal: true
+    driver: bridge
