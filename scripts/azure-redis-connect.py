@@ -60,7 +60,7 @@ class AzureRedisConnector:
         if not text:
             return text
         text = re.sub(
-            r'\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b',
+            r'(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])',
             '***REDACTED***',
             text
         )

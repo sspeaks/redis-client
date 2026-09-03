@@ -55,7 +55,11 @@ endif
 
 test-credentials:
 	python3 -m unittest scripts/test_azure_redis_connect.py
-	cabal build redis-client
+ifeq ($(HAS_NIX),yes)
+	nix-shell --run "cabal build redis-client && cabal test CredentialSpec"
+else
+	cabal build redis-client && cabal test CredentialSpec
+endif
 	./scripts/test-credential-handling.sh
 
 # Validate ephemeral TLS credential generation without starting Docker.

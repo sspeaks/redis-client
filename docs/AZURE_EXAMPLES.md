@@ -281,7 +281,7 @@ You can script the selection process (though interactive mode is recommended):
 
 3. **Saved commands**: Generated command files contain no live credential, require `REDIS_CLIENT_PASSWORD_FILE` or `REDIS_CLIENT_PASSWORD` at execution, and are created with owner-only `0700` permissions.
 
-4. **Process inspection**: Credentials are absent from argv. Privileged users may still inspect process environments, so prefer `REDIS_CLIENT_PASSWORD_FILE` for manual CLI usage.
+4. **Process inspection**: Credentials are absent from argv. Depending on operating-system and platform policy, other same-user or privileged processes may still inspect process environments. Prefer an owner-only `REDIS_CLIENT_PASSWORD_FILE` with mode `0600` for manual CLI usage.
 
 5. **Breaking behavior**: `redis-client` rejects `-a/--password`. Existing automation must migrate to `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
 

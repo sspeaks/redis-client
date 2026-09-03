@@ -64,14 +64,21 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 - `REDIS_CLIENT_PASSWORD` - Redis password, access key, or Entra token used only when `REDIS_CLIENT_PASSWORD_FILE` is not set.
 - `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory. Use smaller values (1024-2048 KB) in memory-constrained environments or larger values (4096-8192 KB) for maximum throughput.
 
-Credential command-line options are no longer accepted. This is a breaking security change that keeps live credentials out of process arguments and parallel fill child arguments. Prefer an owner-readable credential file:
+Credential command-line options are no longer accepted. This is a breaking security change that keeps live credentials out of process arguments and parallel fill child arguments. Prefer an owner-only credential file:
 
 ```sh
+install -d -m 700 "$HOME/.config/redis-client"
+umask 077
+read -rsp "Redis credential: " REDIS_CREDENTIAL && printf '\n'
+printf '%s' "$REDIS_CREDENTIAL" > "$HOME/.config/redis-client/password"
+unset REDIS_CREDENTIAL
+chmod 600 "$HOME/.config/redis-client/password"
+
 REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
   redis-client cli -h localhost
 ```
 
-Environment values are convenient for automation but may still be visible to privileged process inspection. Avoid exporting credentials into shell startup files.
+Environment values are convenient for automation but may be visible to other same-user or privileged processes, depending on operating-system and platform policy. Avoid exporting credentials into shell startup files.
 
 ## Azure Redis Integration
 

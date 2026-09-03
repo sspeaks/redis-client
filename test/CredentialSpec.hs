@@ -1,10 +1,13 @@
 module Main where
 
-import           AppConfig        (RunState (..), defaultRunState)
-import           CredentialConfig (rejectCredentialArguments,
-                                   resolveRedisPasswordFrom)
-import           Data.List        (isInfixOf)
-import           FillProcess      (buildChildArgs)
+import           AppConfig         (RunState (..), defaultRunState)
+import           Control.Exception (IOException, displayException, try)
+import           CredentialConfig  (rejectCredentialArguments,
+                                    resolveRedisPasswordFrom)
+import           Data.List         (isInfixOf)
+import           FillProcess       (buildChildArgs)
+import           System.IO.Error   (doesNotExistErrorType, mkIOError,
+                                    permissionErrorType)
 import           Test.Hspec
 
 syntheticJwt :: String
@@ -38,6 +41,36 @@ main = hspec $ do
     it "rejects an empty credential file" $
       resolveRedisPasswordFrom (Just "/secure/credential") Nothing (\_ -> pure "\n")
         `shouldThrow` anyIOException
+
+    it "does not disclose a missing credential path or fallback environment credential" $ do
+      let configuredPath = "/secure/missing-credential"
+          fallbackCredential = "fallback-environment-credential"
+      result <- try $ resolveRedisPasswordFrom
+        (Just configuredPath)
+        (Just fallbackCredential)
+        (\path -> ioError (mkIOError doesNotExistErrorType fallbackCredential Nothing (Just path)))
+      case result of
+        Left exception -> do
+          let message = displayException (exception :: IOException)
+          message `shouldContain` "Unable to read Redis credential file"
+          message `shouldSatisfy` not . isInfixOf configuredPath
+          message `shouldSatisfy` not . isInfixOf fallbackCredential
+        Right _ -> expectationFailure "missing credential file was accepted"
+
+    it "does not disclose an unreadable credential path or fallback environment credential" $ do
+      let configuredPath = "/secure/unreadable-credential"
+          fallbackCredential = "fallback-environment-credential"
+      result <- try $ resolveRedisPasswordFrom
+        (Just configuredPath)
+        (Just fallbackCredential)
+        (\path -> ioError (mkIOError permissionErrorType fallbackCredential Nothing (Just path)))
+      case result of
+        Left exception -> do
+          let message = displayException (exception :: IOException)
+          message `shouldContain` "Unable to read Redis credential file"
+          message `shouldSatisfy` not . isInfixOf configuredPath
+          message `shouldSatisfy` not . isInfixOf fallbackCredential
+        Right _ -> expectationFailure "unreadable credential file was accepted"
 
   describe "parallel fill child arguments" $ do
     it "never copies the credential into child argv" $ do
