@@ -21,3 +21,4 @@ __pycache__
 *.pyonode_modules
 node_modules
 bench.db
+docker/standalone/.runtime/
