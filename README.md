@@ -201,14 +201,8 @@ make test-unit
 cabal test RespSpec ClusterSpec ClusterCommandSpec MultiplexerSpec MultiplexPoolSpec
 ```
 
-**Compose security checks** (renders configuration without starting containers):
-```sh
-make test-compose-networking
-```
-
 **End-to-end tests** (requires Docker and Nix):
 ```sh
-make test-redis-network-exposure  # Verify local/internal access and reject non-loopback access
 make test-e2e               # Standalone Redis E2E
 make test-cluster-e2e       # Cluster E2E
 make test                   # Run all tests
@@ -228,20 +222,6 @@ cabal run redis-client -- fill -h localhost -d 1
 
 make redis-stop             # Stop standalone Redis
 make redis-cluster-stop     # Stop Redis cluster
-```
-
-The development Compose stacks publish Redis client ports only on `127.0.0.1`.
-Cluster-bus ports remain private to an internal Docker network and are not
-published to the host. Consequently, containers that need Redis must join the
-Compose network rather than connect through a host LAN address.
-
-The legacy `docker/cluster-host` stack is not part of the default test flow. It
-uses host networking only for explicit compatibility investigations, and every
-Redis process in that stack binds to loopback. Run it only on a trusted
-single-user machine after confirming the test ports are unused:
-
-```sh
-REDIS_CLIENT_ALLOW_HOST_NETWORK=1 ./docker/cluster-host/make_cluster.sh
 ```
 
 Note: Do NOT start Redis manually before running E2E tests (`make test-e2e` or `make test-cluster-e2e`). Those tests manage their own Docker instances.

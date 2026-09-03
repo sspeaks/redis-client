@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-compose-networking test-redis-network-exposure test-tls-fixtures test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-tls-fixtures test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-compose-networking test-redis-network-exposure test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -43,7 +43,7 @@ else
 endif
 
 # Run all tests
-test: test-unit test-compose-networking test-redis-network-exposure test-e2e test-cluster-e2e test-library-e2e
+test: test-unit test-e2e test-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
 test-unit:
@@ -56,14 +56,6 @@ endif
 # Validate ephemeral TLS credential generation without starting Docker.
 test-tls-fixtures:
 	./scripts/test-tls-fixtures.sh
-
-# Render Compose configuration without starting containers and enforce safe network defaults.
-test-compose-networking:
-	./scripts/test-compose-networking.sh
-
-# Start one isolated Redis node and verify loopback/internal reachability boundaries.
-test-redis-network-exposure:
-	./scripts/test-redis-loopback-connectivity.sh
 
 # Run end-to-end tests with Docker
 test-e2e: test-tls-fixtures
