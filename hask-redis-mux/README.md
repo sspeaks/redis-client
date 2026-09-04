@@ -78,6 +78,34 @@ that client. Teardown is idempotent and each transport finalizer runs exactly
 once. A client or pool must not be reused after bracket exit or explicit close:
 later submissions return a typed closed-client/pool failure and never reconnect.
 
+## Cluster Error Contract
+
+The low-level `executeKeyedClusterCommand` and
+`executeKeylessClusterCommand` APIs return `Either ClusterError RespData`.
+Every Redis `RespError` is classified centrally and is returned on the `Left`;
+error replies are never success-shaped:
+
+- `MOVED` and `ASK` preserve their existing direct-target routing behavior.
+- `TRYAGAIN` retries the current route with saturating exponential backoff.
+- `CLUSTERDOWN` performs a best-effort bounded topology refresh, then retries
+  from the current topology with the same backoff schedule.
+- `CROSSSLOT` is permanent for the command and returns immediately.
+- Other server errors such as `ERR`, `WRONGTYPE`, and `NOSCRIPT` return
+  `RedisCommandError` with the original server payload.
+
+`clusterMaxRetries` is the total command-attempt budget, including the initial
+attempt. Backoff occurs only when another attempt remains, starts at
+`clusterRetryDelay`, doubles between attempts, and saturates at `maxBound`
+instead of overflowing. The delay remains interruptible, so asynchronous
+cancellation is rethrown rather than converted into a cluster error.
+
+The existing typed `ClusterCommandClient` runner still unwraps `ClusterError`
+through its historical `MonadFail` behavior. Ordinary Redis errors therefore
+fail the typed command instead of appearing as values. The planned breaking
+`Either RedisClientError` runner migration will replace that unwrap while
+nesting these same structured cluster/server causes; this change does not add a
+second compatibility runner.
+
 ## Custom Configuration
 
 ```haskell

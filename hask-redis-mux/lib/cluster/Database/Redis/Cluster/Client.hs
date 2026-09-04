@@ -62,13 +62,17 @@ module Database.Redis.Cluster.Client
     -- proxying. Prefer 'runClusterCommandClient' with 'RedisCommands' for
     -- normal Redis operations.
     executeKeyedClusterCommand,
+    executeKeyedClusterCommandUsingDelay,
     executeKeylessClusterCommand,
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)
     RedirectionInfo (..),
+    RetryRoute (..),
+    classifyClusterReply,
     parseRedirectionError,
     detectRedirection,
+    withRetryAndRefreshUsing,
   )
 where
 
@@ -149,6 +153,7 @@ data ClusterError
   | ClusterDownError String -- ^ The cluster is in a down or error state.
   | TryAgainError String -- ^ Transient failure; the operation should be retried.
   | CrossSlotError String -- ^ Multi-key command spans multiple hash slots.
+  | RedisCommandError ByteString -- ^ An ordinary Redis server error reply, preserved verbatim.
   | MaxRetriesExceeded String -- ^ All retry attempts exhausted.
   | TopologyError String -- ^ Slot or node lookup failed (e.g., empty topology).
   | ConnectionError String -- ^ Network-level failure connecting to a node.
@@ -668,38 +673,62 @@ refreshTopologyIfStale client = do
   when (timeSinceUpdate >= refreshInterval) $ do
     refreshTopology client
 
--- | Detect MOVED or ASK errors from RespData.
--- Common case (no redirect) is a constructor check plus at most a single byte
--- comparison, with zero allocation.
+-- | Classify every Redis error reply returned by a cluster command.
+--
+-- Prefixes are case-sensitive and must end at the error token boundary.
+-- Malformed redirections and unrecognized server errors remain ordinary
+-- 'RedisCommandError' values with their full payload preserved.
+{-# INLINE classifyClusterReply #-}
+classifyClusterReply :: RespData -> Either ClusterError RespData
+classifyClusterReply (RespError msg)
+  | Just redirection <- classifyRedirection msg =
+      case redirection of
+        Left (RedirectionInfo slot host port) ->
+          Left $ MovedError slot $ NodeAddress host port
+        Right (RedirectionInfo slot host port) ->
+          Left $ AskError slot $ NodeAddress host port
+  | hasErrorPrefix "TRYAGAIN" msg =
+      Left $ TryAgainError $ BS8.unpack msg
+  | hasErrorPrefix "CLUSTERDOWN" msg =
+      Left $ ClusterDownError $ BS8.unpack msg
+  | hasErrorPrefix "CROSSSLOT" msg =
+      Left $ CrossSlotError $ BS8.unpack msg
+  | otherwise = Left $ RedisCommandError msg
+classifyClusterReply respData = Right respData
+
+{-# INLINE hasErrorPrefix #-}
+hasErrorPrefix :: ByteString -> ByteString -> Bool
+hasErrorPrefix prefix message =
+  message == prefix
+    || (prefix `BS.isPrefixOf` message
+      && BS.length message > BS.length prefix
+      && BS.index message (BS.length prefix) == 0x20)
+
+{-# INLINE classifyRedirection #-}
+classifyRedirection
+  :: ByteString
+  -> Maybe (Either RedirectionInfo RedirectionInfo)
+classifyRedirection message
+  | "MOVED " `BS.isPrefixOf` message =
+      Left <$> parseMovedAsk (BS.drop 6 message)
+  | "ASK " `BS.isPrefixOf` message =
+      Right <$> parseMovedAsk (BS.drop 4 message)
+  | otherwise = Nothing
+
+-- | Backward-compatible MOVED/ASK-only view of 'classifyClusterReply'.
 {-# INLINE detectRedirection #-}
 detectRedirection :: RespData -> Maybe (Either RedirectionInfo RedirectionInfo)
-detectRedirection (RespError msg)
-  | BS.length msg >= 6  -- shortest redirect: "ASK x y" needs >= 7 chars
-  , let w = BS.index msg 0
-  = if w == 0x4D  -- 'M'
-    then if BS.isPrefixOf "MOVED " msg
-         then case parseMovedAsk (BS.drop 6 msg) of
-                Just redir -> Just (Left redir)
-                Nothing    -> Nothing
-         else Nothing
-    else if w == 0x41  -- 'A'
-    then if BS.isPrefixOf "ASK " msg
-         then case parseMovedAsk (BS.drop 4 msg) of
-                Just redir -> Just (Right redir)
-                Nothing    -> Nothing
-         else Nothing
-    else Nothing
-  | otherwise = Nothing
-detectRedirection _ = Nothing
+detectRedirection (RespError message) = classifyRedirection message
+detectRedirection _                   = Nothing
 
 -- | Execute a command on a specific node (used for keyless commands and topology refresh)
 executeOnNode ::
   (Client client) =>
   ClusterClient client ->
   NodeAddress ->
-  RedisCommandClient client a ->
+  RedisCommandClient client RespData ->
   Connector client ->
-  IO (Either ClusterError a)
+  IO (Either ClusterError RespData)
 executeOnNode client nodeAddr action connector = do
   result <- tryClusterAction $
     withConnectionBounded
@@ -707,17 +736,15 @@ executeOnNode client nodeAddr action connector = do
     let clientState = ClientState conn BS8.empty
     State.evalStateT (runRedisCommandClient action) clientState
 
-  case result of
-    Left err    -> return $ Left err
-    Right value -> return $ Right value
+  return $ result >>= classifyClusterReply
 
 -- | Execute a command that does not target a specific key (e.g., PING, AUTH, FLUSHALL).
 -- Routed to an arbitrary master node.
 executeKeylessClusterCommand ::
   (Client client) =>
   ClusterClient client ->
-  RedisCommandClient client a ->
-  IO (Either ClusterError a)
+  RedisCommandClient client RespData ->
+  IO (Either ClusterError RespData)
 executeKeylessClusterCommand client action = do
   let connector = clusterConnector client
   topology <- readTVarIO (clusterTopology client)
@@ -740,18 +767,23 @@ executeKeylessClusterCommand client action = do
 --
 -- ASK errors follow the Redis protocol: retry at the target node with an ASKING prefix.
 -- No topology refresh is needed since ASK indicates a temporary, in-progress migration.
-withRetryAndRefresh ::
+-- | Deterministic retry seam used by tests and timing-sensitive integrations.
+-- Production command execution supplies 'threadDelay'.
+withRetryAndRefreshUsing ::
   (Client client) =>
+  (Int -> IO ()) ->
   ClusterClient client ->
-  Int -> -- Max retries
-  Int -> -- Initial delay (microseconds)
+  Int ->
+  Int ->
   (RetryRoute -> IO (Either ClusterError a)) ->
   IO (Either ClusterError a)
-withRetryAndRefresh client maxRetries initialDelay action =
+withRetryAndRefreshUsing delayAction client maxRetries initialDelay action =
   go 0 initialDelay RouteBySlot
   where
     go attempt delay route
-      | attempt >= maxRetries = return $ Left $ MaxRetriesExceeded $ "Max retries (" ++ show maxRetries ++ ") exceeded"
+      | attempt >= maxRetries =
+          return $ Left $ MaxRetriesExceeded $
+            "Max retries (" ++ show maxRetries ++ ") exceeded"
       | otherwise = do
           result <- action route
           case result of
@@ -762,38 +794,76 @@ withRetryAndRefresh client maxRetries initialDelay action =
                     client [address] [(slot, address)]
                 _ -> return ()
               return $ Right value
-            Left (TryAgainError _) -> do
-              threadDelay delay
-              go (attempt + 1) (delay * 2) RouteBySlot
-            Left (MovedError slot address) -> do
+            Left err@(TryAgainError _) ->
+              retryAfterDelay err route delay
+            Left err@(ClusterDownError _) -> do
+              if attempt + 1 >= maxRetries
+                then return $ retryExhausted maxRetries err
+                else do
+                  refreshResult <- refreshForRoute route
+                  case refreshResult of
+                    Left ClusterClientClosed ->
+                      return $ Left ClusterClientClosed
+                    Left refreshErr@(TopologyError _) ->
+                      return $ Left refreshErr
+                    _ -> retryAfterDelay err RouteBySlot delay
+            Left err@(MovedError slot address) -> do
               patchMovedSlot client slot address
-              go (attempt + 1) delay $ RouteMoved slot address
-            Left (AskError _ address) ->
-              go (attempt + 1) delay $ RouteAsk address
-            Left (ConnectionError _) -> do
+              retryImmediately err $ RouteMoved slot address
+            Left err@(AskError _ address) ->
+              retryImmediately err $ RouteAsk address
+            Left err@(ConnectionError _) -> do
               refreshResult <- refreshForRoute route
               case refreshResult of
                 Left ClusterClientClosed -> return $ Left ClusterClientClosed
-                Left err@(TopologyError _) -> return $ Left err
-                _ -> do
-                  threadDelay delay
-                  go (attempt + 1) (delay * 2) RouteBySlot
-            Left (ConnectionTimeoutError _) -> do
+                Left refreshErr@(TopologyError _) ->
+                  return $ Left refreshErr
+                _ -> retryAfterDelay err RouteBySlot delay
+            Left err@(ConnectionTimeoutError _) -> do
               refreshResult <- case route of
                 RouteMoved _ _ -> refreshForRoute route
                 _              -> return $ Right ()
               case refreshResult of
                 Left ClusterClientClosed -> return $ Left ClusterClientClosed
-                Left err@(TopologyError _) -> return $ Left err
-                _ -> do
-                  threadDelay delay
-                  go (attempt + 1) (delay * 2) RouteBySlot
+                Left refreshErr@(TopologyError _) ->
+                  return $ Left refreshErr
+                _ -> retryAfterDelay err RouteBySlot delay
             Left err -> return $ Left err
+
+      where
+        retryImmediately err nextRoute
+          | attempt + 1 >= maxRetries =
+              return $ retryExhausted maxRetries err
+          | otherwise =
+              go (attempt + 1) delay nextRoute
+
+        retryAfterDelay err nextRoute currentDelay
+          | attempt + 1 >= maxRetries =
+              return $ retryExhausted maxRetries err
+          | otherwise = do
+              delayAction $ normalizeDelay currentDelay
+              go (attempt + 1) (nextRetryDelay currentDelay) nextRoute
 
     refreshForRoute (RouteMoved slot address) =
       refreshTopologyFromCandidates client [address] [(slot, address)]
     refreshForRoute _ =
       refreshTopologyFromCandidates client [] []
+
+retryExhausted :: Int -> ClusterError -> Either ClusterError a
+retryExhausted maxRetries lastError =
+  Left $ MaxRetriesExceeded $
+    "Max retries (" ++ show maxRetries
+      ++ ") exceeded; last error: " ++ show lastError
+
+normalizeDelay :: Int -> Int
+normalizeDelay = max 0
+
+nextRetryDelay :: Int -> Int
+nextRetryDelay delay
+  | normalized > maxBound `div` 2 = maxBound
+  | otherwise = normalized * 2
+  where
+    normalized = normalizeDelay delay
 
 tryClusterAction :: IO a -> IO (Either ClusterError a)
 tryClusterAction action = do
@@ -825,15 +895,20 @@ parseMovedAsk :: ByteString -> Maybe RedirectionInfo
 parseMovedAsk rest =
   case BS8.readInt rest of
     Just (slot, afterSlot)
-      | not (BS8.null afterSlot)
+      | slot >= 0
+      , slot <= 16383
+      , not (BS8.null afterSlot)
       , BS8.head afterSlot == ' '
       -> let hostPort = BS8.tail afterSlot
          in case BS8.break (== ':') hostPort of
               (host, portPart)
-                | not (BS8.null portPart)
+                | not (BS8.null host)
+                , not (BS8.null portPart)
                 -> case BS8.readInt (BS8.tail portPart) of
                      Just (port, rest')
-                       | BS8.null rest'
+                       | port >= 1
+                       , port <= 65535
+                       , BS8.null rest'
                        -> Just $ RedirectionInfo (fromIntegral slot) (BS8.unpack host) port
                      _ -> Nothing
               _ -> Nothing
@@ -852,8 +927,8 @@ parseRedirectionError errorType msg
 -- | Internal helper to execute a keyless command within ClusterCommandClient monad
 executeKeylessCommand ::
   (Client client) =>
-  RedisCommandClient client a ->
-  ClusterCommandClient client (Either ClusterError a)
+  RedisCommandClient client RespData ->
+  ClusterCommandClient client (Either ClusterError RespData)
 executeKeylessCommand action = do
   client <- State.get
   liftIO $ executeKeylessClusterCommand client action
@@ -876,13 +951,50 @@ executeKeyedAs :: (Client client, FromResp a) => ByteString -> [ByteString] -> C
 executeKeyedAs key cmdArgs = executeKeyed key cmdArgs >>= convertResp
 
 -- | Execute a keyless command and unwrap the result
-executeKeyless :: (Client client) => RedisCommandClient client a -> ClusterCommandClient client a
+executeKeyless
+  :: (Client client, FromResp a)
+  => RedisCommandClient client RespData
+  -> ClusterCommandClient client a
 executeKeyless action = do
   result <- executeKeylessCommand action
-  unwrapClusterResult result
+  raw <- unwrapClusterResult result
+  convertResp raw
+
+executeKeylessMaybe
+  :: (Client client)
+  => RedisCommandClient client (Maybe RespData)
+  -> ClusterCommandClient client (Maybe RespData)
+executeKeylessMaybe action = do
+  client <- State.get
+  topology <- liftIO $ readTVarIO $ clusterTopology client
+  let masters =
+        [ node
+        | node <- Map.elems $ topologyNodes topology
+        , nodeRole node == Master
+        ]
+  case masters of
+    [] -> unwrapClusterResult $ Left $
+      TopologyError "No master nodes available"
+    node : _ -> do
+      result <- liftIO $ tryClusterAction $
+        withConnectionBounded
+          (clusterConnectionPool client)
+          (nodeAddress node)
+          (clusterConnector client) $ \conn -> do
+            let clientState = ClientState conn BS8.empty
+            State.evalStateT
+              (runRedisCommandClient action)
+              clientState
+      case result of
+        Left err -> unwrapClusterResult $ Left err
+        Right Nothing -> return Nothing
+        Right (Just response) ->
+          Just <$> unwrapClusterResult (classifyClusterReply response)
 
 -- | Execute a keyed command via the multiplexer pool.
 -- Pre-encodes the command to a Builder, routes by slot, and handles MOVED/ASK redirection.
+-- Every @RespError@ is returned as a typed 'ClusterError'; ordinary Redis
+-- errors use 'RedisCommandError' and are never success-shaped.
 --
 -- This is the low-level API for executing commands with explicit routing key.
 -- For most operations, prefer 'runClusterCommandClient' with 'RedisCommands'.
@@ -892,11 +1004,25 @@ executeKeyedClusterCommand ::
   ByteString ->           -- key for routing
   [ByteString] ->         -- command args
   IO (Either ClusterError RespData)
-executeKeyedClusterCommand client key cmdArgs = do
+executeKeyedClusterCommand =
+  executeKeyedClusterCommandUsingDelay threadDelay
+
+-- | Test seam for deterministic retry schedule and cancellation coverage.
+executeKeyedClusterCommandUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  ByteString ->
+  [ByteString] ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterCommandUsingDelay delayAction client key cmdArgs = do
   let muxPool = clusterMultiplexPool client
       cmdBuilder = encodeCommandBuilder cmdArgs
       !slot = calculateSlot key
-  withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ \route ->
+  withRetryAndRefreshUsing delayAction
+    client
+    (clusterMaxRetries $ clusterConfig client)
+    (clusterRetryDelay $ clusterConfig client) $ \route ->
     case route of
       RouteBySlot -> do
         refreshResult <- tryClusterAction $ refreshTopologyIfStale client
@@ -923,14 +1049,7 @@ executeOnSlotMux client muxPool slot cmdBuilder = do
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just addr -> do
       result <- tryClusterAction $ submitToNode muxPool addr cmdBuilder
-      case result of
-        Left err -> return $ Left err
-        Right respData -> case detectRedirection respData of
-          Just (Left (RedirectionInfo s host port)) ->
-            return $ Left $ MovedError s (NodeAddress host port)
-          Just (Right (RedirectionInfo s host port)) ->
-            return $ Left $ AskError s (NodeAddress host port)
-          Nothing -> return $ Right respData
+      return $ result >>= classifyClusterReply
 
 executeOnNodeDirect
   :: (Client client)
@@ -940,18 +1059,7 @@ executeOnNodeDirect
   -> IO (Either ClusterError RespData)
 executeOnNodeDirect muxPool address cmdBuilder = do
   result <- tryClusterAction $ submitToNode muxPool address cmdBuilder
-  case result of
-    Left err       -> return $ Left err
-    Right respData -> return $ classifyRedirect respData
-
-classifyRedirect :: RespData -> Either ClusterError RespData
-classifyRedirect respData =
-  case detectRedirection respData of
-    Just (Left (RedirectionInfo slot host port)) ->
-      Left $ MovedError slot $ NodeAddress host port
-    Just (Right (RedirectionInfo slot host port)) ->
-      Left $ AskError slot $ NodeAddress host port
-    Nothing -> Right respData
+  return $ result >>= classifyClusterReply
 
 -- | Execute a command on a specific node with ASKING prefix (for ASK redirects).
 -- Per Redis protocol, ASK requires sending ASKING before the actual command to the
@@ -968,14 +1076,7 @@ executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
   let askingBuilder = encodeCommandBuilder ["ASKING"]
   result <- tryClusterAction $
     submitToNodeWithAsking muxPool addr askingBuilder cmdBuilder
-  case result of
-    Left err -> return $ Left err
-    Right respData -> case detectRedirection respData of
-      Just (Left (RedirectionInfo s host port)) ->
-        return $ Left $ MovedError s (NodeAddress host port)
-      Just (Right (RedirectionInfo s host port)) ->
-        return $ Left $ AskError s (NodeAddress host port)
-      Nothing -> return $ Right respData
+  return $ result >>= classifyClusterReply
 
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
   auth _ _ = liftIO $ throwIO ClusterRuntimeAuthenticationUnsupported
@@ -1021,7 +1122,7 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   llen k = executeKeyedAs k ["LLEN", k]
   lindex k idx = executeKeyedAs k ["LINDEX", k, showBS idx]
   clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
-  clientReply val = executeKeyless (RedisCommandClient.clientReply val)
+  clientReply val = executeKeylessMaybe (RedisCommandClient.clientReply val)
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members
     in executeKeyedAs k ("ZADD" : k : payload)
