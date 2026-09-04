@@ -285,7 +285,11 @@ You can script the selection process (though interactive mode is recommended):
 
 5. **Breaking behavior**: `redis-client` rejects `-a/--password`. Existing automation must migrate to `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
 
-6. **Network security**: Always use TLS (`-t` flag) when connecting to Azure Redis caches.
+6. **Transport security**: Credentialed plaintext connections are rejected by default. The Azure helper always supplies `-t` and does not enable the plaintext-auth override.
+
+7. **Certificate verification**: TLS certificates are verified by default. `REDIS_CLIENT_TLS_INSECURE=1` is the only accepted bypass value and emits a warning. Unset, empty, `0`, and `false` preserve verification; invalid values fail clearly. Do not use the bypass for Azure Redis endpoints.
+
+8. **Network security**: Always use TLS (`-t` flag) when connecting to Azure Redis caches.
 
 ## Performance Tips
 

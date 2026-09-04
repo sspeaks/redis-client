@@ -89,6 +89,18 @@ main = do
       set "key" "value"
 ```
 
+## Transport Security
+
+Use a TLS connector before issuing `AUTH` or otherwise transmitting credentials.
+The library exposes transport and authentication separately, so direct library
+callers are responsible for keeping authenticated traffic off plaintext
+connectors.
+
+TLS certificate verification is enabled by default. For controlled testing
+only, set `REDIS_CLIENT_TLS_INSECURE=1` to disable verification. The client emits
+a warning whenever the bypass is active. Unset, empty, `0`, and `false` preserve
+verification; other values are rejected instead of silently weakening TLS.
+
 ## Documentation
 
 - [Haddock API docs](https://hackage.haskell.org/package/hask-redis-mux)

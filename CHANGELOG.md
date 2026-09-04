@@ -8,6 +8,10 @@
     *   Parallel fill children and the Azure helper no longer carry live credentials in argv.
     *   Saved Azure command files contain no live credential and are created with owner-only permissions.
     *   Subprocess failures no longer format credential-bearing command arguments.
+*   **Secure transport defaults**
+    *   Credentialed plaintext connections are rejected unless `--allow-insecure-plaintext-auth` is supplied.
+    *   The plaintext-auth override emits a warning naming the target and stating that credentials are unencrypted.
+    *   `REDIS_CLIENT_TLS_INSECURE` disables certificate verification only when set to exactly `1`; false values preserve verification and invalid values fail.
 
 ## 0.6.0.0 -- 2026-02-13
 

@@ -1,6 +1,7 @@
 module Main where
 
-import           AppConfig         (RunState (..), defaultRunState)
+import           AppConfig         (RunState (..), defaultRunState,
+                                    plaintextAuthenticationPolicy)
 import           Control.Exception (IOException, displayException, try)
 import           CredentialConfig  (rejectCredentialArguments,
                                     resolveRedisPasswordFrom)
@@ -84,6 +85,47 @@ main = hspec $ do
       args `shouldSatisfy` (\values -> "-a" `notElem` values)
       args `shouldSatisfy` (\values -> "--password" `notElem` values)
       unwords args `shouldSatisfy` not . isInfixOf syntheticJwt
+
+    it "propagates the explicit plaintext-auth override without copying the credential" $ do
+      let state = defaultRunState
+            { host = "localhost"
+            , password = syntheticJwt
+            , allowInsecurePlaintextAuth = True
+            }
+          args = buildChildArgs state 0 1
+      args `shouldContain` ["--allow-insecure-plaintext-auth"]
+      unwords args `shouldSatisfy` not . isInfixOf syntheticJwt
+
+  describe "plaintext authentication policy" $ do
+    it "rejects credentialed plaintext connections by default" $ do
+      let state = defaultRunState {host = "cache.example", password = syntheticJwt}
+      plaintextAuthenticationPolicy state
+        `shouldSatisfy` either (isInfixOf "Refusing to send Redis credentials over plaintext") (const False)
+
+    it "allows credentialed TLS connections without a warning" $ do
+      let state = defaultRunState
+            { host = "cache.example"
+            , password = syntheticJwt
+            , useTLS = True
+            }
+      plaintextAuthenticationPolicy state `shouldBe` Right Nothing
+
+    it "allows credentialed plaintext only with the explicit override and returns a safe warning" $ do
+      let target = "cache.example"
+          state = defaultRunState
+            { host = target
+            , password = syntheticJwt
+            , allowInsecurePlaintextAuth = True
+            }
+      case plaintextAuthenticationPolicy state of
+        Right (Just warning) -> do
+          warning `shouldContain` target
+          warning `shouldContain` "credentials will be sent unencrypted"
+          warning `shouldSatisfy` not . isInfixOf syntheticJwt
+        _ -> expectationFailure "explicit plaintext-auth override was not accepted"
+
+    it "does not require an override when no credential is configured" $
+      plaintextAuthenticationPolicy defaultRunState `shouldBe` Right Nothing
 
 rejectsWithoutEcho :: [String] -> Spec
 rejectsWithoutEcho args =

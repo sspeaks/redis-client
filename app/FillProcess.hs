@@ -15,6 +15,7 @@ buildChildArgs state idx dataGB =
   , "--pipeline", show (pipelineBatchSize state)
   ]
   ++ (["-t" | useTLS state])
+  ++ (["--allow-insecure-plaintext-auth" | allowInsecurePlaintextAuth state])
   ++ (["-c" | useCluster state])
   ++ (["-s" | serial state])
   ++ (case port state of
