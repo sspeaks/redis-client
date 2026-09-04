@@ -112,15 +112,43 @@ verification; other values are rejected instead of silently weakening TLS.
 `PoolConfig.connectionTimeout` is a per-attempt wall-clock deadline in seconds.
 For plaintext connections it covers DNS resolution, socket creation/options,
 and TCP connect. For TLS connections it covers those phases plus certificate
-store loading, TLS context creation, and the TLS handshake. A timed-out setup
-throws `ConnectionSetupTimeout`, which records the endpoint and whether the
-attempt was plaintext or TLS without including credentials.
+store loading, TLS context creation, and the TLS handshake. The redis-client
+executable also includes AUTH in the same deadline. A timed-out setup throws
+`ConnectionSetupTimeout`, which records the endpoint and active phase without
+including credentials.
 
 Cluster multiplexers and ordinary pooled connections use the same deadline.
+The cluster client retains that bounded connector for benchmark, fill, flush,
+and pinned-tunnel connections rather than falling back to the raw connector.
 Timeout retries are bounded by `clusterMaxRetries`; the total worst-case
 connection time is the per-attempt deadline multiplied by the retry count, plus
 configured retry backoff. Timeout retries do not start an additional topology
 refresh connection.
+
+The low-level `connectPlaintext`, `connectTLS`, `clusterPlaintextConnector`, and
+`clusterTLSConnector` helpers are intentionally unbounded because they do not
+take timeout configuration. Direct callers should use the timeout-aware
+variants:
+
+```haskell
+conn <- connectTLSWithTimeout 5 "redis.example.net" 6380
+
+let standaloneConfig = defaultStandaloneConfig
+      { standaloneConnector = clusterPlaintextConnectorWithTimeout 5 }
+withStandaloneClient standaloneConfig $ \client ->
+  runStandaloneClient client ping
+```
+
+`withConnectionTimeoutSupervised` is available for custom connectors. Register
+the connected transport before a potentially blocking AUTH phase so expiry can
+abort the socket without waiting for graceful TLS shutdown.
+
+The caller-side deadline is independent of asynchronous exception delivery.
+The supervisor returns at the configured wall-clock boundary, requests worker
+cancellation, and aborts any registered transport. A platform resolver or TLS
+FFI call that is genuinely non-interruptible may transiently keep its worker
+alive until that call returns; no connection returned after expiry is exposed,
+and any owned socket is closed as soon as it is available.
 
 The existing 300-second `receive` timeout applies only after a connection has
 been established. It is independent of `connectionTimeout` and is not part of

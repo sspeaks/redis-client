@@ -14,6 +14,7 @@ import           Control.Exception                     (SomeAsyncException,
                                                         SomeException, throwIO,
                                                         try)
 import qualified Control.Exception                     as Exception
+import           Control.Monad                         (replicateM_)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
@@ -433,9 +434,11 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
     readIORef connectionCount `shouldReturn` 1
     readIORef closeCount `shouldReturn` 1
 
-  it "bounds connection-timeout retries without topology-refresh amplification" $ do
+  it "bounds retries while failed TLS/AUTH cleanup is still unwinding" $ do
     attempts <- newIORef (0 :: Int)
     closeCount <- newIORef (0 :: Int)
+    cleanupFinished <- newIORef (0 :: Int)
+    cleanupRelease <- newEmptyMVar
     stalled <- newEmptyMVar
     topology <- mkTopology node1
     topologyVar <- newTVarIO topology
@@ -445,7 +448,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
           { clusterPoolConfig =
               testPoolConfig
                 { connectionTimeout = 1
-                , useTLS = False
+                , useTLS = True
                 }
           , clusterMaxRetries = 2
           , clusterRetryDelay = 1000
@@ -454,12 +457,16 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
           atomicModifyIORef' attempts $ \count -> (count + 1, ())
           _ <- Exception.onException
             (takeMVar stalled)
-            (atomicModifyIORef' closeCount $ \count -> (count + 1, ()))
+            (do
+              atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+              takeMVar cleanupRelease
+              atomicModifyIORef' cleanupFinished $ \count ->
+                (count + 1, ()))
           sendBuf <- newIORef BS.empty
           recvQueue <- newIORef []
           return $ MockConnected sendBuf recvQueue closeCount
         boundedConnector =
-          withConnectionTimeout 1 PlaintextConnectionSetup connector
+          withConnectionTimeout 1 TLSConnectionSetup connector
 
     muxPool <- createMultiplexPool boundedConnector 1
     let client = ClusterClient
@@ -476,6 +483,11 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
     elapsedSeconds `shouldSatisfy` \elapsed ->
       elapsed >= 1.5 && elapsed < 4
     readIORef attempts `shouldReturn` 2
+    timeout 1000000 (awaitIORefValue closeCount 2)
+      `shouldReturn` Just ()
+    replicateM_ 2 $ putMVar cleanupRelease ()
+    timeout 1000000 (awaitIORefValue cleanupFinished 2)
+      `shouldReturn` Just ()
     readIORef closeCount `shouldReturn` 2
     closeClusterClient client
     readIORef closeCount `shouldReturn` 2
@@ -550,8 +562,17 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
             Nothing -> False
       _ -> expectationFailure "caller cancellation was not rethrown"
     readIORef attempts `shouldReturn` 1
+    timeout 1000000 (awaitIORefValue closeCount 1)
+      `shouldReturn` Just ()
     readIORef closeCount `shouldReturn` 1
     closeClusterClient client
+
+awaitIORefValue :: IORef Int -> Int -> IO ()
+awaitIORefValue ref expected = do
+  actual <- readIORef ref
+  if actual == expected
+    then return ()
+    else threadDelay 1000 >> awaitIORefValue ref expected
 
 -- ---------------------------------------------------------------------------
 -- ASK redirect integration tests

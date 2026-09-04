@@ -81,8 +81,8 @@ library client
     import:           defaults
     hs-source-dirs:   lib/client
     exposed-modules:  Database.Redis.Client
-    other-modules:    Database.Redis.Client.ConnectionSetup
-                    , Database.Redis.Client.TLSConfig
+                    , Database.Redis.Client.ConnectionSetup
+    other-modules:    Database.Redis.Client.TLSConfig
     build-depends:    bytestring >=0.12 && <0.13
                     , crypton-x509-system >=1.6 && <1.7
                     , data-default-class >=0.1 && <0.3
@@ -183,9 +183,11 @@ test-suite ConnectionSetupSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
     main-is:          ConnectionSetupSpec.hs
-    other-modules:    Database.Redis.Client.ConnectionSetup
-    hs-source-dirs:   test
-                    , lib/client
+    build-depends:    bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , stm
+                    , time
 
 test-suite ClusterSpec
     import:           test-defaults

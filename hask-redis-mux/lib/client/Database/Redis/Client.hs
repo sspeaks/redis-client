@@ -12,6 +12,13 @@
 -- @since 0.1.0.0
 module Database.Redis.Client
   ( Client (..)
+  , CleanupRegistrar
+  , ConnectionPhase (..)
+  , PhaseSetter
+  , connectPlaintextWithCleanup
+  , connectPlaintextWithPhases
+  , connectTLSWithCleanup
+  , connectTLSWithPhases
   , serve
   , PlainTextClient (NotConnectedPlainTextClient)
   , TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname, TLSTunnel)
@@ -26,10 +33,18 @@ import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Char8                 as BS8
 import qualified Data.ByteString.Lazy                  as LBS
 import           Data.Default.Class                    (def)
+import           Data.IORef                            (atomicModifyIORef',
+                                                        newIORef)
 import           Data.IP                               (IPv4, toHostAddress)
 import           Data.Kind                             (Type)
 import           Data.Word                             (Word32)
-import           Database.Redis.Client.ConnectionSetup (withSetupResource)
+import           Database.Redis.Client.ConnectionSetup (CleanupRegistrar,
+                                                        ConnectionPhase (..),
+                                                        PhaseSetter,
+                                                        PlaintextSetupOperations (..),
+                                                        TLSSetupOperations (..),
+                                                        runPlaintextSetup,
+                                                        runTLSSetup)
 import           Database.Redis.Client.TLSConfig       (parseTLSVerificationBypass,
                                                         tlsInsecureEnvironmentVariable)
 import           Network.DNS                           (defaultResolvConf,
@@ -80,6 +95,9 @@ data ConnectionStatus = Connected | NotConnected | Server
 class Client (client :: ConnectionStatus -> Type) where
   connect :: (MonadIO m) => client 'NotConnected -> m (client 'Connected)
   close :: (MonadIO m) => client 'Connected -> m ()
+  -- | Abort a failed or timed-out setup without graceful protocol shutdown.
+  abort :: (MonadIO m) => client 'Connected -> m ()
+  abort = close
   send :: (MonadIO m) => client 'Connected -> LBS.ByteString -> m ()
   -- | Send multiple strict ByteString chunks via vectored I/O (writev).
   -- Default implementation falls back to 'send' with lazy concatenation.
@@ -92,31 +110,26 @@ class Client (client :: ConnectionStatus -> Type) where
 -- a hostname and optional port (defaults to 6379).
 data PlainTextClient (a :: ConnectionStatus) where
   NotConnectedPlainTextClient :: String -> Maybe Int -> PlainTextClient 'NotConnected
-  ConnectedPlainTextClient :: String -> Word32 -> Socket -> PlainTextClient 'Connected
+  ConnectedPlainTextClient :: String -> Word32 -> Socket -> IO () -> PlainTextClient 'Connected
 
 instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
-  connect (NotConnectedPlainTextClient hostname port) = liftIO $
-    withSetupResource
-      (createSocket hostname $ maybe 6379 fromIntegral port)
-      (S.close . fst) $ \(sock, ipCorrectEndian) -> do
-        S.connect sock (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian) `catch` \(e :: IOException) -> do
-          printf "Wasn't able to connect to the server: %s...\n" (show e)
-          putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
-          throwIO e
-        return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
+  connect (NotConnectedPlainTextClient hostname port) =
+    liftIO $ connectPlaintextWithPhases (const $ return ()) hostname port
 
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
-  close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
+  close (ConnectedPlainTextClient _ _ _ cleanup) = liftIO cleanup
+
+  abort (ConnectedPlainTextClient _ _ _ cleanup) = liftIO cleanup
 
   send :: (MonadIO m) => PlainTextClient 'Connected -> LBS.ByteString -> m ()
-  send (ConnectedPlainTextClient _ _ sock) dat = liftIO $ sendAll sock dat
+  send (ConnectedPlainTextClient _ _ sock _) dat = liftIO $ sendAll sock dat
 
   sendChunks :: (MonadIO m) => PlainTextClient 'Connected -> [BS.ByteString] -> m ()
-  sendChunks (ConnectedPlainTextClient _ _ sock) chunks = liftIO $ sendMany sock chunks
+  sendChunks (ConnectedPlainTextClient _ _ sock _) chunks = liftIO $ sendMany sock chunks
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m BS.ByteString
-  receive (ConnectedPlainTextClient _ _ sock) = do
+  receive (ConnectedPlainTextClient _ _ sock _) = do
     -- Post-connect receive deadline; independent of PoolConfig.connectionTimeout.
     val <- liftIO $ timeout receiveTimeoutMicroseconds $ recv sock 16384
     case val of
@@ -133,25 +146,29 @@ data TLSClient (a :: ConnectionStatus) where
   -- This is useful for cluster mode where CLUSTER SLOTS returns IP addresses
   -- but we need to use the original hostname for TLS certificate validation
   NotConnectedTLSClientWithHostname :: String -> String -> Maybe Int -> TLSClient 'NotConnected
-  ConnectedTLSClient :: String -> Word32 -> Socket -> Context -> TLSClient 'Connected
+  ConnectedTLSClient :: String -> Word32 -> Socket -> Context -> IO () -> TLSClient 'Connected
   TLSTunnel :: TLSClient 'Connected -> TLSClient 'Server
 
 instance Client TLSClient where
   connect :: (MonadIO m) => TLSClient 'NotConnected -> m (TLSClient 'Connected)
   connect (NotConnectedTLSClient hostname port) =
-    connectTLS hostname hostname port
+    liftIO $ connectTLSWithPhases (const $ return ()) hostname hostname port
 
   connect (NotConnectedTLSClientWithHostname certHostname targetAddress port) =
-    connectTLS certHostname targetAddress port
+    liftIO $ connectTLSWithPhases
+      (const $ return ()) certHostname targetAddress port
 
   close :: (MonadIO m) => TLSClient 'Connected -> m ()
-  close (ConnectedTLSClient _ _ sock ctx) = liftIO $ bye ctx `finally` S.close sock
+  close (ConnectedTLSClient _ _ _ ctx cleanup) =
+    liftIO $ bye ctx `finally` cleanup
+
+  abort (ConnectedTLSClient _ _ _ _ cleanup) = liftIO cleanup
 
   send :: (MonadIO m) => TLSClient 'Connected -> LBS.ByteString -> m ()
-  send (ConnectedTLSClient _ _ _ ctx) dat = liftIO $ sendData ctx dat
+  send (ConnectedTLSClient _ _ _ ctx _) dat = liftIO $ sendData ctx dat
 
   receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m BS.ByteString
-  receive (ConnectedTLSClient _ _ _ ctx) = do
+  receive (ConnectedTLSClient _ _ _ ctx _) = do
     -- Post-connect receive deadline; independent of PoolConfig.connectionTimeout.
     val <- liftIO $ timeout receiveTimeoutMicroseconds $ recvData ctx
     case val of
@@ -160,8 +177,57 @@ instance Client TLSClient where
 
 -- | Connect to a TLS server, using certHostname for certificate validation
 -- and targetAddress for the actual network connection.
-connectTLS :: (MonadIO m) => String -> String -> Maybe Int -> m (TLSClient 'Connected)
-connectTLS certHostname targetAddress port = liftIO $ do
+connectPlaintextWithPhases
+  :: PhaseSetter
+  -> String
+  -> Maybe Int
+  -> IO (PlainTextClient 'Connected)
+connectPlaintextWithPhases setPhase hostname port =
+  connectPlaintextWithCleanup setPhase localCleanupRegistrar hostname port
+
+connectPlaintextWithCleanup
+  :: PhaseSetter
+  -> CleanupRegistrar
+  -> String
+  -> Maybe Int
+  -> IO (PlainTextClient 'Connected)
+connectPlaintextWithCleanup setPhase registerCleanup hostname port =
+  runPlaintextSetup setPhase registerCleanup PlaintextSetupOperations
+    { plaintextResolve = resolve hostname
+    , plaintextOpenSocket = socket AF_INET Stream defaultProtocol
+    , plaintextConfigureSocket = configureSocket
+    , plaintextConnectSocket = \sock ipCorrectEndian ->
+        S.connect sock
+          (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian)
+          `catch` \(e :: IOException) -> do
+            printf "Wasn't able to connect to the server: %s...\n" (show e)
+            putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
+            throwIO e
+    , plaintextCloseSocket = S.close
+    , plaintextConnected = \sock ipCorrectEndian cleanup ->
+        ConnectedPlainTextClient hostname ipCorrectEndian sock cleanup
+    }
+
+connectTLSWithPhases
+  :: PhaseSetter
+  -> String
+  -> String
+  -> Maybe Int
+  -> IO (TLSClient 'Connected)
+connectTLSWithPhases setPhase certHostname targetAddress port =
+  connectTLSWithCleanup
+    setPhase localCleanupRegistrar certHostname targetAddress port
+
+connectTLSWithCleanup
+  :: PhaseSetter
+  -> CleanupRegistrar
+  -> String
+  -> String
+  -> Maybe Int
+  -> IO (TLSClient 'Connected)
+connectTLSWithCleanup setPhase registerCleanup
+    certHostname targetAddress port = do
+  setPhase TLSContextCreation
   insecureValue <- lookupEnv tlsInsecureEnvironmentVariable
   allowInsecure <-
     case parseTLSVerificationBypass insecureValue of
@@ -173,30 +239,51 @@ connectTLS certHostname targetAddress port = liftIO $ do
         ++ show certHostname
         ++ ". The server identity will not be verified."
     else pure ()
-  withSetupResource
-    (createSocket targetAddress $ maybe 6380 fromIntegral port)
-    (S.close . fst) $ \(sock, ipCorrectEndian) -> do
-      S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
-      store <- getSystemCertificateStore
+  runTLSSetup setPhase registerCleanup TLSSetupOperations
+    { tlsResolve = resolve targetAddress
+    , tlsOpenSocket = socket AF_INET Stream defaultProtocol
+    , tlsConfigureSocket = configureSocket
+    , tlsConnectSocket = \sock ipCorrectEndian ->
+        S.connect sock
+          (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
+    , tlsCloseSocket = S.close
+    , tlsLoadStore = getSystemCertificateStore
+    , tlsCreateContext = \sock store ->
+        contextNew sock $ tlsClientParams allowInsecure store
+    , tlsCloseContext = const $ return ()
+    , tlsRunHandshake = handshake
+    , tlsConnected = \sock ipCorrectEndian context cleanup ->
+        ConnectedTLSClient
+          certHostname ipCorrectEndian sock context cleanup
+    }
+  where
+    tlsClientParams allowInsecure store =
       let baseParams =
             (defaultParamsClient certHostname "redis-server")
               { clientSupported =
                   def
-                    { supportedVersions = [TLS13, TLS12],
-                      supportedCiphers = ciphersuite_strong
-                    },
-                clientShared =
+                    { supportedVersions = [TLS13, TLS12]
+                    , supportedCiphers = ciphersuite_strong
+                    }
+              , clientShared =
                   def
                     { sharedCAStore = store
                     }
               }
-          clientParams =
-            if allowInsecure
-              then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
-              else baseParams
-      context <- contextNew sock clientParams
-      handshake context
-      return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
+      in if allowInsecure
+           then baseParams
+             { clientHooks =
+                 def {onServerCertificate = \_ _ _ _ -> pure []}
+             }
+           else baseParams
+
+localCleanupRegistrar :: CleanupRegistrar
+localCleanupRegistrar cleanup = do
+  finalized <- newIORef False
+  return $ do
+    shouldRun <- atomicModifyIORef' finalized $ \done ->
+      (True, not done)
+    if shouldRun then cleanup else return ()
 
 -- | Start a local TCP proxy on @localhost:6379@ that forwards traffic through an
 -- existing TLS connection. Useful for tunneling plain-text Redis tools over TLS.
@@ -225,15 +312,10 @@ serve (TLSTunnel redisClient) = liftIO $ do
       loop client redis
 
 -- | Create a TCP socket with standard options (NoDelay, KeepAlive) and resolve the hostname.
-createSocket :: String -> S.PortNumber -> IO (Socket, HostAddress)
-createSocket hostname _port = do
-  ipAddr <- resolve hostname
-  withSetupResource
-    (socket AF_INET Stream defaultProtocol)
-    S.close $ \sock -> do
-      setSocketOption sock NoDelay 1
-      setSocketOption sock KeepAlive 1
-      return (sock, ipAddr)
+configureSocket :: Socket -> IO ()
+configureSocket sock = do
+  setSocketOption sock NoDelay 1
+  setSocketOption sock KeepAlive 1
 
 -- | Resolve a hostname or IP address string to a 'HostAddress'.
 -- Handles @\"localhost\"@, dotted-quad IPv4 literals, and DNS A-record lookups.

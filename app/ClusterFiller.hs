@@ -9,7 +9,8 @@ import           Control.Concurrent                 (MVar, forkIO, newEmptyMVar,
                                                      putMVar, takeMVar,
                                                      threadDelay)
 import           Control.Concurrent.STM             (readTVarIO)
-import           Control.Exception                  (SomeException, catch)
+import           Control.Exception                  (SomeException, bracket,
+                                                     catch)
 import           Control.Monad                      (when)
 import qualified Control.Monad.State                as State
 import qualified Data.ByteString                    as BS
@@ -59,7 +60,7 @@ fillClusterWithData ::
   Int ->              -- Value size in bytes
   Int ->              -- Pipeline batch size
   IO ()
-fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keySize valueSize pipelineBatchSize = do
+fillClusterWithData clusterClient _connector totalGB threadsPerNode baseSeed keySize valueSize pipelineBatchSize = do
   -- Get cluster topology to find master nodes
   topology <- readTVarIO (clusterTopology clusterClient)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
@@ -87,7 +88,10 @@ fillClusterWithData clusterClient connector totalGB threadsPerNode baseSeed keyS
                        (zip [0..] masterNodes)
 
   -- Execute jobs in parallel
-  mvars <- mapM (executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize) jobs
+  mvars <- mapM
+    (executeJob clusterClient (clusterConnector clusterClient)
+      slotRanges baseSeed keySize valueSize pipelineBatchSize)
+    jobs
   mapM_ takeMVar mvars
 
   putStrLn "Cluster fill complete!"
@@ -149,26 +153,25 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
 
           -- Create a unique connection for this thread using connector directly
           -- This avoids connection pool contention where threads share connections
-          conn <- connector addr
+          bracket (connector addr) close $ \conn -> do
+            -- Find which slots this node owns
+            topology <- readTVarIO (clusterTopology clusterClient)
+            let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+                maybeNode = findNodeByAddress masters addr
 
-          -- Find which slots this node owns
-          topology <- readTVarIO (clusterTopology clusterClient)
-          let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-              maybeNode = findNodeByAddress masters addr
+            case maybeNode of
+              Nothing -> do
+                printf "Warning: Could not find node for address %s:%d\n"
+                       (nodeHost addr) (nodePort addr)
+              Just node -> do
+                let nId = nodeId node
+                    slots = Map.findWithDefault [] nId slotRanges
 
-          case maybeNode of
-            Nothing -> do
-              printf "Warning: Could not find node for address %s:%d\n"
-                     (nodeHost addr) (nodePort addr)
-            Just node -> do
-              let nId = nodeId node
-                  slots = Map.findWithDefault [] nId slotRanges
+                when (null slots) $ do
+                  printf "Warning: Node %s has no assigned slots\n" (BS8.unpack nId)
 
-              when (null slots) $ do
-                printf "Warning: Node %s has no assigned slots\n" (BS8.unpack nId)
-
-              -- Fill data for this node using its slots
-              fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
+                -- Fill data for this node using its slots
+                fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
           ) (\e -> do
             -- If any exception occurs, log it and continue
             printf "Error in thread %d for node %s:%d: %s\n"

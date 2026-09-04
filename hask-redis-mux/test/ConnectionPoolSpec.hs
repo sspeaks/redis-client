@@ -87,6 +87,13 @@ awaitWaiters pool expected = do
     then return ()
     else threadDelay 1000 >> awaitWaiters pool expected
 
+awaitIORefValue :: IORef Int -> Int -> IO ()
+awaitIORefValue ref expected = do
+  actual <- readIORef ref
+  if actual == expected
+    then return ()
+    else threadDelay 1000 >> awaitIORefValue ref expected
+
 expectWithin :: IO a -> IO a
 expectWithin action =
   timeout 2000000 action >>= \case
@@ -161,6 +168,7 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       elapsedSeconds `shouldSatisfy` \elapsed ->
         elapsed >= 0.75 && elapsed < 3
       readIORef attempts `shouldReturn` 1
+      expectWithin $ awaitIORefValue closeCount 1
       readIORef closeCount `shouldReturn` 1
       getConnectionPoolStats pool node
         `shouldReturn` ConnectionPoolStats 0 0 0

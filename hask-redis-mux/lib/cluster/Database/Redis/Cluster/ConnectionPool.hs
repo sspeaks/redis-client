@@ -20,6 +20,7 @@ module Database.Redis.Cluster.ConnectionPool
     PoolConfig (..),
     createPool,
     withConnection,
+    withConnectionBounded,
     getConnectionPoolStats,
     closePool,
   )
@@ -123,23 +124,41 @@ withConnection ::
   (client 'Connected -> IO a) ->
   IO a
 withConnection pool addr connector action = mask $ \restore -> do
-  conn <- checkoutConnection pool addr connector restore
+  conn <- checkoutConnection False pool addr connector restore
   result <- restore (action conn)
     `onException` discardConnection pool addr conn
   returnConnection pool addr conn
   return result
 {-# INLINE withConnection #-}
 
+-- | Use a connector that already enforces the pool's complete setup deadline.
+-- This avoids nesting a coarse pool timeout around a phase-aware connector.
+withConnectionBounded ::
+  (Client client) =>
+  ConnectionPool client ->
+  NodeAddress ->
+  Connector client ->
+  (client 'Connected -> IO a) ->
+  IO a
+withConnectionBounded pool addr connector action = mask $ \restore -> do
+  conn <- checkoutConnection True pool addr connector restore
+  result <- restore (action conn)
+    `onException` discardConnection pool addr conn
+  returnConnection pool addr conn
+  return result
+{-# INLINE withConnectionBounded #-}
+
 -- | Check out a connection from the pool. Creates a new one if none available
 -- and the max hasn't been reached. Blocks if pool is at capacity.
 checkoutConnection ::
   (Client client) =>
+  Bool ->
   ConnectionPool client ->
   NodeAddress ->
   Connector client ->
   (forall a. IO a -> IO a) ->
   IO (client 'Connected)
-checkoutConnection pool addr connector restore = checkout
+checkoutConnection connectorIsBounded pool addr connector restore = checkout
   where
   checkout = do
     result <- modifyPoolState pool $ \m -> do
@@ -183,9 +202,11 @@ checkoutConnection pool addr connector restore = checkout
               if useTLS (poolConfig pool)
                 then TLSConnectionSetup
                 else PlaintextConnectionSetup
-            boundedConnector =
-              withConnectionTimeout
-                (connectionTimeout $ poolConfig pool) phase connector
+            boundedConnector
+              | connectorIsBounded = connector
+              | otherwise =
+                  withConnectionTimeout
+                    (connectionTimeout $ poolConfig pool) phase connector
         connResult <- try (restore $ boundedConnector addr)
         case connResult of
           Right conn -> do

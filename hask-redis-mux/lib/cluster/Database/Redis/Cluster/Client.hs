@@ -42,6 +42,7 @@ module Database.Redis.Cluster.Client
     ClusterConfig (..),
     -- * Client Lifecycle
     createClusterClient,
+    createClusterClientWithBoundedConnector,
     createClusterClientWithFactories,
     closeClusterClient,
     withClusterClient,
@@ -98,7 +99,8 @@ import           Database.Redis.Cluster.ConnectionPool (ConnectionPool,
                                                         ConnectionPoolException (..),
                                                         PoolConfig (..),
                                                         closePool, createPool,
-                                                        withConnection)
+                                                        withConnection,
+                                                        withConnectionBounded)
 import           Database.Redis.Command                (ClientState (..),
                                                         RedisCommandClient (..),
                                                         RedisCommands (..),
@@ -238,7 +240,19 @@ createClusterClient ::
   Connector client ->
   IO (ClusterClient client)
 createClusterClient config connector = do
-  createClusterClientWithFactories createPool createMultiplexPool config connector
+  createClusterClientWithFactoriesUsing
+    False createPool createMultiplexPool config connector
+
+-- | Construct a cluster client from a phase-aware connector that already owns
+-- its complete setup deadline, including authentication when applicable.
+createClusterClientWithBoundedConnector ::
+  (Client client) =>
+  ClusterConfig ->
+  Connector client ->
+  IO (ClusterClient client)
+createClusterClientWithBoundedConnector config connector =
+  createClusterClientWithFactoriesUsing
+    True createPool createMultiplexPool config connector
 
 -- | Internal construction seam for deterministic failure-injection tests.
 createClusterClientWithFactories
@@ -249,13 +263,30 @@ createClusterClientWithFactories
   -> Connector client
   -> IO (ClusterClient client)
 createClusterClientWithFactories createConnectionPool createMuxPool config connector = do
+  createClusterClientWithFactoriesUsing
+    False createConnectionPool createMuxPool config connector
+
+createClusterClientWithFactoriesUsing
+  :: (Client client)
+  => Bool
+  -> (PoolConfig -> IO (ConnectionPool client))
+  -> (Connector client -> Int -> IO (MultiplexPool client))
+  -> ClusterConfig
+  -> Connector client
+  -> IO (ClusterClient client)
+createClusterClientWithFactoriesUsing connectorIsBounded
+    createConnectionPool createMuxPool config connector = do
   pool <- createConnectionPool (clusterPoolConfig config)
   build pool `onException` closePool pool
   where
     build pool = do
   -- Discover initial topology before creating TVar
       let seedNode = clusterSeedNode config
-      response <- withConnection pool seedNode connector $ \conn -> do
+      let connectFromPool =
+            if connectorIsBounded
+              then withConnectionBounded
+              else withConnection
+      response <- connectFromPool pool seedNode connector $ \conn -> do
         let clientState = ClientState conn BS8.empty
         State.evalStateT (runRedisCommandClient clusterSlots) clientState
 
@@ -270,11 +301,13 @@ createClusterClientWithFactories createConnectionPool createMuxPool config conne
                 if useTLS poolCfg
                   then TLSConnectionSetup
                   else PlaintextConnectionSetup
-              boundedConnector =
-                withConnectionTimeout
-                  (connectionTimeout poolCfg) phase connector
+              boundedConnector
+                | connectorIsBounded = connector
+                | otherwise =
+                    withConnectionTimeout
+                      (connectionTimeout poolCfg) phase connector
           muxPool <- createMuxPool boundedConnector 1
-          return $ ClusterClient topology pool config connector refreshLock muxPool
+          return $ ClusterClient topology pool config boundedConnector refreshLock muxPool
 
 -- | Close all pooled connections across every node.
 -- Closure is terminal and idempotent: owned transports are closed exactly once,
@@ -325,7 +358,8 @@ refreshTopology client = do
     connector = clusterConnector client
     doRefresh = do
       let seedNode = clusterSeedNode (clusterConfig client)
-      response <- withConnection (clusterConnectionPool client) seedNode connector $ \conn -> do
+      response <- withConnectionBounded
+        (clusterConnectionPool client) seedNode connector $ \conn -> do
         let clientState = ClientState conn BS8.empty
         State.evalStateT (runRedisCommandClient clusterSlots) clientState
 
@@ -384,7 +418,8 @@ executeOnNode ::
   IO (Either ClusterError a)
 executeOnNode client nodeAddr action connector = do
   result <- tryClusterAction $
-    withConnection (clusterConnectionPool client) nodeAddr connector $ \conn -> do
+    withConnectionBounded
+      (clusterConnectionPool client) nodeAddr connector $ \conn -> do
     let clientState = ClientState conn BS8.empty
     State.evalStateT (runRedisCommandClient action) clientState
 

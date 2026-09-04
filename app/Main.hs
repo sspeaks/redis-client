@@ -556,7 +556,8 @@ bench state = do
 benchWithConnector :: (Client client) => RunState -> Connector client -> String -> Int -> Int -> Int -> Int -> IO ()
 benchWithConnector state connector op duration nConns kSize vSize = do
   clusterClient <- createClusterClientFromState state connector
-  muxPool <- createMultiplexPool connector (muxCount state)
+  muxPool <- createMultiplexPool
+    (clusterConnector clusterClient) (muxCount state)
 
   -- Pre-populate keys for GET and mixed workloads
   when (op `elem` ["get", "mixed"]) $ do
