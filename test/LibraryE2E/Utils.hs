@@ -6,6 +6,7 @@ module LibraryE2E.Utils
   ( -- * Client creation
     createTestClient
   , createTestClientWith
+  , createOutageTestClient
   , defaultTestConfig
   , defaultPoolConfig
   , testConnector
@@ -16,6 +17,8 @@ module LibraryE2E.Utils
   , withStoppedNode
   , withStoppedNodes
   , waitForClusterReady
+  , nodeOutageScenario
+  , NodeOutageScenario (..)
     -- * Constants
   , seedNode
   ) where
@@ -52,6 +55,9 @@ import           Database.Redis.Connector              (Connector,
                                                         clusterPlaintextConnector)
 import           Database.Redis.Resp                   (RespData (..))
 import           LibraryE2E.NodeLifecycle
+import           LibraryE2E.NodeTargeting              (NodeOutageScenario (..),
+                                                        dockerNodeTarget,
+                                                        resolveNodeOutageScenario)
 import           System.Process                        (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
@@ -89,6 +95,15 @@ createTestClient = createClusterClient defaultTestConfig testConnector
 createTestClientWith :: (ClusterConfig -> ClusterConfig) -> IO (ClusterClient PlainTextClient)
 createTestClientWith f = createClusterClient (f defaultTestConfig) testConnector
 
+createOutageTestClient :: IO (ClusterClient PlainTextClient)
+createOutageTestClient = createTestClientWith $ \config -> config
+  { clusterMaxRetries = 2
+  , clusterRetryDelay = 10000
+  , clusterPoolConfig = (clusterPoolConfig config)
+      { connectionTimeout = 1
+      }
+  }
+
 -- | Run a cluster command using the test connector
 runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
 runCmd client = runClusterCommandClient client
@@ -109,12 +124,24 @@ flushAllNodes client = do
       Right _                   -> return ()
 
 withStoppedNode :: Int -> IO a -> IO a
-withStoppedNode node =
-  withStoppedNodeUsing nodeLifecycleOperations (nodeTarget node)
+withStoppedNode node action = do
+  target <- requireNodeTarget node
+  withStoppedNodeUsing nodeLifecycleOperations target action
 
 withStoppedNodes :: [Int] -> IO a -> IO a
-withStoppedNodes nodes =
-  withStoppedNodesUsing nodeLifecycleOperations $ map nodeTarget nodes
+withStoppedNodes nodes action = do
+  targets <- mapM requireNodeTarget nodes
+  withStoppedNodesUsing nodeLifecycleOperations targets action
+
+nodeOutageScenario
+  :: ClusterClient PlainTextClient
+  -> Int
+  -> IO NodeOutageScenario
+nodeOutageScenario client node = do
+  topology <- readTVarIO $ clusterTopology client
+  target <- requireNodeTarget node
+  either (throwIO . userError) return $
+    resolveNodeOutageScenario 100000 target topology
 
 nodeLifecycleOperations :: NodeLifecycleOps
 nodeLifecycleOperations = NodeLifecycleOps
@@ -125,23 +152,16 @@ nodeLifecycleOperations = NodeLifecycleOps
   , waitNodeReady = waitForNodeReady 30
   }
 
-nodeTarget :: Int -> NodeTarget
-nodeTarget node
-  | node >= 1 && node <= 5 = NodeTarget
-      { nodeNumber = node
-      , nodeContainer = "redis-cluster-node" ++ show node
-      , targetHost = "redis" ++ show node ++ ".local"
-      , targetPort = 6378 + node
-      }
-  | otherwise =
-      error $ "Redis cluster node must be between 1 and 5, got "
-        ++ show node
+requireNodeTarget :: Int -> IO NodeTarget
+requireNodeTarget =
+  either (throwIO . userError) return . dockerNodeTarget
 
 -- | Wait for the cluster to become ready after a node restart.
 -- Polls node 1 for PONG and a complete healthy cluster view.
 waitForClusterReady :: Int -> IO ()
-waitForClusterReady maxWaitSeconds =
-  waitForNodeReady maxWaitSeconds $ nodeTarget 1
+waitForClusterReady maxWaitSeconds = do
+  target <- requireNodeTarget 1
+  waitForNodeReady maxWaitSeconds target
 
 waitForNodeReady :: Int -> NodeTarget -> IO ()
 waitForNodeReady maxWaitSeconds =

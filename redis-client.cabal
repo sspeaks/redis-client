@@ -90,6 +90,19 @@ test-suite NodeLifecycleSpec
     other-modules:    LibraryE2E.NodeLifecycle
     hs-source-dirs:   test
 
+test-suite NodeTargetingSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          NodeTargetingSpec.hs
+    other-modules:    LibraryE2E.NodeLifecycle
+                    , LibraryE2E.NodeTargeting
+    hs-source-dirs:   test
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , time
+                    , vector
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------
@@ -171,6 +184,7 @@ executable LibraryE2E
     hs-source-dirs:   test
     other-modules:    LibraryE2E.Utils
                     , LibraryE2E.NodeLifecycle
+                    , LibraryE2E.NodeTargeting
                     , LibraryE2E.ConnectionPoolTests
                     , LibraryE2E.TopologyTests
                     , LibraryE2E.ResilienceTests
