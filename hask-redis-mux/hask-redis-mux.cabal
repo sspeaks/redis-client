@@ -189,6 +189,12 @@ test-suite ConnectionSetupSpec
                     , stm
                     , time
 
+test-suite PublicApiSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          PublicApiSpec.hs
+    build-depends:    redis
+
 test-suite ClusterSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0

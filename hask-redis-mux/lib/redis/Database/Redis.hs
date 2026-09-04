@@ -101,12 +101,18 @@ import           Database.Redis.Command                (ClientReplyValues (..),
                                                         parseWith, showBS)
 import           Database.Redis.Connector              (ConnectionPhase (..),
                                                         ConnectionSetupException (..),
+                                                        ConnectionSupervisor (..),
                                                         Connector,
                                                         clusterPlaintextConnector,
+                                                        clusterPlaintextConnectorWithTimeout,
                                                         clusterTLSConnector,
+                                                        clusterTLSConnectorWithTimeout,
                                                         connectPlaintext,
+                                                        connectPlaintextWithTimeout,
                                                         connectTLS,
-                                                        withConnectionTimeout)
+                                                        connectTLSWithTimeout,
+                                                        withConnectionTimeout,
+                                                        withConnectionTimeoutSupervised)
 import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.Multiplexer   (Multiplexer,
                                                         MultiplexerException (..),
