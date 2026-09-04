@@ -81,8 +81,10 @@ import           Database.Redis.Cluster.Client         (ClusterClient (..),
                                                         runClusterCommandClient)
 import           Database.Redis.Cluster.ConnectionPool (ConnectionPool (..),
                                                         ConnectionPoolException (..),
+                                                        ConnectionPoolStats (..),
                                                         PoolConfig (..),
                                                         closePool, createPool,
+                                                        getConnectionPoolStats,
                                                         withConnection)
 import           Database.Redis.Command                (ClientReplyValues (..),
                                                         ClientState (..),

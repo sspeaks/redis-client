@@ -146,6 +146,16 @@ library redis
                     , redis-command-client
                     , resp
 
+benchmark ConnectionPoolBench
+    import:           defaults
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   bench
+    main-is:          ConnectionPoolBench.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:    async >=2.2 && <2.3
+                    , client
+                    , cluster
+
 -- ---------------------------------------------------------------------------
 -- Test suites
 -- ---------------------------------------------------------------------------
@@ -198,6 +208,14 @@ test-suite MultiplexerSpec
                     , client
                     , cluster
                     , resp
+
+test-suite ConnectionPoolSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ConnectionPoolSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
 
 test-suite StandaloneSpec
     import:           test-defaults
