@@ -1,0 +1,31 @@
+services:
+  auth-redis1:
+    image: redis:7-alpine
+    hostname: redis-auth1.local
+    volumes:
+      - ./redis1.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - auth-cluster-net
+
+  auth-redis2:
+    image: redis:7-alpine
+    hostname: redis-auth2.local
+    volumes:
+      - ./redis2.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - auth-cluster-net
+
+  auth-redis3:
+    image: redis:7-alpine
+    hostname: redis-auth3.local
+    volumes:
+      - ./redis3.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - auth-cluster-net
+
+networks:
+  auth-cluster-net:
+    driver: bridge

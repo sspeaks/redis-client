@@ -143,6 +143,19 @@ executable ClusterEndToEnd
                     , time
                     , vector
 
+executable AuthenticatedClusterEndToEnd
+    import:           exe-defaults
+    if !flag(e2e)
+        buildable: False
+    main-is:          AuthenticatedClusterE2E.hs
+    hs-source-dirs:   test
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , hspec
+                    , mtl
+                    , stm
+
 executable LibraryE2E
     import:           exe-defaults
     if !flag(e2e)

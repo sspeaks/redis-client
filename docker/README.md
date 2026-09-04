@@ -19,6 +19,18 @@ non-loopback host address:
 ./scripts/test-redis-loopback-connectivity.sh
 ```
 
+## Authenticated cluster stack
+
+`docker/auth-cluster` is an isolated three-master RESP2 interoperability
+fixture. It publishes no host ports, requires a password for the default user,
+and also defines a named ACL user. The runner creates a unique Compose project,
+builds only the authenticated cluster test executable, and removes the project
+and its volumes on exit:
+
+```sh
+make test-authenticated-cluster-e2e
+```
+
 ## Host-network compatibility stack
 
 The legacy `docker/cluster-host` stack is not part of the default development

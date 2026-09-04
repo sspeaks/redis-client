@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-credentials test-tls-fixtures test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-credentials test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -43,7 +43,7 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e test-cluster-e2e test-library-e2e
+test: test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
 test-unit: test-credentials
@@ -86,6 +86,15 @@ test-cluster-e2e:
 	fi
 	@echo "Running cluster E2E tests..."
 	./scripts/run-cluster-e2e-tests.sh
+
+# Run authenticated cluster interoperability tests with Docker
+test-authenticated-cluster-e2e:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@echo "Running authenticated cluster E2E tests..."
+	./scripts/run-authenticated-cluster-e2e-tests.sh
 
 # Run library end-to-end tests with Docker
 test-library-e2e:
