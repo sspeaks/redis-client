@@ -68,8 +68,18 @@ For non-interactive automation, pass that same target to `--confirm-flush`.
 Standalone targets use
 `redis://HOST:PORT?tls=true|false&scope=single-node`; cluster targets use
 `redis+cluster://HOST:PORT?tls=true|false&scope=all-primaries`. `PORT` is the
-effective port (6379 plaintext or 6380 TLS when omitted). Cluster confirmation
-explicitly covers FLUSHALL on every primary.
+effective port (6379 plaintext or 6380 TLS when omitted), and an IPv6 host is
+written in brackets (for example, `[2001:db8::1]`). The `--tls` flag controls
+the connection; `tls=true` records that choice in the target. Cluster
+confirmation explicitly covers FLUSHALL on every primary.
+
+In an interactive terminal, the exact displayed target must be typed. EOF
+(including Ctrl-D) or any mismatch cancels the operation before connecting.
+When stdin is not a terminal, no prompt is available: `--confirm-flush` is
+required and must exactly equal the canonical target. With `--processes N`
+for `N > 1`, only the parent process confirms and performs one flush before
+spawning children; child processes receive no flush request and never repeat
+the confirmation.
 
 ```sh
 # Non-interactive standalone flush
@@ -79,6 +89,17 @@ redis-client fill -h localhost --flush \
 # Non-interactive cluster flush
 redis-client fill -h redis1.local -c --flush \
   --confirm-flush 'redis+cluster://redis1.local:6379?tls=false&scope=all-primaries'
+```
+
+For CI, use an explicitly disposable Redis fixture and keep the exact target
+in the command. This example has no credentials and cannot target a shared
+default port:
+
+```sh
+docker run --rm -d --name redis-client-flush-fixture -p 16379:6379 redis:7
+trap 'docker rm -f redis-client-flush-fixture' EXIT
+redis-client fill -h 127.0.0.1 -p 16379 --flush \
+  --confirm-flush 'redis://127.0.0.1:16379?tls=false&scope=single-node'
 ```
 
 ### Environment Variables
@@ -301,13 +322,13 @@ Profile before and after changes to detect regressions:
 # Start local Redis (if needed)
 make redis-start
 
-# Profile with -p flag (easiest to compare)
-cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
+# Profile with -p flag (easiest to compare); this does not request FLUSHALL.
+cabal run --enable-profiling -- fill -h localhost -d 1 +RTS -p -RTS
 
 # Make changes...
 
-# Profile again
-cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
+# Profile again, still without a destructive flush
+cabal run --enable-profiling -- fill -h localhost -d 1 +RTS -p -RTS
 
 # Compare .prof files for regressions
 # Stop Redis
