@@ -38,8 +38,8 @@ main = hspec $ do
 
     it "encodes maps correctly" $ do
       let mapData = M.fromList [(RespSimpleString "first", RespInteger 1), (RespSimpleString "second", RespBulkString "bulkString")]
-      Builder.toLazyByteString (encode (RespMap mapData)) `shouldBe` "*2\r\n+first\r\n:1\r\n+second\r\n$10\r\nbulkString\r\n"
-      Builder.toLazyByteString (encode (RespMap M.empty)) `shouldBe` "*0\r\n"
+      Builder.toLazyByteString (encode (RespMap mapData)) `shouldBe` "%2\r\n+first\r\n:1\r\n+second\r\n$10\r\nbulkString\r\n"
+      Builder.toLazyByteString (encode (RespMap M.empty)) `shouldBe` "%0\r\n"
 
     it "encodes sets correctly" $ do
       let setData = S.fromList [RespSimpleString "Hello", RespInteger 5, RespBulkString "im very long"]
@@ -175,6 +175,25 @@ main = hspec $ do
       let mapData = M.fromList [(RespSimpleString "first", RespInteger 1), (RespSimpleString "second", RespBulkString "bulkString")]
       parseOnly parseRespData "%2\r\n+first\r\n:1\r\n+second\r\n$10\r\nbulkString\r\n" `shouldBe` Right (RespMap mapData)
       parseOnly parseRespData "%0\r\n" `shouldBe` Right (RespMap M.empty)
+
+    it "roundtrips empty maps" $ do
+      let respMap = RespMap M.empty
+          encoded = Builder.toLazyByteString (encode respMap)
+      encoded `shouldBe` "%0\r\n"
+      parseOnly parseRespData (LBS.toStrict encoded) `shouldBe` Right respMap
+
+    it "roundtrips non-empty maps" $ do
+      let respMap = RespMap (M.fromList [(RespSimpleString "key", RespInteger 1)])
+          encoded = Builder.toLazyByteString (encode respMap)
+      encoded `shouldBe` "%1\r\n+key\r\n:1\r\n"
+      parseOnly parseRespData (LBS.toStrict encoded) `shouldBe` Right respMap
+
+    it "roundtrips nested maps" $ do
+      let innerMap = RespMap (M.fromList [(RespSimpleString "inner", RespArray [RespInteger 1, RespInteger 2])])
+          respMap = RespMap (M.fromList [(RespSimpleString "outer", innerMap)])
+          encoded = Builder.toLazyByteString (encode respMap)
+      encoded `shouldBe` "%1\r\n+outer\r\n%1\r\n+inner\r\n*2\r\n:1\r\n:2\r\n"
+      parseOnly parseRespData (LBS.toStrict encoded) `shouldBe` Right respMap
 
     it "parses sets correctly" $ do
       let setData = S.fromList [RespSimpleString "Hello", RespInteger 5, RespBulkString "im very long"]

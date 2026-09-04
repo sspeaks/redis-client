@@ -63,7 +63,7 @@ instance Encodable RespData where
   encode RespNullBulkString = Builder.byteString "$-1\r\n"
   encode (RespArray !xs) = Builder.char8 '*' <> Builder.intDec (length xs) <> Builder.byteString "\r\n" <> foldMap encode xs
   encode (RespSet !s) = Builder.char8 '~' <> Builder.intDec (S.size s) <> Builder.byteString "\r\n" <> foldMap encode (S.toList s)
-  encode (RespMap !m) = Builder.char8 '*' <> Builder.intDec (M.size m) <> Builder.byteString "\r\n" <> foldMap encodePair (M.toList m)
+  encode (RespMap !m) = Builder.char8 '%' <> Builder.intDec (M.size m) <> Builder.byteString "\r\n" <> foldMap encodePair (M.toList m)
     where
       encodePair (k, v) = encode k <> encode v
 
