@@ -4,7 +4,8 @@
 module LibraryE2E.ResilienceTests (spec) where
 
 import           Control.Concurrent            (threadDelay)
-import           Control.Exception             (SomeException, try)
+import           Control.Exception             (SomeException, displayException,
+                                                throwIO, try)
 import           Database.Redis.Cluster.Client (ClusterConfig (..),
                                                 ClusterError (..),
                                                 closeClusterClient,
@@ -19,6 +20,28 @@ import           Test.Hspec
 
 spec :: Spec
 spec = describe "Error Handling & Resilience" $ do
+  describe "Exception-safe node restoration" $ do
+    it "restores a stopped node after an intentional body failure" $ do
+      result <- try $ withStoppedNode 3 $
+        throwIO $ userError "intentional node fixture failure"
+        :: IO (Either SomeException ())
+      case result of
+        Left err ->
+          displayException err `shouldContain`
+            "intentional node fixture failure"
+        Right () ->
+          expectationFailure "intentional failure unexpectedly succeeded"
+
+    it "starts the following example with a healthy cluster" $ do
+      waitForClusterReady 5
+      client <- createTestClient
+      result <- executeKeyedClusterCommand
+        client
+        "restoration-followup"
+        ["SET", "restoration-followup", "healthy"]
+      result `shouldSatisfy` isRight'
+      flushAllNodes client
+      closeClusterClient client
 
   describe "MOVED error retry" $ do
     it "transparently handles slot routing across nodes" $ do
@@ -57,33 +80,25 @@ spec = describe "Error Handling & Resilience" $ do
         clusterRetryDelay = 10000  -- 10ms to speed up test
       })
 
-      -- Stop multiple nodes to guarantee some slots are unavailable
-      stopNode 4
-      stopNode 5
-      threadDelay 3000000  -- 3s for detection
+      withStoppedNodes [4, 5] $ do
+        threadDelay 3000000  -- 3s for detection
 
-      -- Try operations — some should fail with MaxRetriesExceeded or ConnectionError
-      -- We try several keys to increase odds of hitting a down node's slots
-      let tryKeys = ["maxretry-" <> showBS i | i <- [1..20 :: Int]]
-      results <- mapM (\k ->
-        executeKeyedClusterCommand client k ["SET", k, "v"]
-        ) tryKeys
+        -- Try operations — some should fail with MaxRetriesExceeded or ConnectionError
+        -- We try several keys to increase odds of hitting a down node's slots
+        let tryKeys = ["maxretry-" <> showBS i | i <- [1..20 :: Int]]
+        results <- mapM (\k ->
+          executeKeyedClusterCommand client k ["SET", k, "v"]
+          ) tryKeys
 
-      -- At least some should fail (nodes 4 & 5 own some slots)
-      let failures = [e | Left e <- results]
-      length failures `shouldSatisfy` (> 0)
+        -- At least some should fail (nodes 4 & 5 own some slots)
+        let failures = [e | Left e <- results]
+        length failures `shouldSatisfy` (> 0)
 
-      -- Verify failures are the right error types
-      let isExpectedError (MaxRetriesExceeded _) = True
-          isExpectedError (ConnectionError _)    = True
-          isExpectedError _                      = False
-      mapM_ (\e -> e `shouldSatisfy` isExpectedError) failures
-
-      -- Restart nodes
-      startNode 4
-      startNode 5
-      waitForClusterReady 30
-      threadDelay 5000000  -- 5s stabilization
+        -- Verify failures are the right error types
+        let isExpectedError (MaxRetriesExceeded _) = True
+            isExpectedError (ConnectionError _)    = True
+            isExpectedError _                      = False
+        mapM_ (\e -> e `shouldSatisfy` isExpectedError) failures
 
       flushAllNodes client
       closeClusterClient client
@@ -96,31 +111,25 @@ spec = describe "Error Handling & Resilience" $ do
       -- Use hash tag to target specific node's slots
       _ <- executeKeyedClusterCommand client "conn-close-test" ["SET", "conn-close-test", "v"]
 
-      -- Kill node 3 abruptly
-      stopNode 3
-      threadDelay 2000000  -- 2s
+      withStoppedNode 3 $ do
+        threadDelay 2000000  -- 2s
 
-      -- Try operations — some may fail with ConnectionError
-      results <- mapM (\i -> do
-        let k = "connclose-" <> showBS i
-        try (executeKeyedClusterCommand client k ["SET", k, "v"])
-          :: IO (Either SomeException (Either ClusterError RespData))
-        ) [1..10 :: Int]
+        -- Try operations — some may fail with ConnectionError
+        results <- mapM (\i -> do
+          let k = "connclose-" <> showBS i
+          try (executeKeyedClusterCommand client k ["SET", k, "v"])
+            :: IO (Either SomeException (Either ClusterError RespData))
+          ) [1..10 :: Int]
 
-      -- Should not hang (test completing is the assertion)
-      -- Any failures should be connection-related, not parse errors
-      let checkResult r = case r of
-            Left _                              -> True  -- Exception is fine
-            Right (Left (ConnectionError _))    -> True
-            Right (Left (MaxRetriesExceeded _)) -> True
-            Right (Right _)                     -> True  -- Success is fine (different node)
-            Right (Left _)                      -> True  -- Other cluster errors ok
-      mapM_ (\r -> r `shouldSatisfy` checkResult) results
-
-      -- Restart
-      startNode 3
-      waitForClusterReady 30
-      threadDelay 5000000
+        -- Should not hang (test completing is the assertion)
+        -- Any failures should be connection-related, not parse errors
+        let checkResult r = case r of
+              Left _                              -> True  -- Exception is fine
+              Right (Left (ConnectionError _))    -> True
+              Right (Left (MaxRetriesExceeded _)) -> True
+              Right (Right _)                     -> True  -- Success is fine (different node)
+              Right (Left _)                      -> True  -- Other cluster errors ok
+        mapM_ (\r -> r `shouldSatisfy` checkResult) results
 
       flushAllNodes client
       closeClusterClient client
@@ -133,14 +142,8 @@ spec = describe "Error Handling & Resilience" $ do
       r1 <- executeKeyedClusterCommand client "recovery-key" ["SET", "recovery-key", "before"]
       r1 `shouldSatisfy` isRight'
 
-      -- Stop node
-      stopNode 3
-      threadDelay 3000000
-
-      -- Restart node
-      startNode 3
-      waitForClusterReady 30
-      threadDelay 5000000  -- stabilization
+      withStoppedNode 3 $
+        threadDelay 3000000
 
       -- Force topology refresh
       _ <- try (refreshTopology client) :: IO (Either SomeException ())
