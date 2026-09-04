@@ -76,25 +76,27 @@ import           Control.Concurrent                    (threadDelay)
 import           Control.Concurrent.MVar               (MVar, newMVar, putMVar,
                                                         tryTakeMVar)
 import           Control.Concurrent.STM                (TVar, atomically,
-                                                        newTVarIO, readTVarIO,
-                                                        writeTVar)
+                                                        newTVarIO, readTVar,
+                                                        readTVarIO, writeTVar)
 import           Control.Exception                     (Exception,
                                                         SomeAsyncException,
                                                         SomeException, bracket,
                                                         finally, fromException,
                                                         onException, throwIO,
                                                         try)
-import           Control.Monad                         (when)
+import           Control.Monad                         (void, when)
 import           Control.Monad.IO.Class                (MonadIO (..))
 import qualified Control.Monad.State                   as State
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Builder               as Builder
 import qualified Data.ByteString.Char8                 as BS8
+import           Data.List                             (foldl')
 import qualified Data.Map.Strict                       as Map
 import           Data.Time.Clock                       (NominalDiffTime,
                                                         diffUTCTime,
                                                         getCurrentTime)
+import qualified Data.Vector                           as V
 import           Data.Word                             (Word16)
 import           Database.Redis.Client                 (Client (..),
                                                         ConnectionStatus (..))
@@ -102,6 +104,7 @@ import           Database.Redis.Cluster                (ClusterNode (..),
                                                         ClusterTopology (..),
                                                         NodeAddress (..),
                                                         NodeRole (..),
+                                                        SlotRange (..),
                                                         calculateSlot,
                                                         findNodeAddressForSlot,
                                                         parseClusterSlots)
@@ -166,6 +169,11 @@ data RedirectionInfo = RedirectionInfo
     redirPort :: Int
   }
   deriving (Show, Eq)
+
+data RetryRoute
+  = RouteBySlot
+  | RouteMoved !Word16 !NodeAddress
+  | RouteAsk !NodeAddress
 
 -- | Configuration for a cluster client.
 data ClusterConfig = ClusterConfig
@@ -455,7 +463,7 @@ withClusterClientAuthentication config authentication connector =
     (createClusterClientWithAuthentication config authentication connector)
     closeClusterClient
 
--- | Refresh cluster topology by querying CLUSTER SLOTS.
+-- | Refresh cluster topology by querying known masters and then the seed.
 -- Uses a lock to prevent thundering herd: if another thread is already
 -- refreshing, this call returns immediately (the other thread's refresh
 -- will update the shared topology).
@@ -464,23 +472,185 @@ refreshTopology ::
   ClusterClient client ->
   IO ()
 refreshTopology client = do
+  result <- refreshTopologyFromCandidates client [] []
+  case result of
+    Right () -> return ()
+    Left err -> throwRefreshError err
+  where
+    throwRefreshError (TopologyError err) =
+      throwIO $ TopologyValidationException err
+    throwRefreshError (ConnectionTimeoutError err) = throwIO err
+    throwRefreshError (ClusterAuthenticationError err) = throwIO err
+    throwRefreshError ClusterClientClosed = throwIO ConnectionPoolClosed
+    throwRefreshError err = throwIO $ userError $ show err
+
+refreshTopologyFromCandidates
+  :: (Client client)
+  => ClusterClient client
+  -> [NodeAddress]
+  -> [(Word16, NodeAddress)]
+  -> IO (Either ClusterError ())
+refreshTopologyFromCandidates client preferred protectedPatches = do
   acquired <- tryTakeMVar (clusterRefreshLock client)
   case acquired of
-    Nothing -> return ()  -- Another thread is already refreshing
-    Just _  -> finally doRefresh (putMVar (clusterRefreshLock client) ())
+    Nothing -> return $ Right ()
+    Just _  ->
+      finally doRefresh (putMVar (clusterRefreshLock client) ())
   where
-    connector = clusterConnector client
     doRefresh = do
-      let seedNode = clusterSeedNode (clusterConfig client)
-      response <- withConnectionBounded
-        (clusterConnectionPool client) seedNode connector $ \conn -> do
-        let clientState = ClientState conn BS8.empty
-        State.evalStateT (runRedisCommandClient clusterSlots) clientState
+      baseline <- readTVarIO $ clusterTopology client
+      tryCandidates baseline $ refreshCandidates baseline
 
-      currentTime <- getCurrentTime
-      case parseClusterSlots response currentTime of
-        Left err -> throwIO $ TopologyValidationException err
-        Right topology -> atomically $ writeTVar (clusterTopology client) topology
+    refreshCandidates topology =
+      take candidateLimit $ uniqueAddresses $
+        preferred
+          ++ knownMasters topology
+          ++ [clusterSeedNode $ clusterConfig client]
+
+    candidateLimit = max 1 $ clusterMaxRetries $ clusterConfig client
+
+    knownMasters topology =
+      [ nodeAddress node
+      | node <- Map.elems $ topologyNodes topology
+      , nodeRole node == Master
+      , not $ null $ nodeSlotsServed node
+      ]
+
+    uniqueAddresses = foldl'
+      (\addresses address ->
+        if address `elem` addresses
+          then addresses
+          else addresses ++ [address])
+      []
+
+    tryCandidates _ [] =
+      return $ Left $ ConnectionError "No topology refresh candidates available"
+    tryCandidates baseline (candidate : candidates) = do
+      result <- fetchTopology candidate
+      case result of
+        Right topology -> do
+          commitRefreshedTopology protectedPatches topology
+          return $ Right ()
+        Left err ->
+          case candidates of
+            [] -> return $ Left err
+            _  -> tryCandidates baseline candidates
+
+    fetchTopology candidate = do
+      response <- executeOnNode client candidate clusterSlots $
+        clusterConnector client
+      case response of
+        Left err -> return $ Left err
+        Right payload -> do
+          currentTime <- getCurrentTime
+          return $
+            case parseClusterSlots payload currentTime of
+              Left err       -> Left $ TopologyError err
+              Right topology -> Right topology
+
+    commitRefreshedTopology explicitPatches refreshed =
+      atomically $ do
+        current <- readTVar $ clusterTopology client
+        let currentPatches = movedTopologyPatches current
+            merged =
+              foldl'
+                (\topology (slot, address) ->
+                  if findNodeAddressForSlot topology slot == Just address
+                    then topology
+                    else patchTopologySlot slot address topology)
+                refreshed
+                (explicitPatches ++ currentPatches)
+        writeTVar (clusterTopology client) merged
+
+movedTopologyPatches
+  :: ClusterTopology
+  -> [(Word16, NodeAddress)]
+movedTopologyPatches topology =
+  [ (fromIntegral index, topologyAddresses topology V.! index)
+  | index <- [0 .. upperBound]
+  , movedNodePrefix `BS.isPrefixOf` (topologySlots topology V.! index)
+  ]
+  where
+    upperBound = min
+      (V.length $ topologySlots topology)
+      (V.length $ topologyAddresses topology)
+      - 1
+
+patchMovedSlot
+  :: ClusterClient client
+  -> Word16
+  -> NodeAddress
+  -> IO ()
+patchMovedSlot client slot address =
+  atomically $ do
+    topology <- readTVar $ clusterTopology client
+    writeTVar
+      (clusterTopology client)
+      (patchTopologySlot slot address topology)
+
+patchTopologySlot
+  :: Word16
+  -> NodeAddress
+  -> ClusterTopology
+  -> ClusterTopology
+patchTopologySlot slot _ topology
+  | fromIntegral slot >= V.length (topologySlots topology)
+      || fromIntegral slot >= V.length (topologyAddresses topology) =
+      topology
+patchTopologySlot slot address topology =
+  topology
+    { topologySlots =
+        topologySlots topology V.// [(slotIndex, targetNodeId)]
+    , topologyAddresses =
+        topologyAddresses topology V.// [(slotIndex, address)]
+    , topologyNodes =
+        Map.insert targetNodeId targetNode nodesWithoutSlot
+    }
+  where
+    slotIndex = fromIntegral slot
+    targetNodeId = movedNodeId address
+    nodesWithoutSlot =
+      Map.map removeSlotFromNode $ topologyNodes topology
+    existingTarget =
+      Map.lookup targetNodeId nodesWithoutSlot
+    targetNode =
+      case existingTarget of
+        Just node ->
+          node
+            { nodeAddress = address
+            , nodeRole = Master
+            , nodeSlotsServed =
+                movedRange : nodeSlotsServed node
+            }
+        Nothing ->
+          ClusterNode targetNodeId address Master [movedRange] []
+    movedRange = SlotRange slot slot targetNodeId []
+
+    removeSlotFromNode node =
+      node
+        { nodeSlotsServed =
+            concatMap removeSlotFromRange $ nodeSlotsServed node
+        }
+
+    removeSlotFromRange range
+      | slot < slotStart range || slot > slotEnd range = [range]
+      | slotStart range == slotEnd range = []
+      | slot == slotStart range =
+          [range { slotStart = slot + 1 }]
+      | slot == slotEnd range =
+          [range { slotEnd = slot - 1 }]
+      | otherwise =
+          [ range { slotEnd = slot - 1 }
+          , range { slotStart = slot + 1 }
+          ]
+
+movedNodePrefix :: ByteString
+movedNodePrefix = "__redis_client_moved__:"
+
+movedNodeId :: NodeAddress -> ByteString
+movedNodeId address =
+  movedNodePrefix <> BS8.pack
+    (nodeHost address ++ ":" ++ show (nodePort address))
 
 -- | Check if topology is stale and refresh if needed
 -- Called before every keyed command execution.
@@ -556,16 +726,17 @@ executeKeylessClusterCommand client action = do
     []       -> return $ Left $ TopologyError "No master nodes available"
     (node:_) -> executeOnNode client (nodeAddress node) action connector
 
--- | Retry logic with exponential backoff and topology refresh on MOVED errors
+-- | Retry logic for transient failures and Redis redirections.
 --
--- MOVED errors trigger immediate topology refresh and retry. This ensures the client
--- quickly adapts to cluster topology changes (e.g., slot migrations, node failures).
+-- MOVED retries go directly to the authoritative target without ASKING. The
+-- affected slot is patched before retrying, and a bounded full refresh follows
+-- a successful direct retry. Refresh candidates include the redirect target,
+-- known masters, and the original seed.
 --
 -- Performance considerations:
--- - During cluster reconfiguration, multiple MOVED errors may trigger concurrent refreshes
+-- - Concurrent MOVED patches are retained across an in-flight stale refresh
 -- - Each refresh costs ~1-5ms (network + parsing)
--- - For clusters with high concurrency and frequent rebalancing, consider implementing
---   refresh rate limiting or deduplication to prevent refresh storms
+-- - A single refresh lock prevents a thundering herd
 --
 -- ASK errors follow the Redis protocol: retry at the target node with an ASKING prefix.
 -- No topology refresh is needed since ASK indicates a temporary, in-progress migration.
@@ -574,41 +745,55 @@ withRetryAndRefresh ::
   ClusterClient client ->
   Int -> -- Max retries
   Int -> -- Initial delay (microseconds)
-  (Maybe NodeAddress -> IO (Either ClusterError a)) ->
+  (RetryRoute -> IO (Either ClusterError a)) ->
   IO (Either ClusterError a)
-withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay Nothing
+withRetryAndRefresh client maxRetries initialDelay action =
+  go 0 initialDelay RouteBySlot
   where
-    go attempt delay askTarget
+    go attempt delay route
       | attempt >= maxRetries = return $ Left $ MaxRetriesExceeded $ "Max retries (" ++ show maxRetries ++ ") exceeded"
       | otherwise = do
-          result <- action askTarget
+          result <- action route
           case result of
+            Right value -> do
+              case route of
+                RouteMoved slot address ->
+                  void $ refreshTopologyFromCandidates
+                    client [address] [(slot, address)]
+                _ -> return ()
+              return $ Right value
             Left (TryAgainError _) -> do
               threadDelay delay
-              go (attempt + 1) (delay * 2) Nothing
-            Left (MovedError _ _) -> do
-              refreshResult <- tryClusterAction $ refreshTopology client
-              case refreshResult of
-                Left ClusterClientClosed -> return $ Left ClusterClientClosed
-                Left err@(TopologyError _) -> return $ Left err
-                _ -> do
-                  threadDelay delay
-                  go (attempt + 1) (delay * 2) Nothing
-            Left (AskError _ addr) -> do
-              go (attempt + 1) delay (Just addr)
+              go (attempt + 1) (delay * 2) RouteBySlot
+            Left (MovedError slot address) -> do
+              patchMovedSlot client slot address
+              go (attempt + 1) delay $ RouteMoved slot address
+            Left (AskError _ address) ->
+              go (attempt + 1) delay $ RouteAsk address
             Left (ConnectionError _) -> do
-              refreshResult <- tryClusterAction $ refreshTopology client
+              refreshResult <- refreshForRoute route
               case refreshResult of
                 Left ClusterClientClosed -> return $ Left ClusterClientClosed
                 Left err@(TopologyError _) -> return $ Left err
                 _ -> do
                   threadDelay delay
-                  go (attempt + 1) (delay * 2) Nothing
+                  go (attempt + 1) (delay * 2) RouteBySlot
             Left (ConnectionTimeoutError _) -> do
-              threadDelay delay
-              go (attempt + 1) (delay * 2) Nothing
+              refreshResult <- case route of
+                RouteMoved _ _ -> refreshForRoute route
+                _              -> return $ Right ()
+              case refreshResult of
+                Left ClusterClientClosed -> return $ Left ClusterClientClosed
+                Left err@(TopologyError _) -> return $ Left err
+                _ -> do
+                  threadDelay delay
+                  go (attempt + 1) (delay * 2) RouteBySlot
             Left err -> return $ Left err
-            Right value -> return $ Right value
+
+    refreshForRoute (RouteMoved slot address) =
+      refreshTopologyFromCandidates client [address] [(slot, address)]
+    refreshForRoute _ =
+      refreshTopologyFromCandidates client [] []
 
 tryClusterAction :: IO a -> IO (Either ClusterError a)
 tryClusterAction action = do
@@ -711,14 +896,17 @@ executeKeyedClusterCommand client key cmdArgs = do
   let muxPool = clusterMultiplexPool client
       cmdBuilder = encodeCommandBuilder cmdArgs
       !slot = calculateSlot key
-  withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ \askTarget ->
-    case askTarget of
-      Nothing -> do
+  withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ \route ->
+    case route of
+      RouteBySlot -> do
         refreshResult <- tryClusterAction $ refreshTopologyIfStale client
         case refreshResult of
           Left err -> return $ Left err
           Right () -> executeOnSlotMux client muxPool slot cmdBuilder
-      Just addr -> executeOnNodeWithAsking client muxPool addr cmdBuilder
+      RouteMoved _ address ->
+        executeOnNodeDirect muxPool address cmdBuilder
+      RouteAsk address ->
+        executeOnNodeWithAsking client muxPool address cmdBuilder
 
 -- | Execute a pre-encoded command via multiplexer on the node for a given slot.
 -- Uses findNodeAddressForSlot for O(1) direct address lookup (no Map needed).
@@ -743,6 +931,27 @@ executeOnSlotMux client muxPool slot cmdBuilder = do
           Just (Right (RedirectionInfo s host port)) ->
             return $ Left $ AskError s (NodeAddress host port)
           Nothing -> return $ Right respData
+
+executeOnNodeDirect
+  :: (Client client)
+  => MultiplexPool client
+  -> NodeAddress
+  -> Builder.Builder
+  -> IO (Either ClusterError RespData)
+executeOnNodeDirect muxPool address cmdBuilder = do
+  result <- tryClusterAction $ submitToNode muxPool address cmdBuilder
+  case result of
+    Left err       -> return $ Left err
+    Right respData -> return $ classifyRedirect respData
+
+classifyRedirect :: RespData -> Either ClusterError RespData
+classifyRedirect respData =
+  case detectRedirection respData of
+    Just (Left (RedirectionInfo slot host port)) ->
+      Left $ MovedError slot $ NodeAddress host port
+    Just (Right (RedirectionInfo slot host port)) ->
+      Left $ AskError slot $ NodeAddress host port
+    Nothing -> Right respData
 
 -- | Execute a command on a specific node with ASKING prefix (for ASK redirects).
 -- Per Redis protocol, ASK requires sending ASKING before the actual command to the

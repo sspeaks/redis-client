@@ -9,7 +9,7 @@ import           Control.Concurrent                    (forkFinally, forkIO,
                                                         killThread, threadDelay)
 import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
                                                         putMVar, takeMVar)
-import           Control.Concurrent.STM                (newTVarIO)
+import           Control.Concurrent.STM                (newTVarIO, readTVarIO)
 import           Control.Exception                     (SomeAsyncException,
                                                         SomeException, finally,
                                                         fromException, throwIO,
@@ -36,7 +36,8 @@ import           Database.Redis.Cluster                (ClusterNode (..),
                                                         NodeAddress (..),
                                                         NodeRole (..),
                                                         SlotRange (..),
-                                                        calculateSlot)
+                                                        calculateSlot,
+                                                        findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
                                                         createPool)
@@ -257,6 +258,7 @@ spec = do
 
   askRedirectSpec
   askRedirectAdditionalSpec
+  movedRedirectSpec
   clusterLifecycleSpec
   clusterAuthenticationSpec
 
@@ -349,6 +351,29 @@ mkTopology addr = do
       nodeMap = Map.singleton nodeIdBS node
   return $ ClusterTopology slotVec addrVec nodeMap now
 
+mkTwoMasterTopology
+  :: NodeAddress
+  -> NodeAddress
+  -> IO ClusterTopology
+mkTwoMasterTopology firstAddress secondAddress = do
+  now <- getCurrentTime
+  let firstId = "test-node-id-1"
+      secondId = "test-node-id-2"
+      firstRange = SlotRange 0 8191 firstId []
+      secondRange = SlotRange 8192 16383 secondId []
+      firstNode =
+        ClusterNode firstId firstAddress Master [firstRange] []
+      secondNode =
+        ClusterNode secondId secondAddress Master [secondRange] []
+      slotVec =
+        V.replicate 8192 firstId <> V.replicate 8192 secondId
+      addrVec =
+        V.replicate 8192 firstAddress
+          <> V.replicate 8192 secondAddress
+      nodeMap = Map.fromList
+        [(firstId, firstNode), (secondId, secondNode)]
+  return $ ClusterTopology slotVec addrVec nodeMap now
+
 validClusterSlots :: RespData
 validClusterSlots =
   RespArray
@@ -406,7 +431,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
     readIORef connectionCount `shouldReturn` 1
     readIORef closeCount `shouldReturn` 1
 
-  it "returns a MOVED refresh validation failure as TopologyError without retrying" $ do
+  it "does not make a successful direct MOVED retry depend on refresh validation" $ do
     let incompleteTopology =
           RespArray
             [ RespArray
@@ -429,6 +454,8 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
             [ encodeResp $
                 if connectionIndex == 0
                   then RespError "MOVED 3999 127.0.0.2:6380"
+                  else if connectionIndex == 1
+                    then RespBulkString "redirected-value"
                   else incompleteTopology
             ]
           return $ MockConnected sendBuf recvQueue closeCount
@@ -437,14 +464,8 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     outcome <- timeout 1000000 $
       executeKeyedClusterCommand client "key" ["GET", "key"]
-    case outcome of
-      Just (Left (TopologyError err)) ->
-        err `shouldContain` "does not cover slot 101"
-      other ->
-        expectationFailure $
-          "Expected immediate TopologyError after MOVED refresh, got: "
-            ++ show other
-    readIORef connectionCount `shouldReturn` 2
+    outcome `shouldBe` Just (Right $ RespBulkString "redirected-value")
+    readIORef connectionCount `shouldReturn` 4
     closeClusterClient client
 
   it "returns a connection refresh validation failure as TopologyError without retrying" $ do
@@ -664,9 +685,10 @@ awaitIORefValue ref expected = do
 -- ASK redirect integration tests
 -- ---------------------------------------------------------------------------
 
-node1, node2 :: NodeAddress
+node1, node2, node3 :: NodeAddress
 node1 = NodeAddress "127.0.0.1" 6379
 node2 = NodeAddress "127.0.0.2" 6380
+node3 = NodeAddress "127.0.0.3" 6381
 
 askRedirectSpec :: Spec
 askRedirectSpec = describe "ASK redirect integration (executeKeyedClusterCommand)" $ do
@@ -964,7 +986,7 @@ clusterAuthenticationSpec =
           <> commandBytes ["GET", key]
       closeClusterClient client
 
-    it "authenticates MOVED targets after the topology refresh" $ do
+    it "authenticates a direct MOVED target and its refresh connection" $ do
       let credentials = ClusterPassword "moved-secret"
           key = "moved-key"
           script addr index
@@ -972,17 +994,21 @@ clusterAuthenticationSpec =
                 return
                   [ replyWith $ RespSimpleString "OK"
                   , replyWith $ singleMasterClusterSlots node1 "node-1"
-                  , replyWith $ singleMasterClusterSlots node2 "node-2"
                   ]
             | addr == node1 =
                 return
                   [ replyWith $ RespSimpleString "OK"
                   , replyWith $ RespError "MOVED 3999 127.0.0.2:6380"
                   ]
-            | otherwise =
+            | index == 0 =
                 return
                   [ replyWith $ RespSimpleString "OK"
                   , replyWith $ RespBulkString "moved-value"
+                  ]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ singleMasterClusterSlots node2 "node-2"
                   ]
       (connector, getRecords) <- createAuthMockConnector script
       client <- createClusterClientWithAuthentication
@@ -990,9 +1016,12 @@ clusterAuthenticationSpec =
       executeKeyedClusterCommand client key ["GET", key]
         `shouldReturn` Right (RespBulkString "moved-value")
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node2 0
-      sent `shouldBe`
+      targetSent <- recordSentBytes $ findAuthRecord records node2 0
+      targetSent `shouldBe`
         authCommandFor credentials <> commandBytes ["GET", key]
+      refreshSent <- recordSentBytes $ findAuthRecord records node2 1
+      refreshSent `shouldBe`
+        authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
       closeClusterClient client
 
     it "reapplies authentication after a failed multiplexer is replaced" $ do
@@ -1185,6 +1214,241 @@ clusterAuthenticationSpec =
       sentAfter <- recordSentBytes $ findAuthRecord recordsAfter node1 0
       sentAfter `shouldBe` sentBefore
       closeClusterClient client
+
+movedRedirectSpec :: Spec
+movedRedirectSpec =
+  describe "MOVED redirect recovery" $ do
+    it "retries the authoritative target and patches the next route" $ do
+      let key = "moved-direct-key"
+          slot = calculateSlot key
+          moved = movedResponse slot node2
+          script address index
+            | address == node1 && index == 0 =
+                return [replyWith moved]
+            | address == node1 =
+                throwIO $ userError "seed unavailable"
+            | address == node2 && index == 0 =
+                return
+                  [ replyWith $ RespBulkString "first-value"
+                  , replyWith $ RespBulkString "second-value"
+                  ]
+            | otherwise =
+                return
+                  [replyWith $ singleMasterClusterSlots node2 "node-2"]
+      (connector, getRecords) <- createAuthMockConnector script
+      topology <- mkTopology node1
+      client <- mkAuthMockClusterClient testClusterConfig connector topology
+
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn` Right (RespBulkString "first-value")
+      updated <- readTVarIO $ clusterTopology client
+      findNodeAddressForSlot updated slot `shouldBe` Just node2
+      let patchedNodeId = topologySlots updated V.! fromIntegral slot
+      nodeAddress <$> Map.lookup patchedNodeId (topologyNodes updated)
+        `shouldBe` Just node2
+      Map.size (topologyNodes updated) `shouldBe` 1
+      length
+        [ ()
+        | node <- Map.elems $ topologyNodes updated
+        , range <- nodeSlotsServed node
+        , slot >= slotStart range
+        , slot <= slotEnd range
+        ]
+        `shouldBe` 1
+
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn` Right (RespBulkString "second-value")
+      records <- getRecords
+      staleSent <- recordSentBytes $ findAuthRecord records node1 0
+      staleSent `shouldBe` commandBytes ["GET", key]
+      targetSent <- recordSentBytes $ findAuthRecord records node2 0
+      targetSent `shouldBe`
+        commandBytes ["GET", key] <> commandBytes ["GET", key]
+      BS.isInfixOf (commandBytes ["ASKING"]) targetSent `shouldBe` False
+      closeClusterClient client
+
+    it "refreshes from an alternate known master when target and seed refresh fail" $ do
+      let key = keyForSlotRange (< 8192)
+          slot = calculateSlot key
+          moved = movedResponse slot node2
+      attempts <- newIORef Map.empty
+      (rawConnector, getRecords) <- createAuthMockConnector $ \address index ->
+        if address == node1 && index == 0
+          then return [replyWith moved]
+          else if address == node2 && index == 0
+            then return [replyWith $ RespBulkString "redirected-value"]
+            else if address == node3
+              then return
+                [replyWith $ singleMasterClusterSlots node2 "node-2"]
+              else throwIO $ userError "refresh candidate unavailable"
+      let connector address = do
+            atomicModifyIORef' attempts $ \current ->
+              (Map.insertWith (+) address (1 :: Int) current, ())
+            rawConnector address
+      topology <- mkTwoMasterTopology node1 node3
+      client <- mkAuthMockClusterClient testClusterConfig connector topology
+
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn` Right (RespBulkString "redirected-value")
+      updated <- readTVarIO $ clusterTopology client
+      findNodeAddressForSlot updated slot `shouldBe` Just node2
+      counts <- readIORef attempts
+      Map.findWithDefault 0 node2 counts `shouldBe` 2
+      Map.findWithDefault 0 node1 counts `shouldBe` 2
+      Map.findWithDefault 0 node3 counts `shouldBe` 1
+      records <- getRecords
+      alternateSent <- recordSentBytes $ findAuthRecord records node3 0
+      alternateSent `shouldBe` commandBytes ["CLUSTER", "SLOTS"]
+      closeClusterClient client
+
+    it "returns a bounded typed failure when target and refresh candidates fail" $ do
+      let key = "bounded-moved-key"
+          slot = calculateSlot key
+          moved = movedResponse slot node2
+          retryConfig = testClusterConfig
+            { clusterMaxRetries = 3
+            , clusterRetryDelay = 1000
+            }
+      attempts <- newIORef Map.empty
+      (rawConnector, _) <- createAuthMockConnector $ \address index ->
+        if address == node1 && index == 0
+          then return [replyWith moved]
+          else throwIO $ userError "all redirected paths unavailable"
+      let connector address = do
+            atomicModifyIORef' attempts $ \current ->
+              (Map.insertWith (+) address (1 :: Int) current, ())
+            rawConnector address
+      topology <- mkTopology node1
+      client <- mkAuthMockClusterClient retryConfig connector topology
+
+      outcome <- timeout 1000000 $
+        executeKeyedClusterCommand client key ["GET", key]
+      outcome `shouldSatisfy` \case
+        Just (Left (MaxRetriesExceeded _)) -> True
+        _                                  -> False
+      counts <- readIORef attempts
+      sum (Map.elems counts) `shouldBe` 7
+      closeClusterClient client
+
+    it "bounds repeated MOVED replies without refreshing through ASKING" $ do
+      let key = "repeated-moved-key"
+          slot = calculateSlot key
+          retryConfig = testClusterConfig
+            { clusterMaxRetries = 3
+            , clusterRetryDelay = 1000
+            }
+          script address _
+            | address == node1 =
+                return [replyWith $ movedResponse slot node2]
+            | address == node2 =
+                return [replyWith $ movedResponse slot node3]
+            | otherwise =
+                return [replyWith $ movedResponse slot node2]
+      (connector, getRecords) <- createAuthMockConnector script
+      topology <- mkTopology node1
+      client <- mkAuthMockClusterClient retryConfig connector topology
+
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn`
+          Left (MaxRetriesExceeded "Max retries (3) exceeded")
+      records <- getRecords
+      length records `shouldBe` 3
+      sent <- mapM recordSentBytes records
+      mapM_ (\bytes ->
+          BS.isInfixOf (commandBytes ["ASKING"]) bytes `shouldBe` False
+        ) sent
+      finalTopology <- readTVarIO $ clusterTopology client
+      findNodeAddressForSlot finalTopology slot `shouldBe` Just node2
+      closeClusterClient client
+
+    it "preserves concurrent MOVED patches across a stale full refresh" $ do
+      let firstKey = "concurrent-moved-one"
+          firstSlot = calculateSlot firstKey
+          secondKey = nextDifferentSlotKey firstSlot 0
+          secondSlot = calculateSlot secondKey
+          staleTopology = singleMasterClusterSlots node1 "node-1"
+      refreshRelease <- newEmptyMVar
+      (connector, _) <- createAuthMockConnector $ \address index ->
+        if address == node1 && index == 0
+          then return
+            [ replyWith $ movedResponse firstSlot node2
+            , replyWith $ movedResponse secondSlot node3
+            ]
+          else if index == 0
+            then return [replyWith $ RespBulkString "redirected"]
+            else return
+              [takeMVar refreshRelease >> replyWith staleTopology]
+      topology <- mkTopology node1
+      client <- mkAuthMockClusterClient testClusterConfig connector topology
+      firstResult <- newEmptyMVar
+      secondResult <- newEmptyMVar
+      _ <- forkIO $ executeKeyedClusterCommand
+        client firstKey ["GET", firstKey] >>= putMVar firstResult
+      _ <- forkIO $ executeKeyedClusterCommand
+        client secondKey ["GET", secondKey] >>= putMVar secondResult
+
+      timeout 1000000
+        (awaitSlotAddresses client
+          [(firstSlot, node2), (secondSlot, node3)])
+        `shouldReturn` Just ()
+      patchedTopology <- readTVarIO $ clusterTopology client
+      let firstNodeId =
+            topologySlots patchedTopology V.! fromIntegral firstSlot
+          secondNodeId =
+            topologySlots patchedTopology V.! fromIntegral secondSlot
+      nodeAddress <$> Map.lookup firstNodeId (topologyNodes patchedTopology)
+        `shouldBe` Just node2
+      nodeAddress <$> Map.lookup secondNodeId (topologyNodes patchedTopology)
+        `shouldBe` Just node3
+      putMVar refreshRelease ()
+
+      timeout 1000000 (takeMVar firstResult)
+        `shouldReturn` Just (Right $ RespBulkString "redirected")
+      timeout 1000000 (takeMVar secondResult)
+        `shouldReturn` Just (Right $ RespBulkString "redirected")
+      finalTopology <- readTVarIO $ clusterTopology client
+      findNodeAddressForSlot finalTopology firstSlot `shouldBe` Just node2
+      findNodeAddressForSlot finalTopology secondSlot `shouldBe` Just node3
+      closeClusterClient client
+
+mkAuthMockClusterClient
+  :: ClusterConfig
+  -> (NodeAddress -> IO (AuthMockClient 'Connected))
+  -> ClusterTopology
+  -> IO (ClusterClient AuthMockClient)
+mkAuthMockClusterClient config connector topology = do
+  topologyVar <- newTVarIO topology
+  pool <- createPool $ clusterPoolConfig config
+  muxPool <- createMultiplexPool connector 1
+  refreshLock <- newMVar ()
+  return $
+    ClusterClient topologyVar pool config connector refreshLock muxPool
+
+movedResponse :: Word16 -> NodeAddress -> RespData
+movedResponse slot address =
+  RespError $ BS8.pack $
+    "MOVED " ++ show slot ++ " "
+      ++ nodeHost address ++ ":" ++ show (nodePort address)
+
+nextDifferentSlotKey :: Word16 -> Int -> ByteString
+nextDifferentSlotKey slot index
+  | calculateSlot candidate /= slot = candidate
+  | otherwise = nextDifferentSlotKey slot $ index + 1
+  where
+    candidate = BS8.pack $ "concurrent-moved-key-" ++ show index
+
+awaitSlotAddresses
+  :: ClusterClient client
+  -> [(Word16, NodeAddress)]
+  -> IO ()
+awaitSlotAddresses client expected = do
+  topology <- readTVarIO $ clusterTopology client
+  if all
+      (\(slot, address) ->
+        findNodeAddressForSlot topology slot == Just address)
+      expected
+    then return ()
+    else threadDelay 1000 >> awaitSlotAddresses client expected
 
 askRedirectAdditionalSpec :: Spec
 askRedirectAdditionalSpec = describe "additional ASK redirect integration" $ do
