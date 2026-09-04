@@ -70,7 +70,8 @@ import           Control.Concurrent.MVar               (MVar, newMVar, putMVar,
 import           Control.Concurrent.STM                (TVar, atomically,
                                                         newTVarIO, readTVarIO,
                                                         writeTVar)
-import           Control.Exception                     (SomeAsyncException,
+import           Control.Exception                     (Exception,
+                                                        SomeAsyncException,
                                                         SomeException, bracket,
                                                         finally, fromException,
                                                         onException, throwIO,
@@ -140,6 +141,11 @@ data ClusterError
   | ConnectionTimeoutError ConnectionSetupException -- ^ A bounded connection setup attempt timed out.
   | ClusterClientClosed -- ^ The client has been terminally closed.
   deriving (Show, Eq)
+
+newtype TopologyValidationException = TopologyValidationException String
+  deriving (Show)
+
+instance Exception TopologyValidationException
 
 -- | Redirection information parsed from errors
 data RedirectionInfo = RedirectionInfo
@@ -292,7 +298,7 @@ createClusterClientWithFactoriesUsing connectorIsBounded
 
       currentTime <- getCurrentTime
       case parseClusterSlots response currentTime of
-        Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
+        Left err -> throwIO $ TopologyValidationException err
         Right initialTopology -> do
           topology <- newTVarIO initialTopology
           refreshLock <- newMVar ()
@@ -365,7 +371,7 @@ refreshTopology client = do
 
       currentTime <- getCurrentTime
       case parseClusterSlots response currentTime of
-        Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
+        Left err -> throwIO $ TopologyValidationException err
         Right topology -> atomically $ writeTVar (clusterTopology client) topology
 
 -- | Check if topology is stale and refresh if needed
@@ -476,6 +482,7 @@ withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay No
               refreshResult <- tryClusterAction $ refreshTopology client
               case refreshResult of
                 Left ClusterClientClosed -> return $ Left ClusterClientClosed
+                Left err@(TopologyError _) -> return $ Left err
                 _ -> do
                   threadDelay delay
                   go (attempt + 1) (delay * 2) Nothing
@@ -485,6 +492,7 @@ withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay No
               refreshResult <- tryClusterAction $ refreshTopology client
               case refreshResult of
                 Left ClusterClientClosed -> return $ Left ClusterClientClosed
+                Left err@(TopologyError _) -> return $ Left err
                 _ -> do
                   threadDelay delay
                   go (attempt + 1) (delay * 2) Nothing
@@ -509,6 +517,8 @@ tryClusterAction action = do
               return $ Left ClusterClientClosed
           | Just timeoutError <- fromException e ->
               return $ Left $ ConnectionTimeoutError timeoutError
+          | Just (TopologyValidationException err) <- fromException e ->
+              return $ Left $ TopologyError err
           | otherwise ->
               return $ Left $ ConnectionError $ show e
 

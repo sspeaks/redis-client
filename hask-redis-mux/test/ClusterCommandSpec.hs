@@ -400,6 +400,86 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
     readIORef connectionCount `shouldReturn` 1
     readIORef closeCount `shouldReturn` 1
 
+  it "returns a MOVED refresh validation failure as TopologyError without retrying" $ do
+    let incompleteTopology =
+          RespArray
+            [ RespArray
+                [ RespInteger 0
+                , RespInteger 100
+                , RespArray
+                    [ RespBulkString "127.0.0.1"
+                    , RespInteger 6379
+                    , RespBulkString "partial-node"
+                    ]
+                ]
+            ]
+    connectionCount <- newIORef (0 :: Int)
+    closeCount <- newIORef (0 :: Int)
+    let connector _ = do
+          connectionIndex <- atomicModifyIORef' connectionCount $ \count ->
+            (count + 1, count)
+          sendBuf <- newIORef BS.empty
+          recvQueue <- newIORef
+            [ encodeResp $
+                if connectionIndex == 0
+                  then RespError "MOVED 3999 127.0.0.2:6380"
+                  else incompleteTopology
+            ]
+          return $ MockConnected sendBuf recvQueue closeCount
+    topology <- mkTopology node1
+    client <- mkClusterClient connector topology
+
+    outcome <- timeout 1000000 $
+      executeKeyedClusterCommand client "key" ["GET", "key"]
+    case outcome of
+      Just (Left (TopologyError err)) ->
+        err `shouldContain` "does not cover slot 101"
+      other ->
+        expectationFailure $
+          "Expected immediate TopologyError after MOVED refresh, got: "
+            ++ show other
+    readIORef connectionCount `shouldReturn` 2
+    closeClusterClient client
+
+  it "returns a connection refresh validation failure as TopologyError without retrying" $ do
+    let incompleteTopology =
+          RespArray
+            [ RespArray
+                [ RespInteger 0
+                , RespInteger 100
+                , RespArray
+                    [ RespBulkString "127.0.0.1"
+                    , RespInteger 6379
+                    , RespBulkString "partial-node"
+                    ]
+                ]
+            ]
+    connectionCount <- newIORef (0 :: Int)
+    closeCount <- newIORef (0 :: Int)
+    let connector _ = do
+          connectionIndex <- atomicModifyIORef' connectionCount $ \count ->
+            (count + 1, count)
+          if connectionIndex == 0
+            then throwIO $ userError "injected command connection failure"
+            else do
+              sendBuf <- newIORef BS.empty
+              recvQueue <- newIORef [encodeResp incompleteTopology]
+              return $ MockConnected sendBuf recvQueue closeCount
+    topology <- mkTopology node1
+    client <- mkClusterClient connector topology
+
+    outcome <- timeout 1000000 $
+      executeKeyedClusterCommand client "key" ["GET", "key"]
+    case outcome of
+      Just (Left (TopologyError err)) ->
+        err `shouldContain` "does not cover slot 101"
+      other ->
+        expectationFailure $
+          "Expected immediate TopologyError after connection refresh, got: "
+            ++ show other
+    readIORef connectionCount `shouldReturn` 2
+    closeClusterClient client
+
   it "closes the discovery pool when later initialization fails" $ do
     (connector, connectionCount, closeCount) <-
       createLifecycleConnector validClusterSlots
