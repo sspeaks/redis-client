@@ -8,49 +8,54 @@ module ClusterTunnel
   , rewriteClusterResponse
   ) where
 
-import           Control.Concurrent              (MVar, forkIO, newEmptyMVar,
-                                                  putMVar, takeMVar)
-import           Control.Concurrent.STM          (readTVarIO)
-import           Control.Exception               (SomeException, bracket,
-                                                  finally, throwIO, try)
-import           Control.Monad                   (forever, void, when)
-import qualified Control.Monad.State.Strict      as State
-import qualified Data.ByteString                 as BS
-import qualified Data.ByteString.Builder         as Builder
-import qualified Data.ByteString.Char8           as BS8
-import qualified Data.ByteString.Lazy            as LBS
-import           Data.Char                       (isAlphaNum)
-import           Data.List                       (isPrefixOf)
-import qualified Data.Map.Strict                 as Map
-import           Data.Word                       (Word8)
-import           Database.Redis.Client           (Client (..),
-                                                  ConnectionStatus (..))
-import           Database.Redis.Cluster          (ClusterNode (..),
-                                                  ClusterTopology (..),
-                                                  NodeAddress (..),
-                                                  NodeRole (..))
-import           Database.Redis.Cluster.Client   (ClusterClient (..),
-                                                  ClusterError (..))
-import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
-import           Database.Redis.Cluster.Commands (CommandRouting (..),
-                                                  classifyCommand)
-import           Database.Redis.Command          (ClientState (..),
-                                                  RedisCommandClient, parseWith)
-import           Database.Redis.Connector        (Connector)
-import           Database.Redis.Resp             (Encodable (encode),
-                                                  RespData (..))
-import qualified Database.Redis.Resp             as Resp
-import           Network.Socket                  (Family (..), SockAddr (..),
-                                                  Socket, SocketOption (..),
-                                                  SocketType (..), bind,
-                                                  defaultProtocol, listen,
-                                                  setSocketOption, socket,
-                                                  tupleToHostAddress)
-import qualified Network.Socket                  as S
-import           Network.Socket.ByteString       (recv, sendAll)
-import           System.IO                       (BufferMode (LineBuffering),
-                                                  hFlush, hSetBuffering, stdout)
-import           Text.Printf                     (printf)
+import           Control.Concurrent                    (MVar, forkIO,
+                                                        newEmptyMVar, putMVar,
+                                                        takeMVar)
+import           Control.Concurrent.STM                (readTVarIO)
+import           Control.Exception                     (SomeException, bracket,
+                                                        finally, throwIO, try)
+import           Control.Monad                         (forever, void, when)
+import qualified Control.Monad.State.Strict            as State
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Builder               as Builder
+import qualified Data.ByteString.Char8                 as BS8
+import qualified Data.ByteString.Lazy                  as LBS
+import           Data.Char                             (isAlphaNum)
+import           Data.List                             (isPrefixOf)
+import qualified Data.Map.Strict                       as Map
+import           Data.Word                             (Word8)
+import           Database.Redis.Client                 (Client (..),
+                                                        ConnectionStatus (..))
+import           Database.Redis.Cluster                (ClusterNode (..),
+                                                        ClusterTopology (..),
+                                                        NodeAddress (..),
+                                                        NodeRole (..),
+                                                        calculateSlot,
+                                                        findNodeAddressForSlot)
+import           Database.Redis.Cluster.Client         (ClusterClient (..))
+import qualified Database.Redis.Cluster.Client         as ClusterCommandClient
+import           Database.Redis.Cluster.Commands       (keyArgumentsFromResp)
+import           Database.Redis.Command                (ClientState (..),
+                                                        RedisCommandClient,
+                                                        parseWith)
+import           Database.Redis.Connector              (Connector)
+import           Database.Redis.Internal.MultiplexPool (submitToNode)
+import           Database.Redis.Resp                   (Encodable (encode),
+                                                        RespData (..))
+import qualified Database.Redis.Resp                   as Resp
+import           Network.Socket                        (Family (..),
+                                                        SockAddr (..), Socket,
+                                                        SocketOption (..),
+                                                        SocketType (..), bind,
+                                                        defaultProtocol, listen,
+                                                        setSocketOption, socket,
+                                                        tupleToHostAddress)
+import qualified Network.Socket                        as S
+import           Network.Socket.ByteString             (recv, sendAll)
+import           System.IO                             (BufferMode (LineBuffering),
+                                                        hFlush, hSetBuffering,
+                                                        stdout)
+import           Text.Printf                           (printf)
 
 -- | Smart proxy mode: Makes cluster appear as single Redis instance
 -- Creates single listening socket and routes commands to appropriate nodes
@@ -103,11 +108,12 @@ handleSmartProxyClient clusterClient clientSock = do
               loop
             Right respData -> do
               -- Route and execute the command
-              result <- routeSmartProxyCommand clusterClient respData
+              result <- routeSmartProxyCommand clusterClient respData dat
               case result of
                 Left err -> do
                   printf "Command execution error: %s\n" err
-                  let errorResp = RespError (BS8.pack $ "ERR " ++ err)
+                  let errorResp = RespError (BS8.pack $
+                        if "CROSSSLOT " `isPrefixOf` err then err else "ERR " ++ err)
                   sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
                 Right response -> do
                   -- Send response back to client
@@ -118,15 +124,19 @@ handleSmartProxyClient clusterClient clientSock = do
 routeSmartProxyCommand :: (Client client) =>
   ClusterClient client ->
   RespData ->
+  BS.ByteString ->
   IO (Either String RespData)
-routeSmartProxyCommand clusterClient respData = do
+routeSmartProxyCommand clusterClient respData rawFrame = do
   case respData of
-    RespArray (RespBulkString cmd : args) -> do
-      let argKeys = [k | RespBulkString k <- args]
-      case classifyCommand cmd argKeys of
-        KeylessRoute   -> executeKeylessCommand clusterClient respData
-        KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : argKeys)
-        CommandError e -> return $ Left e
+    RespArray (RespBulkString cmd : args) ->
+      case keyArgumentsFromResp cmd args of
+        Left err -> return $ Left err
+        Right (key:keys)
+          | all ((== calculateSlot key) . calculateSlot) keys ->
+              executeKeyedCommand clusterClient key rawFrame
+          | otherwise ->
+              return $ Left "CROSSSLOT Keys in request don't hash to the same slot"
+        Right [] -> executeKeylessCommand clusterClient respData
     _ -> return $ Left "Expected array command"
 
 -- | Execute a keyless command (route to any master)
@@ -146,17 +156,16 @@ executeKeylessCommand clusterClient respData = do
 executeKeyedCommand :: (Client client) =>
   ClusterClient client ->
   BS.ByteString ->
-  [BS.ByteString] ->
+  BS.ByteString ->
   IO (Either String RespData)
-executeKeyedCommand clusterClient key cmdArgs = do
-  result <- ClusterCommandClient.executeKeyedClusterCommand
-              clusterClient
-              key
-              cmdArgs
-  return $ case result of
-    Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
-    Left err                  -> Left (show err)
-    Right resp                -> Right resp
+executeKeyedCommand clusterClient key rawFrame = do
+  topology <- readTVarIO (clusterTopology clusterClient)
+  case findNodeAddressForSlot topology (calculateSlot key) of
+    Nothing -> return $ Left "no cluster node owns the command key slot"
+    Just address -> Right <$> submitToNode
+      (clusterMultiplexPool clusterClient)
+      address
+      (Builder.byteString rawFrame)
 
 -- | Send RESP command via RedisCommandClient
 sendRespCommand :: (Client client) => RespData -> RedisCommandClient client RespData
