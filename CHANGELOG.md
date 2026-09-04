@@ -23,6 +23,10 @@
     *   Added `ClusterPassword` and `ClusterACL` construction policies that authenticate seed, pooled, multiplexed, redirected, and replacement connections before use.
     *   Password authentication uses `AUTH password`; named ACL authentication uses `HELLO 2 AUTH username password` and never negotiates RESP3.
     *   Cluster runtime `auth` now rejects its misleading one-socket behavior; standalone `auth` remains connection-scoped.
+*   **Authoritative MOVED recovery**
+    *   MOVED commands retry directly at the advertised target without sending `ASKING`, and patch the affected slot before the retry.
+    *   Full topology refresh uses a bounded candidate list of the redirect target, known masters, and the original seed.
+    *   Concurrent MOVED patches survive stale in-flight refreshes, while connector and refresh failures remain in the typed retry result.
 
 ## 0.6.0.0 -- 2026-02-13
 
