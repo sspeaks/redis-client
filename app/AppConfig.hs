@@ -13,19 +13,25 @@ module AppConfig
   , runCommandsAgainstPlaintextHost
   ) where
 
-import           Control.Exception      (bracket)
-import qualified Control.Monad.State    as State
-import           CredentialConfig       (resolveRedisPassword)
-import qualified Data.ByteString        as BS
-import qualified Data.ByteString.Char8  as BS8
-import           Database.Redis.Client  (Client (..),
-                                         PlainTextClient (NotConnectedPlainTextClient),
-                                         TLSClient (..))
-import           Database.Redis.Command (ClientState (..),
-                                         RedisCommandClient (..),
-                                         RedisCommands (..))
-import           Database.Redis.Resp    (RespData (..))
-import           System.IO              (hPutStrLn, stderr)
+import           Control.Exception        (bracket, onException)
+import qualified Control.Monad.State      as State
+import           CredentialConfig         (resolveRedisPassword)
+import qualified Data.ByteString          as BS
+import qualified Data.ByteString.Char8    as BS8
+import           Data.Maybe               (fromMaybe)
+import           Database.Redis.Client    (Client (..), ConnectionPhase (..),
+                                           ConnectionStatus (..),
+                                           PlainTextClient, TLSClient,
+                                           connectPlaintextWithCleanup,
+                                           connectTLSWithCleanup)
+import           Database.Redis.Cluster   (NodeAddress (..))
+import           Database.Redis.Command   (ClientState (..),
+                                           RedisCommandClient (..),
+                                           RedisCommands (..))
+import           Database.Redis.Connector (ConnectionSupervisor (..),
+                                           withConnectionTimeoutSupervised)
+import           Database.Redis.Resp      (RespData (..))
+import           System.IO                (hPutStrLn, stderr)
 
 data RunState = RunState
   { host                       :: String,
@@ -112,13 +118,61 @@ authenticate uname pwd = do
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost st action = do
-  bracket (connect (NotConnectedTLSClient (host st) (port st))) close $ \client -> do
-    State.evalStateT (runRedisCommandClient (authenticate (username st) (password st) >> action)) (ClientState client BS.empty)
+  bracket (connectTLSHost st) close $ \client -> do
+    State.evalStateT
+      (runRedisCommandClient action)
+      (ClientState client BS.empty)
 
 runCommandsAgainstPlaintextHost :: RunState -> RedisCommandClient PlainTextClient a -> IO a
 runCommandsAgainstPlaintextHost st action = do
   enforcePlaintextAuthenticationPolicy st
-  bracket
-    (connect $ NotConnectedPlainTextClient (host st) (port st))
-    close
-    $ \client -> State.evalStateT (runRedisCommandClient (authenticate (username st) (password st) >> action)) (ClientState client BS.empty)
+  bracket (connectPlaintextHost st) close
+    $ \client -> State.evalStateT
+        (runRedisCommandClient action)
+        (ClientState client BS.empty)
+
+connectTLSHost :: RunState -> IO (TLSClient 'Connected)
+connectTLSHost st =
+  withConnectionTimeoutSupervised 300 DNSResolution
+    (\supervisor _ -> do
+      client <- connectTLSWithCleanup
+        (setConnectionPhase supervisor)
+        (registerSetupCleanup supervisor)
+        (host st)
+        (host st)
+        (port st)
+      authenticateConnected st supervisor client)
+    endpoint
+  where
+    endpoint = NodeAddress (host st) $ fromMaybe 6380 (port st)
+
+connectPlaintextHost :: RunState -> IO (PlainTextClient 'Connected)
+connectPlaintextHost st =
+  withConnectionTimeoutSupervised 300 DNSResolution
+    (\supervisor _ -> do
+      client <- connectPlaintextWithCleanup
+        (setConnectionPhase supervisor)
+        (registerSetupCleanup supervisor)
+        (host st)
+        (port st)
+      authenticateConnected st supervisor client)
+    endpoint
+  where
+    endpoint = NodeAddress (host st) $ fromMaybe 6379 (port st)
+
+authenticateConnected
+  :: (Client client)
+  => RunState
+  -> ConnectionSupervisor client
+  -> client 'Connected
+  -> IO (client 'Connected)
+authenticateConnected st supervisor client = do
+  cleanup <- registerConnectedTransport supervisor client
+  setConnectionPhase supervisor Authentication
+  (do
+      _ <- State.evalStateT
+        (runRedisCommandClient $
+          authenticate (username st) (password st))
+        (ClientState client BS.empty)
+      return client)
+    `onException` cleanup

@@ -43,7 +43,7 @@ import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    putMVar, readMVar, takeMVar,
                                                    tryPutMVar, withMVar)
 import           Control.Exception                (Exception, SomeException,
-                                                   catch, finally, mask_,
+                                                   catch, finally, mask, mask_,
                                                    onException, throwIO,
                                                    toException, try,
                                                    uninterruptibleMask_)
@@ -440,10 +440,8 @@ createMultiplexerFromConnectorWithHandoffHook
   -> (client 'Connected -> IO ())
   -> IO Multiplexer
 createMultiplexerFromConnectorWithHandoffHook connector addr handoffHook =
-  mask_ $ do
-    -- Masking remains interruptible, so blocking DNS/connect/TLS work can
-    -- still be cancelled while the post-return ownership gap stays closed.
-    conn <- connector addr
+  mask $ \restore -> do
+    conn <- restore $ connector addr
     handoffHook conn
       `onException` (close conn `catch` \(_ :: SomeException) -> return ())
     createMultiplexer conn (receive conn)

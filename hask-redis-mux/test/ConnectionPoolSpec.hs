@@ -9,6 +9,7 @@ import           Control.Concurrent                    (forkFinally, forkIO,
 import           Control.Concurrent.MVar               (MVar, newEmptyMVar,
                                                         putMVar, takeMVar)
 import           Control.Exception                     (SomeException)
+import qualified Control.Exception                     as Exception
 import           Control.Monad                         (forM, replicateM_)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.IORef                            (IORef,
@@ -18,6 +19,9 @@ import           Database.Redis.Client                 (Client (..),
                                                         ConnectionStatus (..))
 import           Database.Redis.Cluster                (NodeAddress (..))
 import           Database.Redis.Cluster.ConnectionPool
+import           Database.Redis.Connector              (ConnectionPhase (..),
+                                                        ConnectionSetupException (..))
+import           GHC.Clock                             (getMonotonicTimeNSec)
 import           System.Timeout                        (timeout)
 import           Test.Hspec
 
@@ -83,6 +87,13 @@ awaitWaiters pool expected = do
     then return ()
     else threadDelay 1000 >> awaitWaiters pool expected
 
+awaitIORefValue :: IORef Int -> Int -> IO ()
+awaitIORefValue ref expected = do
+  actual <- readIORef ref
+  if actual == expected
+    then return ()
+    else threadDelay 1000 >> awaitIORefValue ref expected
+
 expectWithin :: IO a -> IO a
 expectWithin action =
   timeout 2000000 action >>= \case
@@ -95,7 +106,7 @@ isRight :: Either a b -> Bool
 isRight = either (const False) (const True)
 
 main :: IO ()
-main = hspec $ describe "ConnectionPool cancellation safety" $ do
+main = hspec $ describe "ConnectionPool lifecycle" $ do
   it "recovers capacity when connector acquisition is cancelled" $ do
     pool <- createPool testPoolConfig
     connectionCount <- newIORef (0 :: Int)
@@ -123,6 +134,50 @@ main = hspec $ describe "ConnectionPool cancellation safety" $ do
       `shouldReturn` ConnectionPoolStats 1 1 0
     closePool pool
     readIORef closeCount `shouldReturn` 1
+
+  mapM_ (\(label, tlsEnabled, expectedPhase) ->
+    it ("bounds stalled " <> label <> " setup and closes its allocated resource once") $ do
+      attempts <- newIORef (0 :: Int)
+      closeCount <- newIORef (0 :: Int)
+      stalled <- newEmptyMVar
+      let config = testPoolConfig
+            { connectionTimeout = 1
+            , useTLS = tlsEnabled
+            }
+          connector _ = do
+            atomicModifyIORef' attempts $ \count -> (count + 1, ())
+            _ <- Exception.onException
+              (takeMVar stalled)
+              (atomicModifyIORef' closeCount $ \count -> (count + 1, ()))
+            return $ MockConnected 1 closeCount
+
+      pool <- createPool config
+      started <- getMonotonicTimeNSec
+      result <- (Exception.try $
+        withConnection pool node connector $ \_ -> return ())
+        :: IO (Either SomeException ())
+      finished <- getMonotonicTimeNSec
+      let elapsedSeconds =
+            fromIntegral (finished - started) / 1000000000 :: Double
+
+      result `shouldSatisfy` \case
+        Left err ->
+          Exception.fromException err
+            == Just (ConnectionSetupTimeout expectedPhase node 1)
+        Right () -> False
+      elapsedSeconds `shouldSatisfy` \elapsed ->
+        elapsed >= 0.75 && elapsed < 3
+      readIORef attempts `shouldReturn` 1
+      expectWithin $ awaitIORefValue closeCount 1
+      readIORef closeCount `shouldReturn` 1
+      getConnectionPoolStats pool node
+        `shouldReturn` ConnectionPoolStats 0 0 0
+      closePool pool
+      readIORef closeCount `shouldReturn` 1
+    )
+    [ ("plaintext TCP connect", False, PlaintextConnectionSetup)
+    , ("TLS handshake", True, TLSConnectionSetup)
+    ]
 
   it "removes cancelled saturated waiters before direct handoff" $ do
     pool <- createPool testPoolConfig

@@ -1,15 +1,20 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
-import           Control.Concurrent                    (forkIO, threadDelay)
+import           Control.Concurrent                    (forkFinally, forkIO,
+                                                        killThread, threadDelay)
 import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
                                                         putMVar, takeMVar)
 import           Control.Concurrent.STM                (newTVarIO)
-import           Control.Exception                     (SomeException, throwIO,
+import           Control.Exception                     (SomeAsyncException,
+                                                        SomeException, throwIO,
                                                         try)
+import qualified Control.Exception                     as Exception
+import           Control.Monad                         (replicateM_)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
@@ -31,10 +36,14 @@ import           Database.Redis.Cluster                (ClusterNode (..),
 import           Database.Redis.Cluster.Client
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
                                                         createPool)
+import           Database.Redis.Connector              (ConnectionPhase (..),
+                                                        ConnectionSetupException (..),
+                                                        withConnectionTimeout)
 import           Database.Redis.Internal.MultiplexPool (closeMultiplexPool,
                                                         createMultiplexPool)
 import           Database.Redis.Resp                   (Encodable (..),
                                                         RespData (..))
+import           GHC.Clock                             (getMonotonicTimeNSec)
 import           System.Timeout                        (timeout)
 import           Test.Hspec
 
@@ -192,6 +201,13 @@ spec = do
     it "creates ConnectionError correctly" $ do
       let err = ConnectionError "Connection timeout"
       show err `shouldContain` "ConnectionError"
+
+    it "creates ConnectionTimeoutError without credentials" $ do
+      let timeoutError =
+            ConnectionSetupTimeout PlaintextConnectionSetup node1 5
+          err = ConnectionTimeoutError timeoutError
+      show err `shouldContain` "PlaintextConnectionSetup"
+      show err `shouldContain` "127.0.0.1"
 
     it "creates ClusterClientClosed correctly" $ do
       ClusterClientClosed `shouldBe` ClusterClientClosed
@@ -417,6 +433,146 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
     keyed `shouldBe` Left ClusterClientClosed
     readIORef connectionCount `shouldReturn` 1
     readIORef closeCount `shouldReturn` 1
+
+  it "bounds retries while failed TLS/AUTH cleanup is still unwinding" $ do
+    attempts <- newIORef (0 :: Int)
+    closeCount <- newIORef (0 :: Int)
+    cleanupFinished <- newIORef (0 :: Int)
+    cleanupRelease <- newEmptyMVar
+    stalled <- newEmptyMVar
+    topology <- mkTopology node1
+    topologyVar <- newTVarIO topology
+    discoveryPool <- createPool testPoolConfig
+    refreshLock <- newMVar ()
+    let retryConfig = testClusterConfig
+          { clusterPoolConfig =
+              testPoolConfig
+                { connectionTimeout = 1
+                , useTLS = True
+                }
+          , clusterMaxRetries = 2
+          , clusterRetryDelay = 1000
+          }
+        connector _ = do
+          atomicModifyIORef' attempts $ \count -> (count + 1, ())
+          _ <- Exception.onException
+            (takeMVar stalled)
+            (do
+              atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+              takeMVar cleanupRelease
+              atomicModifyIORef' cleanupFinished $ \count ->
+                (count + 1, ()))
+          sendBuf <- newIORef BS.empty
+          recvQueue <- newIORef []
+          return $ MockConnected sendBuf recvQueue closeCount
+        boundedConnector =
+          withConnectionTimeout 1 TLSConnectionSetup connector
+
+    muxPool <- createMultiplexPool boundedConnector 1
+    let client = ClusterClient
+          topologyVar discoveryPool retryConfig connector refreshLock muxPool
+    started <- getMonotonicTimeNSec
+    result <- executeKeyedClusterCommand client "key" ["GET", "key"]
+    finished <- getMonotonicTimeNSec
+    let elapsedSeconds =
+          fromIntegral (finished - started) / 1000000000 :: Double
+
+    result `shouldSatisfy` \case
+      Left (MaxRetriesExceeded _) -> True
+      _                           -> False
+    elapsedSeconds `shouldSatisfy` \elapsed ->
+      elapsed >= 1.5 && elapsed < 4
+    readIORef attempts `shouldReturn` 2
+    timeout 1000000 (awaitIORefValue closeCount 2)
+      `shouldReturn` Just ()
+    replicateM_ 2 $ putMVar cleanupRelease ()
+    timeout 1000000 (awaitIORefValue cleanupFinished 2)
+      `shouldReturn` Just ()
+    readIORef closeCount `shouldReturn` 2
+    closeClusterClient client
+    readIORef closeCount `shouldReturn` 2
+
+  it "keeps synchronous connection failures inside the retry bound" $ do
+    attempts <- newIORef (0 :: Int)
+    topology <- mkTopology node1
+    topologyVar <- newTVarIO topology
+    discoveryPool <- createPool testPoolConfig
+    refreshLock <- newMVar ()
+    let retryConfig = testClusterConfig
+          { clusterMaxRetries = 2
+          , clusterRetryDelay = 1000
+          }
+        connector :: NodeAddress -> IO (MockClient 'Connected)
+        connector _ = do
+          atomicModifyIORef' attempts $ \count -> (count + 1, ())
+          throwIO $ userError "injected connection failure"
+
+    muxPool <- createMultiplexPool connector 1
+    let client = ClusterClient
+          topologyVar discoveryPool retryConfig connector refreshLock muxPool
+    result <- executeKeyedClusterCommand client "key" ["GET", "key"]
+
+    result `shouldSatisfy` \case
+      Left (MaxRetriesExceeded _) -> True
+      _                           -> False
+    readIORef attempts `shouldReturn` 4
+    closeClusterClient client
+
+  it "rethrows caller cancellation instead of retrying it" $ do
+    attempts <- newIORef (0 :: Int)
+    closeCount <- newIORef (0 :: Int)
+    connectorStarted <- newEmptyMVar
+    stalled <- newEmptyMVar
+    topology <- mkTopology node1
+    topologyVar <- newTVarIO topology
+    discoveryPool <- createPool testPoolConfig
+    refreshLock <- newMVar ()
+    let retryConfig = testClusterConfig
+          { clusterPoolConfig =
+              testPoolConfig { connectionTimeout = 5 }
+          , clusterMaxRetries = 3
+          }
+        connector _ = do
+          atomicModifyIORef' attempts $ \count -> (count + 1, ())
+          putMVar connectorStarted ()
+          _ <- Exception.onException
+            (takeMVar stalled)
+            (atomicModifyIORef' closeCount $ \count -> (count + 1, ()))
+          sendBuf <- newIORef BS.empty
+          recvQueue <- newIORef []
+          return $ MockConnected sendBuf recvQueue closeCount
+        boundedConnector =
+          withConnectionTimeout 5 PlaintextConnectionSetup connector
+
+    muxPool <- createMultiplexPool boundedConnector 1
+    let client = ClusterClient
+          topologyVar discoveryPool retryConfig connector refreshLock muxPool
+    finished <- newEmptyMVar
+    owner <- forkFinally
+      (executeKeyedClusterCommand client "key" ["GET", "key"])
+      (putMVar finished)
+    timeout 1000000 (takeMVar connectorStarted) `shouldReturn` Just ()
+    killThread owner
+    outcome <- timeout 1000000 (takeMVar finished)
+    case outcome of
+      Just (Left err) ->
+        (Exception.fromException err :: Maybe SomeAsyncException)
+          `shouldSatisfy` \case
+            Just _  -> True
+            Nothing -> False
+      _ -> expectationFailure "caller cancellation was not rethrown"
+    readIORef attempts `shouldReturn` 1
+    timeout 1000000 (awaitIORefValue closeCount 1)
+      `shouldReturn` Just ()
+    readIORef closeCount `shouldReturn` 1
+    closeClusterClient client
+
+awaitIORefValue :: IORef Int -> Int -> IO ()
+awaitIORefValue ref expected = do
+  actual <- readIORef ref
+  if actual == expected
+    then return ()
+    else threadDelay 1000 >> awaitIORefValue ref expected
 
 -- ---------------------------------------------------------------------------
 -- ASK redirect integration tests

@@ -55,6 +55,20 @@ test-suite CredentialSpec
                     , hask-redis-mux
                     , mtl
 
+test-suite ClusterSetupSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterSetupSpec.hs
+    other-modules:    AppConfig
+                    , ClusterSetup
+                    , CredentialConfig
+    hs-source-dirs:   app
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , stm
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------
