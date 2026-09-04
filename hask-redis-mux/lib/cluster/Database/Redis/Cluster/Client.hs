@@ -42,6 +42,7 @@ module Database.Redis.Cluster.Client
     ClusterConfig (..),
     -- * Client Lifecycle
     createClusterClient,
+    createClusterClientWithFactories,
     closeClusterClient,
     withClusterClient,
     refreshTopology,
@@ -69,7 +70,9 @@ import           Control.Concurrent.STM                (TVar, atomically,
                                                         newTVarIO, readTVarIO,
                                                         writeTVar)
 import           Control.Exception                     (SomeException, bracket,
-                                                        finally, throwIO, try)
+                                                        finally, fromException,
+                                                        onException, throwIO,
+                                                        try)
 import           Control.Monad                         (when)
 import           Control.Monad.IO.Class                (MonadIO (..))
 import qualified Control.Monad.State                   as State
@@ -91,6 +94,7 @@ import           Database.Redis.Cluster                (ClusterNode (..),
                                                         findNodeAddressForSlot,
                                                         parseClusterSlots)
 import           Database.Redis.Cluster.ConnectionPool (ConnectionPool,
+                                                        ConnectionPoolException (..),
                                                         PoolConfig (..),
                                                         closePool, createPool,
                                                         withConnection)
@@ -110,6 +114,7 @@ import qualified Database.Redis.Command                as RedisCommandClient
 import           Database.Redis.Connector              (Connector)
 import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
+                                                        MultiplexPoolException (..),
                                                         closeMultiplexPool,
                                                         createMultiplexPool,
                                                         submitToNode,
@@ -126,6 +131,7 @@ data ClusterError
   | MaxRetriesExceeded String -- ^ All retry attempts exhausted.
   | TopologyError String -- ^ Slot or node lookup failed (e.g., empty topology).
   | ConnectionError String -- ^ Network-level failure connecting to a node.
+  | ClusterClientClosed -- ^ The client has been terminally closed.
   deriving (Show, Eq)
 
 -- | Redirection information parsed from errors
@@ -227,36 +233,52 @@ createClusterClient ::
   Connector client ->
   IO (ClusterClient client)
 createClusterClient config connector = do
-  pool <- createPool (clusterPoolConfig config)
+  createClusterClientWithFactories createPool createMultiplexPool config connector
 
+-- | Internal construction seam for deterministic failure-injection tests.
+createClusterClientWithFactories
+  :: (Client client)
+  => (PoolConfig -> IO (ConnectionPool client))
+  -> (Connector client -> Int -> IO (MultiplexPool client))
+  -> ClusterConfig
+  -> Connector client
+  -> IO (ClusterClient client)
+createClusterClientWithFactories createConnectionPool createMuxPool config connector = do
+  pool <- createConnectionPool (clusterPoolConfig config)
+  build pool `onException` closePool pool
+  where
+    build pool = do
   -- Discover initial topology before creating TVar
-  let seedNode = clusterSeedNode config
-  response <- withConnection pool seedNode connector $ \conn -> do
-    let clientState = ClientState conn BS8.empty
-    State.evalStateT (runRedisCommandClient clusterSlots) clientState
+      let seedNode = clusterSeedNode config
+      response <- withConnection pool seedNode connector $ \conn -> do
+        let clientState = ClientState conn BS8.empty
+        State.evalStateT (runRedisCommandClient clusterSlots) clientState
 
-  currentTime <- getCurrentTime
-  case parseClusterSlots response currentTime of
-    Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
-    Right initialTopology -> do
-      topology <- newTVarIO initialTopology
-      refreshLock <- newMVar ()
-      muxPool <- createMultiplexPool connector 1
-      return $ ClusterClient topology pool config connector refreshLock muxPool
+      currentTime <- getCurrentTime
+      case parseClusterSlots response currentTime of
+        Left err -> throwIO $ userError $ "Failed to parse cluster topology: " <> err
+        Right initialTopology -> do
+          topology <- newTVarIO initialTopology
+          refreshLock <- newMVar ()
+          muxPool <- createMuxPool connector 1
+          return $ ClusterClient topology pool config connector refreshLock muxPool
 
 -- | Close all pooled connections across every node.
+-- Closure is terminal and idempotent: owned transports are closed exactly once,
+-- and later commands return 'ClusterClientClosed' without reconnecting.
 --
 -- Consider using 'withClusterClient' instead for automatic cleanup.
 closeClusterClient :: (Client client) => ClusterClient client -> IO ()
 closeClusterClient client = do
-  closePool (clusterConnectionPool client)
   closeMultiplexPool (clusterMultiplexPool client)
+  closePool (clusterConnectionPool client)
 
 -- | Bracket-style resource management for cluster clients.
 --
 -- Creates a client, runs the given action, and ensures the client is closed
 -- even if an exception occurs. Prefer this over manual 'createClusterClient'
--- and 'closeClusterClient'.
+-- and 'closeClusterClient'. After the callback returns, both backing pools are
+-- permanently closed.
 --
 -- @
 -- withClusterClient config connector $ \\client ->
@@ -353,7 +375,10 @@ executeOnNode client nodeAddr action connector = do
     State.evalStateT (runRedisCommandClient action) clientState
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
+    Left (e :: SomeException)
+      | Just ConnectionPoolClosed <- fromException e ->
+          return $ Left ClusterClientClosed
+      | otherwise -> return $ Left $ ConnectionError $ show e
     Right value               -> return $ Right value
 
 -- | Execute a command that does not target a specific key (e.g., PING, AUTH, FLUSHALL).
@@ -513,7 +538,10 @@ executeOnSlotMux client muxPool slot cmdBuilder = do
     Just addr -> do
       result <- try $ submitToNode muxPool addr cmdBuilder
       case result of
-        Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
+        Left (e :: SomeException)
+          | Just MultiplexPoolClosed <- fromException e ->
+              return $ Left ClusterClientClosed
+          | otherwise -> return $ Left $ ConnectionError $ show e
         Right respData -> case detectRedirection respData of
           Just (Left (RedirectionInfo s host port)) ->
             return $ Left $ MovedError s (NodeAddress host port)
@@ -536,7 +564,10 @@ executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
   let askingBuilder = encodeCommandBuilder ["ASKING"]
   result <- try $ submitToNodeWithAsking muxPool addr askingBuilder cmdBuilder
   case result of
-    Left (e :: SomeException) -> return $ Left $ ConnectionError $ show e
+    Left (e :: SomeException)
+      | Just MultiplexPoolClosed <- fromException e ->
+          return $ Left ClusterClientClosed
+      | otherwise -> return $ Left $ ConnectionError $ show e
     Right respData -> case detectRedirection respData of
       Just (Left (RedirectionInfo s host port)) ->
         return $ Left $ MovedError s (NodeAddress host port)

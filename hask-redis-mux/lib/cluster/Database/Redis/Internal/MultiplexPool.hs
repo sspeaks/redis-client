@@ -4,7 +4,8 @@
 -- | Pool of 'Multiplexer's for cluster-mode usage.
 --
 -- Manages one or more multiplexed connections per node, matching the
--- StackExchange.Redis architecture. Automatically reconnects dead multiplexers.
+-- StackExchange.Redis architecture. Automatically reconnects dead multiplexers
+-- until the pool is closed.
 --
 -- @
 -- pool <- createMultiplexPool connector 1
@@ -15,6 +16,7 @@
 -- @since 0.1.0.0
 module Database.Redis.Internal.MultiplexPool
   ( MultiplexPool
+  , MultiplexPoolException (..)
   , createMultiplexPool
   , submitToNode
   , submitToNodeWithAsking
@@ -24,14 +26,15 @@ module Database.Redis.Internal.MultiplexPool
   ) where
 
 import           Control.Concurrent.MVar             (MVar, modifyMVar, newMVar)
-import           Control.Exception                   (SomeException, catch,
-                                                      throwIO)
+import           Control.Exception                   (Exception, SomeException,
+                                                      catch, mask, throwIO, try)
 import qualified Data.ByteString.Builder             as Builder
 import           Data.IORef                          (IORef, atomicModifyIORef',
                                                       atomicWriteIORef,
                                                       newIORef, readIORef)
 import           Data.Map.Strict                     (Map)
 import qualified Data.Map.Strict                     as Map
+import           Data.Typeable                       (Typeable)
 import           Data.Vector                         (Vector)
 import qualified Data.Vector                         as V
 import           Database.Redis.Client               (Client (..))
@@ -49,6 +52,12 @@ import           Database.Redis.Internal.Multiplexer (Multiplexer, ResponseSlot,
                                                       waitSlot)
 import           Database.Redis.Resp                 (RespData)
 
+-- | Exception thrown when a terminally closed multiplexer pool is used.
+data MultiplexPoolException = MultiplexPoolClosed
+  deriving (Eq, Show, Typeable)
+
+instance Exception MultiplexPoolException
+
 -- | Per-node multiplexer group with its own round-robin counter.
 -- Keeping the counter per-node eliminates cross-node CAS contention
 -- on the shared counter that existed before.
@@ -64,6 +73,7 @@ data NodeMuxes = NodeMuxes
 data MultiplexPool client = MultiplexPool
   { poolNodesRef  :: !(IORef (Map NodeAddress NodeMuxes))    -- fast reads
   , poolNodesLock :: !(MVar ())                              -- protects writes
+  , poolClosed    :: !(IORef Bool)                           -- terminal state
   , poolConnector :: !(Connector client)
   , poolSlotPool  :: !SlotPool                               -- reusable ResponseSlots
   , poolMuxCount  :: !Int                                    -- multiplexers per node
@@ -80,8 +90,9 @@ createMultiplexPool
 createMultiplexPool connector muxCnt = do
   nodesRef <- newIORef Map.empty
   nodesLock <- newMVar ()
+  closed <- newIORef False
   slotPool <- createSlotPool 256
-  return $ MultiplexPool nodesRef nodesLock connector slotPool (max 1 muxCnt)
+  return $ MultiplexPool nodesRef nodesLock closed connector slotPool (max 1 muxCnt)
 
 -- | Submit a pre-encoded RESP command (as a Builder) to the multiplexer for a given node.
 -- Creates the multiplexer on demand if the node hasn't been seen before.
@@ -156,10 +167,12 @@ getMultiplexer
   -> NodeAddress
   -> IO Multiplexer
 getMultiplexer pool addr = do
+  ensurePoolOpen pool
   m <- readIORef (poolNodesRef pool)
   case Map.lookup addr m of
     Just nm -> pickMux nm
     Nothing -> modifyMVar (poolNodesLock pool) $ \() -> do
+      ensurePoolOpen pool
       -- Double-check after acquiring lock
       m' <- readIORef (poolNodesRef pool)
       case Map.lookup addr m' of
@@ -190,11 +203,22 @@ createNodeMuxes
   -> Int
   -> IO NodeMuxes
 createNodeMuxes connector addr count = do
-  muxes <- V.generateM count $ \_ -> do
-    conn <- connector addr
-    createMultiplexer conn (receive conn)
-  counter <- newIORef 1
-  return $ NodeMuxes muxes counter
+  muxes <- mask $ \restore -> createAll restore [] count
+  counter <- newIORef 1 `catch` \(e :: SomeException) -> do
+    destroyMuxes muxes
+    throwIO e
+  return $ NodeMuxes (V.fromList $ reverse muxes) counter
+  where
+    createAll _ acc 0 = return acc
+    createAll restore acc remaining = do
+      result <- try $ restore $ do
+        conn <- connector addr
+        createMultiplexer conn (receive conn)
+      case result of
+        Right mux -> createAll restore (mux : acc) (remaining - 1)
+        Left (e :: SomeException) -> do
+          destroyMuxes acc
+          throwIO e
 
 -- | Replace a dead multiplexer for a node.
 replaceMux
@@ -203,22 +227,14 @@ replaceMux
   -> NodeAddress
   -> Multiplexer
   -> IO Multiplexer
-replaceMux pool addr oldMux = do
-  destroyMultiplexer oldMux `catch` \(_ :: SomeException) -> return ()
+replaceMux pool addr _oldMux = do
   modifyMVar (poolNodesLock pool) $ \() -> do
+    ensurePoolOpen pool
     m <- readIORef (poolNodesRef pool)
     case Map.lookup addr m of
       Just nm -> do
-        -- Find and replace the dead mux in the vector
-        newMuxes <- V.mapM (\mux -> do
-          alive <- isMultiplexerAlive mux
-          if alive
-            then return mux
-            else do
-              conn <- (poolConnector pool) addr
-              createMultiplexer conn (receive conn)
-          ) (nmMuxes nm)
-        let nm' = nm { nmMuxes = newMuxes }
+        newMuxes <- replaceDeadMuxes pool addr (V.toList $ nmMuxes nm)
+        let nm' = nm { nmMuxes = V.fromList newMuxes }
         atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm' m)
         -- Return the first alive one
         mux <- pickMux nm'
@@ -228,14 +244,54 @@ replaceMux pool addr oldMux = do
         atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm m)
         return ((), V.head (nmMuxes nm))
 
--- | Tear down all multiplexers across all nodes.
+-- | Tear down all multiplexers and their owned transports across all nodes.
+-- Closure is terminal and idempotent; later submissions throw
+-- 'MultiplexPoolClosed' rather than reconnecting.
 closeMultiplexPool
   :: MultiplexPool client
   -> IO ()
 closeMultiplexPool pool = do
-  modifyMVar (poolNodesLock pool) $ \() -> do
+  muxes <- modifyMVar (poolNodesLock pool) $ \() -> do
+    alreadyClosed <- readIORef (poolClosed pool)
     m <- readIORef (poolNodesRef pool)
-    mapM_ (\nm -> V.mapM_ (\mux -> destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()) (nmMuxes nm))
-          (Map.elems m)
-    atomicWriteIORef (poolNodesRef pool) Map.empty
-    return ((), ())
+    if alreadyClosed
+      then return ((), [])
+      else do
+        atomicWriteIORef (poolClosed pool) True
+        atomicWriteIORef (poolNodesRef pool) Map.empty
+        return ((), concatMap (V.toList . nmMuxes) $ Map.elems m)
+  destroyMuxes muxes
+
+ensurePoolOpen :: MultiplexPool client -> IO ()
+ensurePoolOpen pool = do
+  closed <- readIORef (poolClosed pool)
+  if closed then throwIO MultiplexPoolClosed else return ()
+
+destroyMuxes :: [Multiplexer] -> IO ()
+destroyMuxes =
+  mapM_ (\mux -> destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ())
+
+replaceDeadMuxes
+  :: (Client client)
+  => MultiplexPool client
+  -> NodeAddress
+  -> [Multiplexer]
+  -> IO [Multiplexer]
+replaceDeadMuxes pool addr muxes =
+  mask $ \restore -> go restore [] [] muxes
+  where
+    go _ kept _ [] = return $ reverse kept
+    go restore kept created (mux:rest) = do
+      alive <- isMultiplexerAlive mux
+      if alive
+        then go restore (mux : kept) created rest
+        else do
+          destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()
+          result <- try $ restore $ do
+            conn <- poolConnector pool addr
+            createMultiplexer conn (receive conn)
+          case result of
+            Right newMux -> go restore (newMux : kept) (newMux : created) rest
+            Left (e :: SomeException) -> do
+              destroyMuxes created
+              throwIO e

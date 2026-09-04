@@ -156,6 +156,23 @@ createTeardownClient = do
     , putMVar releaseSecond ()
     )
 
+data ClosingClient (a :: ConnectionStatus) where
+  ClosingConnected
+    :: !(IORef Int)
+    -> !(MVar ())
+    -> !(MVar ())
+    -> !(MVar ByteString)
+    -> ClosingClient 'Connected
+
+instance Client ClosingClient where
+  connect = error "ClosingClient: connect not supported"
+  close (ClosingConnected closeCount closeStarted releaseClose _) = liftIO $ do
+    atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+    void $ tryPutMVar closeStarted ()
+    takeMVar releaseClose
+  send _ _ = return ()
+  receive (ClosingConnected _ _ _ replies) = liftIO $ takeMVar replies
+
 -- | Encode a RespData to strict ByteString (for feeding to mock recv).
 encodeResp :: RespData -> ByteString
 encodeResp = LBS.toStrict . Builder.toLazyByteString . encode
@@ -304,6 +321,30 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
     case result of
       Left (e :: SomeException) -> show e `shouldContain` "MultiplexerDead"
       Right _ -> expectationFailure "Expected MultiplexerDead exception"
+
+  it "closes the owned transport exactly once when the destroy owner is cancelled" $ do
+    closeCount <- newIORef 0
+    closeStarted <- newEmptyMVar
+    releaseClose <- newEmptyMVar
+    replies <- newEmptyMVar
+    let client = ClosingConnected closeCount closeStarted releaseClose replies
+    mux <- createMultiplexer client (receive client)
+
+    ownerDone <- newEmptyMVar
+    owner <- forkFinally (destroyMultiplexer mux) (putMVar ownerDone)
+    started <- timeout 1000000 (takeMVar closeStarted)
+    started `shouldBe` Just ()
+    killThread owner
+    cancelled <- timeout 1000000 (takeMVar ownerDone)
+    cancelled `shouldSatisfy` \case
+      Just (Left _) -> True
+      _             -> False
+
+    putMVar releaseClose ()
+    resumed <- timeout 1000000 (destroyMultiplexer mux)
+    resumed `shouldBe` Just ()
+    replicateM_ 3 (destroyMultiplexer mux)
+    readIORef closeCount `shouldReturn` 1
 
   it "submit-after-destroy with pooled also throws MultiplexerDead" $ do
     pool <- createSlotPool 16

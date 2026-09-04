@@ -1,17 +1,20 @@
 {-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module LibraryE2E.ConnectionPoolTests (spec) where
 
 import           Control.Concurrent.Async              (mapConcurrently)
-import           Control.Exception                     (SomeException, throwIO,
+import           Control.Exception                     (SomeException,
+                                                        fromException, throwIO,
                                                         try)
 import           Control.Monad                         (forM_)
 import           Database.Redis.Cluster.Client         (ClusterClient (..),
                                                         ClusterConfig (..),
                                                         closeClusterClient,
                                                         executeKeyedClusterCommand)
-import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
+import           Database.Redis.Cluster.ConnectionPool (ConnectionPoolException (..),
+                                                        PoolConfig (..),
                                                         closePool,
                                                         withConnection)
 import           Database.Redis.Command                (showBS)
@@ -101,7 +104,7 @@ spec = describe "ConnectionPool Thread Safety" $ do
       closeClusterClient client
 
   describe "closePool" $ do
-    it "closes connections and pool remains usable for new connections" $ do
+    it "is terminal and rejects later checkouts" $ do
       client <- createTestClient
 
       -- Warm pool
@@ -110,9 +113,15 @@ spec = describe "ConnectionPool Thread Safety" $ do
       -- Close the pool
       closePool (clusterConnectionPool client)
 
-      -- After close, new operations should still work (pool creates new connections)
-      result <- executeKeyedClusterCommand client "close-test2" ["SET", "close-test2", "v2"]
-      result `shouldSatisfy` isRight
+      result <- try $
+        withConnection
+          (clusterConnectionPool client)
+          seedNode
+          testConnector
+          (\_ -> return ())
+      result `shouldSatisfy` \case
+        Left err -> fromException err == Just ConnectionPoolClosed
+        Right () -> False
 
       closeClusterClient client
 

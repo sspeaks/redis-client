@@ -80,6 +80,7 @@ import           Database.Redis.Cluster.Client         (ClusterClient (..),
                                                         refreshTopology,
                                                         runClusterCommandClient)
 import           Database.Redis.Cluster.ConnectionPool (ConnectionPool (..),
+                                                        ConnectionPoolException (..),
                                                         PoolConfig (..),
                                                         closePool, createPool,
                                                         withConnection)
@@ -109,6 +110,7 @@ import           Database.Redis.Internal.Multiplexer   (Multiplexer,
                                                         isMultiplexerAlive,
                                                         submitCommand)
 import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
+                                                        MultiplexPoolException (..),
                                                         closeMultiplexPool,
                                                         createMultiplexPool,
                                                         submitToNode)

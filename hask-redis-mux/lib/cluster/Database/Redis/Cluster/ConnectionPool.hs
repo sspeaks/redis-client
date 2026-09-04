@@ -15,6 +15,7 @@
 -- @since 0.1.0.0
 module Database.Redis.Cluster.ConnectionPool
   ( ConnectionPool (..),
+    ConnectionPoolException (..),
     PoolConfig (..),
     createPool,
     withConnection,
@@ -24,14 +25,23 @@ where
 
 import           Control.Concurrent.MVar  (MVar, modifyMVar, newEmptyMVar,
                                            newMVar, putMVar, takeMVar)
-import           Control.Exception        (SomeException, catch, throwIO,
-                                           toException, try)
+import           Control.Exception        (Exception, SomeException, catch,
+                                           mask, throwIO, toException, try)
 import           Control.Monad            (forM_)
+import           Data.IORef               (IORef, newIORef, readIORef,
+                                           writeIORef)
 import           Data.Map.Strict          (Map)
 import qualified Data.Map.Strict          as Map
+import           Data.Typeable            (Typeable)
 import           Database.Redis.Client    (Client (..), ConnectionStatus (..))
 import           Database.Redis.Cluster   (NodeAddress (..))
 import           Database.Redis.Connector (Connector)
+
+-- | Exception thrown when a terminally closed connection pool is used.
+data ConnectionPoolException = ConnectionPoolClosed
+  deriving (Eq, Show, Typeable)
+
+instance Exception ConnectionPoolException
 
 -- | Configuration for the connection pool.
 data PoolConfig = PoolConfig
@@ -57,6 +67,7 @@ data NodePool client = NodePool
 -- is returned.
 data ConnectionPool client = ConnectionPool
   { poolConnections :: MVar (Map NodeAddress (NodePool client))
+  , poolClosed      :: IORef Bool
   , poolConfig      :: PoolConfig
   }
 
@@ -65,13 +76,15 @@ data ConnectionPool client = ConnectionPool
 createPool :: PoolConfig -> IO (ConnectionPool client)
 createPool config = do
   connections <- newMVar Map.empty
-  return $ ConnectionPool connections config
+  closed <- newIORef False
+  return $ ConnectionPool connections closed config
 
 -- | What to do after acquiring the MVar lock
 data CheckoutResult client
   = UseExisting (client 'Connected)                      -- ^ Reuse an idle connection
   | CreateNew                                             -- ^ Create a new connection (slot reserved)
   | Wait (MVar (Either SomeException (client 'Connected)))  -- ^ Block until a connection is returned
+  | PoolIsClosed
 
 -- | Check out a connection, run an action, and return the connection to the pool.
 -- If the action throws an exception, the connection is discarded (not returned)
@@ -103,38 +116,49 @@ checkoutConnection ::
   NodeAddress ->
   Connector client ->
   IO (client 'Connected)
-checkoutConnection pool addr connector = do
+checkoutConnection pool addr connector = mask $ \restore -> do
   result <- modifyMVar (poolConnections pool) $ \m -> do
-    let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
-    case availableConns nodePool of
-      (conn : rest) -> do
-        let updated = nodePool { availableConns = rest }
-        return (Map.insert addr updated m, UseExisting conn)
-      [] ->
-        if totalConns nodePool < maxConnectionsPerNode (poolConfig pool)
-          then do
-            -- Reserve a slot, create connection outside the lock
-            let updated = nodePool { totalConns = totalConns nodePool + 1 }
-            return (Map.insert addr updated m, CreateNew)
-          else do
-            -- At capacity — enqueue a waiter
-            waiter <- newEmptyMVar
-            let updated = nodePool { waitQueue = waitQueue nodePool ++ [waiter] }
-            return (Map.insert addr updated m, Wait waiter)
+    closed <- readIORef (poolClosed pool)
+    if closed
+      then return (m, PoolIsClosed)
+      else do
+        let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
+        case availableConns nodePool of
+          (conn : rest) -> do
+            let updated = nodePool { availableConns = rest }
+            return (Map.insert addr updated m, UseExisting conn)
+          [] ->
+            if totalConns nodePool < maxConnectionsPerNode (poolConfig pool)
+              then do
+                let updated = nodePool { totalConns = totalConns nodePool + 1 }
+                return (Map.insert addr updated m, CreateNew)
+              else do
+                waiter <- newEmptyMVar
+                let updated = nodePool { waitQueue = waitQueue nodePool ++ [waiter] }
+                return (Map.insert addr updated m, Wait waiter)
   case result of
+    PoolIsClosed -> throwIO ConnectionPoolClosed
     UseExisting conn -> return conn
     CreateNew -> do
       -- Create connection outside the MVar lock
-      connResult <- try (connector addr)
+      connResult <- try (restore $ connector addr)
       case connResult of
-        Right conn -> return conn
+        Right conn -> do
+          accepted <- modifyMVar (poolConnections pool) $ \m -> do
+            closed <- readIORef (poolClosed pool)
+            return (m, not closed)
+          if accepted
+            then return conn
+            else do
+              close conn `catch` \(_ :: SomeException) -> return ()
+              throwIO ConnectionPoolClosed
         Left (e :: SomeException) -> do
           -- Creation failed — release the reserved slot
           modifyMVar (poolConnections pool) $ \m -> do
             let m' = Map.adjust (\np -> np { totalConns = totalConns np - 1 }) addr m
             return (m', ())
           throwIO e
-    Wait waiter -> takeMVar waiter >>= either throwIO return
+    Wait waiter -> restore (takeMVar waiter) >>= either throwIO return
 
 -- | Return a connection to the pool for reuse.
 -- If threads are waiting, hand the connection directly to the next waiter.
@@ -145,24 +169,30 @@ returnConnection ::
   client 'Connected ->
   IO ()
 returnConnection pool addr conn =
-  modifyMVar (poolConnections pool) $ \m -> do
-    let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
-    case waitQueue nodePool of
-      (waiter : rest) -> do
-        -- Hand connection directly to a waiting thread
-        putMVar waiter (Right conn)
-        let updated = nodePool { waitQueue = rest }
-        return (Map.insert addr updated m, ())
-      [] ->
-        if length (availableConns nodePool) < maxConnectionsPerNode (poolConfig pool)
-          then do
-            let updated = nodePool { availableConns = conn : availableConns nodePool }
-            return (Map.insert addr updated m, ())
-          else do
-            -- Shouldn't happen, but close just in case
-            close conn `catch` \(_ :: SomeException) -> return ()
-            let updated = nodePool { totalConns = totalConns nodePool - 1 }
-            return (Map.insert addr updated m, ())
+  do
+    closeReturned <- modifyMVar (poolConnections pool) $ \m -> do
+      closed <- readIORef (poolClosed pool)
+      if closed
+        then return (m, True)
+        else do
+          let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
+          case waitQueue nodePool of
+            (waiter : rest) -> do
+              putMVar waiter (Right conn)
+              let updated = nodePool { waitQueue = rest }
+              return (Map.insert addr updated m, False)
+            [] ->
+              if length (availableConns nodePool) < maxConnectionsPerNode (poolConfig pool)
+                then do
+                  let updated = nodePool { availableConns = conn : availableConns nodePool }
+                  return (Map.insert addr updated m, False)
+                else do
+                  let updated = nodePool { totalConns = totalConns nodePool - 1 }
+                  return (Map.insert addr updated m, True)
+    whenClose closeReturned
+  where
+    whenClose True  = close conn `catch` \(_ :: SomeException) -> return ()
+    whenClose False = return ()
 
 -- | Discard a connection (on error) and wake a waiter or release the slot.
 -- If threads are waiting, attempts to create a replacement connection.
@@ -177,23 +207,33 @@ discardConnection ::
 discardConnection pool addr conn connector = do
   close conn `catch` \(_ :: SomeException) -> return ()
   maybeWaiter <- modifyMVar (poolConnections pool) $ \m -> do
-    let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
-    case waitQueue nodePool of
-      (waiter : rest) -> do
-        -- Keep slot reserved for the waiter (don't decrement totalConns)
-        let updated = nodePool { waitQueue = rest }
-        return (Map.insert addr updated m, Just waiter)
-      [] -> do
-        -- No waiters, just release the slot
-        let updated = nodePool { totalConns = totalConns nodePool - 1 }
-        return (Map.insert addr updated m, Nothing)
+    closed <- readIORef (poolClosed pool)
+    if closed
+      then return (m, Nothing)
+      else do
+        let nodePool = Map.findWithDefault (NodePool [] 0 []) addr m
+        case waitQueue nodePool of
+          (waiter : rest) -> do
+            let updated = nodePool { waitQueue = rest }
+            return (Map.insert addr updated m, Just waiter)
+          [] -> do
+            let updated = nodePool { totalConns = totalConns nodePool - 1 }
+            return (Map.insert addr updated m, Nothing)
   case maybeWaiter of
     Nothing -> return ()
-    Just waiter -> do
+    Just waiter -> mask $ \restore -> do
       -- Try to create a replacement connection for the waiter
-      connResult <- try (connector addr)
+      connResult <- try (restore $ connector addr)
       case connResult of
-        Right newConn -> putMVar waiter (Right newConn)
+        Right newConn -> do
+          accepted <- modifyMVar (poolConnections pool) $ \m -> do
+            closed <- readIORef (poolClosed pool)
+            return (m, not closed)
+          if accepted
+            then putMVar waiter (Right newConn)
+            else do
+              close newConn `catch` \(_ :: SomeException) -> return ()
+              putMVar waiter (Left $ toException ConnectionPoolClosed)
         Left (e :: SomeException) -> do
           -- Failed — release the reserved slot and notify waiter of the error
           modifyMVar (poolConnections pool) $ \m -> do
@@ -202,15 +242,22 @@ discardConnection pool addr conn connector = do
           putMVar waiter (Left e)
 
 -- | Close all connections in the pool and wake any blocked waiters.
--- Exceptions during close are caught and ignored.
+-- Closure is terminal and idempotent. Later checkouts throw
+-- 'ConnectionPoolClosed' rather than creating a new connection. Exceptions
+-- during transport close are caught and ignored.
 closePool :: (Client client) => ConnectionPool client -> IO ()
 closePool pool =
-  modifyMVar (poolConnections pool) $ \m -> do
-    let poolClosed = toException (userError "Connection pool closed")
-    forM_ (Map.elems m) $ \nodePool -> do
+  do
+    nodePools <- modifyMVar (poolConnections pool) $ \m -> do
+      alreadyClosed <- readIORef (poolClosed pool)
+      if alreadyClosed
+        then return (m, [])
+        else do
+          writeIORef (poolClosed pool) True
+          return (Map.empty, Map.elems m)
+    let closedError = toException ConnectionPoolClosed
+    forM_ nodePools $ \nodePool -> do
       forM_ (availableConns nodePool) $ \conn ->
         close conn `catch` \(_ :: SomeException) -> return ()
-      -- Wake all blocked waiters with an error
       forM_ (waitQueue nodePool) $ \waiter ->
-        putMVar waiter (Left poolClosed)
-    return (Map.empty, ())
+        putMVar waiter (Left closedError)
