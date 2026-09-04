@@ -77,75 +77,77 @@ module Database.Redis.Cluster.Client
   )
 where
 
-import           Control.Concurrent                    (threadDelay)
-import           Control.Concurrent.MVar               (MVar, newMVar, putMVar,
-                                                        tryTakeMVar)
-import           Control.Concurrent.STM                (TVar, atomically,
-                                                        newTVarIO, readTVar,
-                                                        readTVarIO, writeTVar)
-import           Control.Exception                     (Exception,
-                                                        SomeAsyncException,
-                                                        SomeException, bracket,
-                                                        finally, fromException,
-                                                        onException, throwIO,
-                                                        try)
-import           Control.Monad                         (void, when)
-import           Control.Monad.IO.Class                (MonadIO (..))
-import qualified Control.Monad.State                   as State
-import           Data.ByteString                       (ByteString)
-import qualified Data.ByteString                       as BS
-import qualified Data.ByteString.Builder               as Builder
-import qualified Data.ByteString.Char8                 as BS8
-import           Data.List                             (foldl')
-import qualified Data.Map.Strict                       as Map
-import           Data.Time.Clock                       (NominalDiffTime,
-                                                        diffUTCTime,
-                                                        getCurrentTime)
-import qualified Data.Vector                           as V
-import           Data.Word                             (Word16)
-import           Database.Redis.Client                 (Client (..),
-                                                        ConnectionStatus (..))
-import           Database.Redis.Cluster                (ClusterNode (..),
-                                                        ClusterTopology (..),
-                                                        NodeAddress (..),
-                                                        NodeRole (..),
-                                                        SlotRange (..),
-                                                        calculateSlot,
-                                                        findNodeAddressForSlot,
-                                                        parseClusterSlots)
-import           Database.Redis.Cluster.ConnectionPool (ConnectionPool,
-                                                        ConnectionPoolException (..),
-                                                        PoolConfig (..),
-                                                        closePool, createPool,
-                                                        withConnection,
-                                                        withConnectionBounded)
-import           Database.Redis.Command                (ClientState (..),
-                                                        RedisCommandClient (..),
-                                                        RedisCommands (..),
-                                                        convertResp,
-                                                        encodeCommandBuilder,
-                                                        geoRadiusFlagToList,
-                                                        geoSearchByToList,
-                                                        geoSearchFromToList,
-                                                        geoSearchOptionToList,
-                                                        geoUnitKeyword,
-                                                        runRedisCommandClient,
-                                                        showBS)
-import qualified Database.Redis.Command                as RedisCommandClient
-import           Database.Redis.Connector              (ConnectionPhase (..),
-                                                        ConnectionSetupException,
-                                                        ConnectionSupervisor (..),
-                                                        Connector,
-                                                        withConnectionTimeout,
-                                                        withConnectionTimeoutSupervised)
-import           Database.Redis.FromResp               (FromResp (..))
-import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
-                                                        MultiplexPoolException (..),
-                                                        closeMultiplexPool,
-                                                        createMultiplexPool,
-                                                        submitToNode,
-                                                        submitToNodeWithAsking)
-import           Database.Redis.Resp                   (RespData (..))
+import           Control.Concurrent                       (threadDelay)
+import           Control.Concurrent.MVar                  (MVar, newMVar,
+                                                           putMVar, tryTakeMVar)
+import           Control.Concurrent.STM                   (TVar, atomically,
+                                                           newTVarIO,
+                                                           readTVarIO)
+import           Control.Exception                        (Exception,
+                                                           SomeAsyncException,
+                                                           SomeException,
+                                                           bracket, finally,
+                                                           fromException,
+                                                           onException, throwIO,
+                                                           try)
+import           Control.Monad                            (void, when)
+import           Control.Monad.IO.Class                   (MonadIO (..))
+import qualified Control.Monad.State                      as State
+import           Data.ByteString                          (ByteString)
+import qualified Data.ByteString                          as BS
+import qualified Data.ByteString.Builder                  as Builder
+import qualified Data.ByteString.Char8                    as BS8
+import           Data.List                                (foldl')
+import qualified Data.Map.Strict                          as Map
+import           Data.Time.Clock                          (NominalDiffTime,
+                                                           diffUTCTime,
+                                                           getCurrentTime)
+import           Data.Word                                (Word16)
+import           Database.Redis.Client                    (Client (..),
+                                                           ConnectionStatus (..))
+import           Database.Redis.Cluster                   (ClusterNode (..),
+                                                           ClusterTopology (..),
+                                                           NodeAddress (..),
+                                                           NodeRole (..),
+                                                           calculateSlot,
+                                                           findNodeAddressForSlot,
+                                                           parseClusterSlots)
+import           Database.Redis.Cluster.ConnectionPool    (ConnectionPool,
+                                                           ConnectionPoolException (..),
+                                                           PoolConfig (..),
+                                                           closePool,
+                                                           createPool,
+                                                           withConnection,
+                                                           withConnectionBounded)
+import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
+                                                           patchMovedSlot)
+import           Database.Redis.Command                   (ClientState (..),
+                                                           RedisCommandClient (..),
+                                                           RedisCommands (..),
+                                                           convertResp,
+                                                           encodeCommandBuilder,
+                                                           geoRadiusFlagToList,
+                                                           geoSearchByToList,
+                                                           geoSearchFromToList,
+                                                           geoSearchOptionToList,
+                                                           geoUnitKeyword,
+                                                           runRedisCommandClient,
+                                                           showBS)
+import qualified Database.Redis.Command                   as RedisCommandClient
+import           Database.Redis.Connector                 (ConnectionPhase (..),
+                                                           ConnectionSetupException,
+                                                           ConnectionSupervisor (..),
+                                                           Connector,
+                                                           withConnectionTimeout,
+                                                           withConnectionTimeoutSupervised)
+import           Database.Redis.FromResp                  (FromResp (..))
+import           Database.Redis.Internal.MultiplexPool    (MultiplexPool,
+                                                           MultiplexPoolException (..),
+                                                           closeMultiplexPool,
+                                                           createMultiplexPool,
+                                                           submitToNode,
+                                                           submitToNodeWithAsking)
+import           Database.Redis.Resp                      (RespData (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError
@@ -535,7 +537,8 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
       result <- fetchTopology candidate
       case result of
         Right topology -> do
-          commitRefreshedTopology protectedPatches topology
+          atomically $ commitRefreshedTopology
+            (clusterTopology client) protectedPatches topology
           return $ Right ()
         Left err ->
           case candidates of
@@ -553,110 +556,6 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
             case parseClusterSlots payload currentTime of
               Left err       -> Left $ TopologyError err
               Right topology -> Right topology
-
-    commitRefreshedTopology explicitPatches refreshed =
-      atomically $ do
-        current <- readTVar $ clusterTopology client
-        let currentPatches = movedTopologyPatches current
-            merged =
-              foldl'
-                (\topology (slot, address) ->
-                  if findNodeAddressForSlot topology slot == Just address
-                    then topology
-                    else patchTopologySlot slot address topology)
-                refreshed
-                (explicitPatches ++ currentPatches)
-        writeTVar (clusterTopology client) merged
-
-movedTopologyPatches
-  :: ClusterTopology
-  -> [(Word16, NodeAddress)]
-movedTopologyPatches topology =
-  [ (fromIntegral index, topologyAddresses topology V.! index)
-  | index <- [0 .. upperBound]
-  , movedNodePrefix `BS.isPrefixOf` (topologySlots topology V.! index)
-  ]
-  where
-    upperBound = min
-      (V.length $ topologySlots topology)
-      (V.length $ topologyAddresses topology)
-      - 1
-
-patchMovedSlot
-  :: ClusterClient client
-  -> Word16
-  -> NodeAddress
-  -> IO ()
-patchMovedSlot client slot address =
-  atomically $ do
-    topology <- readTVar $ clusterTopology client
-    writeTVar
-      (clusterTopology client)
-      (patchTopologySlot slot address topology)
-
-patchTopologySlot
-  :: Word16
-  -> NodeAddress
-  -> ClusterTopology
-  -> ClusterTopology
-patchTopologySlot slot _ topology
-  | fromIntegral slot >= V.length (topologySlots topology)
-      || fromIntegral slot >= V.length (topologyAddresses topology) =
-      topology
-patchTopologySlot slot address topology =
-  topology
-    { topologySlots =
-        topologySlots topology V.// [(slotIndex, targetNodeId)]
-    , topologyAddresses =
-        topologyAddresses topology V.// [(slotIndex, address)]
-    , topologyNodes =
-        Map.insert targetNodeId targetNode nodesWithoutSlot
-    }
-  where
-    slotIndex = fromIntegral slot
-    targetNodeId = movedNodeId address
-    nodesWithoutSlot =
-      Map.map removeSlotFromNode $ topologyNodes topology
-    existingTarget =
-      Map.lookup targetNodeId nodesWithoutSlot
-    targetNode =
-      case existingTarget of
-        Just node ->
-          node
-            { nodeAddress = address
-            , nodeRole = Master
-            , nodeSlotsServed =
-                movedRange : nodeSlotsServed node
-            }
-        Nothing ->
-          ClusterNode targetNodeId address Master [movedRange] []
-    movedRange = SlotRange slot slot targetNodeId []
-
-    removeSlotFromNode node =
-      node
-        { nodeSlotsServed =
-            concatMap removeSlotFromRange $ nodeSlotsServed node
-        }
-
-    removeSlotFromRange range
-      | slot < slotStart range || slot > slotEnd range = [range]
-      | slotStart range == slotEnd range = []
-      | slot == slotStart range =
-          [range { slotStart = slot + 1 }]
-      | slot == slotEnd range =
-          [range { slotEnd = slot - 1 }]
-      | otherwise =
-          [ range { slotEnd = slot - 1 }
-          , range { slotStart = slot + 1 }
-          ]
-
-movedNodePrefix :: ByteString
-movedNodePrefix = "__redis_client_moved__:"
-
-movedNodeId :: NodeAddress -> ByteString
-movedNodeId address =
-  movedNodePrefix <> BS8.pack
-    (nodeHost address ++ ":" ++ show (nodePort address))
 
 -- | Check if topology is stale and refresh if needed
 -- Called before every keyed command execution.
@@ -851,7 +750,7 @@ withRetryAndRefreshPolicyUsing retryPolicy delayAction
                     _ -> retryAfterDelay err RouteBySlot delay
             Left err@(MovedError slot address)
               | retryPolicy == KeyedRetryPolicy -> do
-                  patchMovedSlot client slot address
+                  atomically $ patchMovedSlot (clusterTopology client) slot address
                   retryImmediately err $ RouteMoved slot address
             Left err@(AskError _ address)
               | retryPolicy == KeyedRetryPolicy ->

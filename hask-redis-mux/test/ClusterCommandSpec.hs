@@ -5,54 +5,62 @@
 
 module Main (main) where
 
-import           Control.Concurrent                    (forkFinally, forkIO,
-                                                        killThread, threadDelay)
-import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
-                                                        putMVar, takeMVar,
-                                                        tryTakeMVar)
-import           Control.Concurrent.STM                (TVar, atomically, check,
-                                                        modifyTVar', newTVarIO,
-                                                        readTVar, readTVarIO)
-import           Control.Exception                     (SomeAsyncException,
-                                                        SomeException, finally,
-                                                        fromException, throwIO,
-                                                        try)
-import qualified Control.Exception                     as Exception
-import           Control.Monad                         (forM_, replicateM_)
-import           Control.Monad.IO.Class                (liftIO)
-import           Data.ByteString                       (ByteString)
-import qualified Data.ByteString                       as BS
-import qualified Data.ByteString.Builder               as Builder
-import qualified Data.ByteString.Char8                 as BS8
-import qualified Data.ByteString.Lazy                  as LBS
-import           Data.IORef                            (IORef,
-                                                        atomicModifyIORef',
-                                                        newIORef, readIORef)
-import qualified Data.Map.Strict                       as Map
-import           Data.Time.Clock                       (getCurrentTime)
-import qualified Data.Vector                           as V
-import           Data.Word                             (Word16)
-import           Database.Redis.Client                 (Client (..),
-                                                        ConnectionStatus (..))
-import           Database.Redis.Cluster                (ClusterNode (..),
-                                                        ClusterTopology (..),
-                                                        NodeAddress (..),
-                                                        NodeRole (..),
-                                                        SlotRange (..),
-                                                        calculateSlot,
-                                                        findNodeAddressForSlot)
+import           Control.Concurrent                       (forkFinally, forkIO,
+                                                           killThread,
+                                                           threadDelay)
+import           Control.Concurrent.MVar                  (newEmptyMVar,
+                                                           newMVar, putMVar,
+                                                           takeMVar,
+                                                           tryTakeMVar)
+import           Control.Concurrent.STM                   (TVar, atomically,
+                                                           check, modifyTVar',
+                                                           newTVarIO, readTVar,
+                                                           readTVarIO)
+import           Control.Exception                        (SomeAsyncException,
+                                                           SomeException,
+                                                           finally,
+                                                           fromException,
+                                                           throwIO, try)
+import qualified Control.Exception                        as Exception
+import           Control.Monad                            (forM_, replicateM_)
+import           Control.Monad.IO.Class                   (liftIO)
+import           Data.ByteString                          (ByteString)
+import qualified Data.ByteString                          as BS
+import qualified Data.ByteString.Builder                  as Builder
+import qualified Data.ByteString.Char8                    as BS8
+import qualified Data.ByteString.Lazy                     as LBS
+import           Data.IORef                               (IORef,
+                                                           atomicModifyIORef',
+                                                           newIORef, readIORef)
+import qualified Data.Map.Strict                          as Map
+import           Data.Time.Clock                          (getCurrentTime)
+import qualified Data.Vector                              as V
+import           Data.Word                                (Word16)
+import           Database.Redis.Client                    (Client (..),
+                                                           ConnectionStatus (..))
+import           Database.Redis.Cluster                   (ClusterNode (..),
+                                                           ClusterTopology (..),
+                                                           NodeAddress (..),
+                                                           NodeRole (..),
+                                                           SlotRange (..),
+                                                           calculateSlot,
+                                                           findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
-import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
-                                                        createPool)
-import           Database.Redis.Connector              (ConnectionPhase (..),
-                                                        ConnectionSetupException (..),
-                                                        withConnectionTimeout)
-import           Database.Redis.Internal.MultiplexPool (closeMultiplexPool,
-                                                        createMultiplexPool)
-import           Database.Redis.Resp                   (Encodable (..),
-                                                        RespData (..))
-import           GHC.Clock                             (getMonotonicTimeNSec)
-import           System.Timeout                        (timeout)
+import           Database.Redis.Cluster.ConnectionPool    (PoolConfig (..),
+                                                           createPool)
+import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
+                                                           mergeRefreshedTopology,
+                                                           patchMovedSlot,
+                                                           provisionalMovedPatches)
+import           Database.Redis.Connector                 (ConnectionPhase (..),
+                                                           ConnectionSetupException (..),
+                                                           withConnectionTimeout)
+import           Database.Redis.Internal.MultiplexPool    (closeMultiplexPool,
+                                                           createMultiplexPool)
+import           Database.Redis.Resp                      (Encodable (..),
+                                                           RespData (..))
+import           GHC.Clock                                (getMonotonicTimeNSec)
+import           System.Timeout                           (timeout)
 import           Test.Hspec
 
 main :: IO ()
@@ -855,7 +863,7 @@ nextScriptedReceive script = do
     (x : xs) -> (xs, Just x)
   case next of
     Just action -> action
-    Nothing     -> threadDelay 1000 >> nextScriptedReceive script
+    Nothing     -> throwIO $ userError "Mock response script exhausted"
 
 incrementRef :: IORef Int -> IO ()
 incrementRef ref =
@@ -1457,48 +1465,57 @@ movedRedirectSpec =
       findNodeAddressForSlot finalTopology slot `shouldBe` Just node2
       closeClusterClient client
 
-    it "preserves concurrent MOVED patches across a stale full refresh" $ do
+    it "merges provisional MOVED patches into a stale snapshot" $ do
       let firstKey = "concurrent-moved-one"
           firstSlot = calculateSlot firstKey
           secondKey = nextDifferentSlotKey firstSlot 0
           secondSlot = calculateSlot secondKey
-          staleTopology = singleMasterClusterSlots node1 "node-1"
-      refreshRelease <- newEmptyMVar
-      (connector, _) <- createAuthMockConnector $ \address index ->
-        if address == node1 && index == 0
-          then return
-            [ replyWith $ movedResponse firstSlot node2
-            , replyWith $ movedResponse secondSlot node3
-            ]
-            else if index == 0
-              then return [replyWith $ RespBulkString "redirected"]
-            else return
-                [ takeMVar refreshRelease
-                    >> replyWith staleTopology
-                ]
-      topology <- mkTopology node1
-      client <- mkAuthMockClusterClient testClusterConfig connector topology
-      firstResult <- newEmptyMVar
-      secondResult <- newEmptyMVar
-      _ <- forkIO $ executeKeyedClusterCommand
-        client firstKey ["GET", firstKey] >>= putMVar firstResult
-      _ <- forkIO $ executeKeyedClusterCommand
-        client secondKey ["GET", secondKey] >>= putMVar secondResult
+      staleTopology <- mkTopology node1
+      let committed = mergeRefreshedTopology staleTopology
+            [(firstSlot, node2), (secondSlot, node3)]
+      findNodeAddressForSlot committed firstSlot `shouldBe` Just node2
+      findNodeAddressForSlot committed secondSlot `shouldBe` Just node3
 
-      timeout 5000000
-        (awaitSlotAddresses client
-          [(firstSlot, node2), (secondSlot, node3)])
-        `shouldReturn` Just ()
-      putMVar refreshRelease ()
+    it "commits a stale refresh without losing concurrent MOVED patches" $ do
+      let firstKey = "concurrent-moved-one"
+          firstSlot = calculateSlot firstKey
+          secondKey = nextDifferentSlotKey firstSlot 0
+          secondSlot = calculateSlot secondKey
+      staleTopology <- mkTopology node1
+      topologyVar <- newTVarIO staleTopology
+      snapshotReady <- newEmptyMVar
+      allowCommit <- newEmptyMVar
+      commitComplete <- newEmptyMVar
+      _ <- forkIO $ do
+        putMVar snapshotReady ()
+        takeMVar allowCommit
+        atomically $ commitRefreshedTopology topologyVar [] staleTopology
+        putMVar commitComplete ()
 
-      timeout 5000000 (takeMVar firstResult)
-        `shouldReturn` Just (Right $ RespBulkString "redirected")
-      timeout 5000000 (takeMVar secondResult)
-        `shouldReturn` Just (Right $ RespBulkString "redirected")
-      finalTopology <- readTVarIO $ clusterTopology client
-      findNodeAddressForSlot finalTopology firstSlot `shouldBe` Just node2
-      findNodeAddressForSlot finalTopology secondSlot `shouldBe` Just node3
-      closeClusterClient client
+      timeout 5000000 (takeMVar snapshotReady) `shouldReturn` Just ()
+      atomically $ do
+        patchMovedSlot topologyVar firstSlot node2
+        patchMovedSlot topologyVar secondSlot node3
+      putMVar allowCommit ()
+      timeout 5000000 (takeMVar commitComplete) `shouldReturn` Just ()
+
+      committed <- readTVarIO topologyVar
+      findNodeAddressForSlot committed firstSlot `shouldBe` Just node2
+      findNodeAddressForSlot committed secondSlot `shouldBe` Just node3
+
+    it "clears a confirmed provisional MOVED patch after refresh" $ do
+      let key = "confirmed-moved-key"
+          slot = calculateSlot key
+      staleTopology <- mkTopology node1
+      confirmedTopology <- mkTopology node2
+      topologyVar <- newTVarIO staleTopology
+      atomically $ do
+        patchMovedSlot topologyVar slot node2
+        commitRefreshedTopology topologyVar [] confirmedTopology
+
+      committed <- readTVarIO topologyVar
+      findNodeAddressForSlot committed slot `shouldBe` Just node2
+      provisionalMovedPatches committed `shouldBe` []
 
 mkAuthMockClusterClient
   :: ClusterConfig
@@ -1525,18 +1542,6 @@ nextDifferentSlotKey slot index
   | otherwise = nextDifferentSlotKey slot $ index + 1
   where
     candidate = BS8.pack $ "concurrent-moved-key-" ++ show index
-
-awaitSlotAddresses
-  :: ClusterClient client
-  -> [(Word16, NodeAddress)]
-  -> IO ()
-awaitSlotAddresses client expected =
-  atomically $ do
-    topology <- readTVar $ clusterTopology client
-    check $ all
-      (\(slot, address) ->
-        findNodeAddressForSlot topology slot == Just address)
-      expected
 
 askRedirectAdditionalSpec :: Spec
 askRedirectAdditionalSpec = describe "additional ASK redirect integration" $ do
