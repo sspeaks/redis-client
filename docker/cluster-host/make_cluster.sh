@@ -3,7 +3,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-docker compose up -d
+if [[ "${REDIS_CLIENT_ALLOW_HOST_NETWORK:-}" != "1" ]]; then
+  cat >&2 <<'EOF'
+Refusing to start the host-network Redis cluster by default.
+Use docker/cluster for normal development and tests.
+
+If host networking is specifically required, ensure no untrusted local users can
+access the test ports, then opt in with:
+  REDIS_CLIENT_ALLOW_HOST_NETWORK=1 ./docker/cluster-host/make_cluster.sh
+EOF
+  exit 1
+fi
+
+echo "WARNING: starting the explicit host-network Redis test cluster on loopback-only ports." >&2
+docker compose --profile host-network up -d
 
 NODES=(
   "127.0.0.1:7000"
