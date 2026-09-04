@@ -81,25 +81,19 @@ spec = describe "Topology Refresh" $ do
       r1 <- executeKeyedClusterCommand client "topo-recover-key" ["SET", "topo-recover-key", "alive"]
       r1 `shouldSatisfy` isRight'
 
-      -- Stop a non-seed node to avoid breaking topology discovery
-      -- Node 3 (port 6381) is a good candidate
-      stopNode 3
-      threadDelay 3000000  -- 3s for cluster to detect failure
+      withStoppedNode 3 $ do
+        threadDelay 3000000  -- 3s for cluster to detect failure
 
-      -- Force a topology refresh so the client knows about the change
-      _ <- try (refreshTopology client) :: IO (Either SomeException ())
+        -- Force a topology refresh so the client knows about the change
+        _ <- try (refreshTopology client) :: IO (Either SomeException ())
 
-      -- Operations to other nodes should still work
-      _ <- executeKeyedClusterCommand client "topo-other-node" ["SET", "topo-other-node", "works"]
-      -- This might succeed or fail depending on which node owns the key slot
-      -- The important thing is it doesn't hang
-
-      -- Restart the node
-      startNode 3
-      waitForClusterReady 30
+        -- Operations to other nodes should still work
+        _ <- executeKeyedClusterCommand client "topo-other-node" ["SET", "topo-other-node", "works"]
+        -- This might succeed or fail depending on which node owns the key slot
+        -- The important thing is it doesn't hang
+        return ()
 
       -- After recovery, all operations should work
-      threadDelay 5000000  -- 5s for cluster to stabilize
       _ <- try (refreshTopology client) :: IO (Either SomeException ())
       r3 <- executeKeyedClusterCommand client "topo-recover-key" ["GET", "topo-recover-key"]
       -- After cluster recovery, the key should still be readable

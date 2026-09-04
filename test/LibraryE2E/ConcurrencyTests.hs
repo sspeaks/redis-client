@@ -126,9 +126,8 @@ spec = describe "Concurrent Cluster Operations" $ do
 
           killerAction = do
             threadDelay 500000  -- 500ms into the test, kill node 3
-            stopNode 3
-            threadDelay 3000000  -- Let it stay dead for 3s
-            startNode 3
+            withStoppedNode 3 $
+              threadDelay 3000000  -- Let it stay dead for 3s
 
       _ <- concurrently workerAction killerAction
 
@@ -138,9 +137,6 @@ spec = describe "Concurrent Cluster Operations" $ do
 
       -- We should have both successes and failures
       successes `shouldSatisfy` (> 0)
-      -- After node restart, wait for stabilization
-      waitForClusterReady 30
-      threadDelay 5000000
 
       -- Final verification: cluster is healthy again
       _ <- try (refreshTopology client) :: IO (Either SomeException ())

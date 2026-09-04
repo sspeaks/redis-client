@@ -13,21 +13,24 @@ module LibraryE2E.Utils
   , runCmd
   , flushAllNodes
     -- * Docker node management
-  , stopNode
-  , startNode
+  , withStoppedNode
+  , withStoppedNodes
   , waitForClusterReady
     -- * Constants
   , seedNode
   ) where
 
-import           Control.Concurrent                    (threadDelay)
 import           Control.Concurrent.STM                (readTVarIO)
-import           Control.Exception                     (SomeException, try)
-import           Control.Monad                         (forM_)
+import           Control.Exception                     (SomeException, bracket,
+                                                        throwIO, try)
+import           Control.Monad                         (forM_, unless)
+import           Control.Monad.IO.Class                (liftIO)
 import qualified Control.Monad.State                   as State
 import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Lazy                  as LBS
 import qualified Data.Map.Strict                       as Map
 import           Database.Redis.Client                 (Client (..),
+                                                        ConnectionStatus (Connected),
                                                         PlainTextClient (NotConnectedPlainTextClient))
 import           Database.Redis.Cluster                (ClusterNode (..),
                                                         ClusterTopology (..),
@@ -41,10 +44,14 @@ import           Database.Redis.Cluster.Client         (ClusterClient (..),
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
 import           Database.Redis.Command                (ClientState (..),
                                                         RedisCommandClient (..),
-                                                        RedisCommands (..))
+                                                        RedisCommands (..),
+                                                        encodeCommand,
+                                                        parseWith,
+                                                        runRedisCommandClient)
 import           Database.Redis.Connector              (Connector,
                                                         clusterPlaintextConnector)
 import           Database.Redis.Resp                   (RespData (..))
+import           LibraryE2E.NodeLifecycle
 import           System.Process                        (readProcessWithExitCode)
 
 -- | Seed node for cluster discovery
@@ -101,39 +108,82 @@ flushAllNodes client = do
       Left (_ :: SomeException) -> return ()
       Right _                   -> return ()
 
--- | Docker container names for each node
-nodeContainerName :: Int -> String
-nodeContainerName n = "redis-cluster-node" ++ show n
+withStoppedNode :: Int -> IO a -> IO a
+withStoppedNode node =
+  withStoppedNodeUsing nodeLifecycleOperations (nodeTarget node)
 
--- | Stop a Redis cluster node by number (1-5)
-stopNode :: Int -> IO ()
-stopNode n = do
-  (_, _, _) <- readProcessWithExitCode "docker" ["stop", nodeContainerName n] ""
-  return ()
+withStoppedNodes :: [Int] -> IO a -> IO a
+withStoppedNodes nodes =
+  withStoppedNodesUsing nodeLifecycleOperations $ map nodeTarget nodes
 
--- | Start a Redis cluster node by number (1-5)
-startNode :: Int -> IO ()
-startNode n = do
-  (_, _, _) <- readProcessWithExitCode "docker" ["start", nodeContainerName n] ""
-  return ()
+nodeLifecycleOperations :: NodeLifecycleOps
+nodeLifecycleOperations = NodeLifecycleOps
+  { stopNodeOperation =
+      runNodeCommandUsing readProcessWithExitCode StopNode
+  , startNodeOperation =
+      runNodeCommandUsing readProcessWithExitCode StartNode
+  , waitNodeReady = waitForNodeReady 30
+  }
+
+nodeTarget :: Int -> NodeTarget
+nodeTarget node
+  | node >= 1 && node <= 5 = NodeTarget
+      { nodeNumber = node
+      , nodeContainer = "redis-cluster-node" ++ show node
+      , targetHost = "redis" ++ show node ++ ".local"
+      , targetPort = 6378 + node
+      }
+  | otherwise =
+      error $ "Redis cluster node must be between 1 and 5, got "
+        ++ show node
 
 -- | Wait for the cluster to become ready after a node restart.
--- Polls node 1 (or fallback) for cluster_state:ok.
+-- Polls node 1 for PONG and a complete healthy cluster view.
 waitForClusterReady :: Int -> IO ()
-waitForClusterReady maxWaitSeconds = go maxWaitSeconds
-  where
-    go 0 = error "Cluster did not become ready in time"
-    go remaining = do
-      result <- try $ do
-        conn <- connect (NotConnectedPlainTextClient (nodeHost seedNode) (Just (nodePort seedNode)))
-        resp <- State.evalStateT (runRedisCommandClient ping) (ClientState conn BS.empty)
-        close conn
-        return resp
-        :: IO (Either SomeException RespData)
-      case result of
-        Right (RespSimpleString "PONG") -> do
-          -- Cluster bus needs a moment to stabilize after node restart
-          threadDelay 1000000  -- 1s extra stabilization
-        _ -> do
-          threadDelay 1000000  -- 1s
-          go (remaining - 1)
+waitForClusterReady maxWaitSeconds =
+  waitForNodeReady maxWaitSeconds $ nodeTarget 1
+
+waitForNodeReady :: Int -> NodeTarget -> IO ()
+waitForNodeReady maxWaitSeconds =
+  waitForReadinessUsing maxWaitSeconds probeNode
+
+probeNode :: NodeTarget -> IO ()
+probeNode target =
+  bracket
+    (connect $ NotConnectedPlainTextClient
+      (targetHost target) (Just $ targetPort target))
+    close $ \connection -> do
+      pingResponse <- runDirect connection ping
+      unless (pingResponse == RespSimpleString "PONG") $
+        throwIO $ userError $ "Unexpected PING response: "
+          ++ show pingResponse
+      clusterInfo <- runRaw connection ["CLUSTER", "INFO"]
+      case clusterInfo of
+        RespBulkString payload -> do
+          unless ("cluster_state:ok" `BS.isInfixOf` payload) $
+            throwIO $ userError "Cluster state is not ok"
+          unless ("cluster_slots_assigned:16384" `BS.isInfixOf` payload) $
+            throwIO $ userError "Cluster slot coverage is incomplete"
+          unless ("cluster_known_nodes:5" `BS.isInfixOf` payload) $
+            throwIO $ userError "Restarted node has not rejoined all peers"
+        other ->
+          throwIO $ userError $ "Unexpected CLUSTER INFO response: "
+            ++ show other
+
+runDirect
+  :: PlainTextClient 'Connected
+  -> RedisCommandClient PlainTextClient a
+  -> IO a
+runDirect connection command =
+  State.evalStateT
+    (runRedisCommandClient command)
+    (ClientState connection BS.empty)
+
+runRaw
+  :: PlainTextClient 'Connected
+  -> [BS.ByteString]
+  -> IO RespData
+runRaw connection arguments = runDirect connection $ RedisCommandClient $ do
+  ClientState connected _ <- State.get
+  liftIO $ send connected $ LBS.fromStrict $ encodeCommand arguments
+  parseWith $ liftIO $ receive connected
