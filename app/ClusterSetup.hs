@@ -13,11 +13,12 @@ import           AppConfig                             (RunState (..),
                                                         authenticate,
                                                         enforcePlaintextAuthenticationPolicy)
 import           Control.Concurrent.STM                (readTVarIO)
+import           Control.Exception                     (onException)
 import qualified Control.Monad.State                   as State
 import qualified Data.ByteString                       as BS
 import qualified Data.Map.Strict                       as Map
 import           Data.Maybe                            (fromMaybe)
-import           Database.Redis.Client                 (Client (connect),
+import           Database.Redis.Client                 (Client (close, connect),
                                                         ConnectionStatus (..),
                                                         PlainTextClient (..),
                                                         TLSClient (..))
@@ -41,11 +42,12 @@ import           Text.Printf                           (printf)
 authenticateClient :: (Client client) => RunState -> client 'Connected -> IO (client 'Connected)
 authenticateClient state client
   | null (password state) = return client
-  | otherwise = do
+  | otherwise = (do
       _ <- State.evalStateT
              (RedisCommand.runRedisCommandClient (authenticate (username state) (password state)))
              (ClientState client BS.empty)
-      return client
+      return client)
+      `onException` close client
 
 -- | Create cluster connector for plaintext connections
 createPlaintextConnector :: RunState -> Connector PlainTextClient

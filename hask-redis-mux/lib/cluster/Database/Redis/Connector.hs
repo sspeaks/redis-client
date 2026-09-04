@@ -26,6 +26,9 @@
 module Database.Redis.Connector
   ( -- * Connector type
     Connector
+  , ConnectionPhase (..)
+  , ConnectionSetupException (..)
+  , withConnectionTimeout
     -- * Standalone connections
   , connectPlaintext
   , connectTLS
@@ -34,15 +37,58 @@ module Database.Redis.Connector
   , clusterTLSConnector
   ) where
 
+import           Control.Exception      (Exception, throwIO)
+import           Data.Typeable          (Typeable)
 import           Database.Redis.Client  (Client (connect),
                                          ConnectionStatus (..),
                                          PlainTextClient (NotConnectedPlainTextClient),
                                          TLSClient (NotConnectedTLSClient, NotConnectedTLSClientWithHostname))
 import           Database.Redis.Cluster (NodeAddress (..))
+import           System.Timeout         (timeout)
 
 -- | A function that creates a connected client for a given node address.
 -- Used throughout the cluster layer to establish connections on demand.
 type Connector client = NodeAddress -> IO (client 'Connected)
+
+-- | The connection setup covered by a configured deadline.
+data ConnectionPhase
+  = PlaintextConnectionSetup
+  | TLSConnectionSetup
+  deriving (Eq, Show, Typeable)
+
+-- | A connection setup attempt exceeded its configured wall-clock deadline.
+-- The endpoint and transport phase are retained without including connector
+-- arguments or credentials.
+data ConnectionSetupException = ConnectionSetupTimeout
+  { connectionTimeoutPhase    :: !ConnectionPhase
+  , connectionTimeoutEndpoint :: !NodeAddress
+  , connectionTimeoutSeconds  :: !Int
+  }
+  deriving (Eq, Show, Typeable)
+
+instance Exception ConnectionSetupException
+
+-- | Bound one complete connector action by a wall-clock deadline in seconds.
+-- For the built-in plaintext connector this covers DNS, socket setup, and TCP
+-- connect. For TLS it additionally covers certificate-store/context setup and
+-- the TLS handshake.
+withConnectionTimeout
+  :: Int
+  -> ConnectionPhase
+  -> Connector client
+  -> Connector client
+withConnectionTimeout seconds phase connector addr
+  | seconds <= 0 =
+      throwIO $ ConnectionSetupTimeout phase addr seconds
+  | otherwise = do
+      result <- timeout (secondsToMicroseconds seconds) $ connector addr
+      case result of
+        Nothing   -> throwIO $ ConnectionSetupTimeout phase addr seconds
+        Just conn -> return conn
+
+secondsToMicroseconds :: Int -> Int
+secondsToMicroseconds seconds =
+  fromInteger $ min (toInteger (maxBound :: Int)) (toInteger seconds * 1000000)
 
 -- | Connect a plaintext client to a specific host and port.
 --

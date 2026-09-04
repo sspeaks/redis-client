@@ -12,6 +12,10 @@
     *   Credentialed plaintext connections are rejected unless `--allow-insecure-plaintext-auth` is supplied.
     *   The plaintext-auth override emits a warning naming the target and stating that credentials are unencrypted.
     *   `REDIS_CLIENT_TLS_INSECURE` disables certificate verification only when set to exactly `1`; false values preserve verification and invalid values fail.
+*   **Bounded connection setup**
+    *   `PoolConfig.connectionTimeout` now bounds DNS, TCP connect, and TLS context/handshake setup for every cluster connection attempt.
+    *   Setup timeouts preserve the transport phase and endpoint in `ConnectionSetupTimeout` and participate in bounded cluster retries.
+    *   Plaintext and TLS setup failures close partially allocated sockets; the separate 300-second post-connect receive timeout is unchanged.
 
 ## 0.6.0.0 -- 2026-02-13
 

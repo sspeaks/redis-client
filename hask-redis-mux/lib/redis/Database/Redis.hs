@@ -99,11 +99,14 @@ import           Database.Redis.Command                (ClientReplyValues (..),
                                                         encodeSetBuilder,
                                                         parseManyWith,
                                                         parseWith, showBS)
-import           Database.Redis.Connector              (Connector,
+import           Database.Redis.Connector              (ConnectionPhase (..),
+                                                        ConnectionSetupException (..),
+                                                        Connector,
                                                         clusterPlaintextConnector,
                                                         clusterTLSConnector,
                                                         connectPlaintext,
-                                                        connectTLS)
+                                                        connectTLS,
+                                                        withConnectionTimeout)
 import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.Multiplexer   (Multiplexer,
                                                         MultiplexerException (..),

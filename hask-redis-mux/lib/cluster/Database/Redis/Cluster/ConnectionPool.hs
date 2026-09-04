@@ -41,7 +41,8 @@ import qualified Data.Map.Strict          as Map
 import           Data.Typeable            (Typeable)
 import           Database.Redis.Client    (Client (..), ConnectionStatus (..))
 import           Database.Redis.Cluster   (NodeAddress (..))
-import           Database.Redis.Connector (Connector)
+import           Database.Redis.Connector (ConnectionPhase (..), Connector,
+                                           withConnectionTimeout)
 
 -- | Exception thrown when a terminally closed connection pool is used.
 data ConnectionPoolException = ConnectionPoolClosed
@@ -60,7 +61,7 @@ data ConnectionPoolStats = ConnectionPoolStats
 -- | Configuration for the connection pool.
 data PoolConfig = PoolConfig
   { maxConnectionsPerNode :: Int  -- ^ Maximum number of connections kept per node. Callers block when all connections are in use.
-  , connectionTimeout     :: Int  -- ^ Connection timeout in seconds (reserved for future use).
+  , connectionTimeout     :: Int  -- ^ Per-attempt setup deadline in seconds. Covers DNS, TCP connect, and TLS context/handshake when enabled.
   , maxRetries            :: Int  -- ^ Maximum retry attempts for cluster operations.
   , useTLS                :: Bool -- ^ Whether to use TLS connections.
   }
@@ -178,7 +179,14 @@ checkoutConnection pool addr connector restore = checkout
     if not open
       then throwIO ConnectionPoolClosed
       else do
-        connResult <- try (restore $ connector addr)
+        let phase =
+              if useTLS (poolConfig pool)
+                then TLSConnectionSetup
+                else PlaintextConnectionSetup
+            boundedConnector =
+              withConnectionTimeout
+                (connectionTimeout $ poolConfig pool) phase connector
+        connResult <- try (restore $ boundedConnector addr)
         case connResult of
           Right conn -> do
             accepted <- poolIsOpen pool

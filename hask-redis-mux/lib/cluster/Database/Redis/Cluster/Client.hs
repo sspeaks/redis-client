@@ -69,7 +69,8 @@ import           Control.Concurrent.MVar               (MVar, newMVar, putMVar,
 import           Control.Concurrent.STM                (TVar, atomically,
                                                         newTVarIO, readTVarIO,
                                                         writeTVar)
-import           Control.Exception                     (SomeException, bracket,
+import           Control.Exception                     (SomeAsyncException,
+                                                        SomeException, bracket,
                                                         finally, fromException,
                                                         onException, throwIO,
                                                         try)
@@ -111,7 +112,10 @@ import           Database.Redis.Command                (ClientState (..),
                                                         runRedisCommandClient,
                                                         showBS)
 import qualified Database.Redis.Command                as RedisCommandClient
-import           Database.Redis.Connector              (Connector)
+import           Database.Redis.Connector              (ConnectionPhase (..),
+                                                        ConnectionSetupException,
+                                                        Connector,
+                                                        withConnectionTimeout)
 import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
                                                         MultiplexPoolException (..),
@@ -131,6 +135,7 @@ data ClusterError
   | MaxRetriesExceeded String -- ^ All retry attempts exhausted.
   | TopologyError String -- ^ Slot or node lookup failed (e.g., empty topology).
   | ConnectionError String -- ^ Network-level failure connecting to a node.
+  | ConnectionTimeoutError ConnectionSetupException -- ^ A bounded connection setup attempt timed out.
   | ClusterClientClosed -- ^ The client has been terminally closed.
   deriving (Show, Eq)
 
@@ -260,7 +265,15 @@ createClusterClientWithFactories createConnectionPool createMuxPool config conne
         Right initialTopology -> do
           topology <- newTVarIO initialTopology
           refreshLock <- newMVar ()
-          muxPool <- createMuxPool connector 1
+          let poolCfg = clusterPoolConfig config
+              phase =
+                if useTLS poolCfg
+                  then TLSConnectionSetup
+                  else PlaintextConnectionSetup
+              boundedConnector =
+                withConnectionTimeout
+                  (connectionTimeout poolCfg) phase connector
+          muxPool <- createMuxPool boundedConnector 1
           return $ ClusterClient topology pool config connector refreshLock muxPool
 
 -- | Close all pooled connections across every node.
@@ -370,16 +383,14 @@ executeOnNode ::
   Connector client ->
   IO (Either ClusterError a)
 executeOnNode client nodeAddr action connector = do
-  result <- try $ withConnection (clusterConnectionPool client) nodeAddr connector $ \conn -> do
+  result <- tryClusterAction $
+    withConnection (clusterConnectionPool client) nodeAddr connector $ \conn -> do
     let clientState = ClientState conn BS8.empty
     State.evalStateT (runRedisCommandClient action) clientState
 
   case result of
-    Left (e :: SomeException)
-      | Just ConnectionPoolClosed <- fromException e ->
-          return $ Left ClusterClientClosed
-      | otherwise -> return $ Left $ ConnectionError $ show e
-    Right value               -> return $ Right value
+    Left err    -> return $ Left err
+    Right value -> return $ Right value
 
 -- | Execute a command that does not target a specific key (e.g., PING, AUTH, FLUSHALL).
 -- Routed to an arbitrary master node.
@@ -427,15 +438,44 @@ withRetryAndRefresh client maxRetries initialDelay action = go 0 initialDelay No
               threadDelay delay
               go (attempt + 1) (delay * 2) Nothing
             Left (MovedError _ _) -> do
-              refreshTopology client
-              go (attempt + 1) delay Nothing
+              refreshResult <- tryClusterAction $ refreshTopology client
+              case refreshResult of
+                Left ClusterClientClosed -> return $ Left ClusterClientClosed
+                _ -> do
+                  threadDelay delay
+                  go (attempt + 1) (delay * 2) Nothing
             Left (AskError _ addr) -> do
               go (attempt + 1) delay (Just addr)
             Left (ConnectionError _) -> do
-              refreshTopology client
-              go (attempt + 1) delay Nothing
+              refreshResult <- tryClusterAction $ refreshTopology client
+              case refreshResult of
+                Left ClusterClientClosed -> return $ Left ClusterClientClosed
+                _ -> do
+                  threadDelay delay
+                  go (attempt + 1) (delay * 2) Nothing
+            Left (ConnectionTimeoutError _) -> do
+              threadDelay delay
+              go (attempt + 1) (delay * 2) Nothing
             Left err -> return $ Left err
             Right value -> return $ Right value
+
+tryClusterAction :: IO a -> IO (Either ClusterError a)
+tryClusterAction action = do
+  result <- try action
+  case result of
+    Right value -> return $ Right value
+    Left (e :: SomeException) ->
+      case fromException e of
+        Just async -> throwIO (async :: SomeAsyncException)
+        Nothing
+          | Just ConnectionPoolClosed <- fromException e ->
+              return $ Left ClusterClientClosed
+          | Just MultiplexPoolClosed <- fromException e ->
+              return $ Left ClusterClientClosed
+          | Just timeoutError <- fromException e ->
+              return $ Left $ ConnectionTimeoutError timeoutError
+          | otherwise ->
+              return $ Left $ ConnectionError $ show e
 
 -- | Parse the payload after "MOVED " or "ASK " prefix.
 -- Input format: "3999 127.0.0.1:6381" (slot, space, host:port)
@@ -513,13 +553,16 @@ executeKeyedClusterCommand ::
   [ByteString] ->         -- command args
   IO (Either ClusterError RespData)
 executeKeyedClusterCommand client key cmdArgs = do
-  refreshTopologyIfStale client
   let muxPool = clusterMultiplexPool client
       cmdBuilder = encodeCommandBuilder cmdArgs
       !slot = calculateSlot key
   withRetryAndRefresh client (clusterMaxRetries (clusterConfig client)) (clusterRetryDelay (clusterConfig client)) $ \askTarget ->
     case askTarget of
-      Nothing   -> executeOnSlotMux client muxPool slot cmdBuilder
+      Nothing -> do
+        refreshResult <- tryClusterAction $ refreshTopologyIfStale client
+        case refreshResult of
+          Left err -> return $ Left err
+          Right () -> executeOnSlotMux client muxPool slot cmdBuilder
       Just addr -> executeOnNodeWithAsking client muxPool addr cmdBuilder
 
 -- | Execute a pre-encoded command via multiplexer on the node for a given slot.
@@ -536,12 +579,9 @@ executeOnSlotMux client muxPool slot cmdBuilder = do
   case findNodeAddressForSlot topology slot of
     Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
     Just addr -> do
-      result <- try $ submitToNode muxPool addr cmdBuilder
+      result <- tryClusterAction $ submitToNode muxPool addr cmdBuilder
       case result of
-        Left (e :: SomeException)
-          | Just MultiplexPoolClosed <- fromException e ->
-              return $ Left ClusterClientClosed
-          | otherwise -> return $ Left $ ConnectionError $ show e
+        Left err -> return $ Left err
         Right respData -> case detectRedirection respData of
           Just (Left (RedirectionInfo s host port)) ->
             return $ Left $ MovedError s (NodeAddress host port)
@@ -562,12 +602,10 @@ executeOnNodeWithAsking ::
   IO (Either ClusterError RespData)
 executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
   let askingBuilder = encodeCommandBuilder ["ASKING"]
-  result <- try $ submitToNodeWithAsking muxPool addr askingBuilder cmdBuilder
+  result <- tryClusterAction $
+    submitToNodeWithAsking muxPool addr askingBuilder cmdBuilder
   case result of
-    Left (e :: SomeException)
-      | Just MultiplexPoolClosed <- fromException e ->
-          return $ Left ClusterClientClosed
-      | otherwise -> return $ Left $ ConnectionError $ show e
+    Left err -> return $ Left err
     Right respData -> case detectRedirection respData of
       Just (Left (RedirectionInfo s host port)) ->
         return $ Left $ MovedError s (NodeAddress host port)

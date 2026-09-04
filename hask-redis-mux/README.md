@@ -107,6 +107,25 @@ only, set `REDIS_CLIENT_TLS_INSECURE=1` to disable verification. The client emit
 a warning whenever the bypass is active. Unset, empty, `0`, and `false` preserve
 verification; other values are rejected instead of silently weakening TLS.
 
+## Connection Setup Timeouts
+
+`PoolConfig.connectionTimeout` is a per-attempt wall-clock deadline in seconds.
+For plaintext connections it covers DNS resolution, socket creation/options,
+and TCP connect. For TLS connections it covers those phases plus certificate
+store loading, TLS context creation, and the TLS handshake. A timed-out setup
+throws `ConnectionSetupTimeout`, which records the endpoint and whether the
+attempt was plaintext or TLS without including credentials.
+
+Cluster multiplexers and ordinary pooled connections use the same deadline.
+Timeout retries are bounded by `clusterMaxRetries`; the total worst-case
+connection time is the per-attempt deadline multiplied by the retry count, plus
+configured retry backoff. Timeout retries do not start an additional topology
+refresh connection.
+
+The existing 300-second `receive` timeout applies only after a connection has
+been established. It is independent of `connectionTimeout` and is not part of
+the setup or retry budget.
+
 ## Documentation
 
 - [Haddock API docs](https://hackage.haskell.org/package/hask-redis-mux)

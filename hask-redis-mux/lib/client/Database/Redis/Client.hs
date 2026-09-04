@@ -18,46 +18,57 @@ module Database.Redis.Client
   , ConnectionStatus (..)
   ) where
 
-import           Control.Exception               (IOException, bracket, catch,
-                                                  finally, onException, throwIO)
-import           Control.Monad                   (void)
+import           Control.Exception                     (IOException, bracket,
+                                                        catch, finally, throwIO)
+import           Control.Monad                         (void)
 import           Control.Monad.IO.Class
-import qualified Data.ByteString                 as BS
-import qualified Data.ByteString.Char8           as BS8
-import qualified Data.ByteString.Lazy            as LBS
-import           Data.Default.Class              (def)
-import           Data.IP                         (IPv4, toHostAddress)
-import           Data.Kind                       (Type)
-import           Data.Word                       (Word32)
-import           Database.Redis.Client.TLSConfig (parseTLSVerificationBypass,
-                                                  tlsInsecureEnvironmentVariable)
-import           Network.DNS                     (defaultResolvConf, lookupA,
-                                                  makeResolvSeed, withResolver)
-import           Network.Socket                  (Family (AF_INET), HostAddress,
-                                                  SockAddr (SockAddrInet),
-                                                  Socket, SocketOption (..),
-                                                  SocketType (Stream),
-                                                  defaultProtocol,
-                                                  setSocketOption, socket,
-                                                  tupleToHostAddress)
-import qualified Network.Socket                  as S
-import           Network.Socket.ByteString       (recv, sendMany)
-import           Network.Socket.ByteString.Lazy  (sendAll)
-import           Network.TLS                     (ClientHooks (..),
-                                                  ClientParams (..), Context,
-                                                  Shared (..), Supported (..),
-                                                  Version (..), bye, contextNew,
-                                                  defaultParamsClient,
-                                                  handshake, recvData, sendData)
-import           Network.TLS.Extra               (ciphersuite_strong)
-import           Prelude                         hiding (getContents)
-import           System.Environment              (lookupEnv)
-import           System.IO                       (BufferMode (LineBuffering),
-                                                  hFlush, hPutStrLn,
-                                                  hSetBuffering, stderr, stdout)
-import           System.Timeout                  (timeout)
-import           System.X509.Unix                (getSystemCertificateStore)
-import           Text.Printf                     (printf)
+import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Char8                 as BS8
+import qualified Data.ByteString.Lazy                  as LBS
+import           Data.Default.Class                    (def)
+import           Data.IP                               (IPv4, toHostAddress)
+import           Data.Kind                             (Type)
+import           Data.Word                             (Word32)
+import           Database.Redis.Client.ConnectionSetup (withSetupResource)
+import           Database.Redis.Client.TLSConfig       (parseTLSVerificationBypass,
+                                                        tlsInsecureEnvironmentVariable)
+import           Network.DNS                           (defaultResolvConf,
+                                                        lookupA, makeResolvSeed,
+                                                        withResolver)
+import           Network.Socket                        (Family (AF_INET),
+                                                        HostAddress,
+                                                        SockAddr (SockAddrInet),
+                                                        Socket,
+                                                        SocketOption (..),
+                                                        SocketType (Stream),
+                                                        defaultProtocol,
+                                                        setSocketOption, socket,
+                                                        tupleToHostAddress)
+import qualified Network.Socket                        as S
+import           Network.Socket.ByteString             (recv, sendMany)
+import           Network.Socket.ByteString.Lazy        (sendAll)
+import           Network.TLS                           (ClientHooks (..),
+                                                        ClientParams (..),
+                                                        Context, Shared (..),
+                                                        Supported (..),
+                                                        Version (..), bye,
+                                                        contextNew,
+                                                        defaultParamsClient,
+                                                        handshake, recvData,
+                                                        sendData)
+import           Network.TLS.Extra                     (ciphersuite_strong)
+import           Prelude                               hiding (getContents)
+import           System.Environment                    (lookupEnv)
+import           System.IO                             (BufferMode (LineBuffering),
+                                                        hFlush, hPutStrLn,
+                                                        hSetBuffering, stderr,
+                                                        stdout)
+import           System.Timeout                        (timeout)
+import           System.X509.Unix                      (getSystemCertificateStore)
+import           Text.Printf                           (printf)
+
+receiveTimeoutMicroseconds :: Int
+receiveTimeoutMicroseconds = 300 * 1000000
 
 -- | Connection lifecycle phase, used as a DataKinds-promoted type parameter
 -- to statically track whether a client is connected.
@@ -85,14 +96,15 @@ data PlainTextClient (a :: ConnectionStatus) where
 
 instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
-  connect (NotConnectedPlainTextClient hostname port) = liftIO $ do
-    (sock, ipCorrectEndian) <- createSocket hostname (maybe 6379 fromIntegral port)
-    flip onException (S.close sock) $ do
-      S.connect sock (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian) `catch` \(e :: IOException) -> do
-        printf "Wasn't able to connect to the server: %s...\n" (show e)
-        putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
-        throwIO e
-      return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
+  connect (NotConnectedPlainTextClient hostname port) = liftIO $
+    withSetupResource
+      (createSocket hostname $ maybe 6379 fromIntegral port)
+      (S.close . fst) $ \(sock, ipCorrectEndian) -> do
+        S.connect sock (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian) `catch` \(e :: IOException) -> do
+          printf "Wasn't able to connect to the server: %s...\n" (show e)
+          putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
+          throwIO e
+        return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
 
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
   close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
@@ -105,8 +117,8 @@ instance Client PlainTextClient where
 
   receive :: (MonadIO m, MonadFail m) => PlainTextClient 'Connected -> m BS.ByteString
   receive (ConnectedPlainTextClient _ _ sock) = do
-    -- Timeout increased to 300s (5 minutes) to handle massive backlogs during fill operations
-    val <- liftIO $ timeout (300 * 1000000) $ recv sock 16384
+    -- Post-connect receive deadline; independent of PoolConfig.connectionTimeout.
+    val <- liftIO $ timeout receiveTimeoutMicroseconds $ recv sock 16384
     case val of
       Nothing -> fail "recv socket timeout (plaintext)"
       Just v  -> return v
@@ -140,8 +152,8 @@ instance Client TLSClient where
 
   receive :: (MonadIO m, MonadFail m) => TLSClient 'Connected -> m BS.ByteString
   receive (ConnectedTLSClient _ _ _ ctx) = do
-    -- Timeout increased to 300s (5 minutes) to handle massive backlogs
-    val <- liftIO $ timeout (300 * 1000000) $ recvData ctx
+    -- Post-connect receive deadline; independent of PoolConfig.connectionTimeout.
+    val <- liftIO $ timeout receiveTimeoutMicroseconds $ recvData ctx
     case val of
       Nothing -> fail "recv socket timeout (TLS)"
       Just v  -> return v
@@ -161,29 +173,30 @@ connectTLS certHostname targetAddress port = liftIO $ do
         ++ show certHostname
         ++ ". The server identity will not be verified."
     else pure ()
-  (sock, ipCorrectEndian) <- createSocket targetAddress (maybe 6380 fromIntegral port)
-  flip onException (S.close sock) $ do
-    S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
-    store <- getSystemCertificateStore
-    let baseParams =
-          (defaultParamsClient certHostname "redis-server")
-            { clientSupported =
-                def
-                  { supportedVersions = [TLS13, TLS12],
-                    supportedCiphers = ciphersuite_strong
-                  },
-              clientShared =
-                def
-                  { sharedCAStore = store
-                  }
-            }
-        clientParams =
-          if allowInsecure
-            then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
-            else baseParams
-    context <- contextNew sock clientParams
-    handshake context
-    return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
+  withSetupResource
+    (createSocket targetAddress $ maybe 6380 fromIntegral port)
+    (S.close . fst) $ \(sock, ipCorrectEndian) -> do
+      S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
+      store <- getSystemCertificateStore
+      let baseParams =
+            (defaultParamsClient certHostname "redis-server")
+              { clientSupported =
+                  def
+                    { supportedVersions = [TLS13, TLS12],
+                      supportedCiphers = ciphersuite_strong
+                    },
+                clientShared =
+                  def
+                    { sharedCAStore = store
+                    }
+              }
+          clientParams =
+            if allowInsecure
+              then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
+              else baseParams
+      context <- contextNew sock clientParams
+      handshake context
+      return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
 
 -- | Start a local TCP proxy on @localhost:6379@ that forwards traffic through an
 -- existing TLS connection. Useful for tunneling plain-text Redis tools over TLS.
@@ -215,10 +228,12 @@ serve (TLSTunnel redisClient) = liftIO $ do
 createSocket :: String -> S.PortNumber -> IO (Socket, HostAddress)
 createSocket hostname _port = do
   ipAddr <- resolve hostname
-  sock <- socket AF_INET Stream defaultProtocol
-  setSocketOption sock NoDelay 1
-  setSocketOption sock KeepAlive 1
-  return (sock, ipAddr)
+  withSetupResource
+    (socket AF_INET Stream defaultProtocol)
+    S.close $ \sock -> do
+      setSocketOption sock NoDelay 1
+      setSocketOption sock KeepAlive 1
+      return (sock, ipAddr)
 
 -- | Resolve a hostname or IP address string to a 'HostAddress'.
 -- Handles @\"localhost\"@, dotted-quad IPv4 literals, and DNS A-record lookups.
