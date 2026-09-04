@@ -64,6 +64,7 @@ module Database.Redis.Cluster.Client
     executeKeyedClusterCommand,
     executeKeyedClusterCommandUsingDelay,
     executeKeylessClusterCommand,
+    executeKeylessClusterCommandUsingDelay,
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)
@@ -745,7 +746,31 @@ executeKeylessClusterCommand ::
   ClusterClient client ->
   RedisCommandClient client RespData ->
   IO (Either ClusterError RespData)
-executeKeylessClusterCommand client action = do
+executeKeylessClusterCommand =
+  executeKeylessClusterCommandUsingDelay threadDelay
+
+-- | Test seam for deterministic keyless retry schedules.
+executeKeylessClusterCommandUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  RedisCommandClient client RespData ->
+  IO (Either ClusterError RespData)
+executeKeylessClusterCommandUsingDelay delayAction client action =
+  withRetryAndRefreshPolicyUsing
+    KeylessRetryPolicy
+    delayAction
+    client
+    (clusterMaxRetries $ clusterConfig client)
+    (clusterRetryDelay $ clusterConfig client)
+    (const $ executeKeylessAttempt client action)
+
+executeKeylessAttempt ::
+  (Client client) =>
+  ClusterClient client ->
+  RedisCommandClient client RespData ->
+  IO (Either ClusterError RespData)
+executeKeylessAttempt client action = do
   let connector = clusterConnector client
   topology <- readTVarIO (clusterTopology client)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
@@ -778,6 +803,25 @@ withRetryAndRefreshUsing ::
   (RetryRoute -> IO (Either ClusterError a)) ->
   IO (Either ClusterError a)
 withRetryAndRefreshUsing delayAction client maxRetries initialDelay action =
+  withRetryAndRefreshPolicyUsing
+    KeyedRetryPolicy delayAction client maxRetries initialDelay action
+
+data RetryPolicy
+  = KeyedRetryPolicy
+  | KeylessRetryPolicy
+  deriving (Eq)
+
+withRetryAndRefreshPolicyUsing ::
+  (Client client) =>
+  RetryPolicy ->
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  Int ->
+  Int ->
+  (RetryRoute -> IO (Either ClusterError a)) ->
+  IO (Either ClusterError a)
+withRetryAndRefreshPolicyUsing retryPolicy delayAction
+    client maxRetries initialDelay action =
   go 0 initialDelay RouteBySlot
   where
     go attempt delay route
@@ -804,30 +848,34 @@ withRetryAndRefreshUsing delayAction client maxRetries initialDelay action =
                   case refreshResult of
                     Left ClusterClientClosed ->
                       return $ Left ClusterClientClosed
+                    _ -> retryAfterDelay err RouteBySlot delay
+            Left err@(MovedError slot address)
+              | retryPolicy == KeyedRetryPolicy -> do
+                  patchMovedSlot client slot address
+                  retryImmediately err $ RouteMoved slot address
+            Left err@(AskError _ address)
+              | retryPolicy == KeyedRetryPolicy ->
+                  retryImmediately err $ RouteAsk address
+            Left err@(ConnectionError _)
+              | retryPolicy == KeyedRetryPolicy -> do
+                  refreshResult <- refreshForRoute route
+                  case refreshResult of
+                    Left ClusterClientClosed ->
+                      return $ Left ClusterClientClosed
                     Left refreshErr@(TopologyError _) ->
                       return $ Left refreshErr
                     _ -> retryAfterDelay err RouteBySlot delay
-            Left err@(MovedError slot address) -> do
-              patchMovedSlot client slot address
-              retryImmediately err $ RouteMoved slot address
-            Left err@(AskError _ address) ->
-              retryImmediately err $ RouteAsk address
-            Left err@(ConnectionError _) -> do
-              refreshResult <- refreshForRoute route
-              case refreshResult of
-                Left ClusterClientClosed -> return $ Left ClusterClientClosed
-                Left refreshErr@(TopologyError _) ->
-                  return $ Left refreshErr
-                _ -> retryAfterDelay err RouteBySlot delay
-            Left err@(ConnectionTimeoutError _) -> do
-              refreshResult <- case route of
-                RouteMoved _ _ -> refreshForRoute route
-                _              -> return $ Right ()
-              case refreshResult of
-                Left ClusterClientClosed -> return $ Left ClusterClientClosed
-                Left refreshErr@(TopologyError _) ->
-                  return $ Left refreshErr
-                _ -> retryAfterDelay err RouteBySlot delay
+            Left err@(ConnectionTimeoutError _)
+              | retryPolicy == KeyedRetryPolicy -> do
+                  refreshResult <- case route of
+                    RouteMoved _ _ -> refreshForRoute route
+                    _              -> return $ Right ()
+                  case refreshResult of
+                    Left ClusterClientClosed ->
+                      return $ Left ClusterClientClosed
+                    Left refreshErr@(TopologyError _) ->
+                      return $ Left refreshErr
+                    _ -> retryAfterDelay err RouteBySlot delay
             Left err -> return $ Left err
 
       where
@@ -966,17 +1014,32 @@ executeKeylessMaybe
   -> ClusterCommandClient client (Maybe RespData)
 executeKeylessMaybe action = do
   client <- State.get
-  topology <- liftIO $ readTVarIO $ clusterTopology client
+  result <- liftIO $
+    withRetryAndRefreshPolicyUsing
+      KeylessRetryPolicy
+      threadDelay
+      client
+      (clusterMaxRetries $ clusterConfig client)
+      (clusterRetryDelay $ clusterConfig client)
+      (const $ executeKeylessMaybeAttempt client action)
+  unwrapClusterResult result
+
+executeKeylessMaybeAttempt
+  :: (Client client)
+  => ClusterClient client
+  -> RedisCommandClient client (Maybe RespData)
+  -> IO (Either ClusterError (Maybe RespData))
+executeKeylessMaybeAttempt client action = do
+  topology <- readTVarIO $ clusterTopology client
   let masters =
         [ node
         | node <- Map.elems $ topologyNodes topology
         , nodeRole node == Master
         ]
   case masters of
-    [] -> unwrapClusterResult $ Left $
-      TopologyError "No master nodes available"
+    [] -> return $ Left $ TopologyError "No master nodes available"
     node : _ -> do
-      result <- liftIO $ tryClusterAction $
+      result <- tryClusterAction $
         withConnectionBounded
           (clusterConnectionPool client)
           (nodeAddress node)
@@ -985,11 +1048,7 @@ executeKeylessMaybe action = do
             State.evalStateT
               (runRedisCommandClient action)
               clientState
-      case result of
-        Left err -> unwrapClusterResult $ Left err
-        Right Nothing -> return Nothing
-        Right (Just response) ->
-          Just <$> unwrapClusterResult (classifyClusterReply response)
+      return $ result >>= traverse classifyClusterReply
 
 -- | Execute a keyed command via the multiplexer pool.
 -- Pre-encodes the command to a Builder, routes by slot, and handles MOVED/ASK redirection.

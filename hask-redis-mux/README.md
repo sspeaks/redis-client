@@ -85,10 +85,16 @@ The low-level `executeKeyedClusterCommand` and
 Every Redis `RespError` is classified centrally and is returned on the `Left`;
 error replies are never success-shaped:
 
-- `MOVED` and `ASK` preserve their existing direct-target routing behavior.
-- `TRYAGAIN` retries the current route with saturating exponential backoff.
+- Keyed `MOVED` and `ASK` replies preserve their existing direct-target routing
+  behavior. Keyless commands return those typed redirects immediately because
+  they have no routing key to apply at the target.
+- `TRYAGAIN` retries the current keyed or keyless route with saturating
+  exponential backoff.
 - `CLUSTERDOWN` performs a best-effort bounded topology refresh, then retries
-  from the current topology with the same backoff schedule.
+  the keyed or keyless command from the current topology with the same backoff
+  schedule. Refresh parsing, validation, and connector failures do not replace
+  the Redis error or consume a command attempt; client closure and asynchronous
+  cancellation remain terminal.
 - `CROSSSLOT` is permanent for the command and returns immediately.
 - Other server errors such as `ERR`, `WRONGTYPE`, and `NOSCRIPT` return
   `RedisCommandError` with the original server payload.

@@ -8,7 +8,8 @@ module Main (main) where
 import           Control.Concurrent                    (forkFinally, forkIO,
                                                         killThread, threadDelay)
 import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
-                                                        putMVar, takeMVar)
+                                                        putMVar, takeMVar,
+                                                        tryTakeMVar)
 import           Control.Concurrent.STM                (newTVarIO, readTVarIO)
 import           Control.Exception                     (SomeAsyncException,
                                                         SomeException, finally,
@@ -1866,6 +1867,328 @@ clusterErrorClassificationSpec =
             Just _  -> True
             Nothing -> False
         _ -> False
+      closeClusterClient client
+
+    it "retries keyless TRYAGAIN with exact attempts and delays" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespSimpleString "PONG"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 4) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      result `shouldBe` Right (RespSimpleString "PONG")
+      readIORef delays `shouldReturn` [4, 8]
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["PING"]) sent `shouldBe` 3
+      closeClusterClient client
+
+    it "refreshes and recovers keyless CLUSTERDOWN within the attempt budget" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespSimpleString "PONG"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 5) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      result `shouldBe` Right (RespSimpleString "PONG")
+      readIORef delays `shouldReturn` [5, 10]
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["PING"]) sent `shouldBe` 3
+      countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) sent `shouldBe` 3
+      closeClusterClient client
+
+    it "exhausts keyless CLUSTERDOWN with the final command cause" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN final cause"
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 6) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyless CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [6, 12]
+      closeClusterClient client
+
+    it "keeps keyed CLUSTERDOWN retries after invalid refresh topology" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 ->
+                [ replyWith validClusterSlots
+                , replyWith $ RespSimpleString "invalid topology"
+                , replyWith $ RespSimpleString "still invalid topology"
+                ]
+              _ ->
+                [ replyWith $ RespError "CLUSTERDOWN first"
+                , replyWith $ RespError "CLUSTERDOWN second"
+                , replyWith $ RespError "CLUSTERDOWN final cause"
+                ]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 7) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "invalid-refresh-key"
+        ["GET", "invalid-refresh-key"]
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyed CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [7, 14]
+      closeClusterClient client
+
+    it "keeps keyless CLUSTERDOWN retries after invalid refresh topology" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith $ RespSimpleString "invalid topology"
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith $ RespSimpleString "still invalid topology"
+                  , replyWith $ RespError "CLUSTERDOWN final cause"
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 8) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyless CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [8, 16]
+      closeClusterClient client
+
+    it "treats keyed CLUSTERDOWN refresh IO failures as best effort" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 ->
+                [ replyWith validClusterSlots
+                , throwIO $ userError "refresh IO failure one"
+                ]
+              1 ->
+                [ replyWith $ RespError "CLUSTERDOWN first"
+                , replyWith $ RespError "CLUSTERDOWN second"
+                , replyWith $ RespError "CLUSTERDOWN final cause"
+                ]
+              _ -> [throwIO $ userError "refresh IO failure two"]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 9) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "io-refresh-key"
+        ["GET", "io-refresh-key"]
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyed CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [9, 18]
+      closeClusterClient client
+
+    it "treats keyless CLUSTERDOWN refresh IO failures as best effort" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 ->
+                [ replyWith validClusterSlots
+                , replyWith $ RespError "CLUSTERDOWN first"
+                , throwIO $ userError "refresh IO failure one"
+                ]
+              1 ->
+                [ replyWith $ RespError "CLUSTERDOWN second"
+                , throwIO $ userError "refresh IO failure two"
+                ]
+              _ ->
+                [replyWith $ RespError "CLUSTERDOWN final cause"]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 10) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyless CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [10, 20]
+      closeClusterClient client
+
+    it "keeps cancellation responsive during keyless backoff" $ do
+      delayStarted <- newEmptyMVar
+      blockDelay <- newEmptyMVar
+      finished <- newEmptyMVar
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "TRYAGAIN wait"
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeKeylessClusterCommandUsingDelay
+          (\_ -> putMVar delayStarted () >> takeMVar blockDelay)
+          client
+          ping)
+        (putMVar finished)
+      timeout 1000000 (takeMVar delayStarted) `shouldReturn` Just ()
+      killThread owner
+      outcome <- timeout 1000000 (takeMVar finished)
+      outcome `shouldSatisfy` \case
+        Just (Left err) ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        _ -> False
+      closeClusterClient client
+
+    it "releases keyless CLUSTERDOWN refresh ownership on cancellation" $ do
+      refreshStarted <- newEmptyMVar
+      blockRefresh <- newEmptyMVar
+      finished <- newEmptyMVar
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN wait"
+                  , putMVar refreshStarted () >> takeMVar blockRefresh
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeKeylessClusterCommand client ping)
+        (putMVar finished)
+      timeout 1000000 (takeMVar refreshStarted) `shouldReturn` Just ()
+      killThread owner
+      outcome <- timeout 1000000 (takeMVar finished)
+      outcome `shouldSatisfy` \case
+        Just (Left err) ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        _ -> False
+      refreshToken <- tryTakeMVar $ clusterRefreshLock client
+      refreshToken `shouldBe` Just ()
+      putMVar (clusterRefreshLock client) ()
+      closeClusterClient client
+
+    forM_
+      [ ( "MOVED"
+        , RespError "MOVED 3999 127.0.0.2:6380"
+        , MovedError 3999 node2
+        )
+      , ( "ASK"
+        , RespError "ASK 3999 127.0.0.2:6380"
+        , AskError 3999 node2
+        )
+      ] $ \(label, reply, expected) ->
+        it ("returns keyless " ++ label ++ " without following the redirect") $ do
+          delays <- newIORef []
+          let script _ index =
+                return $
+                  if index == 0
+                    then [replyWith validClusterSlots, replyWith reply]
+                    else []
+          (connector, getRecords) <- createAuthMockConnector script
+          client <- createClusterClient (retryTestConfig 3 11) connector
+          result <- executeKeylessClusterCommandUsingDelay
+            (\delay -> atomicModifyIORef' delays $ \seen ->
+              (seen ++ [delay], ()))
+            client
+            ping
+          result `shouldBe` Left expected
+          readIORef delays `shouldReturn` []
+          records <- getRecords
+          sent <- recordSentBytes $ findAuthRecord records node1 0
+          countOccurrences (commandBytes ["PING"]) sent `shouldBe` 1
+          closeClusterClient client
+
+    it "returns keyless CROSSSLOT immediately without retry or delay" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CROSSSLOT keyless permanent"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 12) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      result `shouldBe`
+        Left (CrossSlotError "CROSSSLOT keyless permanent")
+      readIORef delays `shouldReturn` []
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["PING"]) sent `shouldBe` 1
       closeClusterClient client
 
     it "returns ordinary server errors as low-level Left values" $ do
