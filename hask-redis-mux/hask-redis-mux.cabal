@@ -122,6 +122,7 @@ library cluster
                     , Database.Redis.Connector
                     , Database.Redis.Internal.MultiplexPool
                     , Database.Redis.Internal.Multiplexer
+                    , Database.Redis.Cluster.Internal.Topology
                     , Database.Redis.Standalone
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
