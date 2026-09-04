@@ -17,8 +17,7 @@ import           ClusterSetup                          (createClusterClientFromS
                                                         flushAllClusterNodes)
 import           ClusterTunnel                         (servePinnedProxy,
                                                         serveSmartProxy)
-import           Control.Concurrent                    (forkIO, newEmptyMVar,
-                                                        putMVar, takeMVar)
+import           Control.Exception                     (bracket)
 
 import           AppConfig                             (RunState (..),
                                                         defaultRunState,
@@ -72,6 +71,7 @@ import           FillProcess                           (buildChildArgs)
 import           FlushConfirmation                     (canonicalFlushTarget,
                                                         confirmFlush)
 import           Numeric                               (showHex)
+import           StructuredConcurrency                 (runConcurrentlyFailFast)
 import           System.Console.GetOpt                 (ArgDescr (..),
                                                         ArgOrder (..),
                                                         OptDescr (Option),
@@ -385,15 +385,12 @@ fillStandalone state = do
             -- Jobs: (connectionIdx, mbForThisConnection)
             jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
         printf "Filling %dGB with %d parallel connections\n" (dataGBs state) (length jobs)
-        mvars <- mapM (\(idx, mb) -> do
-            mv <- newEmptyMVar
-            _ <- forkIO $ do
-                 if useTLS state
-                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
-                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
-                 putMVar mv ()
-            return mv) jobs
-        mapM_ takeMVar mvars
+        runConcurrentlyFailFast
+          [ if useTLS state
+              then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+              else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+          | (idx, mb) <- jobs
+          ]
 
 
 fillCluster :: RunState -> IO ()
@@ -554,47 +551,40 @@ bench state = do
 
 -- | Run the benchmark with a specific connector type
 benchWithConnector :: (Client client) => RunState -> Connector client -> String -> Int -> Int -> Int -> Int -> IO ()
-benchWithConnector state connector op duration nConns kSize vSize = do
-  clusterClient <- createClusterClientFromState state connector
-  muxPool <- createMultiplexPool
-    (clusterConnector clusterClient) (muxCount state)
+benchWithConnector state connector op duration nConns kSize vSize =
+  bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+    bracket (createMultiplexPool (clusterConnector clusterClient) (muxCount state)) closeMultiplexPool $ \muxPool -> do
 
-  -- Pre-populate keys for GET and mixed workloads
-  when (op `elem` ["get", "mixed"]) $ do
-    hPutStrLn stderr "Pre-populating keys for GET workload..."
-    let numKeys = 100000
-    benchPrePopulate muxPool clusterClient numKeys kSize vSize
-    hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
+      -- Pre-populate keys for GET and mixed workloads
+      when (op `elem` ["get", "mixed"]) $ do
+        hPutStrLn stderr "Pre-populating keys for GET workload..."
+        let numKeys = 100000
+        benchPrePopulate muxPool clusterClient numKeys kSize vSize
+        hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
 
-  -- Run the benchmark
-  opsCounter <- newIORef (0 :: Int)
-  startTime <- getCurrentTime
+      -- Run the benchmark
+      opsCounter <- newIORef (0 :: Int)
+      startTime <- getCurrentTime
 
-  mvars <- mapM (\tid -> do
-    mvar <- newEmptyMVar
-    _ <- forkIO $ do
-      benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
-      putMVar mvar ()
-    return mvar
-    ) [0 .. nConns - 1]
+      runConcurrentlyFailFast
+        [ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
+        | tid <- [0 .. nConns - 1]
+        ]
 
-  mapM_ takeMVar mvars
-  endTime <- getCurrentTime
+      endTime <- getCurrentTime
 
-  totalOps <- readIORef opsCounter
-  let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
-      opsPerSec = fromIntegral totalOps / elapsed
+      totalOps <- readIORef opsCounter
+      let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
+          opsPerSec = fromIntegral totalOps / elapsed
 
-  -- Output JSON to stdout
-  putStrLn $ "{\"operation\":\"" ++ op
-    ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
-    ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
-    ++ ",\"total_ops\":" ++ show totalOps
-    ++ "}"
+      -- Output JSON to stdout
+      putStrLn $ "{\"operation\":\"" ++ op
+        ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
+        ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
+        ++ ",\"total_ops\":" ++ show totalOps
+        ++ "}"
 
-  closeMultiplexPool muxPool
-  closeClusterClient clusterClient
-  exitSuccess
+      exitSuccess
 
 -- | Pre-populate keys for GET workload
 benchPrePopulate :: (Client client) => MultiplexPool client -> ClusterClient client -> Int -> Int -> Int -> IO ()
