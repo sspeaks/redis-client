@@ -7,17 +7,21 @@ import           Control.Concurrent            (threadDelay)
 import           Control.Concurrent.Async      (mapConcurrently)
 import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Exception             (SomeException, try)
+import           Data.ByteString               (ByteString)
 import qualified Data.Map.Strict               as Map
 import           Data.Time.Clock               (diffUTCTime)
 import qualified Data.Vector                   as V
+import           Database.Redis.Client         (PlainTextClient)
 import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeRole (..))
 import           Database.Redis.Cluster.Client (ClusterClient (..),
+                                                ClusterError (..),
                                                 closeClusterClient,
                                                 executeKeyedClusterCommand,
                                                 refreshTopology)
 import           Database.Redis.Resp           (RespData (..))
+import           System.Timeout                (timeout)
 
 import           LibraryE2E.Utils
 
@@ -74,38 +78,55 @@ spec = describe "Topology Refresh" $ do
       closeClusterClient client
 
   describe "Refresh on ConnectionError" $ do
-    it "handles node failure and recovers after restart" $ do
-      client <- createTestClient
+    it "keeps healthy slots available and restores the stopped slot" $ do
+      client <- createOutageTestClient
+      scenario <- nodeOutageScenario client 3
+      let targetKey = stoppedNodeKey scenario
+          healthyKey = healthyNodeKey scenario
 
-      -- Write a key to establish baseline
-      r1 <- executeKeyedClusterCommand client "topo-recover-key" ["SET", "topo-recover-key", "alive"]
-      r1 `shouldSatisfy` isRight'
+      assertRoundTrip client targetKey "target-before"
+      assertRoundTrip client healthyKey "healthy-before"
 
       withStoppedNode 3 $ do
-        threadDelay 3000000  -- 3s for cluster to detect failure
+        refreshTopology client
+        assertBoundedOutage client targetKey
+        assertRoundTrip client healthyKey "healthy-during"
 
-        -- Force a topology refresh so the client knows about the change
-        _ <- try (refreshTopology client) :: IO (Either SomeException ())
-
-        -- Operations to other nodes should still work
-        _ <- executeKeyedClusterCommand client "topo-other-node" ["SET", "topo-other-node", "works"]
-        -- This might succeed or fail depending on which node owns the key slot
-        -- The important thing is it doesn't hang
-        return ()
-
-      -- After recovery, all operations should work
-      _ <- try (refreshTopology client) :: IO (Either SomeException ())
-      r3 <- executeKeyedClusterCommand client "topo-recover-key" ["GET", "topo-recover-key"]
-      -- After cluster recovery, the key should still be readable
-      case r3 of
-        Right (RespBulkString "alive") -> return ()
-        Right _                        -> return ()  -- May get redirected, that's fine
-        Left _                         -> return ()  -- Recovery may still be in progress
+      refreshTopology client
+      assertRoundTrip client targetKey "target-after"
 
       flushAllNodes client
       closeClusterClient client
 
--- | Helper
-isRight' :: Either a b -> Bool
-isRight' (Right _) = True
-isRight' _         = False
+assertRoundTrip
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> ByteString
+  -> Expectation
+assertRoundTrip client key value = do
+  result <- timeout 10000000 $ do
+    setResult <- executeKeyedClusterCommand client key ["SET", key, value]
+    getResult <- executeKeyedClusterCommand client key ["GET", key]
+    return (setResult, getResult)
+  case result of
+    Nothing ->
+      expectationFailure "Key round trip exceeded the 10-second bound"
+    Just (setResult, getResult) -> do
+      setResult `shouldBe` Right (RespSimpleString "OK")
+      getResult `shouldBe` Right (RespBulkString value)
+
+assertBoundedOutage
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> Expectation
+assertBoundedOutage client key = do
+  result <- timeout 10000000 $
+    executeKeyedClusterCommand client key ["GET", key]
+  case result of
+    Nothing ->
+      expectationFailure "Stopped-node command exceeded the 10-second bound"
+    Just (Left (MaxRetriesExceeded _)) ->
+      return ()
+    Just other ->
+      expectationFailure $ "Expected MaxRetriesExceeded for stopped-node slot, got "
+        ++ show other

@@ -3,18 +3,24 @@
 
 module LibraryE2E.ConcurrencyTests (spec) where
 
-import           Control.Concurrent            (threadDelay)
-import           Control.Concurrent.Async      (concurrently, mapConcurrently)
-import           Control.Exception             (SomeException, try)
-import           Control.Monad                 (forM_)
-import           Data.IORef                    (atomicModifyIORef', newIORef,
-                                                readIORef)
-import           Database.Redis.Cluster.Client (ClusterError (..),
-                                                closeClusterClient,
-                                                executeKeyedClusterCommand,
-                                                refreshTopology)
-import           Database.Redis.Command        (showBS)
-import           Database.Redis.Resp           (RespData (..))
+import           Control.Concurrent                    (threadDelay)
+import           Control.Concurrent.Async              (concurrently,
+                                                        mapConcurrently)
+import           Control.Exception                     (SomeException, try)
+import           Control.Monad                         (forM_)
+import           Data.ByteString                       (ByteString)
+import           Data.IORef                            (atomicModifyIORef',
+                                                        newIORef, readIORef)
+import           Database.Redis.Client                 (PlainTextClient)
+import           Database.Redis.Cluster.Client         (ClusterClient,
+                                                        ClusterError (..),
+                                                        closeClusterClient,
+                                                        executeKeyedClusterCommand,
+                                                        refreshTopology)
+import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
+import           Database.Redis.Command                (showBS)
+import           Database.Redis.Resp                   (RespData (..))
+import           System.Timeout                        (timeout)
 
 import           LibraryE2E.Utils
 
@@ -69,84 +75,117 @@ spec = describe "Concurrent Cluster Operations" $ do
     it "operations continue while topology is being refreshed" $ do
       client <- createTestClient
 
-      successCount <- newIORef (0 :: Int)
-
       -- Run topology refreshes concurrently with SET/GET operations
-      let refreshAction = do
-            forM_ [1..10 :: Int] $ \_ -> do
-              _ <- try (refreshTopology client) :: IO (Either SomeException ())
+      let refreshAction =
+            mapM (\_ -> do
+              result <- try (refreshTopology client)
+                :: IO (Either SomeException ())
               threadDelay 50000  -- 50ms between refreshes
+              return result
+            ) [1..10 :: Int]
 
-          workerAction = do
-            mapConcurrently (\tid -> do
-              forM_ [1..50 :: Int] $ \i -> do
+          workerAction =
+            mapConcurrently (\tid ->
+              mapM (\i -> do
                 let key = "refresh-storm-" <> showBS tid <> "-" <> showBS i
                 r <- executeKeyedClusterCommand client key ["SET", key, "v"]
-                case r of
-                  Right _ -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
-                  Left _  -> return ()
-              ) [1..49 :: Int]
+                return $ r == Right (RespSimpleString "OK")
+              ) [1..50 :: Int]
+            ) [1..49 :: Int]
 
       -- Run refresh + workers concurrently
-      _ <- concurrently refreshAction workerAction
+      (refreshResults, workerResults) <-
+        concurrently refreshAction workerAction
 
-      -- Most operations should succeed (some transient failures during refresh are ok)
-      total <- readIORef successCount
-      -- 49 workers × 50 ops = 2450 total ops; expect at least 90% success
-      total `shouldSatisfy` (> 2200)
+      length [() | Right () <- refreshResults] `shouldBe` 10
+      length (filter id $ concat workerResults) `shouldBe` 2450
 
       flushAllNodes client
       closeClusterClient client
 
   describe "Concurrent ops during node failure" $ do
-    it "operations to healthy nodes continue during node failure" $ do
-      client <- createTestClient
+    it "fails stopped-slot operations while healthy-slot round trips continue" $ do
+      client <- createOutageTestClient
+      scenario <- nodeOutageScenario client 3
+      let targetKey = stoppedNodeKey scenario
+          healthyKey = healthyNodeKey scenario
+          workerCount = maxConnectionsPerNode defaultPoolConfig
 
-      -- Warm up connections
-      forM_ [1..10 :: Int] $ \i -> do
-        let k = "warmup-" <> showBS i
-        _ <- executeKeyedClusterCommand client k ["SET", k, "v"]
-        return ()
+      assertRoundTrip client targetKey "target-before"
+      assertRoundTrip client healthyKey "healthy-before"
 
-      successCount <- newIORef (0 :: Int)
-      failCount <- newIORef (0 :: Int)
+      (stoppedFailure, healthyOutcomes) <- withStoppedNode 3 $
+        concurrently
+          (runStoppedOperation client targetKey)
+          (mapConcurrently
+            (const $ runHealthyOperation client healthyKey)
+            [1..workerCount :: Int])
 
-      -- Run workers, kill a node mid-flight
-      let workerAction = mapConcurrently (\tid -> do
-            forM_ [1..100 :: Int] $ \i -> do
-              let key = "nodefail-" <> showBS tid <> "-" <> showBS i
-              r <- try (executeKeyedClusterCommand client key ["SET", key, "v"])
-                    :: IO (Either SomeException (Either ClusterError RespData))
-              case r of
-                Right (Right _) -> atomicModifyIORef' successCount (\n -> (n + 1, ()))
-                _               -> atomicModifyIORef' failCount (\n -> (n + 1, ()))
-              -- Small delay to spread operations over time
-              threadDelay 10000  -- 10ms
-            ) [1..50 :: Int]
+      let stoppedFailures = fromEnum stoppedFailure
+          healthySuccesses = length $ filter id healthyOutcomes
+          unexpected = (1 - stoppedFailures)
+            + (workerCount - healthySuccesses)
 
-          killerAction = do
-            threadDelay 500000  -- 500ms into the test, kill node 3
-            withStoppedNode 3 $
-              threadDelay 3000000  -- Let it stay dead for 3s
+      stoppedFailures `shouldBe` 1
+      healthySuccesses `shouldBe` workerCount
+      unexpected `shouldBe` 0
+      stoppedFailures `shouldSatisfy` (> 0)
+      healthySuccesses `shouldSatisfy` (> 0)
 
-      _ <- concurrently workerAction killerAction
-
-      -- Some successes (ops to healthy nodes) and some failures (ops to dead node)
-      successes <- readIORef successCount
-      _ <- readIORef failCount
-
-      -- We should have both successes and failures
-      successes `shouldSatisfy` (> 0)
-
-      -- Final verification: cluster is healthy again
-      _ <- try (refreshTopology client) :: IO (Either SomeException ())
-      r <- executeKeyedClusterCommand client "final-check" ["SET", "final-check", "ok"]
-      r `shouldSatisfy` isRight'
+      refreshTopology client
+      assertRoundTrip client targetKey "target-after"
 
       flushAllNodes client
       closeClusterClient client
 
--- | Helper
-isRight' :: Either a b -> Bool
-isRight' (Right _) = True
-isRight' _         = False
+runStoppedOperation
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> IO Bool
+runStoppedOperation client targetKey = do
+  targetResult <- timeout 10000000 $
+    executeKeyedClusterCommand client
+      targetKey
+      ["SET", targetKey, "target-during"]
+  return $ isExpectedOutage targetResult
+
+runHealthyOperation
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> IO Bool
+runHealthyOperation client healthyKey = do
+  result <- timeout 10000000 $ do
+    healthySet <- executeKeyedClusterCommand client
+      healthyKey
+      ["SET", healthyKey, "healthy-during"]
+    healthyGet <- executeKeyedClusterCommand client
+      healthyKey
+      ["GET", healthyKey]
+    return (healthySet, healthyGet)
+  return $ case result of
+    Just (healthySet, healthyGet) ->
+      healthySet == Right (RespSimpleString "OK")
+        && healthyGet == Right (RespBulkString "healthy-during")
+    Nothing ->
+      False
+
+isExpectedOutage :: Maybe (Either ClusterError RespData) -> Bool
+isExpectedOutage (Just (Left (MaxRetriesExceeded _))) = True
+isExpectedOutage _                                    = False
+
+assertRoundTrip
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> ByteString
+  -> Expectation
+assertRoundTrip client key value = do
+  result <- timeout 10000000 $ do
+    setResult <- executeKeyedClusterCommand client key ["SET", key, value]
+    getResult <- executeKeyedClusterCommand client key ["GET", key]
+    return (setResult, getResult)
+  case result of
+    Nothing ->
+      expectationFailure "Key round trip exceeded the 10-second bound"
+    Just (setResult, getResult) -> do
+      setResult `shouldBe` Right (RespSimpleString "OK")
+      getResult `shouldBe` Right (RespBulkString value)
