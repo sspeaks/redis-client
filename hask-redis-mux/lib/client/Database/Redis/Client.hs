@@ -19,7 +19,7 @@ module Database.Redis.Client
   ) where
 
 import           Control.Exception               (IOException, bracket, catch,
-                                                  finally, throwIO)
+                                                  finally, onException, throwIO)
 import           Control.Monad                   (void)
 import           Control.Monad.IO.Class
 import qualified Data.ByteString                 as BS
@@ -87,11 +87,12 @@ instance Client PlainTextClient where
   connect :: (MonadIO m) => PlainTextClient 'NotConnected -> m (PlainTextClient 'Connected)
   connect (NotConnectedPlainTextClient hostname port) = liftIO $ do
     (sock, ipCorrectEndian) <- createSocket hostname (maybe 6379 fromIntegral port)
-    S.connect sock (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian) `catch` \(e :: IOException) -> do
-      printf "Wasn't able to connect to the server: %s...\n" (show e)
-      putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
-      throwIO e
-    return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
+    flip onException (S.close sock) $ do
+      S.connect sock (SockAddrInet (maybe 6379 fromIntegral port) ipCorrectEndian) `catch` \(e :: IOException) -> do
+        printf "Wasn't able to connect to the server: %s...\n" (show e)
+        putStrLn "Tried to use a plain text socket on port 6379. Did you mean to use TLS on port 6380?"
+        throwIO e
+      return $ ConnectedPlainTextClient hostname ipCorrectEndian sock
 
   close :: (MonadIO m) => PlainTextClient 'Connected -> m ()
   close (ConnectedPlainTextClient _ _ sock) = liftIO $ S.close sock
@@ -161,27 +162,28 @@ connectTLS certHostname targetAddress port = liftIO $ do
         ++ ". The server identity will not be verified."
     else pure ()
   (sock, ipCorrectEndian) <- createSocket targetAddress (maybe 6380 fromIntegral port)
-  S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
-  store <- getSystemCertificateStore
-  let baseParams =
-        (defaultParamsClient certHostname "redis-server")
-          { clientSupported =
-              def
-                { supportedVersions = [TLS13, TLS12],
-                  supportedCiphers = ciphersuite_strong
-                },
-            clientShared =
-              def
-                { sharedCAStore = store
-                }
-          }
-      clientParams =
-        if allowInsecure
-          then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
-          else baseParams
-  context <- contextNew sock clientParams
-  handshake context
-  return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
+  flip onException (S.close sock) $ do
+    S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
+    store <- getSystemCertificateStore
+    let baseParams =
+          (defaultParamsClient certHostname "redis-server")
+            { clientSupported =
+                def
+                  { supportedVersions = [TLS13, TLS12],
+                    supportedCiphers = ciphersuite_strong
+                  },
+              clientShared =
+                def
+                  { sharedCAStore = store
+                  }
+            }
+        clientParams =
+          if allowInsecure
+            then baseParams {clientHooks = def {onServerCertificate = \_ _ _ _ -> pure []}}
+            else baseParams
+    context <- contextNew sock clientParams
+    handshake context
+    return $ ConnectedTLSClient certHostname ipCorrectEndian sock context
 
 -- | Start a local TCP proxy on @localhost:6379@ that forwards traffic through an
 -- existing TLS connection. Useful for tunneling plain-text Redis tools over TLS.

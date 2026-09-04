@@ -24,6 +24,8 @@ module Database.Redis.Internal.Multiplexer
   , ResponseSlot
   , createSlotPool
   , createMultiplexer
+  , createMultiplexerFromConnector
+  , createMultiplexerFromConnectorWithHandoffHook
   , submitCommand
   , submitCommandPooled
   , submitCommandPairPooled
@@ -34,14 +36,17 @@ module Database.Redis.Internal.Multiplexer
   , isMultiplexerAlive
   ) where
 
-import           Control.Concurrent               (ThreadId, forkFinally,
+import           Control.Concurrent               (ThreadId, forkIOWithUnmask,
                                                    killThread, myThreadId)
-import           Control.Concurrent.MVar          (MVar, newEmptyMVar, newMVar,
+import           Control.Concurrent.MVar          (MVar, modifyMVar,
+                                                   newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
                                                    tryPutMVar, withMVar)
 import           Control.Exception                (Exception, SomeException,
-                                                   mask_, throwIO, toException,
-                                                   try, uninterruptibleMask_)
+                                                   catch, finally, mask_,
+                                                   onException, throwIO,
+                                                   toException, try,
+                                                   uninterruptibleMask_)
 import           Control.Monad                    (forM_, void, when)
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
 import           Data.ByteString                  (ByteString)
@@ -60,6 +65,8 @@ import           Data.Typeable                    (Typeable)
 import qualified Data.Vector                      as V
 import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
+import           Database.Redis.Cluster           (NodeAddress)
+import           Database.Redis.Connector         (Connector)
 import           Database.Redis.Resp              (RespData, parseRespData)
 import qualified GHC.Conc                         as GHC (threadCapability)
 
@@ -338,6 +345,7 @@ data Multiplexer = Multiplexer
   , muxAlive        :: !(IORef Bool)
   , muxLifecycle    :: !(IORef MultiplexerLifecycle)
   , muxDestroyLock  :: !(MVar ())
+  , muxTransport    :: !TransportFinalizer
   }
 
 data MultiplexerLifecycle
@@ -346,35 +354,99 @@ data MultiplexerLifecycle
   | MultiplexerDestroyed
   deriving (Eq)
 
+-- | An exactly-once transport finalizer. Closing runs in its own thread so an
+-- interrupted destroy caller cannot cancel the close action or invoke it twice.
+data TransportFinalizer = TransportFinalizer
+  { transportCloseAction :: !(IO ())
+  , transportCloseState  :: !(MVar (Maybe (MVar (Either SomeException ()))))
+  }
+
+newTransportFinalizer :: IO () -> IO TransportFinalizer
+newTransportFinalizer action =
+  TransportFinalizer action <$> newMVar Nothing
+
+startTransportClose :: TransportFinalizer -> IO (MVar (Either SomeException ()))
+startTransportClose finalizer =
+  modifyMVar (transportCloseState finalizer) $ \case
+    Just done -> return (Just done, done)
+    Nothing -> do
+      done <- newEmptyMVar
+      _ <- forkIOWithUnmask $ \unmask ->
+        try (unmask $ transportCloseAction finalizer) >>= putMVar done
+      return (Just done, done)
+
+closeTransport :: TransportFinalizer -> IO ()
+closeTransport finalizer = do
+  done <- startTransportClose finalizer
+  readMVar done >>= either throwIO return
+
 -- | Create a multiplexer over an already-connected client.
 --
--- Spawns a writer and reader green thread. The caller must eventually call
--- 'destroyMultiplexer' to clean up.
+-- Ownership of the connected transport transfers to the multiplexer. It is
+-- closed exactly once by 'destroyMultiplexer', including partial construction
+-- failure.
 createMultiplexer
   :: (Client client)
   => client 'Connected
   -> IO ByteString       -- ^ Action to receive bytes from the connection
   -> IO Multiplexer
-createMultiplexer conn recv = do
-  cmdQueue     <- newCommandQueue
-  pendingQueue <- newPendingQueue
-  transferLock <- newMVar ()
-  alive        <- newIORef True
-  lifecycle    <- newIORef MultiplexerOpen
-  destroyLock  <- newMVar ()
-  readerDone   <- newEmptyMVar
-  writerDone   <- newEmptyMVar
+createMultiplexer conn recv = mask_ $ do
+  transport <- newTransportFinalizer (close conn)
+    `onException` (close conn `catch` \(_ :: SomeException) -> return ())
+  build transport
+    `onException` (closeTransport transport `catch` \(_ :: SomeException) -> return ())
+  where
+    build transport = do
+      cmdQueue     <- newCommandQueue
+      pendingQueue <- newPendingQueue
+      transferLock <- newMVar ()
+      alive        <- newIORef True
+      lifecycle    <- newIORef MultiplexerOpen
+      destroyLock  <- newMVar ()
+      readerDone   <- newEmptyMVar
+      writerDone   <- newEmptyMVar
 
-  readerId <- forkFinally
-    (readerLoop transferLock cmdQueue pendingQueue recv alive)
-    (const $ putMVar readerDone ())
-  writerId <- forkFinally
-    (writerLoop transferLock cmdQueue pendingQueue conn alive)
-    (const $ putMVar writerDone ())
+      readerId <- forkIOWithUnmask $ \unmask ->
+        unmask (readerLoop transferLock cmdQueue pendingQueue recv alive)
+          `finally` putMVar readerDone ()
+      writerId <- (forkIOWithUnmask $ \unmask ->
+        unmask (writerLoop transferLock cmdQueue pendingQueue conn alive)
+          `finally` putMVar writerDone ())
+        `onException` do
+          killThread readerId
+          readMVar readerDone
 
-  return $ Multiplexer
-    cmdQueue pendingQueue writerId readerId writerDone readerDone
-    alive lifecycle destroyLock
+      return $ Multiplexer
+        cmdQueue pendingQueue writerId readerId writerDone readerDone
+        alive lifecycle destroyLock transport
+
+-- | Acquire a connected transport and transfer it to a multiplexer without an
+-- asynchronous-exception gap between connector return and finalizer ownership.
+createMultiplexerFromConnector
+  :: (Client client)
+  => Connector client
+  -> NodeAddress
+  -> IO Multiplexer
+createMultiplexerFromConnector connector addr =
+  createMultiplexerFromConnectorWithHandoffHook
+    connector addr (const $ return ())
+
+-- | Variant with a masked handoff hook for deterministic lifecycle tests.
+-- The hook runs after the connector returns but before finalizer installation.
+createMultiplexerFromConnectorWithHandoffHook
+  :: (Client client)
+  => Connector client
+  -> NodeAddress
+  -> (client 'Connected -> IO ())
+  -> IO Multiplexer
+createMultiplexerFromConnectorWithHandoffHook connector addr handoffHook =
+  mask_ $ do
+    -- Masking remains interruptible, so blocking DNS/connect/TLS work can
+    -- still be cancelled while the post-return ownership gap stays closed.
+    conn <- connector addr
+    handoffHook conn
+      `onException` (close conn `catch` \(_ :: SomeException) -> return ())
+    createMultiplexer conn (receive conn)
 
 multiplexerDestroyed :: SomeException
 multiplexerDestroyed = toException $ MultiplexerDead "Multiplexer destroyed"
@@ -486,12 +558,15 @@ destroyMultiplexer mux =
         void $ commandClose (muxCommandQueue mux)
         atomicWriteIORef (muxAlive mux) False
 
+      transportDone <- startTransportClose (muxTransport mux)
+
       -- These operations may block and remain interruptible. If this owner is
       -- cancelled, the Destroying state lets the next caller resume teardown.
       killThread (muxWriterThread mux)
       killThread (muxReaderThread mux)
       readMVar (muxWriterDone mux)
       readMVar (muxReaderDone mux)
+      transportResult <- readMVar transportDone
 
       -- Queue drains and slot completion are bounded, non-blocking operations.
       -- Keeping this tail uninterruptible prevents ownership from being lost
@@ -502,6 +577,8 @@ destroyMultiplexer mux =
         forM_ commands $ \pc -> failSlot (pcSlot pc) multiplexerDestroyed
         forM_ pending $ \slot -> failSlot slot multiplexerDestroyed
         writeIORef (muxLifecycle mux) MultiplexerDestroyed
+
+      either throwIO return transportResult
 
 -- | Check if the multiplexer's threads are still running.
 isMultiplexerAlive :: Multiplexer -> IO Bool

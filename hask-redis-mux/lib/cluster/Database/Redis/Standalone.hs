@@ -45,12 +45,11 @@ module Database.Redis.Standalone
   ) where
 
 import           Control.Exception                   (SomeException, bracket,
-                                                      catch)
+                                                      catch, onException)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
-import           Database.Redis.Client               (Client (..),
-                                                      PlainTextClient)
+import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Command              (ClientReplyValues (..),
                                                       RedisCommands (..),
@@ -65,7 +64,7 @@ import           Database.Redis.Connector            (Connector,
                                                       clusterPlaintextConnector)
 import           Database.Redis.FromResp             (FromResp (..))
 import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
-                                                      createMultiplexer,
+                                                      createMultiplexerFromConnector,
                                                       createSlotPool,
                                                       destroyMultiplexer,
                                                       submitCommandPooled)
@@ -109,9 +108,9 @@ createStandaloneClient
   -> NodeAddress
   -> IO StandaloneClient
 createStandaloneClient connector addr = do
-  conn <- connector addr
-  mux <- createMultiplexer conn (receive conn)
+  mux <- createMultiplexerFromConnector connector addr
   pool <- createSlotPool 256
+    `onException` closeStandaloneMux mux
   return $ StandaloneClient mux pool
 
 -- | Create a standalone client from a 'StandaloneConfig'.
@@ -120,24 +119,31 @@ createStandaloneClientFromConfig
   => StandaloneConfig client
   -> IO StandaloneClient
 createStandaloneClientFromConfig config = do
-  conn <- standaloneConnector config (standaloneNodeAddress config)
-  mux <- createMultiplexer conn (receive conn)
+  mux <- createMultiplexerFromConnector
+    (standaloneConnector config) (standaloneNodeAddress config)
   pool <- createSlotPool 256
+    `onException` closeStandaloneMux mux
   return $ StandaloneClient mux pool
 
 -- | Close the standalone client, destroying the underlying multiplexer.
+-- The owned plaintext or TLS transport is closed exactly once. Closure is
+-- terminal and idempotent; later commands fail instead of reconnecting.
 --
 -- Consider using 'withStandaloneClient' instead for automatic cleanup.
 closeStandaloneClient :: StandaloneClient -> IO ()
 closeStandaloneClient client =
-  destroyMultiplexer (standaloneMux client)
-    `catch` \(_ :: SomeException) -> return ()
+  closeStandaloneMux (standaloneMux client)
+
+closeStandaloneMux :: Multiplexer -> IO ()
+closeStandaloneMux mux =
+  destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()
 
 -- | Bracket-style resource management for standalone clients.
 --
 -- Creates a client, runs the given action, and ensures the client is closed
 -- even if an exception occurs. Prefer this over manual 'createStandaloneClientFromConfig'
--- and 'closeStandaloneClient'.
+-- and 'closeStandaloneClient'. After the callback returns, the client and its
+-- transport are permanently closed.
 --
 -- @
 -- withStandaloneClient config $ \\client ->

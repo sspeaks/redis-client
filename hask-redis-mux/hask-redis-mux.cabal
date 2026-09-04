@@ -199,6 +199,15 @@ test-suite MultiplexerSpec
                     , cluster
                     , resp
 
+test-suite StandaloneSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          StandaloneSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , redis-command-client
+
 test-suite FromRespSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0

@@ -8,6 +8,8 @@ import           Control.Concurrent                    (forkIO, threadDelay)
 import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
                                                         putMVar, takeMVar)
 import           Control.Concurrent.STM                (newTVarIO)
+import           Control.Exception                     (SomeException, throwIO,
+                                                        try)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
@@ -191,6 +193,9 @@ spec = do
       let err = ConnectionError "Connection timeout"
       show err `shouldContain` "ConnectionError"
 
+    it "creates ClusterClientClosed correctly" $ do
+      ClusterClientClosed `shouldBe` ClusterClientClosed
+
   describe "ClusterConfig" $ do
     it "creates valid cluster config" $ do
       let poolConfig = PoolConfig
@@ -231,6 +236,7 @@ spec = do
       redir1 `shouldNotBe` redir3
 
   askRedirectSpec
+  clusterLifecycleSpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -239,15 +245,17 @@ spec = do
 data MockClient (a :: ConnectionStatus) where
   MockConnected :: !(IORef ByteString)   -- sendBuf
                -> !(IORef [ByteString]) -- recvQueue
+               -> !(IORef Int)          -- closeCount
                -> MockClient 'Connected
 
 instance Client MockClient where
   connect = error "MockClient: connect not supported"
-  close _ = return ()
-  send (MockConnected sendBuf _) lbs = liftIO $ do
+  close (MockConnected _ _ closeCount) =
+    liftIO $ atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+  send (MockConnected sendBuf _ _) lbs = liftIO $ do
     let !bs = LBS.toStrict lbs
     atomicModifyIORef' sendBuf $ \old -> (old <> bs, ())
-  receive (MockConnected sRef recvQueue) = liftIO $ recvLoop sRef recvQueue
+  receive (MockConnected sRef recvQueue _) = liftIO $ recvLoop sRef recvQueue
 
 recvLoop :: IORef ByteString -> IORef [ByteString] -> IO ByteString
 recvLoop sRef recvQueue = do
@@ -265,7 +273,8 @@ createMockClient :: IO (MockClient 'Connected, ByteString -> IO ())
 createMockClient = do
   sendBuf <- newIORef BS.empty
   recvQueue <- newIORef []
-  let client = MockConnected sendBuf recvQueue
+  closeCount <- newIORef 0
+  let client = MockConnected sendBuf recvQueue closeCount
       addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
   return (client, addRecv)
 
@@ -281,6 +290,19 @@ createMockConnector = do
         atomicModifyIORef' connCount $ \n -> (n + 1, ())
         return client
   return (connector, mapRef, connCount)
+
+createLifecycleConnector
+  :: RespData
+  -> IO (NodeAddress -> IO (MockClient 'Connected), IORef Int, IORef Int)
+createLifecycleConnector response = do
+  connectionCount <- newIORef 0
+  closeCount <- newIORef 0
+  let connector _ = do
+        sendBuf <- newIORef BS.empty
+        recvQueue <- newIORef [encodeResp response]
+        atomicModifyIORef' connectionCount $ \count -> (count + 1, ())
+        return $ MockConnected sendBuf recvQueue closeCount
+  return (connector, connectionCount, closeCount)
 
 getAddRecvs :: AddRecvMap -> NodeAddress -> IO [ByteString -> IO ()]
 getAddRecvs mapRef addr = do
@@ -305,6 +327,37 @@ mkTopology addr = do
       nodeMap = Map.singleton nodeIdBS node
   return $ ClusterTopology slotVec addrVec nodeMap now
 
+validClusterSlots :: RespData
+validClusterSlots =
+  RespArray
+    [ RespArray
+        [ RespInteger 0
+        , RespInteger 16383
+        , RespArray
+            [ RespBulkString "127.0.0.1"
+            , RespInteger 6379
+            , RespBulkString "test-node-id-1"
+            ]
+        ]
+    ]
+
+testPoolConfig :: PoolConfig
+testPoolConfig = PoolConfig
+  { maxConnectionsPerNode = 1
+  , connectionTimeout     = 5000
+  , maxRetries            = 3
+  , useTLS                = False
+  }
+
+testClusterConfig :: ClusterConfig
+testClusterConfig = ClusterConfig
+  { clusterSeedNode                = node1
+  , clusterPoolConfig              = testPoolConfig
+  , clusterMaxRetries              = 5
+  , clusterRetryDelay              = 1000
+  , clusterTopologyRefreshInterval = 600
+  }
+
 -- | Build a ClusterClient backed by a mock connector and a given topology.
 mkClusterClient
   :: (NodeAddress -> IO (MockClient 'Connected))
@@ -312,24 +365,58 @@ mkClusterClient
   -> IO (ClusterClient MockClient)
 mkClusterClient connector topo = do
   topoVar   <- newTVarIO topo
-  pool      <- createPool poolCfg
+  pool      <- createPool testPoolConfig
   muxPool   <- createMultiplexPool connector 1
   refreshLk <- newMVar ()
-  return $ ClusterClient topoVar pool clusterCfg connector refreshLk muxPool
-  where
-    poolCfg = PoolConfig
-      { maxConnectionsPerNode = 1
-      , connectionTimeout     = 5000
-      , maxRetries            = 3
-      , useTLS                = False
-      }
-    clusterCfg = ClusterConfig
-      { clusterSeedNode                = NodeAddress "127.0.0.1" 6379
-      , clusterPoolConfig              = poolCfg
-      , clusterMaxRetries              = 5
-      , clusterRetryDelay              = 1000
-      , clusterTopologyRefreshInterval = 600
-      }
+  return $ ClusterClient topoVar pool testClusterConfig connector refreshLk muxPool
+
+clusterLifecycleSpec :: Spec
+clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
+  it "closes the discovery connection when topology parsing fails" $ do
+    (connector, connectionCount, closeCount) <-
+      createLifecycleConnector (RespSimpleString "not cluster slots")
+
+    result <- try (createClusterClient testClusterConfig connector)
+      :: IO (Either SomeException (ClusterClient MockClient))
+    case result of
+      Left _  -> return ()
+      Right _ -> expectationFailure "Expected topology parsing failure"
+    readIORef connectionCount `shouldReturn` 1
+    readIORef closeCount `shouldReturn` 1
+
+  it "closes the discovery pool when later initialization fails" $ do
+    (connector, connectionCount, closeCount) <-
+      createLifecycleConnector validClusterSlots
+    let failMuxCreation _ _ =
+          throwIO $ userError "injected multiplexer pool initialization failure"
+
+    result <- try $
+      createClusterClientWithFactories
+        createPool failMuxCreation testClusterConfig connector
+      :: IO (Either SomeException (ClusterClient MockClient))
+    case result of
+      Left _  -> return ()
+      Right _ -> expectationFailure "Expected multiplexer pool initialization failure"
+    readIORef connectionCount `shouldReturn` 1
+    readIORef closeCount `shouldReturn` 1
+
+  it "closes once and keeps both cluster pools terminal" $ do
+    (connector, connectionCount, closeCount) <-
+      createLifecycleConnector validClusterSlots
+    client <- createClusterClient testClusterConfig connector
+
+    closeClusterClient client
+    closeClusterClient client
+    readIORef connectionCount `shouldReturn` 1
+    readIORef closeCount `shouldReturn` 1
+
+    keyless <- executeKeylessClusterCommand client
+      (ping :: RedisCommandClient MockClient RespData)
+    keyless `shouldBe` Left ClusterClientClosed
+    keyed <- executeKeyedClusterCommand client "key" ["GET", "key"]
+    keyed `shouldBe` Left ClusterClientClosed
+    readIORef connectionCount `shouldReturn` 1
+    readIORef closeCount `shouldReturn` 1
 
 -- ---------------------------------------------------------------------------
 -- ASK redirect integration tests

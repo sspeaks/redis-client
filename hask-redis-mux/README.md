@@ -72,6 +72,12 @@ withClusterClient clusterConfig connector $ \client ->
     get "key"
 ```
 
+The callback owns the client only for its duration. When it returns or throws,
+the library permanently closes every plaintext or TLS transport acquired by
+that client. Teardown is idempotent and each transport finalizer runs exactly
+once. A client or pool must not be reused after bracket exit or explicit close:
+later submissions return a typed closed-client/pool failure and never reconnect.
+
 ## Custom Configuration
 
 ```haskell

@@ -25,6 +25,7 @@ import           Data.IORef                          (IORef, atomicModifyIORef',
                                                       newIORef, readIORef)
 import           Database.Redis.Client               (Client (..),
                                                       ConnectionStatus (..))
+import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Internal.Multiplexer
 import           Database.Redis.Resp                 (Encodable (..),
                                                       RespData (..))
@@ -155,6 +156,40 @@ createTeardownClient = do
     , await receiveStarted
     , putMVar releaseSecond ()
     )
+
+data AcquisitionClient (a :: ConnectionStatus) where
+  AcquisitionConnected
+    :: !(IORef Int)
+    -> !(IORef Int)
+    -> !(MVar ByteString)
+    -> AcquisitionClient 'Connected
+
+instance Client AcquisitionClient where
+  connect = error "AcquisitionClient: connect not supported"
+  close (AcquisitionConnected closeCount _ _) =
+    liftIO $ atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+  send (AcquisitionConnected _ workerStarts _) _ =
+    liftIO $ atomicModifyIORef' workerStarts $ \count -> (count + 1, ())
+  receive (AcquisitionConnected _ workerStarts replies) = liftIO $ do
+    atomicModifyIORef' workerStarts $ \count -> (count + 1, ())
+    takeMVar replies
+
+data ClosingClient (a :: ConnectionStatus) where
+  ClosingConnected
+    :: !(IORef Int)
+    -> !(MVar ())
+    -> !(MVar ())
+    -> !(MVar ByteString)
+    -> ClosingClient 'Connected
+
+instance Client ClosingClient where
+  connect = error "ClosingClient: connect not supported"
+  close (ClosingConnected closeCount closeStarted releaseClose _) = liftIO $ do
+    atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+    void $ tryPutMVar closeStarted ()
+    takeMVar releaseClose
+  send _ _ = return ()
+  receive (ClosingConnected _ _ _ replies) = liftIO $ takeMVar replies
 
 -- | Encode a RespData to strict ByteString (for feeding to mock recv).
 encodeResp :: RespData -> ByteString
@@ -304,6 +339,56 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
     case result of
       Left (e :: SomeException) -> show e `shouldContain` "MultiplexerDead"
       Right _ -> expectationFailure "Expected MultiplexerDead exception"
+
+  mapM_ (\transportName ->
+    it ("closes a returned " <> transportName <> " transport cancelled before finalizer installation") $ do
+      closeCount <- newIORef 0
+      workerStarts <- newIORef 0
+      replies <- newEmptyMVar
+      handoffStarted <- newEmptyMVar
+      releaseHandoff <- newEmptyMVar
+      let client = AcquisitionConnected closeCount workerStarts replies
+          connector _ = return client
+          handoffHook _ = putMVar handoffStarted () >> takeMVar releaseHandoff
+
+      finished <- newEmptyMVar
+      owner <- forkFinally
+        (createMultiplexerFromConnectorWithHandoffHook
+          connector (NodeAddress "127.0.0.1" 6379) handoffHook)
+        (putMVar finished)
+      timeout 1000000 (takeMVar handoffStarted) `shouldReturn` Just ()
+      killThread owner
+      outcome <- timeout 1000000 (takeMVar finished)
+      case outcome of
+        Just (Left _) -> return ()
+        _             -> expectationFailure "handoff cancellation did not terminate creation"
+      readIORef closeCount `shouldReturn` 1
+      readIORef workerStarts `shouldReturn` 0
+    ) ["plaintext", "TLS"]
+
+  it "closes the owned transport exactly once when the destroy owner is cancelled" $ do
+    closeCount <- newIORef 0
+    closeStarted <- newEmptyMVar
+    releaseClose <- newEmptyMVar
+    replies <- newEmptyMVar
+    let client = ClosingConnected closeCount closeStarted releaseClose replies
+    mux <- createMultiplexer client (receive client)
+
+    ownerDone <- newEmptyMVar
+    owner <- forkFinally (destroyMultiplexer mux) (putMVar ownerDone)
+    started <- timeout 1000000 (takeMVar closeStarted)
+    started `shouldBe` Just ()
+    killThread owner
+    cancelled <- timeout 1000000 (takeMVar ownerDone)
+    cancelled `shouldSatisfy` \case
+      Just (Left _) -> True
+      _             -> False
+
+    putMVar releaseClose ()
+    resumed <- timeout 1000000 (destroyMultiplexer mux)
+    resumed `shouldBe` Just ()
+    replicateM_ 3 (destroyMultiplexer mux)
+    readIORef closeCount `shouldReturn` 1
 
   it "submit-after-destroy with pooled also throws MultiplexerDead" $ do
     pool <- createSlotPool 16
