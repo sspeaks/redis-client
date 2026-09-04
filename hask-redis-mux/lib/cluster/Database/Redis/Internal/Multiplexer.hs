@@ -24,6 +24,8 @@ module Database.Redis.Internal.Multiplexer
   , ResponseSlot
   , createSlotPool
   , createMultiplexer
+  , createMultiplexerFromConnector
+  , createMultiplexerFromConnectorWithHandoffHook
   , submitCommand
   , submitCommandPooled
   , submitCommandPairPooled
@@ -34,15 +36,14 @@ module Database.Redis.Internal.Multiplexer
   , isMultiplexerAlive
   ) where
 
-import           Control.Concurrent               (ThreadId, forkFinally,
-                                                   forkIOWithUnmask, killThread,
-                                                   myThreadId)
+import           Control.Concurrent               (ThreadId, forkIOWithUnmask,
+                                                   killThread, myThreadId)
 import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
                                                    tryPutMVar, withMVar)
 import           Control.Exception                (Exception, SomeException,
-                                                   catch, mask, mask_,
+                                                   catch, finally, mask_,
                                                    onException, throwIO,
                                                    toException, try,
                                                    uninterruptibleMask_)
@@ -64,6 +65,8 @@ import           Data.Typeable                    (Typeable)
 import qualified Data.Vector                      as V
 import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
+import           Database.Redis.Cluster           (NodeAddress)
+import           Database.Redis.Connector         (Connector)
 import           Database.Redis.Resp              (RespData, parseRespData)
 import qualified GHC.Conc                         as GHC (threadCapability)
 
@@ -387,13 +390,13 @@ createMultiplexer
   => client 'Connected
   -> IO ByteString       -- ^ Action to receive bytes from the connection
   -> IO Multiplexer
-createMultiplexer conn recv = mask $ \restore -> do
+createMultiplexer conn recv = mask_ $ do
   transport <- newTransportFinalizer (close conn)
     `onException` (close conn `catch` \(_ :: SomeException) -> return ())
-  build restore transport
+  build transport
     `onException` (closeTransport transport `catch` \(_ :: SomeException) -> return ())
   where
-    build restore transport = do
+    build transport = do
       cmdQueue     <- newCommandQueue
       pendingQueue <- newPendingQueue
       transferLock <- newMVar ()
@@ -403,12 +406,12 @@ createMultiplexer conn recv = mask $ \restore -> do
       readerDone   <- newEmptyMVar
       writerDone   <- newEmptyMVar
 
-      readerId <- forkFinally
-        (restore $ readerLoop transferLock cmdQueue pendingQueue recv alive)
-        (const $ putMVar readerDone ())
-      writerId <- forkFinally
-        (restore $ writerLoop transferLock cmdQueue pendingQueue conn alive)
-        (const $ putMVar writerDone ())
+      readerId <- forkIOWithUnmask $ \unmask ->
+        unmask (readerLoop transferLock cmdQueue pendingQueue recv alive)
+          `finally` putMVar readerDone ()
+      writerId <- (forkIOWithUnmask $ \unmask ->
+        unmask (writerLoop transferLock cmdQueue pendingQueue conn alive)
+          `finally` putMVar writerDone ())
         `onException` do
           killThread readerId
           readMVar readerDone
@@ -416,6 +419,34 @@ createMultiplexer conn recv = mask $ \restore -> do
       return $ Multiplexer
         cmdQueue pendingQueue writerId readerId writerDone readerDone
         alive lifecycle destroyLock transport
+
+-- | Acquire a connected transport and transfer it to a multiplexer without an
+-- asynchronous-exception gap between connector return and finalizer ownership.
+createMultiplexerFromConnector
+  :: (Client client)
+  => Connector client
+  -> NodeAddress
+  -> IO Multiplexer
+createMultiplexerFromConnector connector addr =
+  createMultiplexerFromConnectorWithHandoffHook
+    connector addr (const $ return ())
+
+-- | Variant with a masked handoff hook for deterministic lifecycle tests.
+-- The hook runs after the connector returns but before finalizer installation.
+createMultiplexerFromConnectorWithHandoffHook
+  :: (Client client)
+  => Connector client
+  -> NodeAddress
+  -> (client 'Connected -> IO ())
+  -> IO Multiplexer
+createMultiplexerFromConnectorWithHandoffHook connector addr handoffHook =
+  mask_ $ do
+    -- Masking remains interruptible, so blocking DNS/connect/TLS work can
+    -- still be cancelled while the post-return ownership gap stays closed.
+    conn <- connector addr
+    handoffHook conn
+      `onException` (close conn `catch` \(_ :: SomeException) -> return ())
+    createMultiplexer conn (receive conn)
 
 multiplexerDestroyed :: SomeException
 multiplexerDestroyed = toException $ MultiplexerDead "Multiplexer destroyed"

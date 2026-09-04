@@ -49,8 +49,7 @@ import           Control.Exception                   (SomeException, bracket,
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
-import           Database.Redis.Client               (Client (..),
-                                                      PlainTextClient)
+import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Command              (ClientReplyValues (..),
                                                       RedisCommands (..),
@@ -65,7 +64,7 @@ import           Database.Redis.Connector            (Connector,
                                                       clusterPlaintextConnector)
 import           Database.Redis.FromResp             (FromResp (..))
 import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
-                                                      createMultiplexer,
+                                                      createMultiplexerFromConnector,
                                                       createSlotPool,
                                                       destroyMultiplexer,
                                                       submitCommandPooled)
@@ -109,8 +108,7 @@ createStandaloneClient
   -> NodeAddress
   -> IO StandaloneClient
 createStandaloneClient connector addr = do
-  conn <- connector addr
-  mux <- createMultiplexer conn (receive conn)
+  mux <- createMultiplexerFromConnector connector addr
   pool <- createSlotPool 256
     `onException` closeStandaloneMux mux
   return $ StandaloneClient mux pool
@@ -121,8 +119,8 @@ createStandaloneClientFromConfig
   => StandaloneConfig client
   -> IO StandaloneClient
 createStandaloneClientFromConfig config = do
-  conn <- standaloneConnector config (standaloneNodeAddress config)
-  mux <- createMultiplexer conn (receive conn)
+  mux <- createMultiplexerFromConnector
+    (standaloneConnector config) (standaloneNodeAddress config)
   pool <- createSlotPool 256
     `onException` closeStandaloneMux mux
   return $ StandaloneClient mux pool

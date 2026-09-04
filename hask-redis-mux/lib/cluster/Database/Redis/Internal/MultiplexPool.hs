@@ -18,6 +18,7 @@ module Database.Redis.Internal.MultiplexPool
   ( MultiplexPool
   , MultiplexPoolException (..)
   , createMultiplexPool
+  , createMultiplexPoolWithHandoffHook
   , submitToNode
   , submitToNodeWithAsking
   , submitToNodeAsync
@@ -27,7 +28,8 @@ module Database.Redis.Internal.MultiplexPool
 
 import           Control.Concurrent.MVar             (MVar, modifyMVar, newMVar)
 import           Control.Exception                   (Exception, SomeException,
-                                                      catch, mask, throwIO, try)
+                                                      catch, mask_, throwIO,
+                                                      try)
 import qualified Data.ByteString.Builder             as Builder
 import           Data.IORef                          (IORef, atomicModifyIORef',
                                                       atomicWriteIORef,
@@ -37,12 +39,13 @@ import qualified Data.Map.Strict                     as Map
 import           Data.Typeable                       (Typeable)
 import           Data.Vector                         (Vector)
 import qualified Data.Vector                         as V
-import           Database.Redis.Client               (Client (..))
+import           Database.Redis.Client               (Client,
+                                                      ConnectionStatus (..))
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Connector            (Connector)
 import           Database.Redis.Internal.Multiplexer (Multiplexer, ResponseSlot,
                                                       SlotPool,
-                                                      createMultiplexer,
+                                                      createMultiplexerFromConnectorWithHandoffHook,
                                                       createSlotPool,
                                                       destroyMultiplexer,
                                                       isMultiplexerAlive,
@@ -71,12 +74,13 @@ data NodeMuxes = NodeMuxes
 -- with MVar protecting creation/replacement (exclusive writes).
 -- Includes a per-pool SlotPool for ResponseSlot reuse.
 data MultiplexPool client = MultiplexPool
-  { poolNodesRef  :: !(IORef (Map NodeAddress NodeMuxes))    -- fast reads
-  , poolNodesLock :: !(MVar ())                              -- protects writes
-  , poolClosed    :: !(IORef Bool)                           -- terminal state
-  , poolConnector :: !(Connector client)
-  , poolSlotPool  :: !SlotPool                               -- reusable ResponseSlots
-  , poolMuxCount  :: !Int                                    -- multiplexers per node
+  { poolNodesRef    :: !(IORef (Map NodeAddress NodeMuxes))  -- fast reads
+  , poolNodesLock   :: !(MVar ())                            -- protects writes
+  , poolClosed      :: !(IORef Bool)                         -- terminal state
+  , poolConnector   :: !(Connector client)
+  , poolHandoffHook :: !(client 'Connected -> IO ())
+  , poolSlotPool    :: !SlotPool                             -- reusable ResponseSlots
+  , poolMuxCount    :: !Int                                  -- multiplexers per node
   }
 
 -- | Create a new empty multiplexer pool.
@@ -87,12 +91,26 @@ createMultiplexPool
   => Connector client
   -> Int
   -> IO (MultiplexPool client)
-createMultiplexPool connector muxCnt = do
+createMultiplexPool connector muxCnt =
+  createMultiplexPoolWithHandoffHook connector (const $ return ()) muxCnt
+
+-- | Create a pool with an action run after each connector returns and before
+-- multiplexer ownership is installed. The hook is intended for deterministic
+-- lifecycle testing and must not retain the connected client.
+createMultiplexPoolWithHandoffHook
+  :: (Client client)
+  => Connector client
+  -> (client 'Connected -> IO ())
+  -> Int
+  -> IO (MultiplexPool client)
+createMultiplexPoolWithHandoffHook connector handoffHook muxCnt = do
   nodesRef <- newIORef Map.empty
   nodesLock <- newMVar ()
   closed <- newIORef False
   slotPool <- createSlotPool 256
-  return $ MultiplexPool nodesRef nodesLock closed connector slotPool (max 1 muxCnt)
+  return $
+    MultiplexPool nodesRef nodesLock closed connector handoffHook slotPool
+      (max 1 muxCnt)
 
 -- | Submit a pre-encoded RESP command (as a Builder) to the multiplexer for a given node.
 -- Creates the multiplexer on demand if the node hasn't been seen before.
@@ -180,7 +198,8 @@ getMultiplexer pool addr = do
           mux <- pickMux nm
           return ((), mux)
         Nothing -> do
-          nm <- createNodeMuxes (poolConnector pool) addr (poolMuxCount pool)
+          nm <- createNodeMuxes
+            (poolConnector pool) (poolHandoffHook pool) addr (poolMuxCount pool)
           atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm m')
           return ((), V.head (nmMuxes nm))
 {-# INLINE getMultiplexer #-}
@@ -199,23 +218,24 @@ pickMux nm
 createNodeMuxes
   :: (Client client)
   => Connector client
+  -> (client 'Connected -> IO ())
   -> NodeAddress
   -> Int
   -> IO NodeMuxes
-createNodeMuxes connector addr count = do
-  muxes <- mask $ \restore -> createAll restore [] count
+createNodeMuxes connector handoffHook addr count = do
+  muxes <- mask_ $ createAll [] count
   counter <- newIORef 1 `catch` \(e :: SomeException) -> do
     destroyMuxes muxes
     throwIO e
   return $ NodeMuxes (V.fromList $ reverse muxes) counter
   where
-    createAll _ acc 0 = return acc
-    createAll restore acc remaining = do
-      result <- try $ restore $ do
-        conn <- connector addr
-        createMultiplexer conn (receive conn)
+    createAll acc 0 = return acc
+    createAll acc remaining = do
+      result <- try $ do
+        createMultiplexerFromConnectorWithHandoffHook
+          connector addr handoffHook
       case result of
-        Right mux -> createAll restore (mux : acc) (remaining - 1)
+        Right mux -> createAll (mux : acc) (remaining - 1)
         Left (e :: SomeException) -> do
           destroyMuxes acc
           throwIO e
@@ -240,7 +260,8 @@ replaceMux pool addr _oldMux = do
         mux <- pickMux nm'
         return ((), mux)
       Nothing -> do
-        nm <- createNodeMuxes (poolConnector pool) addr (poolMuxCount pool)
+        nm <- createNodeMuxes
+          (poolConnector pool) (poolHandoffHook pool) addr (poolMuxCount pool)
         atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm m)
         return ((), V.head (nmMuxes nm))
 
@@ -278,20 +299,20 @@ replaceDeadMuxes
   -> [Multiplexer]
   -> IO [Multiplexer]
 replaceDeadMuxes pool addr muxes =
-  mask $ \restore -> go restore [] [] muxes
+  mask_ $ go [] [] muxes
   where
-    go _ kept _ [] = return $ reverse kept
-    go restore kept created (mux:rest) = do
+    go kept _ [] = return $ reverse kept
+    go kept created (mux:rest) = do
       alive <- isMultiplexerAlive mux
       if alive
-        then go restore (mux : kept) created rest
+        then go (mux : kept) created rest
         else do
           destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()
-          result <- try $ restore $ do
-            conn <- poolConnector pool addr
-            createMultiplexer conn (receive conn)
+          result <- try $ do
+            createMultiplexerFromConnectorWithHandoffHook
+              (poolConnector pool) addr (poolHandoffHook pool)
           case result of
-            Right newMux -> go restore (newMux : kept) (newMux : created) rest
+            Right newMux -> go (newMux : kept) (newMux : created) rest
             Left (e :: SomeException) -> do
               destroyMuxes created
               throwIO e
