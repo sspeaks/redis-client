@@ -55,6 +55,7 @@ module Database.Redis.Cluster.Client
     withClusterClient,
     withClusterClientAuthentication,
     refreshTopology,
+    mergeRefreshedTopology,
     -- * Running Commands (monadic, recommended)
     runClusterCommandClient,
     -- * Low-Level Command Execution (advanced)
@@ -226,13 +227,12 @@ instance Exception ClusterRuntimeAuthenticationUnsupported
 -- pipelined keyed command execution.
 -- Created via 'createClusterClient' and closed with 'closeClusterClient'.
 data ClusterClient client = ClusterClient
-  { clusterTopology             :: TVar ClusterTopology,
-    clusterConnectionPool       :: ConnectionPool client,
-    clusterConfig               :: ClusterConfig,
-    clusterConnector            :: Connector client,   -- ^ Connector factory used for all connections
-    clusterRefreshLock          :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
-  , clusterBeforeTopologyCommit :: IO () -- ^ Internal test seam; a no-op in production clients.
-  , clusterMultiplexPool        :: MultiplexPool client -- ^ Multiplexer pool for pipelined command execution
+  { clusterTopology       :: TVar ClusterTopology,
+    clusterConnectionPool :: ConnectionPool client,
+    clusterConfig         :: ClusterConfig,
+    clusterConnector      :: Connector client,   -- ^ Connector factory used for all connections
+    clusterRefreshLock    :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
+  , clusterMultiplexPool  :: MultiplexPool client -- ^ Multiplexer pool for pipelined command execution
   }
 
 -- | Monad for executing Redis commands on a cluster
@@ -422,8 +422,7 @@ createClusterClientWithFactoriesUsing connectorIsBounded
                     withConnectionTimeout
                       (connectionTimeout poolCfg) phase connector
           muxPool <- createMuxPool boundedConnector 1
-          return $ ClusterClient
-            topology pool config boundedConnector refreshLock (return ()) muxPool
+          return $ ClusterClient topology pool config boundedConnector refreshLock muxPool
 
 -- | Close all pooled connections across every node.
 -- Closure is terminal and idempotent: owned transports are closed exactly once,
@@ -537,7 +536,6 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
       result <- fetchTopology candidate
       case result of
         Right topology -> do
-          clusterBeforeTopologyCommit client
           commitRefreshedTopology protectedPatches topology
           return $ Right ()
         Left err ->
@@ -560,16 +558,23 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
     commitRefreshedTopology explicitPatches refreshed =
       atomically $ do
         current <- readTVar $ clusterTopology client
-        let currentPatches = movedTopologyPatches current
-            merged =
-              foldl'
-                (\topology (slot, address) ->
-                  if findNodeAddressForSlot topology slot == Just address
-                    then topology
-                    else patchTopologySlot slot address topology)
-                refreshed
-                (explicitPatches ++ currentPatches)
+        let merged = mergeRefreshedTopology
+              refreshed (explicitPatches ++ movedTopologyPatches current)
         writeTVar (clusterTopology client) merged
+
+-- | Preserve authoritative provisional MOVED routes when committing a snapshot
+-- that was fetched before those routes were learned.
+mergeRefreshedTopology
+  :: ClusterTopology
+  -> [(Word16, NodeAddress)]
+  -> ClusterTopology
+mergeRefreshedTopology refreshed =
+  foldl'
+    (\topology (slot, address) ->
+      if findNodeAddressForSlot topology slot == Just address
+        then topology
+        else patchTopologySlot slot address topology)
+    refreshed
 
 movedTopologyPatches
   :: ClusterTopology

@@ -473,8 +473,7 @@ mkClusterClient connector topo = do
   pool      <- createPool testPoolConfig
   muxPool   <- createMultiplexPool connector 1
   refreshLk <- newMVar ()
-  return $ ClusterClient
-    topoVar pool testClusterConfig connector refreshLk (return ()) muxPool
+  return $ ClusterClient topoVar pool testClusterConfig connector refreshLk muxPool
 
 clusterLifecycleSpec :: Spec
 clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
@@ -636,7 +635,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     muxPool <- createMultiplexPool boundedConnector 1
     let client = ClusterClient
-          topologyVar discoveryPool retryConfig connector refreshLock (return ()) muxPool
+          topologyVar discoveryPool retryConfig connector refreshLock muxPool
     started <- getMonotonicTimeNSec
     result <- executeKeyedClusterCommand client "key" ["GET", "key"]
     finished <- getMonotonicTimeNSec
@@ -675,7 +674,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     muxPool <- createMultiplexPool connector 1
     let client = ClusterClient
-          topologyVar discoveryPool retryConfig connector refreshLock (return ()) muxPool
+          topologyVar discoveryPool retryConfig connector refreshLock muxPool
     result <- executeKeyedClusterCommand client "key" ["GET", "key"]
 
     result `shouldSatisfy` \case
@@ -712,7 +711,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     muxPool <- createMultiplexPool boundedConnector 1
     let client = ClusterClient
-          topologyVar discoveryPool retryConfig connector refreshLock (return ()) muxPool
+          topologyVar discoveryPool retryConfig connector refreshLock muxPool
     finished <- newEmptyMVar
     owner <- forkFinally
       (executeKeyedClusterCommand client "key" ["GET", "key"])
@@ -1463,49 +1462,16 @@ movedRedirectSpec =
           firstSlot = calculateSlot firstKey
           secondKey = nextDifferentSlotKey firstSlot 0
           secondSlot = calculateSlot secondKey
-          staleTopology = singleMasterClusterSlots node1 "node-1"
+      staleTopology <- mkTopology node1
       snapshotReady <- newEmptyMVar
       allowCommit <- newEmptyMVar
-      (connector, _) <- createAuthMockConnector $ \address index ->
-        if address == node1 && index == 0
-          then return
-            [ replyWith $ movedResponse firstSlot node2
-            , replyWith $ movedResponse secondSlot node3
-            ]
-            else if index == 0
-              then return [replyWith $ RespBulkString "redirected"]
-            else return
-                [replyWith staleTopology]
-      topology <- mkTopology node1
-      initialClient <- mkAuthMockClusterClient testClusterConfig connector topology
-      let client = initialClient
-            { clusterBeforeTopologyCommit =
-                putMVar snapshotReady () >> takeMVar allowCommit
-            }
-      firstResult <- newEmptyMVar
-      secondResult <- newEmptyMVar
-      _ <- forkIO $ executeKeyedClusterCommand
-        client firstKey ["GET", firstKey] >>= putMVar firstResult
-
-      timeout 5000000 (takeMVar snapshotReady)
-        `shouldReturn` Just ()
-
-      _ <- forkIO $ executeKeyedClusterCommand
-        client secondKey ["GET", secondKey] >>= putMVar secondResult
-
-      timeout 5000000
-        (awaitSlotAddresses client [(firstSlot, node2), (secondSlot, node3)])
-        `shouldReturn` Just ()
+      _ <- forkIO $ putMVar snapshotReady () >> takeMVar allowCommit
+      timeout 5000000 (takeMVar snapshotReady) `shouldReturn` Just ()
+      let committed = mergeRefreshedTopology staleTopology
+            [(firstSlot, node2), (secondSlot, node3)]
       putMVar allowCommit ()
-
-      timeout 5000000 (takeMVar firstResult)
-        `shouldReturn` Just (Right $ RespBulkString "redirected")
-      timeout 5000000 (takeMVar secondResult)
-        `shouldReturn` Just (Right $ RespBulkString "redirected")
-      finalTopology <- readTVarIO $ clusterTopology client
-      findNodeAddressForSlot finalTopology firstSlot `shouldBe` Just node2
-      findNodeAddressForSlot finalTopology secondSlot `shouldBe` Just node3
-      closeClusterClient client
+      findNodeAddressForSlot committed firstSlot `shouldBe` Just node2
+      findNodeAddressForSlot committed secondSlot `shouldBe` Just node3
 
 mkAuthMockClusterClient
   :: ClusterConfig
@@ -1518,8 +1484,7 @@ mkAuthMockClusterClient config connector topology = do
   muxPool <- createMultiplexPool connector 1
   refreshLock <- newMVar ()
   return $
-    ClusterClient
-      topologyVar pool config connector refreshLock (return ()) muxPool
+    ClusterClient topologyVar pool config connector refreshLock muxPool
 
 movedResponse :: Word16 -> NodeAddress -> RespData
 movedResponse slot address =
@@ -1533,18 +1498,6 @@ nextDifferentSlotKey slot index
   | otherwise = nextDifferentSlotKey slot $ index + 1
   where
     candidate = BS8.pack $ "concurrent-moved-key-" ++ show index
-
-awaitSlotAddresses
-  :: ClusterClient client
-  -> [(Word16, NodeAddress)]
-  -> IO ()
-awaitSlotAddresses client expected =
-  atomically $ do
-    topology <- readTVar $ clusterTopology client
-    check $ all
-      (\(slot, address) ->
-        findNodeAddressForSlot topology slot == Just address)
-      expected
 
 askRedirectAdditionalSpec :: Spec
 askRedirectAdditionalSpec = describe "additional ASK redirect integration" $ do
