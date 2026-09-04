@@ -7,11 +7,12 @@ module Main (main) where
 
 import           Control.Concurrent                    (forkFinally, forkIO,
                                                         killThread, threadDelay)
-import           Control.Concurrent.MVar               (MVar, newEmptyMVar,
-                                                        newMVar, putMVar,
-                                                        takeMVar, tryPutMVar,
+import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
+                                                        putMVar, takeMVar,
                                                         tryTakeMVar)
-import           Control.Concurrent.STM                (newTVarIO, readTVarIO)
+import           Control.Concurrent.STM                (TVar, atomically, check,
+                                                        modifyTVar', newTVarIO,
+                                                        readTVar, readTVarIO)
 import           Control.Exception                     (SomeAsyncException,
                                                         SomeException, finally,
                                                         fromException, throwIO,
@@ -791,7 +792,7 @@ askRedirectSpec = describe "ASK redirect integration (executeKeyedClusterCommand
 data AuthMockClient (status :: ConnectionStatus) where
   AuthMockConnected
     :: !(IORef ByteString)
-    -> !(MVar ())
+    -> !(TVar Int)
     -> !(IORef [IO ByteString])
     -> !(IORef Int)
     -> !(IORef Int)
@@ -803,22 +804,21 @@ instance Client AuthMockClient where
     liftIO $ incrementRef closes
   abort (AuthMockConnected _ _ _ _ aborts) =
     liftIO $ incrementRef aborts
-  send (AuthMockConnected sent observed _ _ _) lbs =
+  send (AuthMockConnected sent sendCount _ _ _) lbs =
     liftIO $ do
       atomicModifyIORef' sent $ \old ->
         (old <> LBS.toStrict lbs, ())
-      _ <- tryPutMVar observed ()
-      return ()
+      atomically $ modifyTVar' sendCount (+ 1)
   receive (AuthMockConnected _ _ script _ _) =
     liftIO $ nextScriptedReceive script
 
 data AuthConnectionRecord = AuthConnectionRecord
-  { authRecordAddress    :: !NodeAddress
-  , authRecordIndex      :: !Int
-  , authRecordSent       :: !(IORef ByteString)
-  , authRecordSentSignal :: !(MVar ())
-  , authRecordCloses     :: !(IORef Int)
-  , authRecordAborts     :: !(IORef Int)
+  { authRecordAddress   :: !NodeAddress
+  , authRecordIndex     :: !Int
+  , authRecordSent      :: !(IORef ByteString)
+  , authRecordSendCount :: !(TVar Int)
+  , authRecordCloses    :: !(IORef Int)
+  , authRecordAborts    :: !(IORef Int)
   }
 
 type AuthScript = NodeAddress -> Int -> IO [IO ByteString]
@@ -837,15 +837,15 @@ createAuthMockConnector scriptFor = do
           let index = Map.findWithDefault 0 addr current
           in (Map.insert addr (index + 1) current, index)
         sent <- newIORef BS.empty
-        sentSignal <- newEmptyMVar
+        sendCount <- newTVarIO 0
         script <- scriptFor addr index >>= newIORef
         closes <- newIORef 0
         aborts <- newIORef 0
         let record = AuthConnectionRecord
-              addr index sent sentSignal closes aborts
+              addr index sent sendCount closes aborts
         atomicModifyIORef' records $ \existing ->
           (existing ++ [record], ())
-        return $ AuthMockConnected sent sentSignal script closes aborts
+        return $ AuthMockConnected sent sendCount script closes aborts
   return (connector, readIORef records)
 
 nextScriptedReceive :: IORef [IO ByteString] -> IO ByteString
@@ -869,10 +869,13 @@ commandBytes =
   LBS.toStrict . Builder.toLazyByteString . encodeCommandBuilder
 
 authCommandFor :: ClusterAuthentication -> ByteString
-authCommandFor (ClusterPassword password) =
-  commandBytes ["AUTH", password]
-authCommandFor (ClusterACL username password) =
-  commandBytes ["HELLO", "2", "AUTH", username, password]
+authCommandFor = commandBytes . authCommandArguments
+
+authCommandArguments :: ClusterAuthentication -> [ByteString]
+authCommandArguments (ClusterPassword password) =
+  ["AUTH", password]
+authCommandArguments (ClusterACL username password) =
+  ["HELLO", "2", "AUTH", username, password]
 
 recordSentBytes :: AuthConnectionRecord -> IO ByteString
 recordSentBytes = readIORef . authRecordSent
@@ -956,7 +959,9 @@ clusterAuthenticationSpec =
       client <- createClusterClientWithAuthentication
         testClusterConfig credentials connector
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["CLUSTER", "SLOTS"] 1
+      sent <- recordSentBytes seedRecord
       sent `shouldBe`
         authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
       closeClusterClient client
@@ -972,7 +977,9 @@ clusterAuthenticationSpec =
       client <- createClusterClientWithAuthentication
         testClusterConfig credentials connector
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["CLUSTER", "SLOTS"] 1
+      sent <- recordSentBytes seedRecord
       sent `shouldBe`
         authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
       closeClusterClient client
@@ -1010,6 +1017,11 @@ clusterAuthenticationSpec =
       records <- getRecords
       length records `shouldBe` 3
       mapM_ (\record -> do
+          awaitCommandCount record
+            (if authRecordAddress record == node1 && authRecordIndex record == 0
+              then ["PING"]
+              else ["GET", if authRecordAddress record == node1 then key1 else key2])
+            1
           sent <- recordSentBytes record
           countOccurrences (authCommandFor credentials) sent `shouldBe` 1
           BS.isPrefixOf (authCommandFor credentials) sent `shouldBe` True
@@ -1042,7 +1054,9 @@ clusterAuthenticationSpec =
       executeKeyedClusterCommand client key ["GET", key]
         `shouldReturn` Right (RespBulkString "ask-value")
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node2 0
+      let targetRecord = findAuthRecord records node2 0
+      awaitCommandCount targetRecord ["GET", key] 1
+      sent <- recordSentBytes targetRecord
       sent `shouldBe`
         authCommandFor credentials
           <> commandBytes ["ASKING"]
@@ -1079,10 +1093,14 @@ clusterAuthenticationSpec =
       executeKeyedClusterCommand client key ["GET", key]
         `shouldReturn` Right (RespBulkString "moved-value")
       records <- getRecords
-      targetSent <- recordSentBytes $ findAuthRecord records node2 0
+      let targetRecord = findAuthRecord records node2 0
+      awaitCommandCount targetRecord ["GET", key] 1
+      targetSent <- recordSentBytes targetRecord
       targetSent `shouldBe`
         authCommandFor credentials <> commandBytes ["GET", key]
-      refreshSent <- recordSentBytes $ findAuthRecord records node2 1
+      let refreshRecord = findAuthRecord records node2 1
+      awaitCommandCount refreshRecord ["CLUSTER", "SLOTS"] 1
+      refreshSent <- recordSentBytes refreshRecord
       refreshSent `shouldBe`
         authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
       closeClusterClient client
@@ -1115,6 +1133,7 @@ clusterAuthenticationSpec =
       records <- getRecords
       length records `shouldBe` 3
       mapM_ (\record -> do
+          awaitCommandCount record (authCommandArguments credentials) 1
           sent <- recordSentBytes record
           BS.isPrefixOf (authCommandFor credentials) sent `shouldBe` True
         ) records
@@ -1143,6 +1162,7 @@ clusterAuthenticationSpec =
       records <- getRecords
       length records `shouldBe` 2
       mapM_ (\record -> do
+          awaitCommandCount record (authCommandArguments credentials) 1
           sent <- recordSentBytes record
           BS.isPrefixOf (authCommandFor credentials) sent `shouldBe` True
         ) records
@@ -1163,7 +1183,9 @@ clusterAuthenticationSpec =
         testClusterConfig credentials connector
       pinned <- clusterConnector client node2
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node2 0
+      let pinnedRecord = findAuthRecord records node2 0
+      awaitCommandCount pinnedRecord (authCommandArguments credentials) 1
+      sent <- recordSentBytes pinnedRecord
       sent `shouldBe` authCommandFor credentials
       close pinned
       closeClusterClient client
@@ -1322,7 +1344,9 @@ movedRedirectSpec =
       executeKeyedClusterCommand client key ["GET", key]
         `shouldReturn` Right (RespBulkString "second-value")
       records <- getRecords
-      staleSent <- recordSentBytes $ findAuthRecord records node1 0
+      let staleRecord = findAuthRecord records node1 0
+      awaitCommandCount staleRecord ["GET", key] 1
+      staleSent <- recordSentBytes staleRecord
       staleSent `shouldBe` commandBytes ["GET", key]
       let targetRecord = findAuthRecord records node2 0
       awaitCommandCount targetRecord ["GET", key] 2
@@ -1362,7 +1386,9 @@ movedRedirectSpec =
       Map.findWithDefault 0 node1 counts `shouldBe` 2
       Map.findWithDefault 0 node3 counts `shouldBe` 1
       records <- getRecords
-      alternateSent <- recordSentBytes $ findAuthRecord records node3 0
+      let alternateRecord = findAuthRecord records node3 0
+      awaitCommandCount alternateRecord ["CLUSTER", "SLOTS"] 1
+      alternateSent <- recordSentBytes alternateRecord
       alternateSent `shouldBe` commandBytes ["CLUSTER", "SLOTS"]
       closeClusterClient client
 
@@ -1422,6 +1448,7 @@ movedRedirectSpec =
           "Expected MOVED retry exhaustion, got: " ++ show other
       records <- getRecords
       length records `shouldBe` 3
+      mapM_ (\record -> awaitCommandCount record ["GET", key] 1) records
       sent <- mapM recordSentBytes records
       mapM_ (\bytes ->
           BS.isInfixOf (commandBytes ["ASKING"]) bytes `shouldBe` False
@@ -1443,10 +1470,12 @@ movedRedirectSpec =
             [ replyWith $ movedResponse firstSlot node2
             , replyWith $ movedResponse secondSlot node3
             ]
-          else if index == 0
-            then return [replyWith $ RespBulkString "redirected"]
+            else if index == 0
+              then return [replyWith $ RespBulkString "redirected"]
             else return
-              [takeMVar refreshRelease >> replyWith staleTopology]
+                [ takeMVar refreshRelease
+                    >> replyWith staleTopology
+                ]
       topology <- mkTopology node1
       client <- mkAuthMockClusterClient testClusterConfig connector topology
       firstResult <- newEmptyMVar
@@ -1456,24 +1485,15 @@ movedRedirectSpec =
       _ <- forkIO $ executeKeyedClusterCommand
         client secondKey ["GET", secondKey] >>= putMVar secondResult
 
-      timeout 1000000
+      timeout 5000000
         (awaitSlotAddresses client
           [(firstSlot, node2), (secondSlot, node3)])
         `shouldReturn` Just ()
-      patchedTopology <- readTVarIO $ clusterTopology client
-      let firstNodeId =
-            topologySlots patchedTopology V.! fromIntegral firstSlot
-          secondNodeId =
-            topologySlots patchedTopology V.! fromIntegral secondSlot
-      nodeAddress <$> Map.lookup firstNodeId (topologyNodes patchedTopology)
-        `shouldBe` Just node2
-      nodeAddress <$> Map.lookup secondNodeId (topologyNodes patchedTopology)
-        `shouldBe` Just node3
       putMVar refreshRelease ()
 
-      timeout 1000000 (takeMVar firstResult)
+      timeout 5000000 (takeMVar firstResult)
         `shouldReturn` Just (Right $ RespBulkString "redirected")
-      timeout 1000000 (takeMVar secondResult)
+      timeout 5000000 (takeMVar secondResult)
         `shouldReturn` Just (Right $ RespBulkString "redirected")
       finalTopology <- readTVarIO $ clusterTopology client
       findNodeAddressForSlot finalTopology firstSlot `shouldBe` Just node2
@@ -1510,14 +1530,13 @@ awaitSlotAddresses
   :: ClusterClient client
   -> [(Word16, NodeAddress)]
   -> IO ()
-awaitSlotAddresses client expected = do
-  topology <- readTVarIO $ clusterTopology client
-  if all
+awaitSlotAddresses client expected =
+  atomically $ do
+    topology <- readTVar $ clusterTopology client
+    check $ all
       (\(slot, address) ->
         findNodeAddressForSlot topology slot == Just address)
       expected
-    then return ()
-    else threadDelay 1000 >> awaitSlotAddresses client expected
 
 askRedirectAdditionalSpec :: Spec
 askRedirectAdditionalSpec = describe "additional ASK redirect integration" $ do
@@ -1784,7 +1803,9 @@ clusterErrorClassificationSpec =
       result `shouldBe` Right (RespBulkString "recovered")
       readIORef delays `shouldReturn` [5, 10]
       records <- getRecords
-      seedSent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["CLUSTER", "SLOTS"] 3
+      seedSent <- recordSentBytes seedRecord
       countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) seedSent
         `shouldBe` 3
       closeClusterClient client
@@ -1819,7 +1840,9 @@ clusterErrorClassificationSpec =
           "Expected CLUSTERDOWN exhaustion, got: " ++ show other
       readIORef delays `shouldReturn` [6, 12]
       records <- getRecords
-      seedSent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["CLUSTER", "SLOTS"] 3
+      seedSent <- recordSentBytes seedRecord
       countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) seedSent
         `shouldBe` 3
       let muxRecord = findAuthRecord records node1 1
@@ -1900,7 +1923,9 @@ clusterErrorClassificationSpec =
       result `shouldBe` Right (RespSimpleString "PONG")
       readIORef delays `shouldReturn` [4, 8]
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["PING"] 3
+      sent <- recordSentBytes seedRecord
       countOccurrences (commandBytes ["PING"]) sent `shouldBe` 3
       closeClusterClient client
 
@@ -1928,7 +1953,10 @@ clusterErrorClassificationSpec =
       result `shouldBe` Right (RespSimpleString "PONG")
       readIORef delays `shouldReturn` [5, 10]
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["PING"] 3
+      awaitCommandCount seedRecord ["CLUSTER", "SLOTS"] 3
+      sent <- recordSentBytes seedRecord
       countOccurrences (commandBytes ["PING"]) sent `shouldBe` 3
       countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) sent `shouldBe` 3
       closeClusterClient client
@@ -2171,7 +2199,9 @@ clusterErrorClassificationSpec =
           result `shouldBe` Left expected
           readIORef delays `shouldReturn` []
           records <- getRecords
-          sent <- recordSentBytes $ findAuthRecord records node1 0
+          let seedRecord = findAuthRecord records node1 0
+          awaitCommandCount seedRecord ["PING"] 1
+          sent <- recordSentBytes seedRecord
           countOccurrences (commandBytes ["PING"]) sent `shouldBe` 1
           closeClusterClient client
 
@@ -2196,7 +2226,9 @@ clusterErrorClassificationSpec =
         Left (CrossSlotError "CROSSSLOT keyless permanent")
       readIORef delays `shouldReturn` []
       records <- getRecords
-      sent <- recordSentBytes $ findAuthRecord records node1 0
+      let seedRecord = findAuthRecord records node1 0
+      awaitCommandCount seedRecord ["PING"] 1
+      sent <- recordSentBytes seedRecord
       countOccurrences (commandBytes ["PING"]) sent `shouldBe` 1
       closeClusterClient client
 
@@ -2261,10 +2293,15 @@ awaitCommandCount record command expected = do
         "Timed out waiting for " ++ show expected ++ " sends of " ++ show command
   where
     await = do
+      observed <- readTVarIO $ authRecordSendCount record
       sent <- recordSentBytes record
       if countOccurrences (commandBytes command) sent >= expected
         then return ()
-        else takeMVar (authRecordSentSignal record) >> await
+        else do
+          atomically $ do
+            current <- readTVar $ authRecordSendCount record
+            check $ current > observed
+          await
 
 askRedirectSuccessSpec :: Spec
 askRedirectSuccessSpec = describe "successful command without ASK redirection" $ do
