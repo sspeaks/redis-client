@@ -74,35 +74,34 @@ data ClusterTopology = ClusterTopology
   deriving (Show)
 
 -- | Calculate the hash slot (0–16383) for a Redis key.
--- Respects hash tags: if the key starts with @{tag}@, only @tag@ is hashed.
+-- Respects hash tags: non-empty bytes inside the first brace candidate are hashed.
 calculateSlot :: ByteString -> Word16
 calculateSlot key =
   let !hashKey = extractHashTag key
   in crc16 hashKey
 {-# INLINE calculateSlot #-}
 
--- | Extract hash tag from a key if present
--- Pattern: {tag} - returns the content within the first valid {} pair
+-- | Extract the Redis Cluster hash tag from a key, if present.
+-- The first opening brace and the first closing brace after it form the only
+-- candidate. The enclosed bytes are used when non-empty; otherwise the full key
+-- is returned.
 -- Examples:
 --   "{user}:profile" -> "user"
+--   "prefix{user}:profile" -> "user"
 --   "key" -> "key"
 --   "{}" -> "{}"
 --   "{user" -> "{user"
---   "key{tag}" -> "key{tag}" (no tag at end)
+--   "foo{}{bar}" -> "foo{}{bar}"
 extractHashTag :: ByteString -> ByteString
 extractHashTag key =
-  case BS.breakSubstring "{" key of
-    (before, rest)
-      | not (BS.null rest) && not (BS.null before) ->
-          -- Found { but there's content before it - no valid tag
-          key
-      | not (BS.null rest) ->
-          -- Found { at start, check for closing }
-          case BS.breakSubstring "}" (BS.tail rest) of
-            (tag, after)
-              | not (BS.null after) && not (BS.null tag) -> tag
+  case BS.break (== 0x7b) key of
+    (_, rest)
+      | BS.null rest -> key
+      | otherwise ->
+          case BS.break (== 0x7d) (BS.tail rest) of
+            (tag, closing)
+              | not (BS.null tag) && not (BS.null closing) -> tag
               | otherwise -> key
-      | otherwise -> key
 
 -- | Parse the RESP response from @CLUSTER SLOTS@ into a 'ClusterTopology'.
 -- Returns 'Left' with an error message if the response format is unexpected.
