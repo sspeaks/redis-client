@@ -5,10 +5,17 @@
 
 module Main (main) where
 
-import           Control.Concurrent                  (forkIO, threadDelay)
-import           Control.Concurrent.MVar             (newEmptyMVar, putMVar,
-                                                      takeMVar)
-import           Control.Exception                   (SomeException, try)
+import           Control.Concurrent                  (forkFinally, forkIO,
+                                                      forkOn, killThread,
+                                                      threadDelay)
+import           Control.Concurrent.MVar             (MVar, newEmptyMVar,
+                                                      putMVar, takeMVar,
+                                                      tryPutMVar)
+import           Control.Exception                   (SomeException,
+                                                      fromException, throwIO,
+                                                      try, uninterruptibleMask_)
+import           Control.Monad                       (replicateM, replicateM_,
+                                                      void)
 import           Control.Monad.IO.Class              (liftIO)
 import           Data.ByteString                     (ByteString)
 import qualified Data.ByteString                     as BS
@@ -21,6 +28,7 @@ import           Database.Redis.Client               (Client (..),
 import           Database.Redis.Internal.Multiplexer
 import           Database.Redis.Resp                 (Encodable (..),
                                                       RespData (..))
+import           System.Timeout                      (timeout)
 import           Test.Hspec
 
 -- ---------------------------------------------------------------------------
@@ -64,6 +72,89 @@ createMockClient = do
   let client = MockConnected sendBuf recvQueue
       addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
   return (client, addRecv)
+
+-- | Transport that confirms the writer reached 'send' and then withholds all
+-- responses. This lets lifecycle tests deterministically destroy a mux after
+-- its first slot has moved from the command queue to the pending queue.
+data BlockingClient (a :: ConnectionStatus) where
+  BlockingConnected :: !(MVar ()) -> !(MVar ByteString) -> BlockingClient 'Connected
+
+instance Client BlockingClient where
+  connect = error "BlockingClient: connect not supported"
+  close _ = return ()
+  send (BlockingConnected sent _) _ =
+    liftIO $ void $ tryPutMVar sent ()
+  receive (BlockingConnected _ replies) =
+    liftIO $ takeMVar replies
+
+createBlockingClient :: IO (BlockingClient 'Connected, IO (), ByteString -> IO ())
+createBlockingClient = do
+  sent <- newEmptyMVar
+  replies <- newEmptyMVar
+  let awaitSend = do
+        observed <- timeout 1000000 (takeMVar sent)
+        observed `shouldBe` Just ()
+      reply = putMVar replies
+  return (BlockingConnected sent replies, awaitSend, reply)
+
+-- | Transport with a reader-owned first slot, a pending second slot whose send
+-- is uninterruptibly gated, and a blocked writer that leaves later submissions
+-- queued. It exposes deterministic lifecycle barriers for teardown tests.
+data TeardownClient (a :: ConnectionStatus) where
+  TeardownConnected
+    :: !(IORef Int)
+    -> !(MVar ())
+    -> !(MVar ())
+    -> !(MVar ())
+    -> !(MVar ())
+    -> !(MVar ByteString)
+    -> TeardownClient 'Connected
+
+instance Client TeardownClient where
+  connect = error "TeardownClient: connect not supported"
+  close _ = return ()
+  send (TeardownConnected sendCount firstSent secondStarted releaseSecond _ _) _ =
+    liftIO $ do
+      sendNumber <- atomicModifyIORef' sendCount $ \count ->
+        let next = count + 1
+        in (next, next)
+      case sendNumber of
+        1 -> void $ tryPutMVar firstSent ()
+        2 -> do
+          void $ tryPutMVar secondStarted ()
+          uninterruptibleMask_ $ takeMVar releaseSecond
+        _ -> return ()
+  receive (TeardownConnected _ _ _ _ receiveStarted replies) =
+    liftIO $ do
+      void $ tryPutMVar receiveStarted ()
+      takeMVar replies
+
+createTeardownClient
+  :: IO
+       ( TeardownClient 'Connected
+       , IO ()
+       , IO ()
+       , IO ()
+       , IO ()
+       )
+createTeardownClient = do
+  sendCount <- newIORef 0
+  firstSent <- newEmptyMVar
+  secondStarted <- newEmptyMVar
+  releaseSecond <- newEmptyMVar
+  receiveStarted <- newEmptyMVar
+  replies <- newEmptyMVar
+  let await barrier = do
+        observed <- timeout 1000000 (takeMVar barrier)
+        observed `shouldBe` Just ()
+  return
+    ( TeardownConnected
+        sendCount firstSent secondStarted releaseSecond receiveStarted replies
+    , await firstSent
+    , await secondStarted
+    , await receiveStarted
+    , putMVar releaseSecond ()
+    )
 
 -- | Encode a RespData to strict ByteString (for feeding to mock recv).
 encodeResp :: RespData -> ByteString
@@ -225,6 +316,153 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
       Left (e :: SomeException) -> show e `shouldContain` "MultiplexerDead"
       Right _ -> expectationFailure "Expected MultiplexerDead exception"
 
+  it "destroy wakes a sent but unanswered submitter" $ do
+    (client, awaitSend, _) <- createBlockingClient
+    mux <- createMultiplexer client (receive client)
+    resultVar <- newEmptyMVar
+
+    _ <- forkIO $ do
+      result <- try $ submitCommand mux (encodeCmd ["GET", "blocked"])
+      putMVar resultVar result
+
+    awaitSend
+    destroyMultiplexer mux
+    result <- timeout 1000000 (takeMVar resultVar)
+    result `shouldSatisfy` isTimedMultiplexerDead
+
+  it "a later destroy resumes cancelled teardown across active, pending, and queued slots" $ do
+    pool <- createSlotPool 16
+    (client, awaitFirstSend, awaitSecondSend, awaitReceive, releaseSecondSend) <-
+      createTeardownClient
+    mux <- createMultiplexer client (receive client)
+    firstSlot <- submitCommandAsync pool mux (encodeCmd ["GET", "reader-owned"])
+    firstResult <- waitForSlotInThread pool firstSlot
+    awaitFirstSend
+    awaitReceive
+
+    secondSlot <- submitCommandAsync pool mux (encodeCmd ["GET", "pending"])
+    secondResult <- waitForSlotInThread pool secondSlot
+    awaitSecondSend
+
+    queuedSlots <- mapM
+      (\idx -> submitCommandAsync pool mux
+        (encodeCmd ["GET", LBS.toStrict $ Builder.toLazyByteString $ Builder.intDec idx]))
+      [1 :: Int .. 6]
+    queuedResults <- mapM (waitForSlotInThread pool) queuedSlots
+
+    ownerFinished <- newEmptyMVar
+    owner <- forkFinally (destroyMultiplexer mux) (putMVar ownerFinished)
+    closureStarted <- timeout 1000000 (waitUntilTeardownStarted mux)
+    closureStarted `shouldBe` Just ()
+
+    killThread owner
+    cancelledOwner <- timeout 1000000 (takeMVar ownerFinished)
+    cancelledOwner `shouldSatisfy` \case
+      Just (Left _) -> True
+      _             -> False
+
+    releaseSecondSend
+    resumedDestroy <- timeout 1000000 (destroyMultiplexer mux)
+    resumedDestroy `shouldBe` Just ()
+
+    results <- timeout 1000000 $
+      mapM takeMVar (firstResult : secondResult : queuedResults)
+    results `shouldSatisfy` \case
+      Just completed -> all isMultiplexerDead completed
+      Nothing        -> False
+
+  it "concurrent destroy calls are idempotent and wake the waiter once" $ do
+    pool <- createSlotPool 16
+    (client, awaitSend, _) <- createBlockingClient
+    mux <- createMultiplexer client (receive client)
+    resultVar <- newEmptyMVar
+
+    _ <- forkIO $ do
+      result <- try $ submitCommandPooled pool mux (encodeCmd ["GET", "blocked"])
+      putMVar resultVar result
+
+    awaitSend
+    destroyDone <- replicateM 8 newEmptyMVar
+    mapM_ (\done -> do
+      _ <- forkIO $ destroyMultiplexer mux >> putMVar done ()
+      return ()
+      ) destroyDone
+
+    destroysCompleted <- timeout 1000000 $ mapM_ takeMVar destroyDone
+    destroysCompleted `shouldBe` Just ()
+    result <- timeout 1000000 (takeMVar resultVar)
+    result `shouldSatisfy` isTimedMultiplexerDead
+
+    replicateM_ 3 (destroyMultiplexer mux)
+
+    -- Reusing the same pool concurrently would hang if teardown had returned
+    -- the same ResponseSlot more than once.
+    (reuseClient, addRecv) <- createMockClient
+    reuseMux <- createMultiplexer reuseClient (receive reuseClient)
+    reuseResults <- replicateM 2 newEmptyMVar
+    mapM_ (\reuseResultVar -> do
+      _ <- forkIO $ do
+        reuseResult <- try (submitCommandPooled pool reuseMux (encodeCmd ["PING"]))
+          :: IO (Either SomeException RespData)
+        putMVar reuseResultVar reuseResult
+      return ()
+      ) reuseResults
+    threadDelay 10000
+    addRecv $ encodeResp (RespSimpleString "OK") <> encodeResp (RespSimpleString "OK")
+    reused <- timeout 1000000 $ mapM takeMVar reuseResults
+    reused `shouldSatisfy` \case
+      Just completed -> all isOkResponse completed
+      Nothing        -> False
+    destroyMultiplexer reuseMux
+
+  it "returns the destroyed pooled slot exactly once for deterministic reuse" $
+    runOnCapabilityZero $ do
+      pool <- createSlotPool 1
+      (client, awaitSend, _) <- createBlockingClient
+      mux <- createMultiplexer client (receive client)
+      destroyedSlot <- submitCommandAsync pool mux (encodeCmd ["GET", "blocked"])
+
+      awaitSend
+      destroyMultiplexer mux
+      destroyedResult <- try (waitSlot pool destroyedSlot)
+        :: IO (Either SomeException RespData)
+      destroyedResult `shouldSatisfy` isMultiplexerDead
+
+      (reuseClient, addRecv) <- createMockClient
+      reuseMux <- createMultiplexer reuseClient (receive reuseClient)
+      reusedSlot <- submitCommandAsync pool reuseMux (encodeCmd ["PING"])
+      sameResponseSlot destroyedSlot reusedSlot `shouldBe` True
+
+      premature <- timeout 50000 (waitSlot pool reusedSlot)
+      premature `shouldBe` Nothing
+      addRecv $ encodeResp (RespSimpleString "OK")
+      completed <- timeout 1000000 (waitSlot pool reusedSlot)
+      completed `shouldBe` Just (RespSimpleString "OK")
+      destroyMultiplexer reuseMux
+
+  it "worker failure racing destroy completes every waiter across 50 repetitions" $
+    replicateM_ 50 $ do
+      pool <- createSlotPool 16
+      (client, awaitSend, reply) <- createBlockingClient
+      mux <- createMultiplexer client (receive client)
+      resultVars <- replicateM 4 newEmptyMVar
+
+      mapM_ (\resultVar -> do
+        _ <- forkIO $ do
+          result <- try $ submitCommandPooled pool mux (encodeCmd ["GET", "race"])
+          putMVar resultVar result
+        return ()
+        ) resultVars
+
+      awaitSend
+      _ <- forkIO $ reply "not-resp"
+      destroyMultiplexer mux
+
+      results <- timeout 1000000 $ mapM takeMVar resultVars
+      results `shouldSatisfy` \case
+        Just completed -> all isMultiplexerFailure completed
+        Nothing        -> False
+
   it "handles multiple sequential commands correctly" $ do
     (client, addRecv) <- createMockClient
     mux <- createMultiplexer client (receive client)
@@ -280,3 +518,59 @@ isMultiplexerAliveSpec = describe "isMultiplexerAlive" $ do
     threadDelay 10000
     alive <- isMultiplexerAlive mux
     alive `shouldBe` False
+
+waitForSlotInThread
+  :: SlotPool
+  -> ResponseSlot
+  -> IO (MVar (Either SomeException RespData))
+waitForSlotInThread pool slot = do
+  resultVar <- newEmptyMVar
+  _ <- forkIO $ do
+    result <- try $ waitSlot pool slot
+    putMVar resultVar result
+  return resultVar
+
+waitUntilTeardownStarted :: Multiplexer -> IO ()
+waitUntilTeardownStarted mux = do
+  alive <- isMultiplexerAlive mux
+  if alive
+    then threadDelay 1000 >> waitUntilTeardownStarted mux
+    else return ()
+
+runOnCapabilityZero :: IO () -> IO ()
+runOnCapabilityZero action = do
+  resultVar <- newEmptyMVar
+  _ <- forkOn 0 $ do
+    result <- try action
+    putMVar resultVar result
+  outcome <- timeout 3000000 (takeMVar resultVar)
+  case outcome of
+    Nothing         -> expectationFailure "pinned slot reuse test timed out"
+    Just (Left err) -> throwIO (err :: SomeException)
+    Just (Right ()) -> return ()
+
+isTimedMultiplexerDead
+  :: Maybe (Either SomeException RespData)
+  -> Bool
+isTimedMultiplexerDead (Just result) = isMultiplexerDead result
+isTimedMultiplexerDead Nothing       = False
+
+isMultiplexerDead :: Either SomeException RespData -> Bool
+isMultiplexerDead (Left e) =
+  case fromException e of
+    Just (MultiplexerDead _) -> True
+    _                        -> False
+isMultiplexerDead (Right _) = False
+
+isMultiplexerFailure :: Either SomeException RespData -> Bool
+isMultiplexerFailure (Left e) =
+  case fromException e of
+    Just (MultiplexerDead _)         -> True
+    Just (MultiplexerParseError _)   -> True
+    Just MultiplexerConnectionClosed -> True
+    Nothing                          -> False
+isMultiplexerFailure (Right _) = False
+
+isOkResponse :: Either SomeException RespData -> Bool
+isOkResponse (Right (RespSimpleString "OK")) = True
+isOkResponse _                               = False
