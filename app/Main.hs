@@ -24,7 +24,8 @@ import           AppConfig                             (RunState (..),
                                                         defaultRunState,
                                                         resolveRunStateCredentials,
                                                         runCommandsAgainstPlaintextHost,
-                                                        runCommandsAgainstTLSHost)
+                                                        runCommandsAgainstTLSHost,
+                                                        warnIfInsecurePlaintextAuthentication)
 import           ClusterCli                            (routeAndExecuteCommand)
 import           Control.Concurrent.STM                (readTVarIO)
 import           Control.Monad                         (unless, void, when)
@@ -93,6 +94,7 @@ options =
     Option ['p'] ["port"] (ReqArg (\arg opt -> return $ opt {port = Just . read $ arg}) "PORT") "Port to connect to. Will default to 6379 for plaintext and 6380 for TLS",
     Option ['u'] ["username"] (ReqArg (\arg opt -> return $ opt {username = arg}) "USERNAME") "Username to authenticate with (default: 'default')",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
+    Option [] ["allow-insecure-plaintext-auth"] (NoArg (\opt -> return $ opt {allowInsecurePlaintextAuth = True})) "Allow credentials over plaintext and emit a warning",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
     Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)",
@@ -162,6 +164,7 @@ main = do
         putStrLn "No host specified\n"
         putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
         exitFailure
+      warnIfInsecurePlaintextAuthentication state
       when (mode == "tunn") $ tunn state
       when (mode == "cli") $ cli state
       when (mode == "fill") $ fill state
@@ -175,6 +178,8 @@ printUsage = do
   putStrLn $ "  " ++ passwordFileEnvironmentVariable ++ "  Path to a credential file (highest precedence)"
   putStrLn $ "  " ++ passwordEnvironmentVariable ++ "       Credential value used when no file is configured"
   putStrLn "  Command-line password options are rejected to keep credentials out of process listings."
+  putStrLn "  Credentialed connections require TLS unless --allow-insecure-plaintext-auth is explicitly supplied."
+  putStrLn "  REDIS_CLIENT_TLS_INSECURE=1 disables TLS certificate verification; all other non-false values are rejected."
   putStrLn ""
   putStrLn "Modes:"
   putStrLn "  cli     Interactive Redis command-line interface"

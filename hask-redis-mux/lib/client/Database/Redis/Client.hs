@@ -18,43 +18,46 @@ module Database.Redis.Client
   , ConnectionStatus (..)
   ) where
 
-import           Control.Exception              (IOException, bracket, catch,
-                                                 finally, throwIO)
-import           Control.Monad                  (void)
+import           Control.Exception               (IOException, bracket, catch,
+                                                  finally, throwIO)
+import           Control.Monad                   (void)
 import           Control.Monad.IO.Class
-import qualified Data.ByteString                as BS
-import qualified Data.ByteString.Char8          as BS8
-import qualified Data.ByteString.Lazy           as LBS
-import           Data.Default.Class             (def)
-import           Data.IP                        (IPv4, toHostAddress)
-import           Data.Kind                      (Type)
-import           Data.Word                      (Word32)
-import           Network.DNS                    (defaultResolvConf, lookupA,
-                                                 makeResolvSeed, withResolver)
-import           Network.Socket                 (Family (AF_INET), HostAddress,
-                                                 SockAddr (SockAddrInet),
-                                                 Socket, SocketOption (..),
-                                                 SocketType (Stream),
-                                                 defaultProtocol,
-                                                 setSocketOption, socket,
-                                                 tupleToHostAddress)
-import qualified Network.Socket                 as S
-import           Network.Socket.ByteString      (recv, sendMany)
-import           Network.Socket.ByteString.Lazy (sendAll)
-import           Network.TLS                    (ClientHooks (..),
-                                                 ClientParams (..), Context,
-                                                 Shared (..), Supported (..),
-                                                 Version (..), bye, contextNew,
-                                                 defaultParamsClient, handshake,
-                                                 recvData, sendData)
-import           Network.TLS.Extra              (ciphersuite_strong)
-import           Prelude                        hiding (getContents)
-import           System.Environment             (lookupEnv)
-import           System.IO                      (BufferMode (LineBuffering),
-                                                 hFlush, hSetBuffering, stdout)
-import           System.Timeout                 (timeout)
-import           System.X509.Unix               (getSystemCertificateStore)
-import           Text.Printf                    (printf)
+import qualified Data.ByteString                 as BS
+import qualified Data.ByteString.Char8           as BS8
+import qualified Data.ByteString.Lazy            as LBS
+import           Data.Default.Class              (def)
+import           Data.IP                         (IPv4, toHostAddress)
+import           Data.Kind                       (Type)
+import           Data.Word                       (Word32)
+import           Database.Redis.Client.TLSConfig (parseTLSVerificationBypass,
+                                                  tlsInsecureEnvironmentVariable)
+import           Network.DNS                     (defaultResolvConf, lookupA,
+                                                  makeResolvSeed, withResolver)
+import           Network.Socket                  (Family (AF_INET), HostAddress,
+                                                  SockAddr (SockAddrInet),
+                                                  Socket, SocketOption (..),
+                                                  SocketType (Stream),
+                                                  defaultProtocol,
+                                                  setSocketOption, socket,
+                                                  tupleToHostAddress)
+import qualified Network.Socket                  as S
+import           Network.Socket.ByteString       (recv, sendMany)
+import           Network.Socket.ByteString.Lazy  (sendAll)
+import           Network.TLS                     (ClientHooks (..),
+                                                  ClientParams (..), Context,
+                                                  Shared (..), Supported (..),
+                                                  Version (..), bye, contextNew,
+                                                  defaultParamsClient,
+                                                  handshake, recvData, sendData)
+import           Network.TLS.Extra               (ciphersuite_strong)
+import           Prelude                         hiding (getContents)
+import           System.Environment              (lookupEnv)
+import           System.IO                       (BufferMode (LineBuffering),
+                                                  hFlush, hPutStrLn,
+                                                  hSetBuffering, stderr, stdout)
+import           System.Timeout                  (timeout)
+import           System.X509.Unix                (getSystemCertificateStore)
+import           Text.Printf                     (printf)
 
 -- | Connection lifecycle phase, used as a DataKinds-promoted type parameter
 -- to statically track whether a client is connected.
@@ -110,7 +113,7 @@ instance Client PlainTextClient where
 -- | TLS-encrypted client. Construct with 'NotConnectedTLSClient' (hostname + optional port,
 -- defaults to 6380) or 'NotConnectedTLSClientWithHostname' when the TLS certificate
 -- hostname differs from the connection address (common in cluster mode).
--- Set @REDIS_CLIENT_TLS_INSECURE@ to skip certificate validation.
+-- Set @REDIS_CLIENT_TLS_INSECURE=1@ to skip certificate validation.
 data TLSClient (a :: ConnectionStatus) where
   NotConnectedTLSClient :: String -> Maybe Int -> TLSClient 'NotConnected
   -- | TLS client with separate hostname for certificate validation
@@ -146,12 +149,21 @@ instance Client TLSClient where
 -- and targetAddress for the actual network connection.
 connectTLS :: (MonadIO m) => String -> String -> Maybe Int -> m (TLSClient 'Connected)
 connectTLS certHostname targetAddress port = liftIO $ do
+  insecureValue <- lookupEnv tlsInsecureEnvironmentVariable
+  allowInsecure <-
+    case parseTLSVerificationBypass insecureValue of
+      Left message -> ioError $ userError message
+      Right value  -> pure value
+  if allowInsecure
+    then hPutStrLn stderr $
+      "WARNING: TLS CERTIFICATE VERIFICATION IS DISABLED for "
+        ++ show certHostname
+        ++ ". The server identity will not be verified."
+    else pure ()
   (sock, ipCorrectEndian) <- createSocket targetAddress (maybe 6380 fromIntegral port)
   S.connect sock (SockAddrInet (maybe 6380 fromIntegral port) ipCorrectEndian)
   store <- getSystemCertificateStore
-  insecureFlag <- lookupEnv "REDIS_CLIENT_TLS_INSECURE"
-  let allowInsecure = maybe False (not . null) insecureFlag
-      baseParams =
+  let baseParams =
         (defaultParamsClient certHostname "redis-server")
           { clientSupported =
               def

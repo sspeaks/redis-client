@@ -10,7 +10,8 @@ module ClusterSetup
   ) where
 
 import           AppConfig                             (RunState (..),
-                                                        authenticate)
+                                                        authenticate,
+                                                        enforcePlaintextAuthenticationPolicy)
 import           Control.Concurrent.STM                (readTVarIO)
 import qualified Control.Monad.State                   as State
 import qualified Data.ByteString                       as BS
@@ -49,6 +50,7 @@ authenticateClient state client
 -- | Create cluster connector for plaintext connections
 createPlaintextConnector :: RunState -> Connector PlainTextClient
 createPlaintextConnector state addr = do
+  enforcePlaintextAuthenticationPolicy state
   client <- connect $ NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
   authenticateClient state client
 

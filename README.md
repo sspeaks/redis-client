@@ -51,6 +51,7 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 - `-p`, `--port PORT` - Port (default: 6379 for plaintext, 6380 for TLS)
 - `-u`, `--username USERNAME` - Username (default: 'default')
 - `-t`, `--tls` - Use TLS connection
+- `--allow-insecure-plaintext-auth` - Explicitly allow credentials over plaintext. Emits a warning naming the target host.
 - `-c`, `--cluster` - Redis Cluster mode
 - `-d`, `--data GBs` - Amount of random data to fill (in GB)
 - `-f`, `--flush` - Flush database before filling (deletes all data; use only in testing)
@@ -62,6 +63,7 @@ redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 
 - `REDIS_CLIENT_PASSWORD_FILE` - Path to a file containing the Redis password, access key, or Entra token. This has highest precedence. A single trailing newline is removed.
 - `REDIS_CLIENT_PASSWORD` - Redis password, access key, or Entra token used only when `REDIS_CLIENT_PASSWORD_FILE` is not set.
+- `REDIS_CLIENT_TLS_INSECURE` - Set to exactly `1` to disable TLS certificate verification. Unset, empty, `0`, and `false` keep verification enabled; every other value is rejected.
 - `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory. Use smaller values (1024-2048 KB) in memory-constrained environments or larger values (4096-8192 KB) for maximum throughput.
 
 Credential command-line options are no longer accepted. This is a breaking security change that keeps live credentials out of process arguments and parallel fill child arguments. Prefer an owner-only credential file:
@@ -75,10 +77,33 @@ unset REDIS_CREDENTIAL
 chmod 600 "$HOME/.config/redis-client/password"
 
 REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
-  redis-client cli -h localhost
+  redis-client cli -h localhost -t
 ```
 
 Environment values are convenient for automation but may be visible to other same-user or privileged processes, depending on operating-system and platform policy. Avoid exporting credentials into shell startup files.
+
+Credentialed connections require TLS by default. For a trusted local test server
+that does not support TLS, the risk must be acknowledged explicitly:
+
+```sh
+REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
+  redis-client cli -h 127.0.0.1 --allow-insecure-plaintext-auth
+```
+
+This override prints a prominent warning naming the target and stating that the
+credential is being sent unencrypted. Do not use it across shared or untrusted
+networks.
+
+TLS certificate verification remains enabled unless
+`REDIS_CLIENT_TLS_INSECURE=1` is set. This bypass is intended only for controlled
+testing with a server whose certificate cannot be verified:
+
+```sh
+REDIS_CLIENT_TLS_INSECURE=1 redis-client cli -h test-cache.local -t
+```
+
+The client warns whenever verification is disabled. Values such as `true`,
+`yes`, or misspellings fail rather than silently weakening TLS.
 
 ## Azure Redis Integration
 
@@ -127,6 +152,9 @@ main = do
 Set `standaloneUseMultiplexing = False` to fall back to sequential (non-pipelined) command execution.
 
 For TLS connections, use `clusterTLSConnector` instead of `clusterPlaintextConnector`.
+Library callers that issue `AUTH` directly are responsible for choosing a TLS
+connector; the CLI enforces the credentialed-plaintext policy because it owns
+both the credential and transport configuration.
 
 ### Cluster Client
 
