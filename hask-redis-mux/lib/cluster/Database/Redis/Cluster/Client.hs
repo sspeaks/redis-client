@@ -554,6 +554,14 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
     (k:_) -> executeKeyedAs k ("MGET" : keys)
   setnx k v = executeKeyedAs k ["SETNX", k, v]
   decr k = executeKeyedAs k ["DECR", k]
+  append k v = executeKeyedAs k ["APPEND", k, v]
+  strlen k = executeKeyedAs k ["STRLEN", k]
+  setex k secs v = executeKeyedAs k ["SETEX", k, showBS secs, v]
+  incrby k amt = executeKeyedAs k ["INCRBY", k, showBS amt]
+  decrby k amt = executeKeyedAs k ["DECRBY", k, showBS amt]
+  incrbyfloat k amt = executeKeyedAs k ["INCRBYFLOAT", k, showBS amt]
+  getdel k = executeKeyedAs k ["GETDEL", k]
+  getex k opts = executeKeyedAs k (["GETEX", k] ++ opts)
   psetex k ms v = executeKeyedAs k ["PSETEX", k, showBS ms, v]
   bulkSet kvs = case kvs of
     []         -> executeKeyless (RedisCommandClient.bulkSet [])
@@ -575,6 +583,18 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   lrange k start stop = executeKeyedAs k ["LRANGE", k, showBS start, showBS stop]
   expire k secs = executeKeyedAs k ["EXPIRE", k, showBS secs]
   ttl k = executeKeyedAs k ["TTL", k]
+  persist k = executeKeyedAs k ["PERSIST", k]
+  keyType k = executeKeyedAs k ["TYPE", k]
+  rename k newk = executeKeyedAs k ["RENAME", k, newk]
+  renamenx k newk = executeKeyedAs k ["RENAMENX", k, newk]
+  unlink keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.unlink [])
+    (k:_) -> executeKeyedAs k ("UNLINK" : keys)
+  pfadd k elements = executeKeyedAs k ("PFADD" : k : elements)
+  pfcount keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.pfcount [])
+    (k:_) -> executeKeyedAs k ("PFCOUNT" : keys)
+  pfmerge destk srckeys = executeKeyedAs destk ("PFMERGE" : destk : srckeys)
   rpush k vs = executeKeyedAs k ("RPUSH" : k : vs)
   lpop k = executeKeyedAs k ["LPOP", k]
   rpop k = executeKeyedAs k ["RPOP", k]
@@ -582,11 +602,32 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   smembers k = executeKeyedAs k ["SMEMBERS", k]
   scard k = executeKeyedAs k ["SCARD", k]
   sismember k v = executeKeyedAs k ["SISMEMBER", k, v]
+  srem k members = executeKeyedAs k ("SREM" : k : members)
+  sdiff keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.sdiff [])
+    (k:_) -> executeKeyedAs k ("SDIFF" : keys)
+  sinter keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.sinter [])
+    (k:_) -> executeKeyedAs k ("SINTER" : keys)
+  sunion keys = case keys of
+    []    -> executeKeyless (RedisCommandClient.sunion [])
+    (k:_) -> executeKeyedAs k ("SUNION" : keys)
+  spop k = executeKeyedAs k ["SPOP", k]
+  srandmember k = executeKeyedAs k ["SRANDMEMBER", k]
   hdel k fs = executeKeyedAs k ("HDEL" : k : fs)
   hkeys k = executeKeyedAs k ["HKEYS", k]
   hvals k = executeKeyedAs k ["HVALS", k]
+  hgetall k = executeKeyedAs k ["HGETALL", k]
+  hlen k = executeKeyedAs k ["HLEN", k]
+  hsetnx k f v = executeKeyedAs k ["HSETNX", k, f, v]
+  hincrby k f amt = executeKeyedAs k ["HINCRBY", k, f, showBS amt]
+  hincrbyfloat k f amt = executeKeyedAs k ["HINCRBYFLOAT", k, f, showBS amt]
   llen k = executeKeyedAs k ["LLEN", k]
   lindex k idx = executeKeyedAs k ["LINDEX", k, showBS idx]
+  linsert k pos pivot element = executeKeyedAs k ["LINSERT", k, pos, pivot, element]
+  lset k idx element = executeKeyedAs k ["LSET", k, showBS idx, element]
+  ltrim k start stop = executeKeyedAs k ["LTRIM", k, showBS start, showBS stop]
+  lrem k cnt element = executeKeyedAs k ["LREM", k, showBS cnt, element]
   clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
   clientReply val = executeKeyless (RedisCommandClient.clientReply val)
   zadd k members =
@@ -596,6 +637,14 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
     let base = ["ZRANGE", k, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
     in executeKeyedAs k command
+  zrem k members = executeKeyedAs k ("ZREM" : k : members)
+  zcard k = executeKeyedAs k ["ZCARD", k]
+  zscore k member = executeKeyedAs k ["ZSCORE", k, member]
+  zrank k member = executeKeyedAs k ["ZRANK", k, member]
+  zrevrank k member = executeKeyedAs k ["ZREVRANK", k, member]
+  zcount k minScore maxScore = executeKeyedAs k ["ZCOUNT", k, minScore, maxScore]
+  zincrby k increment member = executeKeyedAs k ["ZINCRBY", k, showBS increment, member]
+  zrangestore dst src minVal maxVal opts = executeKeyedAs dst (["ZRANGESTORE", dst, src, minVal, maxVal] ++ opts)
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
     in executeKeyedAs k ("GEOADD" : k : payload)

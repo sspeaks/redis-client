@@ -213,6 +213,14 @@ instance RedisCommands StandaloneCommandClient where
   mget keys = submitMuxAs ("MGET" : keys)
   setnx k v = submitMuxAs ["SETNX", k, v]
   decr k = submitMuxAs ["DECR", k]
+  append k v = submitMuxAs ["APPEND", k, v]
+  strlen k = submitMuxAs ["STRLEN", k]
+  setex k secs v = submitMuxAs ["SETEX", k, showBS secs, v]
+  incrby k amt = submitMuxAs ["INCRBY", k, showBS amt]
+  decrby k amt = submitMuxAs ["DECRBY", k, showBS amt]
+  incrbyfloat k amt = submitMuxAs ["INCRBYFLOAT", k, showBS amt]
+  getdel k = submitMuxAs ["GETDEL", k]
+  getex k opts = submitMuxAs (["GETEX", k] ++ opts)
   psetex k ms v = submitMuxAs ["PSETEX", k, showBS ms, v]
   bulkSet kvs = submitMuxAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
   flushAll = submitMuxAs ["FLUSHALL"]
@@ -228,6 +236,14 @@ instance RedisCommands StandaloneCommandClient where
   lrange k start stop = submitMuxAs ["LRANGE", k, showBS start, showBS stop]
   expire k secs = submitMuxAs ["EXPIRE", k, showBS secs]
   ttl k = submitMuxAs ["TTL", k]
+  persist k = submitMuxAs ["PERSIST", k]
+  keyType k = submitMuxAs ["TYPE", k]
+  rename k newk = submitMuxAs ["RENAME", k, newk]
+  renamenx k newk = submitMuxAs ["RENAMENX", k, newk]
+  unlink keys = submitMuxAs ("UNLINK" : keys)
+  pfadd k elements = submitMuxAs ("PFADD" : k : elements)
+  pfcount keys = submitMuxAs ("PFCOUNT" : keys)
+  pfmerge destk srckeys = submitMuxAs ("PFMERGE" : destk : srckeys)
   rpush k vs = submitMuxAs ("RPUSH" : k : vs)
   lpop k = submitMuxAs ["LPOP", k]
   rpop k = submitMuxAs ["RPOP", k]
@@ -235,11 +251,26 @@ instance RedisCommands StandaloneCommandClient where
   smembers k = submitMuxAs ["SMEMBERS", k]
   scard k = submitMuxAs ["SCARD", k]
   sismember k v = submitMuxAs ["SISMEMBER", k, v]
+  srem k members = submitMuxAs ("SREM" : k : members)
+  sdiff keys = submitMuxAs ("SDIFF" : keys)
+  sinter keys = submitMuxAs ("SINTER" : keys)
+  sunion keys = submitMuxAs ("SUNION" : keys)
+  spop k = submitMuxAs ["SPOP", k]
+  srandmember k = submitMuxAs ["SRANDMEMBER", k]
   hdel k fs = submitMuxAs ("HDEL" : k : fs)
   hkeys k = submitMuxAs ["HKEYS", k]
   hvals k = submitMuxAs ["HVALS", k]
+  hgetall k = submitMuxAs ["HGETALL", k]
+  hlen k = submitMuxAs ["HLEN", k]
+  hsetnx k f v = submitMuxAs ["HSETNX", k, f, v]
+  hincrby k f amt = submitMuxAs ["HINCRBY", k, f, showBS amt]
+  hincrbyfloat k f amt = submitMuxAs ["HINCRBYFLOAT", k, f, showBS amt]
   llen k = submitMuxAs ["LLEN", k]
   lindex k idx = submitMuxAs ["LINDEX", k, showBS idx]
+  linsert k pos pivot element = submitMuxAs ["LINSERT", k, pos, pivot, element]
+  lset k idx element = submitMuxAs ["LSET", k, showBS idx, element]
+  ltrim k start stop = submitMuxAs ["LTRIM", k, showBS start, showBS stop]
+  lrem k cnt element = submitMuxAs ["LREM", k, showBS cnt, element]
   clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
   clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
 
@@ -261,6 +292,15 @@ instance RedisCommands StandaloneCommandClient where
     let base = ["ZRANGE", k, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
     in submitMuxAs command
+
+  zrem k members = submitMuxAs ("ZREM" : k : members)
+  zcard k = submitMuxAs ["ZCARD", k]
+  zscore k member = submitMuxAs ["ZSCORE", k, member]
+  zrank k member = submitMuxAs ["ZRANK", k, member]
+  zrevrank k member = submitMuxAs ["ZREVRANK", k, member]
+  zcount k minScore maxScore = submitMuxAs ["ZCOUNT", k, minScore, maxScore]
+  zincrby k increment member = submitMuxAs ["ZINCRBY", k, showBS increment, member]
+  zrangestore dst src minVal maxVal opts = submitMuxAs (["ZRANGESTORE", dst, src, minVal, maxVal] ++ opts)
 
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries

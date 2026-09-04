@@ -255,3 +255,385 @@ spec = describe "Standalone Multiplexed Client" $ do
       result `shouldBe` RespInteger 2
       _ <- run client flushAll
       closeStandaloneClient client
+
+  describe "New string commands" $ do
+    it "APPEND appends to string and returns new length" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "append-key" "hello"
+      r1 <- run client $ append "append-key" " world"
+      r1 `shouldBe` RespInteger 11
+      r2 <- run client $ get "append-key"
+      r2 `shouldBe` RespBulkString "hello world"
+      _ <- run client $ del ["append-key"]
+      closeStandaloneClient client
+
+    it "STRLEN returns string length" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "strlen-key" "hello"
+      result <- run client $ strlen "strlen-key"
+      result `shouldBe` RespInteger 5
+      _ <- run client $ del ["strlen-key"]
+      closeStandaloneClient client
+
+    it "SETEX sets with expiry" $ do
+      client <- createTestStandaloneClient
+      r1 <- run client $ setex "setex-key" 100 "value"
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ get "setex-key"
+      r2 `shouldBe` RespBulkString "value"
+      r3 <- run client $ ttl "setex-key"
+      -- TTL should be positive (close to 100)
+      case r3 of
+        RespInteger t -> t `shouldSatisfy` (> 0)
+        _ -> expectationFailure $ "Expected RespInteger, got: " ++ show r3
+      _ <- run client $ del ["setex-key"]
+      closeStandaloneClient client
+
+    it "INCRBY and DECRBY adjust by arbitrary amount" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "incrby-key" "10"
+      r1 <- run client $ incrby "incrby-key" 5
+      r1 `shouldBe` RespInteger 15
+      r2 <- run client $ decrby "incrby-key" 3
+      r2 `shouldBe` RespInteger 12
+      _ <- run client $ del ["incrby-key"]
+      closeStandaloneClient client
+
+    it "INCRBYFLOAT increments by float" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "floatkey" "10.5"
+      r1 <- run client $ incrbyfloat "floatkey" 0.1
+      r1 `shouldBe` RespBulkString "10.6"
+      _ <- run client $ del ["floatkey"]
+      closeStandaloneClient client
+
+    it "GETDEL gets and deletes" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "getdel-key" "myval"
+      r1 <- run client $ getdel "getdel-key"
+      r1 `shouldBe` RespBulkString "myval"
+      r2 <- run client $ get "getdel-key"
+      r2 `shouldBe` RespNullBulkString
+      closeStandaloneClient client
+
+    it "GETEX gets value and sets expiry" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "getex-key" "val"
+      r1 <- run client $ getex "getex-key" ["EX", "100"]
+      r1 `shouldBe` RespBulkString "val"
+      r2 <- run client $ ttl "getex-key"
+      case r2 of
+        RespInteger t -> t `shouldSatisfy` (> 0)
+        _ -> expectationFailure $ "Expected RespInteger, got: " ++ show r2
+      _ <- run client $ del ["getex-key"]
+      closeStandaloneClient client
+
+  describe "New hash commands" $ do
+    it "HGETALL returns all fields and values" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hgetall-hash" "f1" "v1"
+      _ <- run client $ hset "hgetall-hash" "f2" "v2"
+      result <- run client $ hgetall "hgetall-hash"
+      case result of
+        RespArray items -> do
+          length items `shouldBe` 4  -- 2 field-value pairs
+          items `shouldSatisfy` (elem (RespBulkString "f1"))
+          items `shouldSatisfy` (elem (RespBulkString "v1"))
+          items `shouldSatisfy` (elem (RespBulkString "f2"))
+          items `shouldSatisfy` (elem (RespBulkString "v2"))
+        _ -> expectationFailure $ "Expected RespArray, got: " ++ show result
+      _ <- run client $ del ["hgetall-hash"]
+      closeStandaloneClient client
+
+    it "HLEN returns number of fields" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hlen-hash" "f1" "v1"
+      _ <- run client $ hset "hlen-hash" "f2" "v2"
+      result <- run client $ hlen "hlen-hash"
+      result `shouldBe` RespInteger 2
+      _ <- run client $ del ["hlen-hash"]
+      closeStandaloneClient client
+
+    it "HSETNX sets only when field does not exist" $ do
+      client <- createTestStandaloneClient
+      r1 <- run client $ hsetnx "hsetnx-hash" "field" "original"
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ hsetnx "hsetnx-hash" "field" "new"
+      r2 `shouldBe` RespInteger 0
+      r3 <- run client $ hget "hsetnx-hash" "field"
+      r3 `shouldBe` RespBulkString "original"
+      _ <- run client $ del ["hsetnx-hash"]
+      closeStandaloneClient client
+
+    it "HINCRBY increments hash field integer" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hincrby-hash" "count" "10"
+      result <- run client $ hincrby "hincrby-hash" "count" 5
+      result `shouldBe` RespInteger 15
+      _ <- run client $ del ["hincrby-hash"]
+      closeStandaloneClient client
+
+    it "HINCRBYFLOAT increments hash field float" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ hset "hincrbyfloat-hash" "price" "10.5"
+      result <- run client $ hincrbyfloat "hincrbyfloat-hash" "price" 1.5
+      result `shouldBe` RespBulkString "12"
+      _ <- run client $ del ["hincrbyfloat-hash"]
+      closeStandaloneClient client
+
+  -- | Tests for LINSERT, LSET, LTRIM, LREM list commands added in
+  -- the missing-redis-commands feature branch. Validates that each
+  -- command behaves correctly against a real Redis instance.
+  describe "New list commands" $ do
+    it "LINSERT inserts before and after pivot" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "linsert-list" ["a", "c"]
+      r1 <- run client $ linsert "linsert-list" "BEFORE" "c" "b"
+      r1 `shouldBe` RespInteger 3
+      r2 <- run client $ lrange "linsert-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "a", RespBulkString "b", RespBulkString "c"]
+      _ <- run client $ del ["linsert-list"]
+      closeStandaloneClient client
+
+    it "LSET updates element at index" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "lset-list" ["a", "b", "c"]
+      r1 <- run client $ lset "lset-list" 1 "B"
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ lrange "lset-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "a", RespBulkString "B", RespBulkString "c"]
+      _ <- run client $ del ["lset-list"]
+      closeStandaloneClient client
+
+    it "LTRIM trims list to range" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "ltrim-list" ["a", "b", "c", "d", "e"]
+      r1 <- run client $ ltrim "ltrim-list" 1 3
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ lrange "ltrim-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "b", RespBulkString "c", RespBulkString "d"]
+      _ <- run client $ del ["ltrim-list"]
+      closeStandaloneClient client
+
+    it "LREM removes elements" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ rpush "lrem-list" ["a", "b", "a", "c", "a"]
+      r1 <- run client $ lrem "lrem-list" 2 "a"
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ lrange "lrem-list" 0 (-1)
+      r2 `shouldBe` RespArray [RespBulkString "b", RespBulkString "c", RespBulkString "a"]
+      _ <- run client $ del ["lrem-list"]
+      closeStandaloneClient client
+
+  -- | Tests for new set commands: SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER
+  describe "New set commands" $ do
+    it "SREM removes members and returns count" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "srem-set" ["a", "b", "c"]
+      r1 <- run client $ srem "srem-set" ["a", "b", "nonexistent"]
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ smembers "srem-set"
+      r2 `shouldBe` RespArray [RespBulkString "c"]
+      _ <- run client $ del ["srem-set"]
+      closeStandaloneClient client
+
+    it "SDIFF returns set difference" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "sdiff-s1" ["a", "b", "c"]
+      _ <- run client $ sadd "sdiff-s2" ["b", "c", "d"]
+      result <- run client $ sdiff ["sdiff-s1", "sdiff-s2"]
+      result `shouldBe` RespArray [RespBulkString "a"]
+      _ <- run client $ del ["sdiff-s1", "sdiff-s2"]
+      closeStandaloneClient client
+
+    it "SINTER returns set intersection" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "sinter-s1" ["a", "b", "c"]
+      _ <- run client $ sadd "sinter-s2" ["b", "c", "d"]
+      result <- run client $ sinter ["sinter-s1", "sinter-s2"]
+      case result of
+        RespArray items -> do
+          length items `shouldBe` 2
+          items `shouldSatisfy` (elem (RespBulkString "b"))
+          items `shouldSatisfy` (elem (RespBulkString "c"))
+        _ -> expectationFailure $ "Expected RespArray, got: " ++ show result
+      _ <- run client $ del ["sinter-s1", "sinter-s2"]
+      closeStandaloneClient client
+
+    it "SUNION returns set union" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "sunion-s1" ["a", "b"]
+      _ <- run client $ sadd "sunion-s2" ["b", "c"]
+      result <- run client $ sunion ["sunion-s1", "sunion-s2"]
+      case result of
+        RespArray items -> do
+          length items `shouldBe` 3
+          items `shouldSatisfy` (elem (RespBulkString "a"))
+          items `shouldSatisfy` (elem (RespBulkString "b"))
+          items `shouldSatisfy` (elem (RespBulkString "c"))
+        _ -> expectationFailure $ "Expected RespArray, got: " ++ show result
+      _ <- run client $ del ["sunion-s1", "sunion-s2"]
+      closeStandaloneClient client
+
+    it "SPOP removes and returns a random member" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "spop-set" ["only"]
+      result <- run client $ spop "spop-set"
+      result `shouldBe` RespBulkString "only"
+      r2 <- run client $ scard "spop-set"
+      r2 `shouldBe` RespInteger 0
+      _ <- run client $ del ["spop-set"]
+      closeStandaloneClient client
+
+    it "SRANDMEMBER returns a random member without removing" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ sadd "srand-set" ["a", "b", "c"]
+      result <- run client $ srandmember "srand-set"
+      case result of
+        RespBulkString _ -> pure ()  -- any member is fine
+        _ -> expectationFailure $ "Expected RespBulkString, got: " ++ show result
+      r2 <- run client $ scard "srand-set"
+      r2 `shouldBe` RespInteger 3  -- not removed
+      _ <- run client $ del ["srand-set"]
+      closeStandaloneClient client
+
+  -- | Tests for new sorted set commands: ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY
+  describe "New sorted set commands" $ do
+    it "ZREM removes members and returns count" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zrem-zset" [(1, "a"), (2, "b"), (3, "c")]
+      r1 <- run client $ zrem "zrem-zset" ["a", "c", "nonexistent"]
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ zrange "zrem-zset" 0 (-1) False
+      r2 `shouldBe` RespArray [RespBulkString "b"]
+      _ <- run client $ del ["zrem-zset"]
+      closeStandaloneClient client
+
+    it "ZCARD returns cardinality" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zcard-zset" [(1, "a"), (2, "b"), (3, "c")]
+      result <- run client $ zcard "zcard-zset"
+      result `shouldBe` RespInteger 3
+      _ <- run client $ del ["zcard-zset"]
+      closeStandaloneClient client
+
+    it "ZSCORE returns member score" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zscore-zset" [(42, "member")]
+      result <- run client $ zscore "zscore-zset" "member"
+      result `shouldBe` RespBulkString "42"
+      _ <- run client $ del ["zscore-zset"]
+      closeStandaloneClient client
+
+    it "ZRANK and ZREVRANK return rank" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zrank-zset" [(1, "a"), (2, "b"), (3, "c")]
+      r1 <- run client $ zrank "zrank-zset" "b"
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ zrevrank "zrank-zset" "b"
+      r2 `shouldBe` RespInteger 1
+      _ <- run client $ del ["zrank-zset"]
+      closeStandaloneClient client
+
+    it "ZCOUNT counts members in score range" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zcount-zset" [(1, "a"), (2, "b"), (3, "c"), (4, "d")]
+      result <- run client $ zcount "zcount-zset" "2" "3"
+      result `shouldBe` RespInteger 2
+      _ <- run client $ del ["zcount-zset"]
+      closeStandaloneClient client
+
+    it "ZINCRBY increments member score" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zincrby-zset" [(10, "member")]
+      result <- run client $ zincrby "zincrby-zset" 5.0 "member"
+      result `shouldBe` RespBulkString "15"
+      _ <- run client $ del ["zincrby-zset"]
+      closeStandaloneClient client
+
+  -- | Tests for new key commands: PERSIST, TYPE, RENAME, RENAMENX, UNLINK
+  describe "New key commands" $ do
+    it "PERSIST removes expiry" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ setex "persist-key" 100 "val"
+      r1 <- run client $ persist "persist-key"
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ ttl "persist-key"
+      r2 `shouldBe` RespInteger (-1)  -- no expiry
+      _ <- run client $ del ["persist-key"]
+      closeStandaloneClient client
+
+    it "TYPE returns key type" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "type-str" "val"
+      r1 <- run client $ keyType "type-str"
+      r1 `shouldBe` RespSimpleString "string"
+      _ <- run client $ lpush "type-list" ["a"]
+      r2 <- run client $ keyType "type-list"
+      r2 `shouldBe` RespSimpleString "list"
+      _ <- run client $ del ["type-str", "type-list"]
+      closeStandaloneClient client
+
+    it "RENAME renames a key" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "rename-src" "val"
+      r1 <- run client $ rename "rename-src" "rename-dst"
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ get "rename-dst"
+      r2 `shouldBe` RespBulkString "val"
+      r3 <- run client $ get "rename-src"
+      r3 `shouldBe` RespNullBulkString
+      _ <- run client $ del ["rename-dst"]
+      closeStandaloneClient client
+
+    it "RENAMENX renames only if dest does not exist" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "rnx-src" "val"
+      _ <- run client $ set "rnx-dst" "existing"
+      r1 <- run client $ renamenx "rnx-src" "rnx-dst"
+      r1 `shouldBe` RespInteger 0  -- dest exists, no rename
+      _ <- run client $ del ["rnx-dst"]
+      r2 <- run client $ renamenx "rnx-src" "rnx-dst"
+      r2 `shouldBe` RespInteger 1
+      _ <- run client $ del ["rnx-dst"]
+      closeStandaloneClient client
+
+    it "UNLINK asynchronously deletes keys" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ set "unlink-k1" "v1"
+      _ <- run client $ set "unlink-k2" "v2"
+      r1 <- run client $ unlink ["unlink-k1", "unlink-k2"]
+      r1 `shouldBe` RespInteger 2
+      r2 <- run client $ get "unlink-k1"
+      r2 `shouldBe` RespNullBulkString
+      closeStandaloneClient client
+
+  -- | Tests for HyperLogLog commands: PFADD, PFCOUNT, PFMERGE
+  describe "HyperLogLog commands" $ do
+    it "PFADD adds elements" $ do
+      client <- createTestStandaloneClient
+      r1 <- run client $ pfadd "hll-key" ["a", "b", "c"]
+      r1 `shouldBe` RespInteger 1
+      r2 <- run client $ pfadd "hll-key" ["a", "b"]  -- duplicates
+      r2 `shouldBe` RespInteger 0
+      _ <- run client $ del ["hll-key"]
+      closeStandaloneClient client
+
+    it "PFCOUNT returns approximate cardinality" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ pfadd "pfcount-key" ["a", "b", "c"]
+      result <- run client $ pfcount ["pfcount-key"]
+      result `shouldBe` RespInteger 3
+      _ <- run client $ del ["pfcount-key"]
+      closeStandaloneClient client
+
+    it "PFMERGE merges HyperLogLogs" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ pfadd "hll1" ["a", "b"]
+      _ <- run client $ pfadd "hll2" ["b", "c"]
+      r1 <- run client $ pfmerge "hll-merged" ["hll1", "hll2"]
+      r1 `shouldBe` RespSimpleString "OK"
+      r2 <- run client $ pfcount ["hll-merged"]
+      r2 `shouldBe` RespInteger 3
+      _ <- run client $ del ["hll1", "hll2", "hll-merged"]
+      closeStandaloneClient client

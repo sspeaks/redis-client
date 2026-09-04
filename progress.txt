@@ -1,0 +1,213 @@
+# Ralph Progress Log
+Started: Wed Feb 25 12:48:19 PST 2026
+
+## Codebase Patterns
+- New Redis commands require changes in 3 places: typeclass in Command.hs, RedisCommandClient instance in Command.hs, ClusterCommandClient instance in Client.hs
+- Single-node commands use `executeCommandAs [args]`, cluster keyed commands use `executeKeyedAs key [args]`
+- Use `showBS` to convert Int/Double to ByteString for Redis args
+- Cluster multi-key commands (lists of keys) need a `case keys of [] -> executeKeyless ...; (k:_) -> executeKeyedAs k ...` pattern
+- Build with `nix-shell --run 'cabal build all'` to verify changes
+- A pre-commit hook runs stylish-haskell on changed .hs files
+- New typeclass methods also need implementations in StandaloneCommandClient (Standalone.hs), not just Command.hs and Cluster/Client.hs
+- When adding new keyed commands, also update `requiresKeyCommands` in Cluster/Commands.hs for proper cluster routing
+- The Database.Redis re-export module uses explicit import lists — new types/functions from sub-modules must be explicitly added there
+- E2E tests go in test/LibraryE2E/StandaloneTests.hs; build with `nix-shell --run 'cabal build all -fe2e'`; new describe blocks at end of spec inside outermost describe
+
+---
+
+## 2026-02-25T20:48 - string-commands-basic
+- Implemented APPEND, STRLEN, SETEX, INCRBY, DECRBY in RedisCommands typeclass, RedisCommandClient instance, and ClusterCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+- **Learnings for future iterations:**
+  - New typeclass methods go between existing methods in alphabetical/logical groups (string cmds near incr/decr)
+  - Instance implementations follow the same order as the typeclass declaration
+  - The pre-commit hook auto-formats with stylish-haskell
+---
+
+## 2026-02-25T20:51 - string-commands-advanced
+- Implemented INCRBYFLOAT, GETDEL, GETEX in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - StandaloneCommandClient in Standalone.hs also implements RedisCommands and needs new methods (uses `submitMuxAs` instead of `executeCommandAs` or `executeKeyedAs`)
+  - Previous story left Standalone.hs missing methods (append, strlen, setex, incrby, decrby); added them here to clear warnings
+  - The `getex` command takes optional args as `[ByteString]` so callers control options like `["EX", "60"]` or `["PERSIST"]`
+---
+
+## 2026-02-25T20:53 - hash-commands
+- Implemented HGETALL, HLEN, HSETNX, HINCRBY, HINCRBYFLOAT in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - Hash commands with numeric args (hincrby, hincrbyfloat) need showBS for the amount parameter
+  - All 3 files (Command.hs, Client.hs, Standalone.hs) must be updated together — the pattern is well established now
+  - The pre-commit hook runs stylish-haskell automatically on changed files
+---
+
+## 2026-02-25T20:54 - list-commands
+- Implemented LINSERT, LSET, LTRIM, LREM in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - linsert uses ByteString for position arg ("BEFORE"/"AFTER") matching the pattern of letting callers pass Redis keywords directly
+  - All 4 list commands added after lindex in each file — maintains logical grouping
+  - Pattern is now very well established: add to typeclass, then 3 instances (Command.hs, Client.hs, Standalone.hs)
+---
+
+## 2026-02-25T20:56 - set-commands
+- Implemented SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - Multi-key set commands (sdiff, sinter, sunion) need the empty-list pattern in cluster: `case keys of [] -> executeKeyless ...; (k:_) -> executeKeyedAs k ...`
+  - Single-key set commands (srem, spop, srandmember) use the standard keyed pattern
+  - srem takes a list of members like sadd does
+  - Pattern is fully established: 4 places to update (typeclass, Command.hs instance, Client.hs cluster instance, Standalone.hs instance)
+---
+
+## 2026-02-25T20:59 - sorted-set-commands-advanced
+- Implemented ZCOUNT, ZINCRBY, ZRANGESTORE in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - zcount uses ByteString for min/max to support Redis -inf/+inf/( syntax
+  - zrangestore takes optional args as [ByteString] for BYSCORE, REV, LIMIT etc — same pattern as getex
+  - zincrby uses Double for increment, needs showBS conversion
+  - Pattern remains consistent: 4 places (typeclass, Command.hs, Client.hs, Standalone.hs), stylish-haskell auto-formats on commit
+---
+
+## 2026-02-25T20:57 - sorted-set-commands-basic
+- Implemented ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - Sorted set commands follow the same 4-place pattern (typeclass, Command.hs, Client.hs, Standalone.hs)
+  - zrem takes a list of members like srem/sadd pattern
+  - zscore, zrank, zrevrank are simple key+member commands
+  - Build succeeded cleanly with no warnings; stylish-haskell auto-formatted 3 files on commit
+---
+
+## 2026-02-25T21:01 - key-commands
+- Implemented PERSIST, TYPE (as keyType), RENAME, RENAMENX, UNLINK in RedisCommands typeclass, RedisCommandClient instance, ClusterCommandClient instance, and StandaloneCommandClient instance
+- Files changed:
+  - hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs (typeclass + instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs (cluster instance)
+  - hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs (standalone instance)
+- **Learnings for future iterations:**
+  - keyType is named to avoid conflict with Haskell's `type` keyword, but sends "TYPE" to Redis
+  - unlink takes a list of keys and needs the empty-list pattern in cluster (same as sdiff/sinter/sunion)
+  - rename/renamenx are simple two-key commands; in cluster they're keyed on the first key
+  - Pattern remains: 4 places (typeclass, Command.hs, Client.hs, Standalone.hs), stylish-haskell auto-formats on commit
+---
+
+## 2026-02-25T21:12 - update-exports
+- Updated requiresKeyCommands in Database.Redis.Cluster.Commands to include all 29 new keyed commands, organized by category (string, key, hash, list, set, sorted set, HyperLogLog)
+- Updated Database.Redis re-export module to include missing Geo types (GeoUnit, GeoRadiusFlag, GeoSearchFrom, GeoSearchBy, GeoSearchOption), missing Standalone exports (defaultStandaloneConfig, runRedis, withStandaloneClient), and missing Cluster.Client export (withClusterClient)
+- Files changed:
+  - hask-redis-mux/lib/cluster/Database/Redis/Cluster/Commands.hs (requiresKeyCommands list)
+  - hask-redis-mux/lib/redis/Database/Redis.hs (re-export imports)
+- **Learnings for future iterations:**
+  - When adding new Redis commands, also update requiresKeyCommands in Cluster/Commands.hs for proper cluster routing
+  - The Database.Redis module uses explicit import lists (not wildcard imports), so new types/functions from sub-modules must be explicitly added
+  - RedisCommands (..) already covers all typeclass methods, so new command methods don't need separate import entries
+  - The module's doc comments reference runRedis, defaultStandaloneConfig, withClusterClient which must be imported for the re-export to work
+  - stylish-haskell auto-formats on commit via pre-commit hook
+---
+
+## 2026-02-25T21:18 - test-string-commands
+- Added E2E tests for APPEND, STRLEN, SETEX, INCRBY, DECRBY, INCRBYFLOAT, GETDEL, GETEX in test/LibraryE2E/StandaloneTests.hs
+- Added new "New string commands" describe block at end of spec with 7 test cases
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 72 lines of tests)
+- **Learnings for future iterations:**
+  - E2E tests follow the pattern: createTestStandaloneClient, run commands, assert with shouldBe against RespData constructors, cleanup with del, closeStandaloneClient
+  - Build E2E tests with `nix-shell --run 'cabal build all -fe2e'` (the -fe2e flag enables the e2e build targets)
+  - TTL assertions use `shouldSatisfy (> 0)` since exact value depends on timing
+  - New describe blocks go at the end of the spec, inside the outermost "Standalone Multiplexed Client" describe
+  - stylish-haskell auto-formats on commit via pre-commit hook
+---
+
+## 2026-02-25T21:35 - test-hash-commands
+- Added E2E tests for HGETALL, HLEN, HSETNX, HINCRBY, HINCRBYFLOAT in test/LibraryE2E/StandaloneTests.hs
+- Added new "New hash commands" describe block at end of spec with 5 test cases
+- All 57 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 53 lines of tests)
+- **Learnings for future iterations:**
+  - HINCRBYFLOAT with 10.5 + 1.5 returns "12" (not "12.0") — Redis strips trailing zeros
+  - Hash test patterns: use unique key names per test (e.g., "hgetall-hash", "hlen-hash") to avoid collisions
+  - HGETALL returns flat array of alternating field/value pairs, so length is 2x number of fields
+  - The E2E test suite takes ~220 seconds total including Docker container setup/teardown
+---
+
+## 2026-02-25T21:41 - test-list-commands
+- Added E2E tests for LINSERT, LSET, LTRIM, LREM in test/LibraryE2E/StandaloneTests.hs
+- Added new "New list commands" describe block at end of spec with 4 test cases
+- All 61 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 44 lines of tests)
+- **Learnings for future iterations:**
+  - LINSERT takes 4 args: key, position ("BEFORE"/"AFTER"), pivot, element — returns new list length
+  - LSET returns RespSimpleString "OK" on success
+  - LTRIM returns RespSimpleString "OK" on success
+  - LREM with count=2 removes the first 2 occurrences from head, leaving the last one
+  - E2E test suite now has 61 tests total and takes ~255 seconds including Docker setup/teardown
+---
+
+## 2026-02-25T21:48 - test-set-commands
+- Added E2E tests for SREM, SDIFF, SINTER, SUNION, SPOP, SRANDMEMBER in test/LibraryE2E/StandaloneTests.hs
+- Added new "New set commands" describe block at end of spec with 6 test cases
+- All 67 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 72 lines of tests)
+- **Learnings for future iterations:**
+  - Set commands with non-deterministic ordering (SINTER, SUNION) should use `shouldSatisfy (elem ...)` instead of exact array comparison
+  - SDIFF returns a deterministic single-element result in our test case so exact comparison works
+  - SPOP with a single-element set is deterministic, good for testing
+  - SRANDMEMBER only checks that the result is a RespBulkString (any member), doesn't check exact value
+  - E2E test suite now has 67 tests total and takes ~245 seconds including Docker setup/teardown
+---
+
+## 2026-02-25T21:55 - test-sorted-set-commands
+- Added E2E tests for ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY in test/LibraryE2E/StandaloneTests.hs
+- Added new "New sorted set commands" describe block at end of spec with 6 test cases
+- All 73 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 54 lines of tests)
+- **Learnings for future iterations:**
+  - ZSCORE returns score as RespBulkString (e.g., "42"), not RespInteger
+  - ZINCRBY also returns result as RespBulkString (e.g., "15"), same pattern as ZSCORE
+  - ZRANK/ZREVRANK return 0-based rank as RespInteger
+  - ZCOUNT takes min/max as ByteString to support Redis range syntax (-inf/+inf/(exclusive)
+  - E2E test suite now has 73 tests total and takes ~256 seconds including Docker setup/teardown
+---
+
+## 2026-02-25T22:02 - test-key-and-hyperloglog-commands
+- Added E2E tests for PERSIST, TYPE, RENAME, RENAMENX, UNLINK, PFADD, PFCOUNT, PFMERGE in test/LibraryE2E/StandaloneTests.hs
+- Added two new describe blocks: "New key commands" (5 tests) and "HyperLogLog commands" (3 tests)
+- All 81 E2E tests pass (0 failures)
+- Files changed:
+  - test/LibraryE2E/StandaloneTests.hs (added 87 lines of tests)
+- **Learnings for future iterations:**
+  - PERSIST returns RespInteger 1 on success (expiry removed), TTL becomes -1
+  - keyType returns RespSimpleString with type name ("string", "list", etc.)
+  - RENAME returns RespSimpleString "OK"; source key becomes RespNullBulkString after rename
+  - RENAMENX returns RespInteger 0 if dest exists, RespInteger 1 if rename succeeded
+  - PFADD returns RespInteger 1 if cardinality changed, 0 if not (duplicates)
+  - PFMERGE returns RespSimpleString "OK"
+  - E2E test suite now has 81 tests total and takes ~251 seconds including Docker setup/teardown
+---
