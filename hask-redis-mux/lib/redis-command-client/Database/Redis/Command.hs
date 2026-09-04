@@ -15,6 +15,8 @@ module Database.Redis.Command
   , RedisCommandClient (..)
   , RedisCommands (..)
   , ClientReplyValues (..)
+  , authenticatePassword
+  , authenticateACL
     -- * Errors
   , RedisError (..)
     -- * Geo types
@@ -107,6 +109,8 @@ instance (Client client) => MonadFail (RedisCommandClient client) where
 -- Keys and values use strict 'ByteString' to avoid O(n) String conversions.
 -- Command return types are polymorphic via 'FromResp', allowing typed results.
 class (MonadIO m) => RedisCommands m where
+  -- | Authenticate the current standalone physical connection. Cluster
+  -- clients reject this operation; use construction-time cluster credentials.
   auth :: (FromResp a) => ByteString -> ByteString -> m a
   ping :: (FromResp a) => m a
   set :: (FromResp a) => ByteString -> ByteString -> m a
@@ -156,6 +160,22 @@ class (MonadIO m) => RedisCommands m where
   geosearch :: (FromResp a) => ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> m a
   geosearchstore :: (FromResp a) => ByteString -> ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m a
   clusterSlots :: (FromResp a) => m a
+
+-- | Authenticate with the legacy/default Redis user while retaining RESP2.
+authenticatePassword
+  :: (Client client, FromResp a)
+  => ByteString
+  -> RedisCommandClient client a
+authenticatePassword password = executeCommandAs ["AUTH", password]
+
+-- | Authenticate an ACL user while explicitly retaining RESP2.
+authenticateACL
+  :: (Client client, FromResp a)
+  => ByteString
+  -> ByteString
+  -> RedisCommandClient client a
+authenticateACL username password =
+  executeCommandAs ["HELLO", "2", "AUTH", username, password]
 
 -- | Helper to convert a showable value to ByteString for use in commands.
 showBS :: (Show a) => a -> ByteString
@@ -324,7 +344,11 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   setnx key value = executeCommandAs ["SETNX", key, value]
   decr key = executeCommandAs ["DECR", key]
   psetex key milliseconds value = executeCommandAs ["PSETEX", key, showBS milliseconds, value]
-  auth username password = executeCommandAs ["HELLO", "3", "AUTH", username, password]
+  auth username password
+    | BS8.null username || username == "default" =
+        authenticatePassword password
+    | otherwise =
+        authenticateACL username password
   bulkSet kvs = executeCommandAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
   flushAll = executeCommandAs ["FLUSHALL"]
   dbsize = executeCommandAs ["DBSIZE"]

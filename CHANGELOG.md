@@ -19,6 +19,10 @@
     *   Setup timeouts preserve the transport phase and endpoint in `ConnectionSetupTimeout` and participate in bounded cluster retries.
     *   Added timeout-aware direct helpers; legacy raw connector helpers remain intentionally unbounded for API compatibility.
     *   Plaintext and TLS setup failures close partially allocated sockets; the separate 300-second post-connect receive timeout is unchanged.
+*   **Per-connection cluster authentication**
+    *   Added `ClusterPassword` and `ClusterACL` construction policies that authenticate seed, pooled, multiplexed, redirected, and replacement connections before use.
+    *   Password authentication uses `AUTH password`; named ACL authentication uses `HELLO 2 AUTH username password` and never negotiates RESP3.
+    *   Cluster runtime `auth` now rejects its misleading one-socket behavior; standalone `auth` remains connection-scoped.
 
 ## 0.6.0.0 -- 2026-02-13
 

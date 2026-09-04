@@ -28,6 +28,9 @@
 -- The 'ClusterCommandClient' monad implements 'RedisCommands', providing
 -- the same @get@\/@set@\/@del@\/… API as single-node Redis with transparent
 -- cluster slot routing, MOVED\/ASK handling, and connection pooling.
+-- Runtime 'auth' is intentionally unsupported because it cannot authenticate
+-- every physical cluster connection; use
+-- 'createClusterClientWithAuthentication' instead.
 --
 -- For advanced use (e.g.\ forwarding raw RESP commands), the low-level
 -- 'executeKeyedClusterCommand' and 'executeKeylessClusterCommand' are also
@@ -40,12 +43,17 @@ module Database.Redis.Cluster.Client
     ClusterCommandClient,
     ClusterError (..),
     ClusterConfig (..),
+    ClusterAuthentication (..),
+    ClusterAuthenticationException (..),
+    ClusterRuntimeAuthenticationUnsupported (..),
     -- * Client Lifecycle
     createClusterClient,
+    createClusterClientWithAuthentication,
     createClusterClientWithBoundedConnector,
     createClusterClientWithFactories,
     closeClusterClient,
     withClusterClient,
+    withClusterClientAuthentication,
     refreshTopology,
     -- * Running Commands (monadic, recommended)
     runClusterCommandClient,
@@ -88,7 +96,8 @@ import           Data.Time.Clock                       (NominalDiffTime,
                                                         diffUTCTime,
                                                         getCurrentTime)
 import           Data.Word                             (Word16)
-import           Database.Redis.Client                 (Client (..))
+import           Database.Redis.Client                 (Client (..),
+                                                        ConnectionStatus (..))
 import           Database.Redis.Cluster                (ClusterNode (..),
                                                         ClusterTopology (..),
                                                         NodeAddress (..),
@@ -117,8 +126,10 @@ import           Database.Redis.Command                (ClientState (..),
 import qualified Database.Redis.Command                as RedisCommandClient
 import           Database.Redis.Connector              (ConnectionPhase (..),
                                                         ConnectionSetupException,
+                                                        ConnectionSupervisor (..),
                                                         Connector,
-                                                        withConnectionTimeout)
+                                                        withConnectionTimeout,
+                                                        withConnectionTimeoutSupervised)
 import           Database.Redis.FromResp               (FromResp (..))
 import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
                                                         MultiplexPoolException (..),
@@ -139,6 +150,7 @@ data ClusterError
   | TopologyError String -- ^ Slot or node lookup failed (e.g., empty topology).
   | ConnectionError String -- ^ Network-level failure connecting to a node.
   | ConnectionTimeoutError ConnectionSetupException -- ^ A bounded connection setup attempt timed out.
+  | ClusterAuthenticationError ClusterAuthenticationException -- ^ A physical connection could not authenticate.
   | ClusterClientClosed -- ^ The client has been terminally closed.
   deriving (Show, Eq)
 
@@ -164,6 +176,36 @@ data ClusterConfig = ClusterConfig
   , clusterTopologyRefreshInterval :: Int -- ^ Seconds between automatic background topology refreshes (default: 600 = 10 min).
   }
   deriving (Show)
+
+-- | Authentication applied once to every physical cluster connection before
+-- it is used for topology discovery, pooling, multiplexing, or redirects.
+--
+-- Password authentication sends @AUTH password@. ACL authentication sends
+-- @HELLO 2 AUTH username password@, explicitly retaining RESP2.
+data ClusterAuthentication
+  = ClusterPassword !ByteString
+  | ClusterACL !ByteString !ByteString
+  deriving (Eq)
+
+instance Show ClusterAuthentication where
+  show (ClusterPassword _) = "ClusterPassword <redacted>"
+  show (ClusterACL _ _)    = "ClusterACL <redacted> <redacted>"
+
+-- | Authentication failed for a physical connection. The server response and
+-- credentials are intentionally omitted.
+newtype ClusterAuthenticationException
+  = ClusterAuthenticationFailed NodeAddress
+  deriving (Eq, Show)
+
+instance Exception ClusterAuthenticationException
+
+-- | Runtime cluster authentication is unsupported because Redis credentials
+-- are connection-scoped. Configure authentication during client construction.
+data ClusterRuntimeAuthenticationUnsupported
+  = ClusterRuntimeAuthenticationUnsupported
+  deriving (Eq, Show)
+
+instance Exception ClusterRuntimeAuthenticationUnsupported
 
 -- | A cluster client that manages topology discovery, a per-node connection pool
 -- (for keyless commands and topology refresh), and a multiplexer pool for
@@ -248,6 +290,58 @@ createClusterClient ::
 createClusterClient config connector = do
   createClusterClientWithFactoriesUsing
     False createPool createMultiplexPool config connector
+
+-- | Construct a cluster client whose every physical connection is
+-- authenticated before first use. Authentication shares the configured
+-- per-attempt connection deadline and abortively closes failed transports.
+createClusterClientWithAuthentication
+  :: (Client client)
+  => ClusterConfig
+  -> ClusterAuthentication
+  -> Connector client
+  -> IO (ClusterClient client)
+createClusterClientWithAuthentication config authentication connector =
+  createClusterClientWithBoundedConnector config authenticatedConnector
+  where
+    authenticatedConnector =
+      withConnectionTimeoutSupervised
+        (connectionTimeout $ clusterPoolConfig config)
+        initialPhase $ \supervisor addr -> do
+          conn <- connector addr
+          cleanup <- registerConnectedTransport supervisor conn
+          setConnectionPhase supervisor Authentication
+          authenticateClusterConnection authentication addr conn
+            `onException` cleanup
+    initialPhase
+      | useTLS (clusterPoolConfig config) = TLSConnectionSetup
+      | otherwise = PlaintextConnectionSetup
+
+authenticateClusterConnection
+  :: (Client client)
+  => ClusterAuthentication
+  -> NodeAddress
+  -> client 'Connected
+  -> IO (client 'Connected)
+authenticateClusterConnection authentication addr conn = do
+  outcome <- try $ State.evalStateT
+    (runRedisCommandClient authenticationAction)
+    (ClientState conn BS8.empty)
+  case outcome of
+    Right response ->
+      case response of
+        RespError _ -> throwIO $ ClusterAuthenticationFailed addr
+        _           -> return conn
+    Left (err :: SomeException) ->
+      case fromException err of
+        Just async -> throwIO (async :: SomeAsyncException)
+        Nothing    -> throwIO $ ClusterAuthenticationFailed addr
+  where
+    authenticationAction =
+      case authentication of
+        ClusterPassword password ->
+          RedisCommandClient.authenticatePassword password
+        ClusterACL username password ->
+          RedisCommandClient.authenticateACL username password
 
 -- | Construct a cluster client from a phase-aware connector that already owns
 -- its complete setup deadline, including authentication when applicable.
@@ -346,6 +440,20 @@ withClusterClient
   -> IO a
 withClusterClient config connector =
   bracket (createClusterClient config connector) closeClusterClient
+
+-- | Bracket-style authenticated cluster construction. The supplied
+-- credentials are applied independently to every physical connection.
+withClusterClientAuthentication
+  :: (Client client)
+  => ClusterConfig
+  -> ClusterAuthentication
+  -> Connector client
+  -> (ClusterClient client -> IO a)
+  -> IO a
+withClusterClientAuthentication config authentication connector =
+  bracket
+    (createClusterClientWithAuthentication config authentication connector)
+    closeClusterClient
 
 -- | Refresh cluster topology by querying CLUSTER SLOTS.
 -- Uses a lock to prevent thundering herd: if another thread is already
@@ -517,6 +625,8 @@ tryClusterAction action = do
               return $ Left ClusterClientClosed
           | Just timeoutError <- fromException e ->
               return $ Left $ ConnectionTimeoutError timeoutError
+          | Just authenticationError <- fromException e ->
+              return $ Left $ ClusterAuthenticationError authenticationError
           | Just (TopologyValidationException err) <- fromException e ->
               return $ Left $ TopologyError err
           | otherwise ->
@@ -659,7 +769,7 @@ executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
       Nothing -> return $ Right respData
 
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
-  auth username password = executeKeyless (RedisCommandClient.auth username password)
+  auth _ _ = liftIO $ throwIO ClusterRuntimeAuthenticationUnsupported
   ping = executeKeyless RedisCommandClient.ping
   set k v = executeKeyedAs k ["SET", k, v]
   get k = executeKeyedAs k ["GET", k]

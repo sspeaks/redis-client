@@ -11,7 +11,8 @@ import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
                                                         putMVar, takeMVar)
 import           Control.Concurrent.STM                (newTVarIO)
 import           Control.Exception                     (SomeAsyncException,
-                                                        SomeException, throwIO,
+                                                        SomeException, finally,
+                                                        fromException, throwIO,
                                                         try)
 import qualified Control.Exception                     as Exception
 import           Control.Monad                         (replicateM_)
@@ -19,6 +20,7 @@ import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Builder               as Builder
+import qualified Data.ByteString.Char8                 as BS8
 import qualified Data.ByteString.Lazy                  as LBS
 import           Data.IORef                            (IORef,
                                                         atomicModifyIORef',
@@ -26,13 +28,15 @@ import           Data.IORef                            (IORef,
 import qualified Data.Map.Strict                       as Map
 import           Data.Time.Clock                       (getCurrentTime)
 import qualified Data.Vector                           as V
+import           Data.Word                             (Word16)
 import           Database.Redis.Client                 (Client (..),
                                                         ConnectionStatus (..))
 import           Database.Redis.Cluster                (ClusterNode (..),
                                                         ClusterTopology (..),
                                                         NodeAddress (..),
                                                         NodeRole (..),
-                                                        SlotRange (..))
+                                                        SlotRange (..),
+                                                        calculateSlot)
 import           Database.Redis.Cluster.Client
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..),
                                                         createPool)
@@ -252,7 +256,9 @@ spec = do
       redir1 `shouldNotBe` redir3
 
   askRedirectSpec
+  askRedirectAdditionalSpec
   clusterLifecycleSpec
+  clusterAuthenticationSpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -699,6 +705,489 @@ askRedirectSpec = describe "ASK redirect integration (executeKeyedClusterCommand
       closeMultiplexPool (clusterMultiplexPool client)
     result `shouldBe` Just ()
 
+-- ---------------------------------------------------------------------------
+-- Per-connection cluster authentication
+-- ---------------------------------------------------------------------------
+
+data AuthMockClient (status :: ConnectionStatus) where
+  AuthMockConnected
+    :: !(IORef ByteString)
+    -> !(IORef [IO ByteString])
+    -> !(IORef Int)
+    -> !(IORef Int)
+    -> AuthMockClient 'Connected
+
+instance Client AuthMockClient where
+  connect = error "AuthMockClient: connect not supported"
+  close (AuthMockConnected _ _ closes _) =
+    liftIO $ incrementRef closes
+  abort (AuthMockConnected _ _ _ aborts) =
+    liftIO $ incrementRef aborts
+  send (AuthMockConnected sent _ _ _) lbs =
+    liftIO $ atomicModifyIORef' sent $ \old ->
+      (old <> LBS.toStrict lbs, ())
+  receive (AuthMockConnected _ script _ _) =
+    liftIO $ nextScriptedReceive script
+
+data AuthConnectionRecord = AuthConnectionRecord
+  { authRecordAddress :: !NodeAddress
+  , authRecordIndex   :: !Int
+  , authRecordSent    :: !(IORef ByteString)
+  , authRecordCloses  :: !(IORef Int)
+  , authRecordAborts  :: !(IORef Int)
+  }
+
+type AuthScript = NodeAddress -> Int -> IO [IO ByteString]
+
+createAuthMockConnector
+  :: AuthScript
+  -> IO
+      ( NodeAddress -> IO (AuthMockClient 'Connected)
+      , IO [AuthConnectionRecord]
+      )
+createAuthMockConnector scriptFor = do
+  counts <- newIORef Map.empty
+  records <- newIORef []
+  let connector addr = do
+        index <- atomicModifyIORef' counts $ \current ->
+          let index = Map.findWithDefault 0 addr current
+          in (Map.insert addr (index + 1) current, index)
+        sent <- newIORef BS.empty
+        script <- scriptFor addr index >>= newIORef
+        closes <- newIORef 0
+        aborts <- newIORef 0
+        let record = AuthConnectionRecord
+              addr index sent closes aborts
+        atomicModifyIORef' records $ \existing ->
+          (existing ++ [record], ())
+        return $ AuthMockConnected sent script closes aborts
+  return (connector, readIORef records)
+
+nextScriptedReceive :: IORef [IO ByteString] -> IO ByteString
+nextScriptedReceive script = do
+  next <- atomicModifyIORef' script $ \case
+    []       -> ([], Nothing)
+    (x : xs) -> (xs, Just x)
+  case next of
+    Just action -> action
+    Nothing     -> threadDelay 1000 >> nextScriptedReceive script
+
+incrementRef :: IORef Int -> IO ()
+incrementRef ref =
+  atomicModifyIORef' ref $ \count -> (count + 1, ())
+
+replyWith :: RespData -> IO ByteString
+replyWith = return . encodeResp
+
+commandBytes :: [ByteString] -> ByteString
+commandBytes =
+  LBS.toStrict . Builder.toLazyByteString . encodeCommandBuilder
+
+authCommandFor :: ClusterAuthentication -> ByteString
+authCommandFor (ClusterPassword password) =
+  commandBytes ["AUTH", password]
+authCommandFor (ClusterACL username password) =
+  commandBytes ["HELLO", "2", "AUTH", username, password]
+
+recordSentBytes :: AuthConnectionRecord -> IO ByteString
+recordSentBytes = readIORef . authRecordSent
+
+findAuthRecord
+  :: [AuthConnectionRecord]
+  -> NodeAddress
+  -> Int
+  -> AuthConnectionRecord
+findAuthRecord records addr index =
+  case [record | record <- records
+               , authRecordAddress record == addr
+               , authRecordIndex record == index] of
+    [record] -> record
+    _        -> error $ "Missing connection record for " ++ show (addr, index)
+
+countOccurrences :: ByteString -> ByteString -> Int
+countOccurrences needle = go 0
+  where
+    go count haystack
+      | BS.null needle = count
+      | otherwise =
+          case BS.breakSubstring needle haystack of
+            (_, suffix) | BS.null suffix -> count
+            (_, suffix) ->
+              go (count + 1) $ BS.drop (BS.length needle) suffix
+
+twoMasterClusterSlots :: RespData
+twoMasterClusterSlots =
+  RespArray
+    [ slotRange 0 8191 node1 "node-1"
+    , slotRange 8192 16383 node2 "node-2"
+    ]
+  where
+    slotRange start end addr nodeId =
+      RespArray
+        [ RespInteger start
+        , RespInteger end
+        , RespArray
+            [ RespBulkString $ BS.pack $ map (fromIntegral . fromEnum) $
+                nodeHost addr
+            , RespInteger $ fromIntegral $ nodePort addr
+            , RespBulkString nodeId
+            ]
+        ]
+
+singleMasterClusterSlots :: NodeAddress -> ByteString -> RespData
+singleMasterClusterSlots addr nodeId =
+  RespArray
+    [ RespArray
+        [ RespInteger 0
+        , RespInteger 16383
+        , RespArray
+            [ RespBulkString $ BS.pack $ map (fromIntegral . fromEnum) $
+                nodeHost addr
+            , RespInteger $ fromIntegral $ nodePort addr
+            , RespBulkString nodeId
+            ]
+        ]
+    ]
+
+keyForSlotRange :: (Word16 -> Bool) -> ByteString
+keyForSlotRange predicate = findKey (0 :: Int)
+  where
+    findKey number
+      | predicate (calculateSlot candidate) = candidate
+      | otherwise = findKey (number + 1)
+      where
+        candidate = BS8.pack $ "auth-key-" ++ show number
+
+clusterAuthenticationSpec :: Spec
+clusterAuthenticationSpec =
+  describe "per-connection cluster authentication" $ do
+    it "authenticates the seed with AUTH before topology discovery" $ do
+      let credentials = ClusterPassword "password-secret"
+      (connector, getRecords) <- createAuthMockConnector $ \_ _ ->
+        return
+          [ replyWith $ RespSimpleString "OK"
+          , replyWith validClusterSlots
+          ]
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      sent `shouldBe`
+        authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
+      closeClusterClient client
+
+    it "authenticates ACL users with HELLO 2 before topology discovery" $ do
+      let credentials = ClusterACL "acl-user" "acl-password-secret"
+      (connector, getRecords) <- createAuthMockConnector $ \_ _ ->
+        return
+          [ replyWith $ RespArray
+              [ RespBulkString "proto", RespInteger 2 ]
+          , replyWith validClusterSlots
+          ]
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      sent `shouldBe`
+        authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
+      closeClusterClient client
+
+    it "initializes pooled and keyed connections once across two masters" $ do
+      let credentials = ClusterPassword "multi-master-secret"
+          key1 = keyForSlotRange (< 8192)
+          key2 = keyForSlotRange (>= 8192)
+          script addr index
+            | addr == node1 && index == 0 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith twoMasterClusterSlots
+                  , replyWith $ RespSimpleString "PONG"
+                  ]
+            | addr == node1 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespBulkString "node-one"
+                  ]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespBulkString "node-two"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      executeKeyedClusterCommand client key1 ["GET", key1]
+        `shouldReturn` Right (RespBulkString "node-one")
+      executeKeyedClusterCommand client key2 ["GET", key2]
+        `shouldReturn` Right (RespBulkString "node-two")
+      executeKeylessClusterCommand client ping
+        `shouldReturn` Right (RespSimpleString "PONG")
+      records <- getRecords
+      length records `shouldBe` 3
+      mapM_ (\record -> do
+          sent <- recordSentBytes record
+          countOccurrences (authCommandFor credentials) sent `shouldBe` 1
+          BS.isPrefixOf (authCommandFor credentials) sent `shouldBe` True
+        ) records
+      closeClusterClient client
+
+    it "authenticates ASK targets before ASKING and the redirected command" $ do
+      let credentials = ClusterPassword "ask-secret"
+          key = "ask-key"
+          script addr index
+            | addr == node1 && index == 0 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith validClusterSlots
+                  ]
+            | addr == node1 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespError "ASK 3999 127.0.0.2:6380"
+                  ]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespBulkString "ask-value"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn` Right (RespBulkString "ask-value")
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node2 0
+      sent `shouldBe`
+        authCommandFor credentials
+          <> commandBytes ["ASKING"]
+          <> commandBytes ["GET", key]
+      closeClusterClient client
+
+    it "authenticates MOVED targets after the topology refresh" $ do
+      let credentials = ClusterPassword "moved-secret"
+          key = "moved-key"
+          script addr index
+            | addr == node1 && index == 0 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ singleMasterClusterSlots node1 "node-1"
+                  , replyWith $ singleMasterClusterSlots node2 "node-2"
+                  ]
+            | addr == node1 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespError "MOVED 3999 127.0.0.2:6380"
+                  ]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespBulkString "moved-value"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn` Right (RespBulkString "moved-value")
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node2 0
+      sent `shouldBe`
+        authCommandFor credentials <> commandBytes ["GET", key]
+      closeClusterClient client
+
+    it "reapplies authentication after a failed multiplexer is replaced" $ do
+      let credentials = ClusterPassword "replacement-secret"
+          key = "replacement-key"
+          script _addr index
+            | index == 0 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith validClusterSlots
+                  , replyWith validClusterSlots
+                  ]
+            | index == 1 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , throwIO $ userError "worker receive failed"
+                  ]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespBulkString "replacement-value"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      executeKeyedClusterCommand client key ["GET", key]
+        `shouldReturn` Right (RespBulkString "replacement-value")
+      records <- getRecords
+      length records `shouldBe` 3
+      mapM_ (\record -> do
+          sent <- recordSentBytes record
+          BS.isPrefixOf (authCommandFor credentials) sent `shouldBe` True
+        ) records
+      closeClusterClient client
+
+    it "reapplies authentication after a pooled connection is discarded" $ do
+      let credentials = ClusterPassword "pool-reconnect-secret"
+          script _ index
+            | index == 0 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith validClusterSlots
+                  ]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespSimpleString "PONG"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      _ <- executeKeylessClusterCommand client $
+        liftIO $ throwIO $ userError "discard pooled connection"
+      executeKeylessClusterCommand client ping
+        `shouldReturn` Right (RespSimpleString "PONG")
+      records <- getRecords
+      length records `shouldBe` 2
+      mapM_ (\record -> do
+          sent <- recordSentBytes record
+          BS.isPrefixOf (authCommandFor credentials) sent `shouldBe` True
+        ) records
+      closeClusterClient client
+
+    it "retains the initialized connector for pinned library-owned paths" $ do
+      let credentials = ClusterPassword "pinned-secret"
+          script addr _
+            | addr == node1 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith validClusterSlots
+                  ]
+            | otherwise =
+                return [replyWith $ RespSimpleString "OK"]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      pinned <- clusterConnector client node2
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node2 0
+      sent `shouldBe` authCommandFor credentials
+      close pinned
+      closeClusterClient client
+
+    it "returns a typed redacted failure and aborts rejected AUTH once" $ do
+      let secret = "rejected-auth-secret"
+          credentials = ClusterPassword secret
+      (connector, getRecords) <- createAuthMockConnector $ \_ _ ->
+        return [replyWith $ RespError $ "WRONGPASS " <> secret]
+      result <- try $ createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+        :: IO (Either SomeException (ClusterClient AuthMockClient))
+      case result of
+        Left err ->
+          case fromException err of
+            Just (ClusterAuthenticationFailed endpoint) ->
+              do
+                endpoint `shouldBe` node1
+                show err `shouldNotContain` BS8.unpack secret
+            Nothing -> expectationFailure $
+              "Expected ClusterAuthenticationFailed, got: " ++ show err
+        Right _ ->
+          expectationFailure "Rejected AUTH unexpectedly created a client"
+      records <- getRecords
+      let record = findAuthRecord records node1 0
+      readIORef (authRecordCloses record) `shouldReturn` 0
+      readIORef (authRecordAborts record) `shouldReturn` 1
+
+    it "returns a typed redacted error when a new keyed connection rejects AUTH" $ do
+      let secret = "keyed-auth-secret"
+          credentials = ClusterPassword secret
+          key = "keyed-auth-key"
+          script _ index
+            | index == 0 =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith validClusterSlots
+                  ]
+            | otherwise =
+                return [replyWith $ RespError $ "WRONGPASS " <> secret]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      result <- executeKeyedClusterCommand client key ["GET", key]
+      case result of
+        Left (ClusterAuthenticationError
+              (ClusterAuthenticationFailed endpoint)) -> do
+          endpoint `shouldBe` node1
+          show result `shouldNotContain` BS8.unpack secret
+        other -> expectationFailure $
+          "Expected ClusterAuthenticationError, got: " ++ show other
+      records <- getRecords
+      let record = findAuthRecord records node1 1
+      readIORef (authRecordCloses record) `shouldReturn` 0
+      readIORef (authRecordAborts record) `shouldReturn` 1
+      closeClusterClient client
+
+    it "bounds stalled authentication and aborts the transport once" $ do
+      started <- newEmptyMVar
+      stalled <- newEmptyMVar
+      workerFinished <- newEmptyMVar
+      let secret = "timeout-auth-secret"
+          credentials = ClusterPassword secret
+          timeoutConfig = testClusterConfig
+            { clusterPoolConfig = testPoolConfig
+                { connectionTimeout = 1 }
+            }
+          stalledReply =
+            (putMVar started () >> takeMVar stalled)
+              `finally` putMVar workerFinished ()
+      (connector, getRecords) <- createAuthMockConnector $ \_ _ ->
+        return [stalledReply]
+      result <- try $ createClusterClientWithAuthentication
+        timeoutConfig credentials connector
+        :: IO (Either SomeException (ClusterClient AuthMockClient))
+      case result of
+        Left err ->
+          case fromException err of
+            Just timeoutError ->
+              do
+                connectionTimeoutPhase timeoutError
+                  `shouldBe` Authentication
+                show err `shouldNotContain` BS8.unpack secret
+            Nothing -> expectationFailure $
+              "Expected ConnectionSetupTimeout, got: " ++ show err
+        Right _ ->
+          expectationFailure "Stalled AUTH unexpectedly created a client"
+      timeout 1000000 (takeMVar started) `shouldReturn` Just ()
+      timeout 1000000 (takeMVar workerFinished) `shouldReturn` Just ()
+      records <- getRecords
+      let record = findAuthRecord records node1 0
+      readIORef (authRecordCloses record) `shouldReturn` 0
+      readIORef (authRecordAborts record) `shouldReturn` 1
+
+    it "rejects runtime cluster auth without touching a connection" $ do
+      let credentials = ClusterPassword "construction-secret"
+      (connector, getRecords) <- createAuthMockConnector $ \_ _ ->
+        return
+          [ replyWith $ RespSimpleString "OK"
+          , replyWith validClusterSlots
+          ]
+      client <- createClusterClientWithAuthentication
+        testClusterConfig credentials connector
+      recordsBefore <- getRecords
+      sentBefore <- recordSentBytes $ findAuthRecord recordsBefore node1 0
+      result <- try $ runClusterCommandClient client
+        (auth "ignored-user" "ignored-secret" :: ClusterCommandClient AuthMockClient RespData)
+        :: IO (Either ClusterRuntimeAuthenticationUnsupported RespData)
+      result `shouldBe` Left ClusterRuntimeAuthenticationUnsupported
+      recordsAfter <- getRecords
+      sentAfter <- recordSentBytes $ findAuthRecord recordsAfter node1 0
+      sentAfter `shouldBe` sentBefore
+      closeClusterClient client
+
+askRedirectAdditionalSpec :: Spec
+askRedirectAdditionalSpec = describe "additional ASK redirect integration" $ do
   it "ASK redirect does NOT trigger topology refresh" $ do
     result <- timeout 5000000 $ do
       (connector, addRecvMap, connCount) <- createMockConnector

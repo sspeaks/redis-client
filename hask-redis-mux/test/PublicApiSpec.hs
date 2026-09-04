@@ -1,5 +1,6 @@
-{-# LANGUAGE DataKinds  #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
@@ -9,6 +10,26 @@ import           Test.Hspec
 
 main :: IO ()
 main = hspec $ describe "Database.Redis timeout-aware public API" $ do
+  it "exports redaction-safe cluster authentication policies" $ do
+    let createAuthenticated
+          :: ClusterConfig
+          -> ClusterAuthentication
+          -> Connector PlainTextClient
+          -> IO (ClusterClient PlainTextClient)
+        createAuthenticated = createClusterClientWithAuthentication
+        withAuthenticated
+          :: ClusterConfig
+          -> ClusterAuthentication
+          -> Connector PlainTextClient
+          -> (ClusterClient PlainTextClient -> IO ())
+          -> IO ()
+        withAuthenticated = withClusterClientAuthentication
+    show (ClusterPassword "public-password")
+      `shouldBe` "ClusterPassword <redacted>"
+    show (ClusterACL "public-user" "public-password")
+      `shouldBe` "ClusterACL <redacted> <redacted>"
+    createAuthenticated `seq` withAuthenticated `seq` return ()
+
   it "exports and enforces the documented direct TLS deadline" $ do
     result <- try $ connectTLSWithTimeout 0 "redis.example.net" 6380
       :: IO (Either ConnectionSetupException (TLSClient 'Connected))

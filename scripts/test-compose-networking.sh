@@ -30,6 +30,8 @@ docker compose -f "$REPO_ROOT/docker/standalone/docker-compose.yml" \
   config --format json >"$WORK_DIR/standalone.json"
 docker compose -f "$REPO_ROOT/docker/cluster/docker-compose.yml" \
   config --format json >"$WORK_DIR/cluster.json"
+docker compose -f "$REPO_ROOT/docker/auth-cluster/docker-compose.yml" \
+  config --format json >"$WORK_DIR/auth-cluster.json"
 docker compose -f "$REPO_ROOT/docker/cluster-host/docker-compose.yml" \
   config --format json >"$WORK_DIR/cluster-host.json"
 
@@ -93,6 +95,13 @@ for name, expected_port in expected_cluster_ports.items():
         not any(16379 <= port <= 16383 for port in published),
         f"{name} publishes a cluster-bus port: {published!r}",
     )
+
+auth_cluster = load("auth-cluster")
+auth_cluster_network = next(iter(auth_cluster["networks"].values()))
+require(auth_cluster_network["driver"] == "bridge", "authenticated cluster network must use a bridge")
+for name, service in auth_cluster["services"].items():
+    require("network_mode" not in service, f"{name} must not use host networking")
+    require(service.get("ports", []) == [], f"{name} must not publish host ports")
 
 cluster_host = load("cluster-host")
 for name, service in cluster_host["services"].items():

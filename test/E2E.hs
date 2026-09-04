@@ -93,14 +93,6 @@ main = do
           runRedisAction (get "hello") `shouldReturn` RespBulkString "world"
         it "ping is encoded properly and returns pong" $ do
           runRedisAction ping `shouldReturn` RespSimpleString "PONG"
-        it "auth negotiates the RESP3 handshake" $ do
-          authResp <- runRedisAction (auth "default" "")
-          case authResp of
-            RespError err -> expectationFailure $ "Unexpected AUTH error: " <> BS8.unpack err
-            RespMap _ -> pure ()
-            RespArray _ -> pure ()
-            RespSimpleString "OK" -> pure ()
-            _ -> expectationFailure $ "Unexpected AUTH response shape: " <> show authResp
         it "bulkSet is encoded properly and subsequent gets work properly" $ do
           runRedisAction (bulkSet [("a", "b"), ("c", "d"), ("e", "f")]) `shouldReturn` RespSimpleString "OK"
           runRedisAction (get "a") `shouldReturn` RespBulkString "b"
