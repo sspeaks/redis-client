@@ -29,6 +29,7 @@ module Database.Redis.Internal.Multiplexer
   , submitCommandPairPooled
   , submitCommandAsync
   , waitSlot
+  , sameResponseSlot
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where
@@ -36,12 +37,12 @@ module Database.Redis.Internal.Multiplexer
 import           Control.Concurrent               (ThreadId, forkFinally,
                                                    killThread, myThreadId)
 import           Control.Concurrent.MVar          (MVar, newEmptyMVar, newMVar,
-                                                   putMVar, takeMVar,
+                                                   putMVar, readMVar, takeMVar,
                                                    tryPutMVar, withMVar)
 import           Control.Exception                (Exception, SomeException,
                                                    mask_, throwIO, toException,
-                                                   try)
-import           Control.Monad                    (forM_, unless, void, when)
+                                                   try, uninterruptibleMask_)
+import           Control.Monad                    (forM_, void, when)
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
 import           Data.ByteString                  (ByteString)
 import qualified Data.ByteString                  as BS
@@ -79,6 +80,10 @@ data ResponseSlot = ResponseSlot
   { slotResult :: !(IORef (Maybe (Either SomeException RespData)))
   , slotSignal :: !(MVar ())
   }
+
+-- | Test and diagnostics identity for a pooled response slot.
+sameResponseSlot :: ResponseSlot -> ResponseSlot -> Bool
+sameResponseSlot left right = slotSignal left == slotSignal right
 
 -- | Striped pool of pre-allocated ResponseSlots.
 -- Uses multiple IORef-based stacks indexed by capability (core) to reduce
@@ -322,9 +327,15 @@ data Multiplexer = Multiplexer
   , muxWriterDone   :: !(MVar ())
   , muxReaderDone   :: !(MVar ())
   , muxAlive        :: !(IORef Bool)
-  , muxDestroyed    :: !(IORef Bool)
+  , muxLifecycle    :: !(IORef MultiplexerLifecycle)
   , muxDestroyLock  :: !(MVar ())
   }
+
+data MultiplexerLifecycle
+  = MultiplexerOpen
+  | MultiplexerDestroying
+  | MultiplexerDestroyed
+  deriving (Eq)
 
 -- | Create a multiplexer over an already-connected client.
 --
@@ -340,7 +351,7 @@ createMultiplexer conn recv = do
   pendingQueue <- newPendingQueue
   transferLock <- newMVar ()
   alive        <- newIORef True
-  destroyed    <- newIORef False
+  lifecycle    <- newIORef MultiplexerOpen
   destroyLock  <- newMVar ()
   readerDone   <- newEmptyMVar
   writerDone   <- newEmptyMVar
@@ -354,7 +365,7 @@ createMultiplexer conn recv = do
 
   return $ Multiplexer
     cmdQueue pendingQueue writerId readerId writerDone readerDone
-    alive destroyed destroyLock
+    alive lifecycle destroyLock
 
 multiplexerDestroyed :: SomeException
 multiplexerDestroyed = toException $ MultiplexerDead "Multiplexer destroyed"
@@ -459,19 +470,29 @@ waitSlot pool slot = do
 destroyMultiplexer :: Multiplexer -> IO ()
 destroyMultiplexer mux =
   withMVar (muxDestroyLock mux) $ \() -> mask_ $ do
-    alreadyDestroyed <- readIORef (muxDestroyed mux)
-    unless alreadyDestroyed $ do
-      writeIORef (muxDestroyed mux) True
-      void $ commandClose (muxCommandQueue mux)
-      atomicWriteIORef (muxAlive mux) False
+    lifecycle <- readIORef (muxLifecycle mux)
+    when (lifecycle /= MultiplexerDestroyed) $ do
+      when (lifecycle == MultiplexerOpen) $ do
+        writeIORef (muxLifecycle mux) MultiplexerDestroying
+        void $ commandClose (muxCommandQueue mux)
+        atomicWriteIORef (muxAlive mux) False
+
+      -- These operations may block and remain interruptible. If this owner is
+      -- cancelled, the Destroying state lets the next caller resume teardown.
       killThread (muxWriterThread mux)
       killThread (muxReaderThread mux)
-      takeMVar (muxWriterDone mux)
-      takeMVar (muxReaderDone mux)
-      commands <- commandDrainAll (muxCommandQueue mux)
-      pending <- pendingDrainAll (muxPendingQueue mux)
-      forM_ commands $ \pc -> failSlot (pcSlot pc) multiplexerDestroyed
-      forM_ pending $ \slot -> failSlot slot multiplexerDestroyed
+      readMVar (muxWriterDone mux)
+      readMVar (muxReaderDone mux)
+
+      -- Queue drains and slot completion are bounded, non-blocking operations.
+      -- Keeping this tail uninterruptible prevents ownership from being lost
+      -- between removing a slot from lifecycle tracking and signaling it.
+      uninterruptibleMask_ $ do
+        commands <- commandDrainAll (muxCommandQueue mux)
+        pending <- pendingDrainAll (muxPendingQueue mux)
+        forM_ commands $ \pc -> failSlot (pcSlot pc) multiplexerDestroyed
+        forM_ pending $ \slot -> failSlot slot multiplexerDestroyed
+        writeIORef (muxLifecycle mux) MultiplexerDestroyed
 
 -- | Check if the multiplexer's threads are still running.
 isMultiplexerAlive :: Multiplexer -> IO Bool
