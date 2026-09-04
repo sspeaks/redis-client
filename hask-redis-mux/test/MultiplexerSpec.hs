@@ -319,6 +319,34 @@ commandQueueBatchingSpec = describe "Command queue batching" $ do
     length rs `shouldBe` n
     destroyMultiplexer mux
 
+  it "consumes concatenated response frames from the parser remainder" $ do
+    pool <- createSlotPool 2
+    (client, addRecv) <- createMockClient
+    mux <- createMultiplexer client (receive client)
+    firstSlot <- submitCommandAsync pool mux (encodeCmd ["PING"])
+    secondSlot <- submitCommandAsync pool mux (encodeCmd ["GET", "key"])
+
+    addRecv $ encodeResp (RespSimpleString "PONG") <> encodeResp (RespInteger 1)
+
+    first <- timeout 1000000 (waitSlot pool firstSlot)
+    second <- timeout 1000000 (waitSlot pool secondSlot)
+    first `shouldBe` Just (RespSimpleString "PONG")
+    second `shouldBe` Just (RespInteger 1)
+    destroyMultiplexer mux
+
+  it "fails promptly when a response has a malformed CRLF delimiter" $ do
+    pool <- createSlotPool 1
+    (client, addRecv) <- createMockClient
+    mux <- createMultiplexer client (receive client)
+    slot <- submitCommandAsync pool mux (encodeCmd ["PING"])
+
+    addRecv "+OK\rX"
+
+    result <- timeout 1000000
+      (try (waitSlot pool slot) :: IO (Either SomeException RespData))
+    result `shouldSatisfy` isTimedMultiplexerParseFailure
+    destroyMultiplexer mux
+
 multiplexerLifecycleSpec :: Spec
 multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
   it "create and submit returns correct response" $ do
@@ -655,6 +683,15 @@ isMultiplexerFailure (Left e) =
     Just MultiplexerConnectionClosed -> True
     Nothing                          -> False
 isMultiplexerFailure (Right _) = False
+
+isTimedMultiplexerParseFailure
+  :: Maybe (Either SomeException RespData)
+  -> Bool
+isTimedMultiplexerParseFailure (Just (Left e)) =
+  case fromException e of
+    Just (MultiplexerParseError _) -> True
+    _                              -> False
+isTimedMultiplexerParseFailure _ = False
 
 isOkResponse :: Either SomeException RespData -> Bool
 isOkResponse (Right (RespSimpleString "OK")) = True

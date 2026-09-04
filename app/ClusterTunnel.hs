@@ -5,6 +5,7 @@
 module ClusterTunnel
   ( serveSmartProxy
   , servePinnedProxy
+  , rewriteClusterResponse
   ) where
 
 import           Control.Concurrent              (MVar, forkIO, newEmptyMVar,
