@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-credentials test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-credentials test-e2e-runner test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e-runner test-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -46,7 +46,7 @@ endif
 test: test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
-test-unit: test-credentials
+test-unit: test-credentials test-e2e-runner
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all"
 else
@@ -60,6 +60,9 @@ ifeq ($(HAS_NIX),yes)
 else
 	cabal build redis-client && cabal test CredentialSpec && ./scripts/test-credential-handling.sh
 endif
+
+test-e2e-runner:
+	./scripts/test-run-e2e-tests.sh
 
 # Validate ephemeral TLS credential generation without starting Docker.
 test-tls-fixtures:
