@@ -273,13 +273,22 @@ commandEnqueuePair cq pc1 pc2 = do
 {-# INLINE commandEnqueuePair #-}
 
 -- | Drain all commands (writer thread only — single consumer).
--- Blocks if empty. Returns commands in submission order.
+-- Blocks if empty. Stale wakeups are retried while admission remains open;
+-- an empty result is reserved for a closed queue. Returns commands in
+-- submission order.
 commandDrain :: CommandQueue -> IO [PendingCommand]
 commandDrain cq = do
   takeMVar (cqSignal cq)
-  atomicModifyIORef' (cqState cq) $ \state ->
-    let batch = reverse (cqsQueued state)
-    in (state { cqsQueued = [], cqsActive = batch }, batch)
+  result <- atomicModifyIORef' (cqState cq) $ \state ->
+    case reverse (cqsQueued state) of
+      []
+        | cqsOpen state -> (state, Nothing)
+        | otherwise     -> (state, Just [])
+      batch ->
+        (state { cqsQueued = [], cqsActive = batch }, Just batch)
+  case result of
+    Nothing    -> commandDrain cq
+    Just batch -> return batch
 
 -- | Non-blocking drain of any additional commands that have arrived.
 -- Returns commands in submission order. Returns [] if none available.
