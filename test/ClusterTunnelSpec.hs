@@ -51,31 +51,29 @@ main = hspec $ do
       rewriteClusterResponse malformed `shouldBe` malformed
 
   describe "checked-in cluster key specifications" $ do
-    it "selects fixed first and later key positions" $ do
-      keyArguments "GET" ["key"] `shouldBe` Right ["key"]
-      keyArguments "BITOP" ["AND", "destination", "source"]
-        `shouldBe` Right ["destination", "source"]
-
-    it "extracts every key from same-slot multi-key commands" $ do
-      keyArguments "ZUNIONSTORE" ["{tag}:out", "2", "{tag}:one", "{tag}:two"]
-        `shouldBe` Right ["{tag}:out", "{tag}:one", "{tag}:two"]
-      keyArguments "MSET" ["{tag}:one", "one", "{tag}:two", "two"]
-        `shouldBe` Right ["{tag}:one", "{tag}:two"]
-
-    it "handles movable EVAL and stream key lists" $ do
-      keyArguments "EVAL" ["return KEYS[1]", "1", "key", "argument"]
-        `shouldBe` Right ["key"]
-      keyArguments "XREADGROUP" ["GROUP", "g", "c", "STREAMS", "one", "two", ">", ">"]
-        `shouldBe` Right ["one", "two"]
-
-    it "uses Redis command key specifications for special forms" $ do
-      keyArguments "MEMORY" ["USAGE", "key"] `shouldBe` Right ["key"]
-      keyArguments "RENAME" ["source", "destination"]
-        `shouldBe` Right ["source", "destination"]
-      keyArguments "COPY" ["source", "destination"]
-        `shouldBe` Right ["source", "destination"]
-      keyArguments "ZUNION" ["2", "one", "two"] `shouldBe` Right ["one", "two"]
-      keyArguments "XINFO" ["STREAM", "stream"] `shouldBe` Right ["stream"]
+    it "matches the Redis 7.2.12 command metadata key specifications" $
+      mapM_ assertKeys
+        [ ("GET", ["key"], ["key"])
+        , ("BITOP", ["AND", "destination", "source"], ["destination", "source"])
+        , ("SINTERSTORE", ["destination", "source"], ["destination", "source"])
+        , ("ZUNIONSTORE", ["{tag}:out", "2", "{tag}:one", "{tag}:two"],
+            ["{tag}:out", "{tag}:one", "{tag}:two"])
+        , ("MSET", ["{tag}:one", "one", "{tag}:two", "two"],
+            ["{tag}:one", "{tag}:two"])
+        , ("EVAL", ["return KEYS[1]", "1", "key", "argument"], ["key"])
+        , ("XREADGROUP", ["GROUP", "g", "c", "STREAMS", "one", "two", ">", ">"],
+            ["one", "two"])
+        , ("MEMORY", ["USAGE", "key"], ["key"])
+        , ("OBJECT", ["ENCODING", "key"], ["key"])
+        , ("XINFO", ["STREAM", "stream", "FULL", "COUNT", "1"], ["stream"])
+        , ("PFCOUNT", ["one", "two"], ["one", "two"])
+        , ("TOUCH", ["one", "two"], ["one", "two"])
+        , ("UNLINK", ["one", "two"], ["one", "two"])
+        , ("WATCH", ["one", "two"], ["one", "two"])
+        , ("BLPOP", ["one", "two", "0"], ["one", "two"])
+        , ("GEORADIUS", ["source", "1", "2", "3", "km", "STORE", "destination"],
+            ["source", "destination"])
+        ]
 
     it "keeps keyless commands keyless when they have arguments" $
       keyArgumentsFromResp "ECHO" [RespInteger 42] `shouldBe` Right []
@@ -84,7 +82,7 @@ main = hspec $ do
       keyArgumentsFromResp "SET" [RespBulkString "key", RespBulkString "\NUL\255"]
         `shouldBe` Right ["key"]
 
-    it "fails closed for unknown commands and malformed movable specs" $ do
+    it "fails closed for unknown and malformed Redis 7.2.12 specifications" $ do
       keyArguments "MODULE.FUTURE" ["might-be-a-key"]
         `shouldBe` Left "unsupported command for cluster routing: MODULE.FUTURE"
       keyArguments "EVALSHA" ["digest", "not-a-number"]
@@ -95,17 +93,42 @@ main = hspec $ do
         `shouldBe` Left "command ZINTERCARD has fewer keys than its key count"
       keyArguments "EVAL" ["return 1", "2", "one"]
         `shouldBe` Left "command EVAL has fewer keys than its key count"
+      keyArguments "MSET" ["key", "value", "orphan"]
+        `shouldBe` Left "command MSET requires key-value pairs"
+      keyArguments "BLPOP" ["0"]
+        `shouldBe` Left "command BLPOP requires keys and a timeout"
+      keyArguments "MEMORY" ["USAGE"]
+        `shouldBe` Left "command MEMORY has an invalid subcommand or arity"
+      keyArguments "XINFO" ["STREAM"]
+        `shouldBe` Left "command XINFO has an invalid subcommand or arity"
+      keyArguments "OBJECT" ["ENCODING"]
+        `shouldBe` Left "command OBJECT has an invalid subcommand or arity"
+      keyArguments "GEORADIUS" ["source", "1", "2", "3", "km", "STORE"]
+        `shouldBe` Left "command has a STORE option without a destination key"
 
   describe "smart proxy dispatch" $ do
     it "does not contact a node for unknown, malformed, or cross-slot requests" $ do
       (client, connectionCount, _) <- mockClusterClient
       let unknown = RespArray [RespBulkString "MODULE.FUTURE", RespBulkString "key"]
           malformed = RespArray [RespBulkString "ZUNION", RespBulkString "2", RespBulkString "key"]
+          malformedMemory = RespArray [RespBulkString "MEMORY", RespBulkString "USAGE"]
+          malformedXInfo = RespArray [RespBulkString "XINFO", RespBulkString "STREAM"]
+          oddMSet = RespArray [RespBulkString "MSET", RespBulkString "key",
+            RespBulkString "value", RespBulkString "orphan"]
+          timeoutOnly = RespArray [RespBulkString "BLPOP", RespBulkString "0"]
           crossSlot = RespArray [RespBulkString "MGET", RespBulkString "one", RespBulkString "two"]
       routeSmartProxyCommand client unknown "unknown" `shouldReturn`
         Left "unsupported command for cluster routing: MODULE.FUTURE"
       routeSmartProxyCommand client malformed "malformed" `shouldReturn`
         Left "command ZUNION has fewer keys than its key count"
+      routeSmartProxyCommand client malformedMemory "memory" `shouldReturn`
+        Left "command MEMORY has an invalid subcommand or arity"
+      routeSmartProxyCommand client malformedXInfo "xinfo" `shouldReturn`
+        Left "command XINFO has an invalid subcommand or arity"
+      routeSmartProxyCommand client oddMSet "mset" `shouldReturn`
+        Left "command MSET requires key-value pairs"
+      routeSmartProxyCommand client timeoutOnly "blpop" `shouldReturn`
+        Left "command BLPOP requires keys and a timeout"
       routeSmartProxyCommand client crossSlot "cross-slot" `shouldReturn`
         Left "CROSSSLOT Keys in request don't hash to the same slot"
       readIORef connectionCount `shouldReturn` 0
@@ -119,6 +142,22 @@ main = hspec $ do
           routeSmartProxyCommand client parsed rawFrame `shouldReturn`
             Right (RespSimpleString "OK")
           readIORef sent `shouldReturn` rawFrame
+
+    it "rejects cross-slot keys from all Redis multi-key range specifications" $ do
+      (client, connectionCount, _) <- mockClusterClient
+      mapM_ (\command ->
+        routeSmartProxyCommand client command "cross-slot" `shouldReturn`
+          Left "CROSSSLOT Keys in request don't hash to the same slot")
+        [ RespArray [RespBulkString "PFCOUNT", RespBulkString "one", RespBulkString "two"]
+        , RespArray [RespBulkString "TOUCH", RespBulkString "one", RespBulkString "two"]
+        , RespArray [RespBulkString "UNLINK", RespBulkString "one", RespBulkString "two"]
+        , RespArray [RespBulkString "WATCH", RespBulkString "one", RespBulkString "two"]
+        ]
+      readIORef connectionCount `shouldReturn` 0
+
+assertKeys :: (BS.ByteString, [BS.ByteString], [BS.ByteString]) -> Expectation
+assertKeys (command, arguments, expectedKeys) =
+  keyArguments command arguments `shouldBe` Right expectedKeys
 
 data MockClient (a :: ConnectionStatus) where
   MockConnected :: !(IORef BS.ByteString) -> !(IORef [BS.ByteString]) -> MockClient 'Connected

@@ -170,6 +170,20 @@ spec = describe "Cluster Tunnel Mode" $ do
           RespBulkString stream, RespBulkString "0"]) conn `shouldSatisfyResponse` isArray
         rawCommand (RespArray [RespBulkString "XINFO", RespBulkString "STREAM",
           RespBulkString stream]) conn `shouldSatisfyResponse` isArray
+        rawCommand (RespArray [RespBulkString "MSET", RespBulkString (tag <> ":one"),
+          RespBulkString "one", RespBulkString (tag <> ":two"), RespBulkString "two"]) conn
+          `shouldReturn` RespSimpleString "OK"
+        rawCommand (RespArray [RespBulkString "PFADD", RespBulkString (tag <> ":hll"),
+          RespBulkString "one"]) conn `shouldReturn` RespInteger 1
+        rawCommand (RespArray [RespBulkString "PFCOUNT", RespBulkString (tag <> ":hll"),
+          RespBulkString (tag <> ":hll")]) conn `shouldSatisfyResponse` isInteger
+        rawCommand (RespArray [RespBulkString "TOUCH", RespBulkString (tag <> ":one"),
+          RespBulkString (tag <> ":two")]) conn `shouldReturn` RespInteger 2
+        rawCommand (RespArray [RespBulkString "OBJECT", RespBulkString "ENCODING",
+          RespBulkString (tag <> ":one")]) conn `shouldSatisfyResponse` isBulk
+        rawCommand (RespArray [RespBulkString "WATCH", RespBulkString (tag <> ":one"),
+          RespBulkString (tag <> ":two")]) conn `shouldReturn` RespSimpleString "OK"
+        rawCommand (RespArray [RespBulkString "UNWATCH"]) conn `shouldReturn` RespSimpleString "OK"
         rawCommand (RespArray [RespBulkString "ECHO", RespBulkString "argument"]) conn
           `shouldReturn` RespBulkString "argument"
 
@@ -181,10 +195,14 @@ spec = describe "Cluster Tunnel Mode" $ do
         rawCommand (RespArray [RespBulkString "MGET", RespBulkString "one",
           RespBulkString "two"]) conn
           `shouldSatisfyResponse` isErrContaining "CROSSSLOT Keys in request don't hash to the same slot"
+        rawCommand (RespArray [RespBulkString "PFCOUNT", RespBulkString "{first}:hll",
+          RespBulkString "{second}:hll"]) conn
+          `shouldSatisfyResponse` isErrContaining "CROSSSLOT Keys in request don't hash to the same slot"
         close conn
 
         bracket createTestClusterClient closeClusterClient $ \client -> do
-          _ <- runCmd_ client (del [renamedKey, copiedKey, zsetOne, zsetTwo, stream])
+          _ <- runCmd_ client (del [renamedKey, copiedKey, zsetOne, zsetTwo, stream,
+            tag <> ":one", tag <> ":two", tag <> ":hll"])
           pure ()
 
   describe "Pinned Proxy Mode" $ do
