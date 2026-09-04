@@ -226,12 +226,13 @@ instance Exception ClusterRuntimeAuthenticationUnsupported
 -- pipelined keyed command execution.
 -- Created via 'createClusterClient' and closed with 'closeClusterClient'.
 data ClusterClient client = ClusterClient
-  { clusterTopology       :: TVar ClusterTopology,
-    clusterConnectionPool :: ConnectionPool client,
-    clusterConfig         :: ClusterConfig,
-    clusterConnector      :: Connector client,   -- ^ Connector factory used for all connections
-    clusterRefreshLock    :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
-  , clusterMultiplexPool  :: MultiplexPool client -- ^ Multiplexer pool for pipelined command execution
+  { clusterTopology             :: TVar ClusterTopology,
+    clusterConnectionPool       :: ConnectionPool client,
+    clusterConfig               :: ClusterConfig,
+    clusterConnector            :: Connector client,   -- ^ Connector factory used for all connections
+    clusterRefreshLock          :: MVar ()  -- ^ Lock to prevent concurrent topology refreshes
+  , clusterBeforeTopologyCommit :: IO () -- ^ Internal test seam; a no-op in production clients.
+  , clusterMultiplexPool        :: MultiplexPool client -- ^ Multiplexer pool for pipelined command execution
   }
 
 -- | Monad for executing Redis commands on a cluster
@@ -421,7 +422,8 @@ createClusterClientWithFactoriesUsing connectorIsBounded
                     withConnectionTimeout
                       (connectionTimeout poolCfg) phase connector
           muxPool <- createMuxPool boundedConnector 1
-          return $ ClusterClient topology pool config boundedConnector refreshLock muxPool
+          return $ ClusterClient
+            topology pool config boundedConnector refreshLock (return ()) muxPool
 
 -- | Close all pooled connections across every node.
 -- Closure is terminal and idempotent: owned transports are closed exactly once,
@@ -535,6 +537,7 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
       result <- fetchTopology candidate
       case result of
         Right topology -> do
+          clusterBeforeTopologyCommit client
           commitRefreshedTopology protectedPatches topology
           return $ Right ()
         Left err ->

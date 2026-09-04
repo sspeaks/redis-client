@@ -473,7 +473,8 @@ mkClusterClient connector topo = do
   pool      <- createPool testPoolConfig
   muxPool   <- createMultiplexPool connector 1
   refreshLk <- newMVar ()
-  return $ ClusterClient topoVar pool testClusterConfig connector refreshLk muxPool
+  return $ ClusterClient
+    topoVar pool testClusterConfig connector refreshLk (return ()) muxPool
 
 clusterLifecycleSpec :: Spec
 clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
@@ -635,7 +636,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     muxPool <- createMultiplexPool boundedConnector 1
     let client = ClusterClient
-          topologyVar discoveryPool retryConfig connector refreshLock muxPool
+          topologyVar discoveryPool retryConfig connector refreshLock (return ()) muxPool
     started <- getMonotonicTimeNSec
     result <- executeKeyedClusterCommand client "key" ["GET", "key"]
     finished <- getMonotonicTimeNSec
@@ -674,7 +675,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     muxPool <- createMultiplexPool connector 1
     let client = ClusterClient
-          topologyVar discoveryPool retryConfig connector refreshLock muxPool
+          topologyVar discoveryPool retryConfig connector refreshLock (return ()) muxPool
     result <- executeKeyedClusterCommand client "key" ["GET", "key"]
 
     result `shouldSatisfy` \case
@@ -711,7 +712,7 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
 
     muxPool <- createMultiplexPool boundedConnector 1
     let client = ClusterClient
-          topologyVar discoveryPool retryConfig connector refreshLock muxPool
+          topologyVar discoveryPool retryConfig connector refreshLock (return ()) muxPool
     finished <- newEmptyMVar
     owner <- forkFinally
       (executeKeyedClusterCommand client "key" ["GET", "key"])
@@ -855,7 +856,7 @@ nextScriptedReceive script = do
     (x : xs) -> (xs, Just x)
   case next of
     Just action -> action
-    Nothing     -> threadDelay 1000 >> nextScriptedReceive script
+    Nothing     -> throwIO $ userError "Mock response script exhausted"
 
 incrementRef :: IORef Int -> IO ()
 incrementRef ref =
@@ -1463,7 +1464,8 @@ movedRedirectSpec =
           secondKey = nextDifferentSlotKey firstSlot 0
           secondSlot = calculateSlot secondKey
           staleTopology = singleMasterClusterSlots node1 "node-1"
-      refreshRelease <- newEmptyMVar
+      snapshotReady <- newEmptyMVar
+      allowCommit <- newEmptyMVar
       (connector, _) <- createAuthMockConnector $ \address index ->
         if address == node1 && index == 0
           then return
@@ -1473,23 +1475,28 @@ movedRedirectSpec =
             else if index == 0
               then return [replyWith $ RespBulkString "redirected"]
             else return
-                [ takeMVar refreshRelease
-                    >> replyWith staleTopology
-                ]
+                [replyWith staleTopology]
       topology <- mkTopology node1
-      client <- mkAuthMockClusterClient testClusterConfig connector topology
+      initialClient <- mkAuthMockClusterClient testClusterConfig connector topology
+      let client = initialClient
+            { clusterBeforeTopologyCommit =
+                putMVar snapshotReady () >> takeMVar allowCommit
+            }
       firstResult <- newEmptyMVar
       secondResult <- newEmptyMVar
       _ <- forkIO $ executeKeyedClusterCommand
         client firstKey ["GET", firstKey] >>= putMVar firstResult
+
+      timeout 5000000 (takeMVar snapshotReady)
+        `shouldReturn` Just ()
+
       _ <- forkIO $ executeKeyedClusterCommand
         client secondKey ["GET", secondKey] >>= putMVar secondResult
 
       timeout 5000000
-        (awaitSlotAddresses client
-          [(firstSlot, node2), (secondSlot, node3)])
+        (awaitSlotAddresses client [(firstSlot, node2), (secondSlot, node3)])
         `shouldReturn` Just ()
-      putMVar refreshRelease ()
+      putMVar allowCommit ()
 
       timeout 5000000 (takeMVar firstResult)
         `shouldReturn` Just (Right $ RespBulkString "redirected")
@@ -1511,7 +1518,8 @@ mkAuthMockClusterClient config connector topology = do
   muxPool <- createMultiplexPool connector 1
   refreshLock <- newMVar ()
   return $
-    ClusterClient topologyVar pool config connector refreshLock muxPool
+    ClusterClient
+      topologyVar pool config connector refreshLock (return ()) muxPool
 
 movedResponse :: Word16 -> NodeAddress -> RespData
 movedResponse slot address =
