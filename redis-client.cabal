@@ -69,6 +69,20 @@ test-suite ClusterSetupSpec
                     , mtl
                     , stm
 
+test-suite ClusterTunnelSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterTunnelSpec.hs
+    other-modules:    ClusterTunnel
+    hs-source-dirs:   test
+                    , app
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , network
+                    , stm
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------

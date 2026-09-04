@@ -2,6 +2,7 @@
 
 module Main where
 
+import qualified Data.Attoparsec.ByteString       as StrictParse
 import           Data.Attoparsec.ByteString.Char8 (parseOnly)
 import qualified Data.ByteString.Builder          as Builder
 import qualified Data.ByteString.Char8            as BS8
@@ -225,3 +226,84 @@ main = hspec $ do
     it "fails on incomplete RESP data" $ do
       parseOnly parseRespData "+OK" `shouldSatisfy` isLeft
       parseOnly parseRespData "$6\r\nfoo" `shouldSatisfy` isLeft
+
+  describe "Strict RESP framing" $ do
+    it "rejects malformed simple string and error terminators" $ do
+      mapM_
+        (\input -> parseStrict input `shouldSatisfy` isLeft)
+        [ "+OK\n",
+          "+OK\rX",
+          "+OK\r",
+          "-ERR\n",
+          "-ERR\rX",
+          "-ERR\r"
+        ]
+
+    it "rejects malformed integer and bulk string terminators" $ do
+      mapM_
+        (\input -> parseStrict input `shouldSatisfy` isLeft)
+        [ ":1\n",
+          ":1\rX",
+          ":1\r",
+          "$3\nfoo\r\n",
+          "$3\rXfoo\r\n",
+          "$3\r\nfoo\n",
+          "$3\r\nfoo\rX",
+          "$3\r\nfoo\r",
+          "$-1\n",
+          "$-1\rX",
+          "$-1\r"
+        ]
+
+    it "rejects malformed aggregate length terminators" $ do
+      mapM_
+        (\input -> parseStrict input `shouldSatisfy` isLeft)
+        [ "*0\n",
+          "*0\rX",
+          "*0\r",
+          "~0\n",
+          "~0\rX",
+          "~0\r",
+          "%0\n",
+          "%0\rX",
+          "%0\r",
+          "*1\r\n+OK\n"
+        ]
+
+    it "accepts exactly one complete value" $ do
+      parseStrict "+OK\r\n" `shouldBe` Right (RespSimpleString "OK")
+      parseStrict "+OK\r\ntrailing" `shouldSatisfy` isLeft
+      parseStrict "+OK\r\n:1\r\n" `shouldSatisfy` isLeft
+
+    it "preserves valid remainders for incremental parsing" $ do
+      case StrictParse.parse parseRespData "+OK\r\n:1\r\n" of
+        StrictParse.Done remainder first -> do
+          first `shouldBe` RespSimpleString "OK"
+          case StrictParse.parse parseRespData remainder of
+            StrictParse.Done finalRemainder second -> do
+              finalRemainder `shouldBe` ""
+              second `shouldBe` RespInteger 1
+            _ -> expectationFailure "second concatenated frame did not parse"
+        _ -> expectationFailure "first concatenated frame did not parse"
+
+    it "fails immediately when an invalid delimiter byte is available" $ do
+      assertImmediateFailure "+OK\n"
+      assertImmediateFailure ":1\rX"
+      assertImmediateFailure "$3\r\nfoo\rX"
+
+    it "resumes a truncated CRLF when the missing byte arrives" $ do
+      case StrictParse.parse parseRespData "+OK\r" of
+        StrictParse.Partial continue ->
+          case continue "\n" of
+            StrictParse.Done remainder value -> do
+              remainder `shouldBe` ""
+              value `shouldBe` RespSimpleString "OK"
+            _ -> expectationFailure "valid CRLF continuation did not complete"
+        _ -> expectationFailure "truncated CRLF was not treated as partial input"
+
+assertImmediateFailure :: BS8.ByteString -> Expectation
+assertImmediateFailure input =
+  case StrictParse.parse parseRespData input of
+    StrictParse.Fail {} -> return ()
+    StrictParse.Partial _ -> expectationFailure "malformed delimiter waited for more input"
+    StrictParse.Done {} -> expectationFailure "malformed delimiter parsed successfully"
