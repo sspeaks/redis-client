@@ -1317,7 +1317,9 @@ movedRedirectSpec =
       records <- getRecords
       staleSent <- recordSentBytes $ findAuthRecord records node1 0
       staleSent `shouldBe` commandBytes ["GET", key]
-      targetSent <- recordSentBytes $ findAuthRecord records node2 0
+      let targetRecord = findAuthRecord records node2 0
+      awaitCommandCount targetRecord ["GET", key] 2
+      targetSent <- recordSentBytes targetRecord
       targetSent `shouldBe`
         commandBytes ["GET", key] <> commandBytes ["GET", key]
       BS.isInfixOf (commandBytes ["ASKING"]) targetSent `shouldBe` False
