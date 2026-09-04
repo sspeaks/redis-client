@@ -52,6 +52,7 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , allowInsecurePlaintextAuth = False
   , dataGBs = 0
   , flush = False
+  , flushConfirmation = Nothing
   , serial = False
   , numConnections = Nothing
   , useCluster = False
@@ -215,7 +216,7 @@ main = do
           -- Just test that the flag doesn't crash the program and data is written.
           redisClientPath <- getRedisClientPath
           (code, _, _) <- readCreateProcessWithExitCode
-            (proc redisClientPath ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f"])
+            (proc redisClientPath ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"])
             ""
           code `shouldBe` ExitSuccess
           -- Simple check that some data was written.
@@ -332,10 +333,18 @@ main = do
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
 
-      it "fill --flush clears the database" $ do
+      it "fill rejects absent or mismatched non-interactive confirmation without flushing" $ do
         threadDelay 200000
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
+        (missingCode, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
+        missingCode `shouldNotBe` ExitSuccess
+        runRedisAction dbsize `shouldReturn` RespInteger 1048576
+        (mismatchCode, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush", "--confirm-flush", "redis://redis.local:6380?tls=false&scope=single-node"] ""
+        mismatchCode `shouldNotBe` ExitSuccess
+        runRedisAction dbsize `shouldReturn` RespInteger 1048576
+
+      it "fill --flush clears the database after exact non-interactive confirmation" $ do
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Flush complete" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 0
@@ -587,7 +596,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --pipeline 10 works correctly" $ do
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "10", "-f"] ""
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "10", "-f", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         dbSizeResp <- runRedisAction dbsize
@@ -596,7 +605,7 @@ main = do
              _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --pipeline 20000 works correctly" $ do
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "20000", "-f"] ""
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "20000", "-f", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         dbSizeResp <- runRedisAction dbsize
@@ -645,6 +654,7 @@ main = do
                 , allowInsecurePlaintextAuth = False
                 , dataGBs = 0
                 , flush = False
+                , flushConfirmation = Nothing
                 , serial = False
                 , numConnections = Nothing
                 , useCluster = False

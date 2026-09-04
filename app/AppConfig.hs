@@ -42,6 +42,7 @@ data RunState = RunState
     allowInsecurePlaintextAuth :: Bool,
     dataGBs                    :: Int,
     flush                      :: Bool,
+    flushConfirmation          :: Maybe String,
     serial                     :: Bool,
     numConnections             :: Maybe Int,
     useCluster                 :: Bool,
@@ -66,6 +67,7 @@ defaultRunState = RunState
   , allowInsecurePlaintextAuth = False
   , dataGBs = 0
   , flush = False
+  , flushConfirmation = Nothing
   , serial = False
   , numConnections = Just 2
   , useCluster = False

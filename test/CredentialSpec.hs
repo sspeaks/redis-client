@@ -96,6 +96,17 @@ main = hspec $ do
       args `shouldContain` ["--allow-insecure-plaintext-auth"]
       unwords args `shouldSatisfy` not . isInfixOf syntheticJwt
 
+    it "does not let child processes inherit a flush request or confirmation" $ do
+      let state = defaultRunState
+            { host = "localhost"
+            , flush = True
+            , flushConfirmation = Just "redis://localhost:6379?tls=false&scope=single-node"
+            }
+          args = buildChildArgs state 0 1
+      args `shouldSatisfy` (\values -> "-f" `notElem` values)
+      args `shouldSatisfy` (\values -> "--flush" `notElem` values)
+      args `shouldSatisfy` (\values -> "--confirm-flush" `notElem` values)
+
   describe "plaintext authentication policy" $ do
     it "rejects credentialed plaintext connections by default" $ do
       let state = defaultRunState {host = "cache.example", password = syntheticJwt}

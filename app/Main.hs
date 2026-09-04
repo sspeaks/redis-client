@@ -69,6 +69,8 @@ import           Filler                                (fillCacheWithData,
                                                         fillCacheWithDataMB,
                                                         initRandomNoise)
 import           FillProcess                           (buildChildArgs)
+import           FlushConfirmation                     (canonicalFlushTarget,
+                                                        confirmFlush)
 import           Numeric                               (showHex)
 import           System.Console.GetOpt                 (ArgDescr (..),
                                                         ArgOrder (..),
@@ -96,7 +98,8 @@ options =
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option [] ["allow-insecure-plaintext-auth"] (NoArg (\opt -> return $ opt {allowInsecurePlaintextAuth = True})) "Allow credentials over plaintext and emit a warning",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
-    Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
+    Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Request a destructive FLUSHALL; requires confirmation",
+    Option [] ["confirm-flush"] (ReqArg (\arg opt -> return $ opt {flushConfirmation = Just arg}) "TARGET") "Non-interactive acknowledgement of the exact displayed flush target",
     Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)",
     Option ['n'] ["connections"] (ReqArg (\arg opt -> return $ opt {numConnections = Just . read $ arg}) "NUM") "Number of parallel connections (default: 2)",
     Option ['c'] ["cluster"] (NoArg (\opt -> return $ opt {useCluster = True})) "Use Redis Cluster mode",
@@ -193,6 +196,7 @@ printUsage = do
   putStrLn "Examples:"
   putStrLn "  REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h localhost"
   putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
+  putStrLn "  redis-client fill -h localhost -f                       # prompts for exact flush target"
   putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
   putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
   putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
@@ -255,6 +259,13 @@ tunnCluster state = do
 
 fill :: RunState -> IO ()
 fill state = do
+  when (flush state) $ do
+    let target = canonicalFlushTarget (host state) (port state) (useTLS state) (useCluster state)
+    confirmation <- confirmFlush (flushConfirmation state) target
+    case confirmation of
+      Left message -> hPutStrLn stderr message >> exitFailure
+      Right ()     -> pure ()
+
   -- If no data specified and no flush flag, show error
   when (dataGBs state <= 0 && not (flush state)) $ do
     putStrLn "No data specified or data is 0GB or fewer\n"
@@ -263,23 +274,7 @@ fill state = do
 
   -- If only flush requested (no data), just flush and exit
   when (dataGBs state <= 0 && flush state) $ do
-    if useCluster state
-      then do
-        printf "Flushing cluster cache (seed node: '%s')\n" (host state)
-        if useTLS state
-          then do
-            clusterClient <- createClusterClientFromState state (createTLSConnector state)
-            flushAllClusterNodes clusterClient (createTLSConnector state)
-            closeClusterClient clusterClient
-          else do
-            clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-            flushAllClusterNodes clusterClient (createPlaintextConnector state)
-            closeClusterClient clusterClient
-      else do
-        printf "Flushing cache '%s'\n" (host state)
-        if useTLS state
-          then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
-          else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+    flushCache state
     putStrLn "Flush complete"
     exitSuccess
 
@@ -304,23 +299,9 @@ spawnFillProcesses state nprocs = do
   exePath <- getExecutablePath
 
   -- Flush once before spawning processes (if requested)
-  when (flush state && useCluster state) $ do
-    printf "Flushing cluster cache before spawning %d processes\n" nprocs
-    if useTLS state
-      then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        flushAllClusterNodes clusterClient (createTLSConnector state)
-        closeClusterClient clusterClient
-      else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        flushAllClusterNodes clusterClient (createPlaintextConnector state)
-        closeClusterClient clusterClient
-
-  when (flush state && not (useCluster state)) $ do
-    printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
-    if useTLS state
-      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
-      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+  when (flush state) $ do
+    printf "Flushing cache before spawning %d processes\n" nprocs
+    flushCache state
 
   -- Calculate data per process
   let totalGB = dataGBs state
@@ -348,14 +329,30 @@ spawnChildProcess exePath state baseGB remainder idx = do
   (_, _, _, ph) <- createProcess (proc exePath args)
   return ph
 
+flushCache :: RunState -> IO ()
+flushCache state
+  | useCluster state = do
+      printf "Flushing all primary cluster nodes (seed node: '%s')\n" (host state)
+      if useTLS state
+        then do
+          clusterClient <- createClusterClientFromState state (createTLSConnector state)
+          flushAllClusterNodes clusterClient (createTLSConnector state)
+          closeClusterClient clusterClient
+        else do
+          clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
+          flushAllClusterNodes clusterClient (createPlaintextConnector state)
+          closeClusterClient clusterClient
+  | otherwise = do
+      printf "Flushing cache '%s'\n" (host state)
+      if useTLS state
+        then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+        else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+
 fillStandalone :: RunState -> IO ()
 fillStandalone state = do
-  -- Only flush if we're not in multi-process mode (parent handles flush)
-  when (flush state && isNothing (numProcesses state)) $ do
-    printf "Flushing cache '%s'\n" (host state)
-    if useTLS state
-      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
-      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+  -- Only the parent process performs a requested flush.
+  when (flush state && isNothing (processIndex state)) $ do
+    flushCache state
   when (dataGBs state > 0) $ do
     initRandomNoise -- Ensure noise buffer is initialized once and shared
     baseSeed <- randomIO :: IO Word64
@@ -390,16 +387,7 @@ fillStandalone state = do
 fillCluster :: RunState -> IO ()
 fillCluster state = do
   when (flush state) $ do
-    printf "Flushing cluster cache (seed node: '%s')\n" (host state)
-    if useTLS state
-      then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        flushAllClusterNodes clusterClient (createTLSConnector state)
-        closeClusterClient clusterClient
-      else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        flushAllClusterNodes clusterClient (createPlaintextConnector state)
-        closeClusterClient clusterClient
+    flushCache state
 
   when (dataGBs state > 0) $ do
     -- Get base seed for randomness
