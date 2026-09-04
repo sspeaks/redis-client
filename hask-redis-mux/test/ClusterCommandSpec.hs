@@ -8,14 +8,15 @@ module Main (main) where
 import           Control.Concurrent                    (forkFinally, forkIO,
                                                         killThread, threadDelay)
 import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
-                                                        putMVar, takeMVar)
+                                                        putMVar, takeMVar,
+                                                        tryTakeMVar)
 import           Control.Concurrent.STM                (newTVarIO, readTVarIO)
 import           Control.Exception                     (SomeAsyncException,
                                                         SomeException, finally,
                                                         fromException, throwIO,
                                                         try)
 import qualified Control.Exception                     as Exception
-import           Control.Monad                         (replicateM_)
+import           Control.Monad                         (forM_, replicateM_)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
@@ -128,9 +129,15 @@ spec = do
         -- Tighter parsing rejects non-standard formatting (Redis never produces this)
         result `shouldBe` Nothing
 
-      it "handles port 0" $ do
+      it "rejects port 0" $ do
         let result = parseRedirectionError "MOVED" "MOVED 3999 127.0.0.1:0"
-        result `shouldBe` Just (RedirectionInfo 3999 "127.0.0.1" 0)
+        result `shouldBe` Nothing
+
+      it "rejects negative and out-of-range slots" $ do
+        parseRedirectionError "MOVED" "MOVED -1 127.0.0.1:6379"
+          `shouldBe` Nothing
+        parseRedirectionError "MOVED" "MOVED 16384 127.0.0.1:6379"
+          `shouldBe` Nothing
 
       it "returns Nothing for extra fields after host:port" $ do
         let result = parseRedirectionError "MOVED" "MOVED 3999 127.0.0.1:6381 extra-data"
@@ -169,6 +176,53 @@ spec = do
 
     it "returns Nothing for errors starting with A but not ASK" $ do
       detectRedirection (RespError "AUTH required") `shouldBe` Nothing
+
+  describe "central cluster reply classification" $ do
+    it "classifies all supported Redis Cluster error tokens" $ do
+      classifyClusterReply
+        (RespError "MOVED 3999 127.0.0.1:6381")
+        `shouldBe`
+          Left (MovedError 3999 $ NodeAddress "127.0.0.1" 6381)
+      classifyClusterReply
+        (RespError "ASK 3999 127.0.0.1:6381")
+        `shouldBe`
+          Left (AskError 3999 $ NodeAddress "127.0.0.1" 6381)
+      classifyClusterReply
+        (RespError "TRYAGAIN Slot is migrating")
+        `shouldBe`
+          Left (TryAgainError "TRYAGAIN Slot is migrating")
+      classifyClusterReply
+        (RespError "CLUSTERDOWN The cluster is down")
+        `shouldBe`
+          Left (ClusterDownError "CLUSTERDOWN The cluster is down")
+      classifyClusterReply
+        (RespError "CROSSSLOT Keys do not hash to one slot")
+        `shouldBe`
+          Left (CrossSlotError "CROSSSLOT Keys do not hash to one slot")
+
+    it "requires an exact case-sensitive token boundary" $ do
+      let ordinary message =
+            classifyClusterReply (RespError message)
+              `shouldBe` Left (RedisCommandError message)
+      mapM_ ordinary
+        [ "TRYAGAINLY not the cluster token"
+        , "TRYAGAIN\twrong delimiter"
+        , "tryagain wrong case"
+        , "CLUSTERDOWNTIME different token"
+        , "CROSSSLOTTERY different token"
+        , "MOVEDLY 1 127.0.0.1:6379"
+        , "ASKED 1 127.0.0.1:6379"
+        ]
+
+    it "preserves malformed redirects and ordinary server errors verbatim" $ do
+      classifyClusterReply (RespError "MOVED invalid payload")
+        `shouldBe` Left (RedisCommandError "MOVED invalid payload")
+      classifyClusterReply (RespError "WRONGTYPE full server cause")
+        `shouldBe` Left (RedisCommandError "WRONGTYPE full server cause")
+
+    it "passes non-error replies through unchanged" $ do
+      classifyClusterReply (RespBulkString "value")
+        `shouldBe` Right (RespBulkString "value")
 
   describe "ClusterError types" $ do
     it "creates MovedError correctly" $ do
@@ -258,9 +312,11 @@ spec = do
 
   askRedirectSpec
   askRedirectAdditionalSpec
+  askRedirectSuccessSpec
   movedRedirectSpec
   clusterLifecycleSpec
   clusterAuthenticationSpec
+  clusterErrorClassificationSpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -1348,9 +1404,13 @@ movedRedirectSpec =
       topology <- mkTopology node1
       client <- mkAuthMockClusterClient retryConfig connector topology
 
-      executeKeyedClusterCommand client key ["GET", key]
-        `shouldReturn`
-          Left (MaxRetriesExceeded "Max retries (3) exceeded")
+      result <- executeKeyedClusterCommand client key ["GET", key]
+      case result of
+        Left (MaxRetriesExceeded message) -> do
+          message `shouldContain` "Max retries (3) exceeded"
+          message `shouldContain` "MovedError"
+        other -> expectationFailure $
+          "Expected MOVED retry exhaustion, got: " ++ show other
       records <- getRecords
       length records `shouldBe` 3
       sent <- mapM recordSentBytes records
@@ -1484,6 +1544,713 @@ askRedirectAdditionalSpec = describe "additional ASK redirect integration" $ do
       closeMultiplexPool (clusterMultiplexPool client)
     result `shouldBe` Just ()
 
+-- ---------------------------------------------------------------------------
+-- Cluster error classification and retry policy
+-- ---------------------------------------------------------------------------
+
+data ExpectedPathError
+  = ImmediateError ClusterError
+  | ExhaustedWith String
+
+clusterErrorReplies :: [(String, RespData, ExpectedPathError)]
+clusterErrorReplies =
+  [ ( "MOVED"
+    , RespError "MOVED 3999 127.0.0.2:6380"
+    , ExhaustedWith "MovedError"
+    )
+  , ( "ASK"
+    , RespError "ASK 3999 127.0.0.2:6380"
+    , ExhaustedWith "AskError"
+    )
+  , ( "TRYAGAIN"
+    , RespError "TRYAGAIN migration still converging"
+    , ExhaustedWith "TryAgainError"
+    )
+  , ( "CLUSTERDOWN"
+    , RespError "CLUSTERDOWN cluster state is not ok"
+    , ExhaustedWith "ClusterDownError"
+    )
+  , ( "CROSSSLOT"
+    , RespError "CROSSSLOT keys span slots"
+    , ImmediateError $ CrossSlotError "CROSSSLOT keys span slots"
+    )
+  , ( "ordinary Redis error"
+    , RespError "WRONGTYPE full server cause"
+    , ImmediateError $ RedisCommandError "WRONGTYPE full server cause"
+    )
+  ]
+
+assertPathError
+  :: ExpectedPathError
+  -> Either ClusterError RespData
+  -> Expectation
+assertPathError (ImmediateError expected) actual =
+  actual `shouldBe` Left expected
+assertPathError (ExhaustedWith expectedCause) actual =
+  case actual of
+    Left (MaxRetriesExceeded message) ->
+      message `shouldContain` expectedCause
+    other -> expectationFailure $
+      "Expected retry exhaustion containing "
+        ++ show expectedCause ++ ", got: " ++ show other
+
+retryTestConfig :: Int -> Int -> ClusterConfig
+retryTestConfig attempts delay =
+  testClusterConfig
+    { clusterMaxRetries = attempts
+    , clusterRetryDelay = delay
+    }
+
+runNormalErrorPath
+  :: RespData
+  -> IO (Either ClusterError RespData)
+runNormalErrorPath reply = do
+  (connector, _) <- createAuthMockConnector $ \_ index ->
+    return $
+      if index == 0
+        then [replyWith validClusterSlots]
+        else [replyWith reply]
+  client <- createClusterClient
+    (retryTestConfig 1 1)
+    connector
+  result <- executeKeyedClusterCommandUsingDelay
+    (const $ return ())
+    client
+    "classification-key"
+    ["GET", "classification-key"]
+  closeClusterClient client
+  return result
+
+runRedirectTargetErrorPath
+  :: Bool
+  -> RespData
+  -> IO (Either ClusterError RespData)
+runRedirectTargetErrorPath useAsking reply = do
+  let initialRedirect
+        | useAsking = RespError "ASK 3999 127.0.0.2:6380"
+        | otherwise = RespError "MOVED 3999 127.0.0.2:6380"
+      script address index
+        | address == node1 && index == 0 =
+            return [replyWith validClusterSlots]
+        | address == node1 =
+            return [replyWith initialRedirect]
+        | useAsking =
+            return
+              [ replyWith $ RespSimpleString "OK"
+              , replyWith reply
+              ]
+        | otherwise =
+            return [replyWith reply]
+  (connector, _) <- createAuthMockConnector script
+  client <- createClusterClient
+    (retryTestConfig 2 1)
+    connector
+  result <- executeKeyedClusterCommandUsingDelay
+    (const $ return ())
+    client
+    "classification-key"
+    ["GET", "classification-key"]
+  closeClusterClient client
+  return result
+
+clusterErrorClassificationSpec :: Spec
+clusterErrorClassificationSpec =
+  describe "cluster error execution and retry policy" $ do
+    describe "identical classification across execution paths" $ do
+      forM_ clusterErrorReplies $ \(label, reply, expected) -> do
+        it ("classifies " ++ label ++ " on the normal slot path") $ do
+          runNormalErrorPath reply >>= assertPathError expected
+
+        it ("classifies " ++ label ++ " on a direct MOVED target") $ do
+          runRedirectTargetErrorPath False reply >>= assertPathError expected
+
+        it ("classifies " ++ label ++ " on an ASK target") $ do
+          runRedirectTargetErrorPath True reply >>= assertPathError expected
+
+    it "retries TRYAGAIN on the same route with exact exponential delays" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else
+                  [ replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespBulkString "value"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 7) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "tryagain-key"
+        ["GET", "tryagain-key"]
+      result `shouldBe` Right (RespBulkString "value")
+      readIORef delays `shouldReturn` [7, 14]
+      records <- getRecords
+      let muxRecord = findAuthRecord records node1 1
+      awaitCommandCount muxRecord ["GET", "tryagain-key"] 3
+      closeClusterClient client
+
+    it "exhausts TRYAGAIN after exactly the configured total attempts" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else
+                  [ replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespError "TRYAGAIN final cause"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 9) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "tryagain-exhaust-key"
+        ["GET", "tryagain-exhaust-key"]
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "TRYAGAIN final cause"
+        other -> expectationFailure $
+          "Expected TRYAGAIN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [9, 18]
+      records <- getRecords
+      let muxRecord = findAuthRecord records node1 1
+      awaitCommandCount muxRecord ["GET", "tryagain-exhaust-key"] 3
+      closeClusterClient client
+
+    it "saturates exponential backoff instead of overflowing Int" $ do
+      delays <- newIORef []
+      let initialDelay = maxBound `div` 2 + 1
+          script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else
+                  [ replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespBulkString "value"
+                  ]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient
+        (retryTestConfig 3 initialDelay)
+        connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "overflow-key"
+        ["GET", "overflow-key"]
+      result `shouldBe` Right (RespBulkString "value")
+      readIORef delays `shouldReturn` [initialDelay, maxBound]
+      closeClusterClient client
+
+    it "refreshes and backs off CLUSTERDOWN within the attempt budget" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith validClusterSlots
+                  , replyWith validClusterSlots
+                  ]
+                else
+                  [ replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith $ RespBulkString "recovered"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 5) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "clusterdown-key"
+        ["GET", "clusterdown-key"]
+      result `shouldBe` Right (RespBulkString "recovered")
+      readIORef delays `shouldReturn` [5, 10]
+      records <- getRecords
+      seedSent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) seedSent
+        `shouldBe` 3
+      closeClusterClient client
+
+    it "bounds CLUSTERDOWN exhaustion and preserves the final cause" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith validClusterSlots
+                  , replyWith validClusterSlots
+                  ]
+                else
+                  [ replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith $ RespError "CLUSTERDOWN final cause"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 6) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "clusterdown-exhaust-key"
+        ["GET", "clusterdown-exhaust-key"]
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [6, 12]
+      records <- getRecords
+      seedSent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) seedSent
+        `shouldBe` 3
+      let muxRecord = findAuthRecord records node1 1
+      awaitCommandCount
+        muxRecord ["GET", "clusterdown-exhaust-key"] 3
+      closeClusterClient client
+
+    it "returns CROSSSLOT immediately without retry or delay" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else [replyWith $ RespError "CROSSSLOT permanent"]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 5 11) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "crossslot-key"
+        ["GET", "crossslot-key"]
+      result `shouldBe` Left (CrossSlotError "CROSSSLOT permanent")
+      readIORef delays `shouldReturn` []
+      records <- getRecords
+      let muxRecord = findAuthRecord records node1 1
+      awaitCommandCount muxRecord ["GET", "crossslot-key"] 1
+      closeClusterClient client
+
+    it "keeps cancellation responsive during retry backoff" $ do
+      delayStarted <- newEmptyMVar
+      blockDelay <- newEmptyMVar
+      finished <- newEmptyMVar
+      let script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else [replyWith $ RespError "TRYAGAIN wait"]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeKeyedClusterCommandUsingDelay
+          (\_ -> putMVar delayStarted () >> takeMVar blockDelay)
+          client
+          "cancel-key"
+          ["GET", "cancel-key"])
+        (putMVar finished)
+      timeout 1000000 (takeMVar delayStarted) `shouldReturn` Just ()
+      killThread owner
+      outcome <- timeout 1000000 (takeMVar finished)
+      outcome `shouldSatisfy` \case
+        Just (Left err) ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        _ -> False
+      closeClusterClient client
+
+    it "retries keyless TRYAGAIN with exact attempts and delays" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespSimpleString "PONG"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 4) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      result `shouldBe` Right (RespSimpleString "PONG")
+      readIORef delays `shouldReturn` [4, 8]
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["PING"]) sent `shouldBe` 3
+      closeClusterClient client
+
+    it "refreshes and recovers keyless CLUSTERDOWN within the attempt budget" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespSimpleString "PONG"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 5) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      result `shouldBe` Right (RespSimpleString "PONG")
+      readIORef delays `shouldReturn` [5, 10]
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["PING"]) sent `shouldBe` 3
+      countOccurrences (commandBytes ["CLUSTER", "SLOTS"]) sent `shouldBe` 3
+      closeClusterClient client
+
+    it "exhausts keyless CLUSTERDOWN with the final command cause" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN final cause"
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 6) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyless CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [6, 12]
+      closeClusterClient client
+
+    it "keeps keyed CLUSTERDOWN retries after invalid refresh topology" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 ->
+                [ replyWith validClusterSlots
+                , replyWith $ RespSimpleString "invalid topology"
+                , replyWith $ RespSimpleString "still invalid topology"
+                ]
+              _ ->
+                [ replyWith $ RespError "CLUSTERDOWN first"
+                , replyWith $ RespError "CLUSTERDOWN second"
+                , replyWith $ RespError "CLUSTERDOWN final cause"
+                ]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 7) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "invalid-refresh-key"
+        ["GET", "invalid-refresh-key"]
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyed CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [7, 14]
+      closeClusterClient client
+
+    it "keeps keyless CLUSTERDOWN retries after invalid refresh topology" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN first"
+                  , replyWith $ RespSimpleString "invalid topology"
+                  , replyWith $ RespError "CLUSTERDOWN second"
+                  , replyWith $ RespSimpleString "still invalid topology"
+                  , replyWith $ RespError "CLUSTERDOWN final cause"
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 8) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyless CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [8, 16]
+      closeClusterClient client
+
+    it "treats keyed CLUSTERDOWN refresh IO failures as best effort" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 ->
+                [ replyWith validClusterSlots
+                , throwIO $ userError "refresh IO failure one"
+                ]
+              1 ->
+                [ replyWith $ RespError "CLUSTERDOWN first"
+                , replyWith $ RespError "CLUSTERDOWN second"
+                , replyWith $ RespError "CLUSTERDOWN final cause"
+                ]
+              _ -> [throwIO $ userError "refresh IO failure two"]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 9) connector
+      result <- executeKeyedClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        "io-refresh-key"
+        ["GET", "io-refresh-key"]
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyed CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [9, 18]
+      closeClusterClient client
+
+    it "treats keyless CLUSTERDOWN refresh IO failures as best effort" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 ->
+                [ replyWith validClusterSlots
+                , replyWith $ RespError "CLUSTERDOWN first"
+                , throwIO $ userError "refresh IO failure one"
+                ]
+              1 ->
+                [ replyWith $ RespError "CLUSTERDOWN second"
+                , throwIO $ userError "refresh IO failure two"
+                ]
+              _ ->
+                [replyWith $ RespError "CLUSTERDOWN final cause"]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 10) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      case result of
+        Left (MaxRetriesExceeded message) ->
+          message `shouldContain` "CLUSTERDOWN final cause"
+        other -> expectationFailure $
+          "Expected keyless CLUSTERDOWN exhaustion, got: " ++ show other
+      readIORef delays `shouldReturn` [10, 20]
+      closeClusterClient client
+
+    it "keeps cancellation responsive during keyless backoff" $ do
+      delayStarted <- newEmptyMVar
+      blockDelay <- newEmptyMVar
+      finished <- newEmptyMVar
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "TRYAGAIN wait"
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeKeylessClusterCommandUsingDelay
+          (\_ -> putMVar delayStarted () >> takeMVar blockDelay)
+          client
+          ping)
+        (putMVar finished)
+      timeout 1000000 (takeMVar delayStarted) `shouldReturn` Just ()
+      killThread owner
+      outcome <- timeout 1000000 (takeMVar finished)
+      outcome `shouldSatisfy` \case
+        Just (Left err) ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        _ -> False
+      closeClusterClient client
+
+    it "releases keyless CLUSTERDOWN refresh ownership on cancellation" $ do
+      refreshStarted <- newEmptyMVar
+      blockRefresh <- newEmptyMVar
+      finished <- newEmptyMVar
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CLUSTERDOWN wait"
+                  , putMVar refreshStarted () >> takeMVar blockRefresh
+                  ]
+                else []
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeKeylessClusterCommand client ping)
+        (putMVar finished)
+      timeout 1000000 (takeMVar refreshStarted) `shouldReturn` Just ()
+      killThread owner
+      outcome <- timeout 1000000 (takeMVar finished)
+      outcome `shouldSatisfy` \case
+        Just (Left err) ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        _ -> False
+      refreshToken <- tryTakeMVar $ clusterRefreshLock client
+      refreshToken `shouldBe` Just ()
+      putMVar (clusterRefreshLock client) ()
+      closeClusterClient client
+
+    forM_
+      [ ( "MOVED"
+        , RespError "MOVED 3999 127.0.0.2:6380"
+        , MovedError 3999 node2
+        )
+      , ( "ASK"
+        , RespError "ASK 3999 127.0.0.2:6380"
+        , AskError 3999 node2
+        )
+      ] $ \(label, reply, expected) ->
+        it ("returns keyless " ++ label ++ " without following the redirect") $ do
+          delays <- newIORef []
+          let script _ index =
+                return $
+                  if index == 0
+                    then [replyWith validClusterSlots, replyWith reply]
+                    else []
+          (connector, getRecords) <- createAuthMockConnector script
+          client <- createClusterClient (retryTestConfig 3 11) connector
+          result <- executeKeylessClusterCommandUsingDelay
+            (\delay -> atomicModifyIORef' delays $ \seen ->
+              (seen ++ [delay], ()))
+            client
+            ping
+          result `shouldBe` Left expected
+          readIORef delays `shouldReturn` []
+          records <- getRecords
+          sent <- recordSentBytes $ findAuthRecord records node1 0
+          countOccurrences (commandBytes ["PING"]) sent `shouldBe` 1
+          closeClusterClient client
+
+    it "returns keyless CROSSSLOT immediately without retry or delay" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "CROSSSLOT keyless permanent"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 12) connector
+      result <- executeKeylessClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        ping
+      result `shouldBe`
+        Left (CrossSlotError "CROSSSLOT keyless permanent")
+      readIORef delays `shouldReturn` []
+      records <- getRecords
+      sent <- recordSentBytes $ findAuthRecord records node1 0
+      countOccurrences (commandBytes ["PING"]) sent `shouldBe` 1
+      closeClusterClient client
+
+    it "returns ordinary server errors as low-level Left values" $ do
+      let serverError = "ERR complete server explanation"
+          secret = "credential-like-command-argument"
+          script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else [replyWith $ RespError serverError]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      result <- executeKeyedClusterCommand client secret ["GET", secret]
+      result `shouldBe` Left (RedisCommandError serverError)
+      show result `shouldNotContain` BS8.unpack secret
+      closeClusterClient client
+
+    it "does not make ordinary errors success-shaped in the typed API" $ do
+      let serverError = "WRONGTYPE full typed cause"
+          script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots]
+                else [replyWith $ RespError serverError]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      result <- try $ runClusterCommandClient client
+        (get "typed-error-key"
+          :: ClusterCommandClient AuthMockClient ByteString)
+        :: IO (Either SomeException ByteString)
+      case result of
+        Left err -> show err `shouldContain` BS8.unpack serverError
+        Right _  -> expectationFailure "Typed cluster error returned success"
+      closeClusterClient client
+
+    it "classifies ordinary errors from the low-level keyless API" $ do
+      let serverError = "NOSCRIPT full keyless cause"
+          script _ _ =
+            return
+              [ replyWith validClusterSlots
+              , replyWith $ RespError serverError
+              ]
+      (connector, _) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      executeKeylessClusterCommand client
+        (ping :: RedisCommandClient AuthMockClient RespData)
+        `shouldReturn` Left (RedisCommandError serverError)
+      closeClusterClient client
+
+awaitCommandCount
+  :: AuthConnectionRecord
+  -> [ByteString]
+  -> Int
+  -> IO ()
+awaitCommandCount record command expected = do
+  sent <- recordSentBytes record
+  if countOccurrences (commandBytes command) sent >= expected
+    then return ()
+    else threadDelay 1000 >> awaitCommandCount record command expected
+
+askRedirectSuccessSpec :: Spec
+askRedirectSuccessSpec = describe "successful command without ASK redirection" $ do
   it "successful command without redirection returns directly" $ do
     result <- timeout 5000000 $ do
       (connector, addRecvMap, _) <- createMockConnector

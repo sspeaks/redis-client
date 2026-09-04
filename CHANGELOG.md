@@ -27,6 +27,10 @@
     *   MOVED commands retry directly at the advertised target without sending `ASKING`, and patch the affected slot before the retry.
     *   Full topology refresh uses a bounded candidate list of the redirect target, known masters, and the original seed.
     *   Concurrent MOVED patches survive stale in-flight refreshes, while connector and refresh failures remain in the typed retry result.
+*   **Central cluster error classification**
+    *   MOVED, ASK, TRYAGAIN, CLUSTERDOWN, CROSSSLOT, and ordinary Redis errors now share one strict reply classifier across keyed, keyless, and redirected paths.
+    *   TRYAGAIN retries the current route with bounded saturating exponential backoff; CLUSTERDOWN performs a best-effort refresh before bounded backoff without replacing the Redis cause when refresh validation or I/O fails.
+    *   CROSSSLOT and ordinary server errors return immediately as typed `ClusterError` values, preserving the complete server error payload.
 
 ## 0.6.0.0 -- 2026-02-13
 

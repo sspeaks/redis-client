@@ -10,6 +10,10 @@ import           Test.Hspec
 
 main :: IO ()
 main = hspec $ describe "Database.Redis timeout-aware public API" $ do
+  it "exports the migration-compatible ordinary cluster error" $ do
+    RedisCommandError "ERR full server cause"
+      `shouldBe` RedisCommandError "ERR full server cause"
+
   it "exports redaction-safe cluster authentication policies" $ do
     let createAuthenticated
           :: ClusterConfig
