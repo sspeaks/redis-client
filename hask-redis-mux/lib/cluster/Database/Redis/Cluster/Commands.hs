@@ -1,6 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Checked-in Redis command key specifications used by cluster callers.
+--
+-- Source: Redis command reference, Redis Open Source 7.2 command syntax
+-- (<https://redis.io/commands/>), reviewed 2026-09-04.  Update this table
+-- when supporting a newer Redis release or a command's key specification
+-- changes; add focused extraction and malformed-count regression tests first.
 module Database.Redis.Cluster.Commands
   ( keylessCommands
   , requiresKeyCommands
@@ -58,6 +63,11 @@ keyArgumentsWith cmd args =
     "FCALL_RO"   -> evalKeys
     "XREAD"      -> streamKeys
     "XREADGROUP" -> streamKeys
+    "MEMORY"     -> memoryKeys
+    "RENAME"     -> exactly 2
+    "RENAMENX"   -> exactly 2
+    "COPY"       -> exactly 2
+    "XINFO"      -> xinfoKeys
     "ZUNIONSTORE"   -> destinationAndCount 1
     "ZINTERSTORE"   -> destinationAndCount 1
     "ZDIFFSTORE"    -> destinationAndCount 1
@@ -69,6 +79,9 @@ keyArgumentsWith cmd args =
     "BITOP"         -> allFrom 1
     "PFMERGE"       -> allFrom 0
     "SINTERCARD"    -> countOnly 0
+    "ZUNION"        -> countOnly 0
+    "ZINTER"        -> countOnly 0
+    "ZDIFF"         -> countOnly 0
     "BZPOPMIN"      -> allButLast
     "BZPOPMAX"      -> allButLast
     "BLPOP"         -> allButLast
@@ -79,6 +92,11 @@ keyArgumentsWith cmd args =
       (Just key:_) -> Right [key]
       (Nothing:_)  -> Left "cluster key arguments must be bulk strings"
       []           -> Left $ "command " ++ BS8.unpack cmd ++ " requires a key argument"
+    exactly count =
+      let keys = take count args
+      in if length keys == count
+          then traverse requireKey keys
+          else Left $ "command " ++ BS8.unpack cmd ++ " requires key arguments"
 
     allFrom n =
       case drop n args of
@@ -93,7 +111,10 @@ keyArgumentsWith cmd args =
 
     countOnly offset = do
       count <- decimalAt offset
-      traverse requireKey (take count (drop (offset + 1) args))
+      keys <- traverse requireKey (take count (drop (offset + 1) args))
+      if length keys == count
+        then Right keys
+        else Left $ "command " ++ BS8.unpack cmd ++ " has fewer keys than its key count"
 
     destinationAndCount countOffset = do
       destination <- at 0
@@ -120,6 +141,17 @@ keyArgumentsWith cmd args =
     isStreams (Just value) = BS8.map toUpper value == "STREAMS"
     isStreams Nothing      = False
 
+    memoryKeys = case args of
+      (Just subcommand : key : _)
+        | BS8.map toUpper subcommand == "USAGE" -> traverse requireKey [key]
+      _ -> Right []
+
+    xinfoKeys = case args of
+      (Just subcommand : key : _)
+        | BS8.map toUpper subcommand `elem` ["STREAM", "GROUPS", "CONSUMERS"] ->
+            traverse requireKey [key]
+      _ -> Right []
+
     decimalAt n = case drop n args of
       (Just value:_) -> case BS8.readInt value of
         Just (count, "") | count >= 0 -> Right count
@@ -129,7 +161,7 @@ keyArgumentsWith cmd args =
 keylessCommands :: [ByteString]
 keylessCommands =
   [ "PING", "ECHO", "AUTH", "HELLO", "QUIT", "SELECT", "RESET"
-  , "INFO", "TIME", "ROLE", "LASTSAVE", "DBSIZE", "MEMORY", "LATENCY"
+  , "INFO", "TIME", "ROLE", "LASTSAVE", "DBSIZE", "LATENCY"
   , "CLIENT", "CONFIG", "COMMAND", "CLUSTER", "ACL", "SLOWLOG"
   , "BGSAVE", "BGREWRITEAOF", "SAVE", "SHUTDOWN", "REPLICAOF", "SLAVEOF"
   , "FLUSHALL", "FLUSHDB", "PUBSUB", "MONITOR", "SCRIPT", "FUNCTION"
@@ -144,7 +176,7 @@ firstKeyCommands =
   [ "GET", "SET", "SETNX", "SETEX", "PSETEX", "GETEX", "GETDEL", "APPEND"
   , "STRLEN", "GETRANGE", "SETRANGE", "INCR", "INCRBY", "INCRBYFLOAT"
   , "DECR", "DECRBY", "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT"
-  , "TTL", "PTTL", "PERSIST", "TYPE", "RENAME", "RENAMENX", "COPY"
+  , "TTL", "PTTL", "PERSIST", "TYPE"
   , "HGET", "HSET", "HDEL", "HGETALL", "HKEYS", "HVALS", "HEXISTS"
   , "HLEN", "HINCRBY", "HINCRBYFLOAT", "HMGET", "HMSET", "HRANDFIELD"
   , "LPUSH", "RPUSH", "LPOP", "RPOP", "LLEN", "LINDEX", "LRANGE", "LTRIM"
@@ -153,7 +185,7 @@ firstKeyCommands =
   , "ZRANGE", "ZREVRANGE", "ZRANK", "ZREVRANK", "ZSCORE", "ZCARD"
   , "ZCOUNT", "ZLEXCOUNT", "ZRANDMEMBER", "ZINCRBY", "XADD", "XLEN"
   , "XRANGE", "XREVRANGE", "XDEL", "XTRIM", "XACK", "XPENDING", "XCLAIM"
-  , "XAUTOCLAIM", "XINFO", "GEOADD", "GEOPOS", "GEODIST", "GEOHASH"
+  , "XAUTOCLAIM", "GEOADD", "GEOPOS", "GEODIST", "GEOHASH"
   , "GEORADIUS", "GEORADIUSBYMEMBER", "BITCOUNT", "GETBIT", "SETBIT"
   , "BITFIELD", "BITFIELD_RO", "PFADD", "PFCOUNT", "DUMP", "RESTORE"
   , "OBJECT", "TOUCH", "UNLINK", "WATCH"
@@ -162,5 +194,5 @@ firstKeyCommands =
 allKeyCommands :: [ByteString]
 allKeyCommands =
   [ "DEL", "EXISTS", "MGET", "SUNION", "SINTER", "SDIFF", "SINTERSTORE"
-  , "SUNIONSTORE", "SDIFFSTORE", "ZUNION", "ZINTER", "ZDIFF"
+  , "SUNIONSTORE", "SDIFFSTORE"
   ]

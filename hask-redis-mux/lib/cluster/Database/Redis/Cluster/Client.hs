@@ -62,6 +62,7 @@ module Database.Redis.Cluster.Client
     -- proxying. Prefer 'runClusterCommandClient' with 'RedisCommands' for
     -- normal Redis operations.
     executeKeyedClusterCommand,
+    executeKeyedClusterCommandBuilder,
     executeKeyedClusterCommandUsingDelay,
     executeKeylessClusterCommand,
     executeKeylessClusterCommandUsingDelay,
@@ -1064,7 +1065,20 @@ executeKeyedClusterCommand ::
   [ByteString] ->         -- command args
   IO (Either ClusterError RespData)
 executeKeyedClusterCommand =
-  executeKeyedClusterCommandUsingDelay threadDelay
+  \client key cmdArgs ->
+    executeKeyedClusterCommandBuilder client key (encodeCommandBuilder cmdArgs)
+
+-- | Execute a keyed command whose complete RESP frame has already been encoded.
+-- This retains the normal keyed cluster redirect, retry, and transport-error
+-- handling while allowing a proxy to preserve the client's frame verbatim.
+executeKeyedClusterCommandBuilder ::
+  (Client client) =>
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterCommandBuilder =
+  executeKeyedClusterCommandBuilderUsingDelay threadDelay
 
 -- | Test seam for deterministic retry schedule and cancellation coverage.
 executeKeyedClusterCommandUsingDelay ::
@@ -1075,8 +1089,18 @@ executeKeyedClusterCommandUsingDelay ::
   [ByteString] ->
   IO (Either ClusterError RespData)
 executeKeyedClusterCommandUsingDelay delayAction client key cmdArgs = do
+  executeKeyedClusterCommandBuilderUsingDelay delayAction client key
+    (encodeCommandBuilder cmdArgs)
+
+executeKeyedClusterCommandBuilderUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterCommandBuilderUsingDelay delayAction client key cmdBuilder = do
   let muxPool = clusterMultiplexPool client
-      cmdBuilder = encodeCommandBuilder cmdArgs
       !slot = calculateSlot key
   withRetryAndRefreshUsing delayAction
     client

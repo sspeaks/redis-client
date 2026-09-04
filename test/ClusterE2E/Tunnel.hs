@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
@@ -7,18 +8,24 @@ import           ClusterE2E.Utils
 import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Exception             (bracket)
 import           Control.Monad                 (forM_, when)
+import qualified Control.Monad.State.Strict    as State
+import qualified Data.ByteString.Builder       as Builder
 import qualified Data.ByteString.Char8         as BS8
 import           Data.List                     (isInfixOf)
 import qualified Data.Map.Strict               as Map
-import           Database.Redis.Client         (PlainTextClient (NotConnectedPlainTextClient),
+import           Database.Redis.Client         (Client (..),
+                                                ConnectionStatus (..),
+                                                PlainTextClient (NotConnectedPlainTextClient),
                                                 close, connect)
 import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeAddress (..), NodeRole (..))
 import           Database.Redis.Cluster.Client (closeClusterClient,
                                                 clusterTopology)
-import           Database.Redis.Command        (RedisCommands (..))
-import           Database.Redis.Resp           (RespData (..))
+import           Database.Redis.Command        (ClientState (..),
+                                                RedisCommands (..), parseWith)
+import           Database.Redis.Resp           (Encodable (encode),
+                                                RespData (..))
 import           SlotMappingHelpers            (getKeyForNode)
 import           Test.Hspec
 
@@ -123,6 +130,61 @@ spec = describe "Cluster Tunnel Mode" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           _ <- runCmd_ client (del ["multi:key1"])
           _ <- runCmd_ client (del ["multi:key2"])
+          pure ()
+
+    it "smart mode routes Redis key specifications and rejects invalid requests before dispatch" $
+      withSmartProxy $ do
+        conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+        let tag = "{tunnel-routing}"
+            binaryKey = tag <> ":binary"
+            renamedKey = tag <> ":renamed"
+            copiedKey = tag <> ":copied"
+            zsetOne = tag <> ":zset-one"
+            zsetTwo = tag <> ":zset-two"
+            stream = tag <> ":stream"
+
+        rawCommand (RespArray [RespBulkString "SET", RespBulkString binaryKey,
+          RespBulkString "\NUL\255"]) conn `shouldReturn` RespSimpleString "OK"
+        rawCommand (RespArray [RespBulkString "EVAL",
+          RespBulkString "return redis.call('GET', KEYS[1])", RespBulkString "1",
+          RespBulkString binaryKey]) conn `shouldReturn` RespBulkString "\NUL\255"
+        rawCommand (RespArray [RespBulkString "MEMORY", RespBulkString "USAGE",
+          RespBulkString binaryKey]) conn `shouldSatisfyResponse` isInteger
+        rawCommand (RespArray [RespBulkString "RENAME", RespBulkString binaryKey,
+          RespBulkString renamedKey]) conn `shouldReturn` RespSimpleString "OK"
+        rawCommand (RespArray [RespBulkString "COPY", RespBulkString renamedKey,
+          RespBulkString copiedKey]) conn `shouldReturn` RespInteger 1
+
+        rawCommand (RespArray [RespBulkString "ZADD", RespBulkString zsetOne,
+          RespBulkString "1", RespBulkString "one"]) conn `shouldReturn` RespInteger 1
+        rawCommand (RespArray [RespBulkString "ZADD", RespBulkString zsetTwo,
+          RespBulkString "2", RespBulkString "two"]) conn `shouldReturn` RespInteger 1
+        rawCommand (RespArray [RespBulkString "ZUNION", RespBulkString "2",
+          RespBulkString zsetOne, RespBulkString zsetTwo]) conn `shouldReturn`
+          RespArray [RespBulkString "one", RespBulkString "two"]
+
+        rawCommand (RespArray [RespBulkString "XADD", RespBulkString stream,
+          RespBulkString "*", RespBulkString "field", RespBulkString "value"]) conn
+          `shouldSatisfyResponse` isBulk
+        rawCommand (RespArray [RespBulkString "XREAD", RespBulkString "STREAMS",
+          RespBulkString stream, RespBulkString "0"]) conn `shouldSatisfyResponse` isArray
+        rawCommand (RespArray [RespBulkString "XINFO", RespBulkString "STREAM",
+          RespBulkString stream]) conn `shouldSatisfyResponse` isArray
+        rawCommand (RespArray [RespBulkString "ECHO", RespBulkString "argument"]) conn
+          `shouldReturn` RespBulkString "argument"
+
+        rawCommand (RespArray [RespBulkString "MODULE.FUTURE", RespBulkString "key"]) conn
+          `shouldSatisfyResponse` isErrContaining "unsupported command for cluster routing"
+        rawCommand (RespArray [RespBulkString "ZUNION", RespBulkString "2",
+          RespBulkString zsetOne]) conn
+          `shouldSatisfyResponse` isErrContaining "fewer keys than its key count"
+        rawCommand (RespArray [RespBulkString "MGET", RespBulkString "one",
+          RespBulkString "two"]) conn
+          `shouldSatisfyResponse` isErrContaining "CROSSSLOT Keys in request don't hash to the same slot"
+        close conn
+
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          _ <- runCmd_ client (del [renamedKey, copiedKey, zsetOne, zsetTwo, stream])
           pure ()
 
   describe "Pinned Proxy Mode" $ do
@@ -240,3 +302,30 @@ spec = describe "Cluster Tunnel Mode" $ do
                 other -> expectationFailure $ "Expected RespArray from CLUSTER SLOTS, got: " ++ show other
 
               close conn
+
+rawCommand :: RespData -> PlainTextClient 'Connected -> IO RespData
+rawCommand command conn =
+  State.evalStateT (do
+    ClientState client _ <- State.get
+    send client (Builder.toLazyByteString $ encode command)
+    parseWith (receive client)
+  ) (ClientState conn BS8.empty)
+
+shouldSatisfyResponse :: IO RespData -> (RespData -> Bool) -> IO ()
+shouldSatisfyResponse response predicate = response >>= (`shouldSatisfy` predicate)
+
+isInteger :: RespData -> Bool
+isInteger (RespInteger _) = True
+isInteger _               = False
+
+isBulk :: RespData -> Bool
+isBulk (RespBulkString _) = True
+isBulk _                  = False
+
+isArray :: RespData -> Bool
+isArray (RespArray _) = True
+isArray _             = False
+
+isErrContaining :: BS8.ByteString -> RespData -> Bool
+isErrContaining message (RespError err) = message `BS8.isInfixOf` err
+isErrContaining _ _                     = False

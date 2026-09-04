@@ -82,6 +82,8 @@ test-suite ClusterTunnelSpec
                     , mtl
                     , network
                     , stm
+                    , time
+                    , vector
 
 test-suite NodeLifecycleSpec
     import:           test-defaults
