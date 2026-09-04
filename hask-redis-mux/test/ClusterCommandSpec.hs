@@ -7,8 +7,9 @@ module Main (main) where
 
 import           Control.Concurrent                    (forkFinally, forkIO,
                                                         killThread, threadDelay)
-import           Control.Concurrent.MVar               (newEmptyMVar, newMVar,
-                                                        putMVar, takeMVar,
+import           Control.Concurrent.MVar               (MVar, newEmptyMVar,
+                                                        newMVar, putMVar,
+                                                        takeMVar, tryPutMVar,
                                                         tryTakeMVar)
 import           Control.Concurrent.STM                (newTVarIO, readTVarIO)
 import           Control.Exception                     (SomeAsyncException,
@@ -790,6 +791,7 @@ askRedirectSpec = describe "ASK redirect integration (executeKeyedClusterCommand
 data AuthMockClient (status :: ConnectionStatus) where
   AuthMockConnected
     :: !(IORef ByteString)
+    -> !(MVar ())
     -> !(IORef [IO ByteString])
     -> !(IORef Int)
     -> !(IORef Int)
@@ -797,22 +799,26 @@ data AuthMockClient (status :: ConnectionStatus) where
 
 instance Client AuthMockClient where
   connect = error "AuthMockClient: connect not supported"
-  close (AuthMockConnected _ _ closes _) =
+  close (AuthMockConnected _ _ _ closes _) =
     liftIO $ incrementRef closes
-  abort (AuthMockConnected _ _ _ aborts) =
+  abort (AuthMockConnected _ _ _ _ aborts) =
     liftIO $ incrementRef aborts
-  send (AuthMockConnected sent _ _ _) lbs =
-    liftIO $ atomicModifyIORef' sent $ \old ->
-      (old <> LBS.toStrict lbs, ())
-  receive (AuthMockConnected _ script _ _) =
+  send (AuthMockConnected sent observed _ _ _) lbs =
+    liftIO $ do
+      atomicModifyIORef' sent $ \old ->
+        (old <> LBS.toStrict lbs, ())
+      _ <- tryPutMVar observed ()
+      return ()
+  receive (AuthMockConnected _ _ script _ _) =
     liftIO $ nextScriptedReceive script
 
 data AuthConnectionRecord = AuthConnectionRecord
-  { authRecordAddress :: !NodeAddress
-  , authRecordIndex   :: !Int
-  , authRecordSent    :: !(IORef ByteString)
-  , authRecordCloses  :: !(IORef Int)
-  , authRecordAborts  :: !(IORef Int)
+  { authRecordAddress    :: !NodeAddress
+  , authRecordIndex      :: !Int
+  , authRecordSent       :: !(IORef ByteString)
+  , authRecordSentSignal :: !(MVar ())
+  , authRecordCloses     :: !(IORef Int)
+  , authRecordAborts     :: !(IORef Int)
   }
 
 type AuthScript = NodeAddress -> Int -> IO [IO ByteString]
@@ -831,14 +837,15 @@ createAuthMockConnector scriptFor = do
           let index = Map.findWithDefault 0 addr current
           in (Map.insert addr (index + 1) current, index)
         sent <- newIORef BS.empty
+        sentSignal <- newEmptyMVar
         script <- scriptFor addr index >>= newIORef
         closes <- newIORef 0
         aborts <- newIORef 0
         let record = AuthConnectionRecord
-              addr index sent closes aborts
+              addr index sent sentSignal closes aborts
         atomicModifyIORef' records $ \existing ->
           (existing ++ [record], ())
-        return $ AuthMockConnected sent script closes aborts
+        return $ AuthMockConnected sent sentSignal script closes aborts
   return (connector, readIORef records)
 
 nextScriptedReceive :: IORef [IO ByteString] -> IO ByteString
@@ -2246,10 +2253,18 @@ awaitCommandCount
   -> Int
   -> IO ()
 awaitCommandCount record command expected = do
-  sent <- recordSentBytes record
-  if countOccurrences (commandBytes command) sent >= expected
-    then return ()
-    else threadDelay 1000 >> awaitCommandCount record command expected
+  observed <- timeout 5000000 await
+  case observed of
+    Just () -> return ()
+    Nothing ->
+      expectationFailure $
+        "Timed out waiting for " ++ show expected ++ " sends of " ++ show command
+  where
+    await = do
+      sent <- recordSentBytes record
+      if countOccurrences (commandBytes command) sent >= expected
+        then return ()
+        else takeMVar (authRecordSentSignal record) >> await
 
 askRedirectSuccessSpec :: Spec
 askRedirectSuccessSpec = describe "successful command without ASK redirection" $ do
