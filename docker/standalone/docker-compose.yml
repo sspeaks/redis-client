@@ -16,7 +16,7 @@ services:
         aliases:
           - redis.local
   e2etests:
-    image: e2etests:latest
+    image: "${REDIS_E2E_IMAGE:-e2etests:latest}"
     depends_on: [redis]
     volumes:
       # This ephemeral CA is test-only trust material and must never be reused.
