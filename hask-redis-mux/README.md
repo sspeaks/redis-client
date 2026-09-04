@@ -95,12 +95,52 @@ main = do
       set "key" "value"
 ```
 
+## Cluster Authentication
+
+Redis authentication is connection-scoped. Authenticated cluster clients must
+therefore apply credentials while each physical connection is created, before
+topology discovery or application commands:
+
+```haskell
+let credentials = ClusterPassword "secret"
+
+withClusterClientAuthentication
+    clusterConfig
+    credentials
+    (clusterTLSConnector "redis.example.net") $ \client ->
+  runClusterCommandClient client $ get "key"
+```
+
+`ClusterPassword password` sends `AUTH password`, which authenticates the
+default user and remains compatible with legacy password-protected Redis.
+`ClusterACL username password` sends
+`HELLO 2 AUTH username password`; the explicit protocol version preserves the
+library's RESP2 contract and never negotiates RESP3.
+
+The policy is applied exactly once to every seed, topology-refresh, pooled,
+keyed multiplexer, MOVED/ASK target, replacement, reconnect, and stored
+connector connection before that connection is exposed. Authentication failure
+or timeout abortively closes the transport, and
+`ClusterAuthenticationException` contains only the endpoint, never the
+credential or server response.
+
+Calling the shared `auth` command through `ClusterCommandClient` now throws
+`ClusterRuntimeAuthenticationUnsupported`, because authenticating one arbitrary
+socket cannot establish cluster-wide state. Migrate custom connector wrappers
+to `createClusterClientWithAuthentication` or
+`withClusterClientAuthentication`. Existing unauthenticated constructors remain
+unchanged.
+
+Standalone `auth` remains meaningful because a standalone client owns one
+physical connection. It uses `AUTH password` for an empty or `default` username
+and `HELLO 2 AUTH username password` for a named ACL user.
+
 ## Transport Security
 
-Use a TLS connector before issuing `AUTH` or otherwise transmitting credentials.
-The library exposes transport and authentication separately, so direct library
-callers are responsible for keeping authenticated traffic off plaintext
-connectors.
+Use a TLS connector whenever credentials must not cross the network in
+plaintext. Passing a plaintext connector to an authenticated constructor is an
+explicit caller choice; the library does not silently upgrade transport
+security.
 
 TLS certificate verification is enabled by default. For controlled testing
 only, set `REDIS_CLIENT_TLS_INSECURE=1` to disable verification. The client emits
@@ -111,11 +151,10 @@ verification; other values are rejected instead of silently weakening TLS.
 
 `PoolConfig.connectionTimeout` is a per-attempt wall-clock deadline in seconds.
 For plaintext connections it covers DNS resolution, socket creation/options,
-and TCP connect. For TLS connections it covers those phases plus certificate
-store loading, TLS context creation, and the TLS handshake. The redis-client
-executable also includes AUTH in the same deadline. A timed-out setup throws
-`ConnectionSetupTimeout`, which records the endpoint and active phase without
-including credentials.
+TCP connect, and configured connection authentication. For TLS connections it
+covers those phases plus certificate store loading, TLS context creation, and
+the TLS handshake. A timed-out setup throws `ConnectionSetupTimeout`, which
+records the endpoint and active phase without including credentials.
 
 Cluster multiplexers and ordinary pooled connections use the same deadline.
 The cluster client retains that bounded connector for benchmark, fill, flush,
@@ -139,9 +178,11 @@ withStandaloneClient standaloneConfig $ \client ->
   runStandaloneClient client ping
 ```
 
-`withConnectionTimeoutSupervised` is available for custom connectors. Register
-the connected transport before a potentially blocking AUTH phase so expiry can
-abort the socket without waiting for graceful TLS shutdown.
+`createClusterClientWithAuthentication` supervises the raw connector and AUTH
+under one configured deadline. Do not pass a separately timeout-wrapped
+connector to that constructor, because nested deadlines obscure the intended
+single-attempt budget. `withConnectionTimeoutSupervised` remains available for
+custom lower-level initialization.
 
 The caller-side deadline is independent of asynchronous exception delivery.
 The supervisor returns at the configured wall-clock boundary, requests worker

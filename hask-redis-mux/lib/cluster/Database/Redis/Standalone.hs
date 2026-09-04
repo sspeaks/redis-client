@@ -49,6 +49,7 @@ import           Control.Exception                   (SomeException, bracket,
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
+import qualified Data.ByteString                     as BS
 import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Command              (ClientReplyValues (..),
@@ -212,7 +213,11 @@ submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a
 submitMuxAs args = submitMux args >>= convertResp
 
 instance RedisCommands StandaloneCommandClient where
-  auth username password = submitMuxAs ["HELLO", "3", "AUTH", username, password]
+  auth username password
+    | BS.null username || username == "default" =
+        submitMuxAs ["AUTH", password]
+    | otherwise =
+        submitMuxAs ["HELLO", "2", "AUTH", username, password]
   ping = submitMuxAs ["PING"]
   set k v = submitMuxAs ["SET", k, v]
   get k = submitMuxAs ["GET", k]

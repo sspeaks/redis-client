@@ -2,123 +2,53 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module ClusterSetup
-  ( authenticateClient
-  , createAuthenticatedConnectorWithTimeout
-  , createPlaintextConnector
-  , createPlaintextConnectorWithTimeout
+  ( createPlaintextConnector
   , createTLSConnector
-  , createTLSConnectorWithTimeout
   , createClusterClientFromState
   , flushAllClusterNodes
   ) where
 
 import           AppConfig                             (RunState (..),
-                                                        authenticate,
                                                         enforcePlaintextAuthenticationPolicy)
 import           Control.Concurrent.STM                (readTVarIO)
-import           Control.Exception                     (onException)
 import qualified Control.Monad.State                   as State
 import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Char8                 as BS8
 import qualified Data.Map.Strict                       as Map
 import           Data.Maybe                            (fromMaybe)
-import           Database.Redis.Client                 (Client (abort),
-                                                        ConnectionPhase (..),
-                                                        ConnectionStatus (..),
-                                                        PlainTextClient (..),
-                                                        TLSClient (..),
-                                                        connectPlaintextWithCleanup,
-                                                        connectTLSWithCleanup)
+import           Database.Redis.Client                 (Client, PlainTextClient,
+                                                        TLSClient)
 import           Database.Redis.Cluster                (ClusterNode (..),
                                                         ClusterTopology (..),
                                                         NodeAddress (..),
                                                         NodeRole (..))
-import           Database.Redis.Cluster.Client         (ClusterClient (..),
+import           Database.Redis.Cluster.Client         (ClusterAuthentication (..),
+                                                        ClusterClient (..),
                                                         ClusterConfig (..),
-                                                        createClusterClientWithBoundedConnector)
+                                                        createClusterClient,
+                                                        createClusterClientWithAuthentication)
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (PoolConfig))
 import qualified Database.Redis.Cluster.ConnectionPool as CP
 import           Database.Redis.Command                (ClientState (ClientState),
                                                         RedisCommands (flushAll))
 import qualified Database.Redis.Command                as RedisCommand
-import           Database.Redis.Connector              (ConnectionSupervisor (..),
-                                                        Connector,
-                                                        withConnectionTimeoutSupervised)
+import           Database.Redis.Connector              (Connector,
+                                                        clusterPlaintextConnector,
+                                                        clusterTLSConnector)
 import           Database.Redis.Resp                   (RespData)
 import           Text.Printf                           (printf)
 
--- | Authenticate a client connection if a password is configured
-authenticateClient :: (Client client) => RunState -> client 'Connected -> IO (client 'Connected)
-authenticateClient state client
-  | null (password state) = return client
-  | otherwise =
-      runAuthentication state client
-      `onException` abort client
-
-runAuthentication
-  :: (Client client)
-  => RunState
-  -> client 'Connected
-  -> IO (client 'Connected)
-runAuthentication state client
-  | null (password state) = return client
-  | otherwise = do
-      _ <- State.evalStateT
-             (RedisCommand.runRedisCommandClient (authenticate (username state) (password state)))
-             (ClientState client BS.empty)
-      return client
-
 -- | Create cluster connector for plaintext connections
 createPlaintextConnector :: RunState -> Connector PlainTextClient
-createPlaintextConnector = createPlaintextConnectorWithTimeout 300
-
-createPlaintextConnectorWithTimeout
-  :: Int
-  -> RunState
-  -> Connector PlainTextClient
-createPlaintextConnectorWithTimeout seconds state =
-  createAuthenticatedConnectorWithTimeout seconds state $ \supervisor addr -> do
-      enforcePlaintextAuthenticationPolicy state
-      connectPlaintextWithCleanup
-        (setConnectionPhase supervisor)
-        (registerSetupCleanup supervisor)
-        (nodeHost addr)
-        (Just $ nodePort addr)
+createPlaintextConnector state addr = do
+  enforcePlaintextAuthenticationPolicy state
+  clusterPlaintextConnector addr
 
 -- | Create cluster connector for TLS connections
 -- Uses the original seed hostname for TLS certificate validation to avoid
 -- hostname mismatch errors when CLUSTER SLOTS returns IP addresses
 createTLSConnector :: RunState -> Connector TLSClient
-createTLSConnector = createTLSConnectorWithTimeout 300
-
-createTLSConnectorWithTimeout
-  :: Int
-  -> RunState
-  -> Connector TLSClient
-createTLSConnectorWithTimeout seconds state =
-  createAuthenticatedConnectorWithTimeout seconds state $ \supervisor addr ->
-    connectTLSWithCleanup
-      (setConnectionPhase supervisor)
-      (registerSetupCleanup supervisor)
-      (host state)
-      (nodeHost addr)
-      (Just $ nodePort addr)
-
--- | Production connector seam shared by plaintext, TLS, and deterministic
--- authentication tests. Transport ownership is registered before AUTH.
-createAuthenticatedConnectorWithTimeout
-  :: (Client client)
-  => Int
-  -> RunState
-  -> (ConnectionSupervisor client
-      -> NodeAddress
-      -> IO (client 'Connected))
-  -> Connector client
-createAuthenticatedConnectorWithTimeout seconds state connectTransport =
-  withConnectionTimeoutSupervised seconds DNSResolution $ \supervisor addr -> do
-    client <- connectTransport supervisor addr
-    cleanup <- registerConnectedTransport supervisor client
-    setConnectionPhase supervisor Authentication
-    runAuthentication state client `onException` cleanup
+createTLSConnector state = clusterTLSConnector (host state)
 
 -- | Create a cluster client from RunState
 createClusterClientFromState :: (Client client) =>
@@ -141,7 +71,21 @@ createClusterClientFromState state connector = do
         , clusterRetryDelay = 100000  -- 100ms
         , clusterTopologyRefreshInterval = 600  -- 10 minutes
         }
-  createClusterClientWithBoundedConnector clusterCfg connector
+  case clusterAuthentication state of
+    Nothing ->
+      createClusterClient clusterCfg connector
+    Just authentication ->
+      createClusterClientWithAuthentication clusterCfg authentication connector
+
+clusterAuthentication :: RunState -> Maybe ClusterAuthentication
+clusterAuthentication state
+  | null (password state) = Nothing
+  | username state == "default" =
+      Just $ ClusterPassword $ BS8.pack (password state)
+  | otherwise =
+      Just $ ClusterACL
+        (BS8.pack $ username state)
+        (BS8.pack $ password state)
 
 -- | Flush all master nodes in a cluster
 flushAllClusterNodes :: (Client client) =>

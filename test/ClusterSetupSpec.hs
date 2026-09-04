@@ -1,134 +1,128 @@
-{-# LANGUAGE DataKinds  #-}
-{-# LANGUAGE GADTs      #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
-import           AppConfig                (RunState (..), defaultRunState)
-import           ClusterSetup             (authenticateClient,
-                                           createAuthenticatedConnectorWithTimeout)
-import           Control.Concurrent       (forkFinally, killThread)
-import           Control.Concurrent.MVar  (newEmptyMVar, putMVar, takeMVar)
-import           Control.Exception        (SomeException, finally,
-                                           fromException, throwIO, try)
-import           Control.Monad.IO.Class   (liftIO)
-import           Data.ByteString          (ByteString)
-import           Data.IORef               (IORef, atomicModifyIORef', newIORef,
-                                           readIORef)
-import           Data.List                (isInfixOf)
-import           Database.Redis.Client    (Client (..), ConnectionPhase (..),
-                                           ConnectionStatus (..))
-import           Database.Redis.Cluster   (NodeAddress (..))
-import           Database.Redis.Connector (ConnectionSetupException (..))
-import           GHC.Clock                (getMonotonicTimeNSec)
-import           System.Timeout           (timeout)
+import           AppConfig                     (RunState (..), defaultRunState)
+import           ClusterSetup                  (createClusterClientFromState)
+import           Control.Concurrent            (threadDelay)
+import           Control.Monad.IO.Class        (liftIO)
+import           Data.ByteString               (ByteString)
+import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Builder       as Builder
+import qualified Data.ByteString.Lazy          as LBS
+import           Data.IORef                    (IORef, atomicModifyIORef',
+                                                newIORef, readIORef)
+import           Database.Redis.Client         (Client (..),
+                                                ConnectionStatus (..))
+import           Database.Redis.Cluster        (NodeAddress (..))
+import           Database.Redis.Cluster.Client (closeClusterClient)
+import           Database.Redis.Command        (encodeCommandBuilder)
+import           Database.Redis.Resp           (Encodable (encode),
+                                                RespData (..))
 import           Test.Hspec
 
-data AuthClient (status :: ConnectionStatus) where
-  AuthConnected
-    :: !(IORef Int)
-    -> !(IORef Int)
-    -> !(IO ByteString)
-    -> AuthClient 'Connected
+data SetupClient (status :: ConnectionStatus) where
+  SetupConnected
+    :: !(IORef ByteString)
+    -> !(IORef [ByteString])
+    -> SetupClient 'Connected
 
-instance Show (AuthClient status) where
-  show _ = "AuthClient"
+instance Client SetupClient where
+  connect = error "SetupClient: connect not supported"
+  close _ = return ()
+  send (SetupConnected sent _) lbs =
+    liftIO $ atomicModifyIORef' sent $ \old ->
+      (old <> LBS.toStrict lbs, ())
+  receive (SetupConnected _ responses) =
+    liftIO $ receiveNext responses
 
-instance Client AuthClient where
-  connect = error "AuthClient: connect not supported"
-  close (AuthConnected gracefulCloseCount _ _) =
-    liftIO $ increment gracefulCloseCount
-  abort (AuthConnected _ abortCount _) =
-    liftIO $ increment abortCount
-  send _ _ = return ()
-  receive (AuthConnected _ _ receiveAction) = liftIO receiveAction
+receiveNext :: IORef [ByteString] -> IO ByteString
+receiveNext responses = do
+  next <- atomicModifyIORef' responses $ \case
+    []       -> ([], Nothing)
+    (x : xs) -> (xs, Just x)
+  case next of
+    Just response -> return response
+    Nothing       -> threadDelay 1000 >> receiveNext responses
 
 main :: IO ()
-main = hspec $ describe "authenticated production connector" $ do
-  it "uses abortive cleanup when direct authentication is cancelled" $ do
-    gracefulCloses <- newIORef (0 :: Int)
-    aborts <- newIORef (0 :: Int)
-    receiveStarted <- newEmptyMVar
-    stalled <- newEmptyMVar
-    finished <- newEmptyMVar
-    let client = AuthConnected gracefulCloses aborts $
-          putMVar receiveStarted () >> takeMVar stalled
+main = hspec $ describe "cluster executable setup" $ do
+  it "maps the default user to password AUTH before topology discovery" $ do
+    (connector, sent) <- setupConnector
+      [ RespSimpleString "OK", validClusterSlots ]
+    client <- createClusterClientFromState
+      (credentialState "default" "password-secret")
+      connector
+    readIORef sent `shouldReturn`
+      commandBytes ["AUTH", "password-secret"]
+        <> commandBytes ["CLUSTER", "SLOTS"]
+    closeClusterClient client
 
-    owner <- forkFinally
-      (authenticateClient credentialState client)
-      (putMVar finished)
-    timeout 1000000 (takeMVar receiveStarted) `shouldReturn` Just ()
-    killThread owner
-    outcome <- timeout 1000000 (takeMVar finished)
-    outcome `shouldSatisfy` \case
-      Just (Left _) -> True
-      _             -> False
-    readIORef gracefulCloses `shouldReturn` 0
-    readIORef aborts `shouldReturn` 1
+  it "maps a named ACL user to HELLO 2 AUTH before topology discovery" $ do
+    (connector, sent) <- setupConnector
+      [ RespArray [RespBulkString "proto", RespInteger 2]
+      , validClusterSlots
+      ]
+    client <- createClusterClientFromState
+      (credentialState "acl-user" "acl-secret")
+      connector
+    readIORef sent `shouldReturn`
+      commandBytes ["HELLO", "2", "AUTH", "acl-user", "acl-secret"]
+        <> commandBytes ["CLUSTER", "SLOTS"]
+    closeClusterClient client
 
-  it "times out the actual authenticated connector with typed redacted error" $ do
-    gracefulCloses <- newIORef (0 :: Int)
-    aborts <- newIORef (0 :: Int)
-    receiveStarted <- newEmptyMVar
-    stalled <- newEmptyMVar
-    workerFinished <- newEmptyMVar
-    let receiveAction =
-          (putMVar receiveStarted () >> takeMVar stalled)
-            `finally` putMVar workerFinished ()
-        client = AuthConnected gracefulCloses aborts receiveAction
-        connector = createAuthenticatedConnectorWithTimeout
-          1 credentialState (\_ _ -> return client)
+  it "keeps unauthenticated cluster construction compatible" $ do
+    (connector, sent) <- setupConnector [validClusterSlots]
+    client <- createClusterClientFromState
+      (defaultRunState
+        { host = "127.0.0.1"
+        , port = Just 6379
+        })
+      connector
+    readIORef sent `shouldReturn` commandBytes ["CLUSTER", "SLOTS"]
+    closeClusterClient client
 
-    startedAt <- getMonotonicTimeNSec
-    result <- try $ connector testNode
-      :: IO (Either SomeException (AuthClient 'Connected))
-    finishedAt <- getMonotonicTimeNSec
-    let elapsed =
-          fromIntegral (finishedAt - startedAt) / 1000000000 :: Double
+setupConnector
+  :: [RespData]
+  -> IO
+      ( NodeAddress -> IO (SetupClient 'Connected)
+      , IORef ByteString
+      )
+setupConnector responses = do
+  sent <- newIORef BS.empty
+  encodedResponses <- newIORef $ map encodeResp responses
+  return (const $ return $ SetupConnected sent encodedResponses, sent)
 
-    result `shouldSatisfy` \case
-      Left err ->
-        case fromException err of
-          Just timeoutError ->
-            connectionTimeoutPhase timeoutError == Authentication
-              && connectionTimeoutEndpoint timeoutError == testNode
-              && not (syntheticCredential `isInfixOf` show timeoutError)
-          Nothing -> False
-      Right _ -> False
-    elapsed `shouldSatisfy` \seconds ->
-      seconds >= 0.75 && seconds < 2.5
-    timeout 1000000 (takeMVar workerFinished) `shouldReturn` Just ()
-    readIORef gracefulCloses `shouldReturn` 0
-    readIORef aborts `shouldReturn` 1
-
-  it "abortively closes exactly once on synchronous AUTH failure" $ do
-    gracefulCloses <- newIORef (0 :: Int)
-    aborts <- newIORef (0 :: Int)
-    let client = AuthConnected gracefulCloses aborts $
-          throwIO $ userError "synthetic AUTH rejection"
-        connector = createAuthenticatedConnectorWithTimeout
-          5 credentialState (\_ _ -> return client)
-
-    result <- try $ connector testNode
-      :: IO (Either SomeException (AuthClient 'Connected))
-    result `shouldSatisfy` \case
-      Left err -> not (syntheticCredential `isInfixOf` show err)
-      Right _  -> False
-    readIORef gracefulCloses `shouldReturn` 0
-    readIORef aborts `shouldReturn` 1
-
-credentialState :: RunState
-credentialState = defaultRunState
-  { username = "default"
-  , password = syntheticCredential
+credentialState :: String -> String -> RunState
+credentialState authUsername authPassword = defaultRunState
+  { host = "127.0.0.1"
+  , port = Just 6379
+  , username = authUsername
+  , password = authPassword
+  , allowInsecurePlaintextAuth = True
   }
 
-syntheticCredential :: String
-syntheticCredential = "synthetic-secret-for-redaction"
+validClusterSlots :: RespData
+validClusterSlots =
+  RespArray
+    [ RespArray
+        [ RespInteger 0
+        , RespInteger 16383
+        , RespArray
+            [ RespBulkString "127.0.0.1"
+            , RespInteger 6379
+            , RespBulkString "test-node-id"
+            ]
+        ]
+    ]
 
-testNode :: NodeAddress
-testNode = NodeAddress "redis.test" 6380
+encodeResp :: RespData -> ByteString
+encodeResp =
+  LBS.toStrict . Builder.toLazyByteString . encode
 
-increment :: IORef Int -> IO ()
-increment ref =
-  atomicModifyIORef' ref $ \count -> (count + 1, ())
+commandBytes :: [ByteString] -> ByteString
+commandBytes =
+  LBS.toStrict . Builder.toLazyByteString . encodeCommandBuilder
