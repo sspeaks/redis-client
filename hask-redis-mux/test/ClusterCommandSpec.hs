@@ -917,7 +917,11 @@ createPostWriteFailureConnector = do
                     sentCommands <- readTVar sendCount
                     check $ sentCommands == 1
                   throwIO $ userError "injected transport failure after raw write"
-              | otherwise = replyWith $ RespSimpleString "OK"
+              | otherwise = do
+                  atomically $ do
+                    sentCommands <- readTVar sendCount
+                    check $ sentCommands == 1
+                  replyWith $ RespSimpleString "OK"
             record = PostWriteFailureRecord index sent sendCount closes
         atomicModifyIORef' records $ \existing ->
           (existing ++ [record], ())
