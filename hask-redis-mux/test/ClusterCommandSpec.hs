@@ -2523,6 +2523,7 @@ rawFrameIdentitySpec =
         client (RawRouteByKey "raw-reconnect-key") rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [7]
+      readIORef connectorCalls `shouldReturn` 3
       records <- getRecords
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
@@ -2549,6 +2550,7 @@ rawFrameIdentitySpec =
         client (RawRouteByKey "raw-timeout-key") rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [8]
+      readIORef connectorCalls `shouldReturn` 3
       records <- getRecords
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
