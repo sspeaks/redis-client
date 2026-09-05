@@ -5,62 +5,65 @@
 
 module Main (main) where
 
-import           Control.Concurrent                       (forkFinally, forkIO,
-                                                           killThread,
-                                                           threadDelay)
-import           Control.Concurrent.MVar                  (newEmptyMVar,
-                                                           newMVar, putMVar,
-                                                           takeMVar,
-                                                           tryTakeMVar)
-import           Control.Concurrent.STM                   (TVar, atomically,
-                                                           check, modifyTVar',
-                                                           newTVarIO, readTVar,
-                                                           readTVarIO)
-import           Control.Exception                        (SomeAsyncException,
-                                                           SomeException,
-                                                           finally,
-                                                           fromException,
-                                                           throwIO, try)
-import qualified Control.Exception                        as Exception
-import           Control.Monad                            (forM_, replicateM_)
-import           Control.Monad.IO.Class                   (liftIO)
-import           Data.ByteString                          (ByteString)
-import qualified Data.ByteString                          as BS
-import qualified Data.ByteString.Builder                  as Builder
-import qualified Data.ByteString.Char8                    as BS8
-import qualified Data.ByteString.Lazy                     as LBS
-import           Data.IORef                               (IORef,
-                                                           atomicModifyIORef',
-                                                           newIORef, readIORef)
-import qualified Data.Map.Strict                          as Map
-import           Data.Time.Clock                          (getCurrentTime)
-import qualified Data.Vector                              as V
-import           Data.Word                                (Word16)
-import           Database.Redis.Client                    (Client (..),
-                                                           ConnectionStatus (..))
-import           Database.Redis.Cluster                   (ClusterNode (..),
-                                                           ClusterTopology (..),
-                                                           NodeAddress (..),
-                                                           NodeRole (..),
-                                                           SlotRange (..),
-                                                           calculateSlot,
-                                                           findNodeAddressForSlot)
+import           Control.Concurrent                         (forkFinally,
+                                                             forkIO, killThread,
+                                                             threadDelay)
+import           Control.Concurrent.MVar                    (newEmptyMVar,
+                                                             newMVar, putMVar,
+                                                             takeMVar,
+                                                             tryTakeMVar)
+import           Control.Concurrent.STM                     (TVar, atomically,
+                                                             check, modifyTVar',
+                                                             newTVarIO,
+                                                             readTVar,
+                                                             readTVarIO)
+import           Control.Exception                          (SomeAsyncException,
+                                                             SomeException,
+                                                             finally,
+                                                             fromException,
+                                                             throwIO, try)
+import qualified Control.Exception                          as Exception
+import           Control.Monad                              (forM_, replicateM_)
+import           Control.Monad.IO.Class                     (liftIO)
+import           Data.ByteString                            (ByteString)
+import qualified Data.ByteString                            as BS
+import qualified Data.ByteString.Builder                    as Builder
+import qualified Data.ByteString.Char8                      as BS8
+import qualified Data.ByteString.Lazy                       as LBS
+import           Data.IORef                                 (IORef,
+                                                             atomicModifyIORef',
+                                                             newIORef,
+                                                             readIORef)
+import qualified Data.Map.Strict                            as Map
+import           Data.Time.Clock                            (getCurrentTime)
+import qualified Data.Vector                                as V
+import           Data.Word                                  (Word16)
+import           Database.Redis.Client                      (Client (..),
+                                                             ConnectionStatus (..))
+import           Database.Redis.Cluster                     (ClusterNode (..),
+                                                             ClusterTopology (..),
+                                                             NodeAddress (..),
+                                                             NodeRole (..),
+                                                             SlotRange (..),
+                                                             calculateSlot,
+                                                             findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
-import           Database.Redis.Cluster.ConnectionPool    (PoolConfig (..),
-                                                           createPool)
-import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
-                                                           mergeRefreshedTopology,
-                                                           patchMovedSlot,
-                                                           provisionalMovedPatches)
-import           Database.Redis.Connector                 (ConnectionPhase (..),
-                                                           ConnectionSetupException (..),
-                                                           withConnectionTimeout)
-import           Database.Redis.Internal.MultiplexPool    (closeMultiplexPool,
-                                                           createMultiplexPool)
-import           Database.Redis.Resp                      (Encodable (..),
-                                                           RespData (..))
-import           GHC.Clock                                (getMonotonicTimeNSec)
-import           System.Timeout                           (timeout)
+import           Database.Redis.Cluster.ConnectionPool      (PoolConfig (..),
+                                                             createPool)
+import           Database.Redis.Cluster.Internal.RawCommand
+import           Database.Redis.Cluster.Internal.Topology   (commitRefreshedTopology,
+                                                             mergeRefreshedTopology,
+                                                             patchMovedSlot,
+                                                             provisionalMovedPatches)
+import           Database.Redis.Connector                   (ConnectionPhase (..),
+                                                             ConnectionSetupException (..),
+                                                             withConnectionTimeout)
+import           Database.Redis.Internal.MultiplexPool      (closeMultiplexPool,
+                                                             createMultiplexPool)
+import           Database.Redis.Resp                        (Encodable (..),
+                                                             RespData (..))
+import           GHC.Clock                                  (getMonotonicTimeNSec)
+import           System.Timeout                             (timeout)
 import           Test.Hspec
 
 main :: IO ()
@@ -2423,6 +2426,7 @@ rawFrameIdentitySpec =
       closeClusterClient client
 
     it "keeps the identical raw frame through TRYAGAIN and keyless retries" $ do
+      delays <- newIORef []
       let frame = rawFrame
           script _ index =
             return $
@@ -2437,16 +2441,115 @@ rawFrameIdentitySpec =
       (connector, getRecords) <- createAuthMockConnector script
       client <- createClusterClient (retryTestConfig 3 1) connector
       executeRawClusterCommandUsingDelay
-        (const $ return ())
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
         client
         RawRouteKeyless
         frame
         `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [1, 2]
       records <- getRecords
       recordSentBytes (findAuthRecord records node1 0)
         `shouldReturn`
           commandBytes ["CLUSTER", "SLOTS"]
             <> encodeResp frame <> encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+    it "refreshes and reuses a keyed frame through CLUSTERDOWN" $ do
+      delays <- newIORef []
+      let key = "raw-clusterdown-key"
+          script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots, replyWith validClusterSlots]
+                else [ replyWith $ RespError "CLUSTERDOWN unavailable"
+                     , replyWith $ RespSimpleString "OK"
+                     ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 5) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client (RawRouteByKey key) rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [5]
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp rawFrame <> encodeResp rawFrame
+      awaitCommandCount (findAuthRecord records node1 0) ["CLUSTER", "SLOTS"] 2
+      closeClusterClient client
+
+    it "refreshes and reuses a keyless frame through CLUSTERDOWN" $ do
+      delays <- newIORef []
+      let script _ _ =
+            return
+              [ replyWith validClusterSlots
+              , replyWith $ RespError "CLUSTERDOWN unavailable"
+              , replyWith validClusterSlots
+              , replyWith $ RespSimpleString "OK"
+              ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 6) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client RawRouteKeyless rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [6]
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 0)
+        `shouldReturn`
+          commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
+            <> commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
+      closeClusterClient client
+
+    it "reconnects and preserves a keyed frame after connection failure" $ do
+      delays <- newIORef []
+      let script _ index =
+            return $ case index of
+              0 -> [replyWith validClusterSlots]
+              1 -> [throwIO $ userError "injected raw frame connection failure"]
+              _ -> [replyWith $ RespSimpleString "OK"]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 7) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client (RawRouteByKey "raw-reconnect-key") rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      -- The multiplex pool reconnects and retries this transport failure
+      -- internally, so cluster retry backoff is intentionally not invoked.
+      readIORef delays `shouldReturn` []
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp rawFrame
+      recordSentBytes (findAuthRecord records node1 2)
+        `shouldReturn` encodeResp rawFrame
+      closeClusterClient client
+
+    it "retries the identical keyed frame after a connection timeout" $ do
+      delays <- newIORef []
+      let timeoutError =
+            ConnectionSetupTimeout PlaintextConnectionSetup node1 1
+          script _ index =
+            return $ case index of
+              0 -> [replyWith validClusterSlots]
+              1 -> [throwIO timeoutError]
+              _ -> [replyWith $ RespSimpleString "OK"]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 8) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client (RawRouteByKey "raw-timeout-key") rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      -- Timeout-triggered reconnect is likewise owned by the multiplex pool.
+      readIORef delays `shouldReturn` []
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp rawFrame
+      recordSentBytes (findAuthRecord records node1 2)
+        `shouldReturn` encodeResp rawFrame
       closeClusterClient client
 
 rawFrame :: RespData
