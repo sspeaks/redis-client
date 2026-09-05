@@ -16,6 +16,8 @@ module Database.Redis.Command
   , RedisCommands (..)
   , ClientReplyValues (..)
   , ClientReplyModeUnsupported (..)
+  , sendCommandWithoutReply
+  , sendClientReplySkipAndCommand
   , authenticatePassword
   , authenticateACL
     -- * Errors
@@ -239,6 +241,26 @@ executeCommand args = do
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
   parseWith (receive client)
 
+-- | Send a command without reading a response on a dedicated sequential
+-- connection whose reply mode is already @OFF@.
+sendCommandWithoutReply :: (Client client) => [ByteString] -> RedisCommandClient client ()
+sendCommandWithoutReply args = do
+  ClientState !client _ <- State.get
+  liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
+
+-- | Atomically send @CLIENT REPLY SKIP@ and its target command on a dedicated
+-- sequential connection. Redis suppresses the target reply, so no reply is
+-- read and the following command remains aligned.
+sendClientReplySkipAndCommand
+  :: (Client client)
+  => [ByteString]
+  -> RedisCommandClient client ()
+sendClientReplySkipAndCommand args = do
+  ClientState !client _ <- State.get
+  let builder =
+        encode (wrapInRay ["CLIENT", "REPLY", "SKIP"]) <> encode (wrapInRay args)
+  liftIO $ send client (Builder.toLazyByteString builder)
+
 -- | Convert a raw 'RespData' value using 'FromResp', throwing on failure.
 convertResp :: (FromResp a, MonadIO m) => RespData -> m a
 convertResp rd = case fromResp rd of
@@ -343,11 +365,12 @@ geoSearchOptionToList opt =
 data ClientReplyValues = OFF | ON | SKIP
   deriving (Eq, Show)
 
--- | A reply mode that cannot be represented safely by a client backend.
+-- | A reply mode that cannot be represented safely by the requested API.
 --
--- Multiplexed and cluster clients reject @OFF@ because it suppresses replies
--- for later commands on a shared connection.  Use a dedicated
--- 'RedisCommandClient' connection for that connection-scoped mode.
+-- Multiplexed and cluster clients reject @OFF@ and @SKIP@ because both alter
+-- the reply stream of a shared connection. Sequential clients reject @SKIP@
+-- from 'clientReply'; use 'sendClientReplySkipAndCommand' to bind it to its
+-- target command atomically.
 data ClientReplyModeUnsupported
   = ClientReplyModeUnsupported ClientReplyValues
   deriving (Eq, Show, Typeable)
@@ -397,11 +420,10 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   clusterSlots = executeCommandAs ["CLUSTER", "SLOTS"]
 
   clientReply val = do
-    ClientState !client _ <- State.get
-    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", showBS val])
     case val of
-      ON -> Just <$> parseWith (receive client)
-      _  -> return Nothing
+      ON -> Just <$> executeCommand ["CLIENT", "REPLY", showBS val]
+      OFF -> sendCommandWithoutReply ["CLIENT", "REPLY", showBS val] >> return Nothing
+      SKIP -> liftIO $ throwIO (ClientReplyModeUnsupported SKIP)
 
   zadd key members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members

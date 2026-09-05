@@ -8,7 +8,7 @@ import           Control.Concurrent        (forkIO)
 import           Control.Concurrent.MVar   (MVar, newEmptyMVar, putMVar,
                                             takeMVar, tryPutMVar, tryTakeMVar)
 import           Control.Exception         (SomeException, try)
-import           Control.Monad             (void)
+import           Control.Monad             (forM_, void)
 import           Control.Monad.IO.Class    (liftIO)
 import qualified Control.Monad.State       as State
 import           Data.ByteString           (ByteString)
@@ -24,7 +24,9 @@ import           Database.Redis.Command    (ClientReplyModeUnsupported (..),
                                             ClientState (..),
                                             RedisCommandClient (..),
                                             RedisCommands (..),
-                                            encodeCommandBuilder)
+                                            encodeCommandBuilder,
+                                            sendClientReplySkipAndCommand,
+                                            sendCommandWithoutReply)
 import           Database.Redis.Resp       (RespData (..))
 import           Database.Redis.Standalone
 import           System.Timeout            (timeout)
@@ -93,36 +95,13 @@ main = hspec $ do
       closeStandaloneClient client
 
   describe "Standalone CLIENT REPLY protocol" $ do
-    it "sends SKIP without claiming the following response slot" $ do
+    it "rejects OFF and SKIP before sending, leaving later commands reply-safe" $ do
       (client, replies, sent, sentEvent) <- createCommandClient
-      skipped <- newEmptyMVar
-      _ <- forkResult skipped $
-        runStandaloneClient client
-          (clientReply SKIP :: StandaloneCommandClient (Maybe RespData))
-
-      awaitSent sentEvent `shouldReturn` Just (commandBytes ["CLIENT", "REPLY", "SKIP"])
-      takeMVar skipped >>= \result -> case result of
-        Right Nothing -> return ()
-        _             -> expectationFailure "CLIENT REPLY SKIP did not complete successfully"
-
-      pinged <- newEmptyMVar
-      _ <- forkResult pinged $
-        runStandaloneClient client (ping :: StandaloneCommandClient RespData)
-      awaitSent sentEvent `shouldReturn` Just (commandBytes ["PING"])
-      putMVar replies "+PONG\r\n"
-      takeMVar pinged >>= \pingResult -> case pingResult of
-        Right (RespSimpleString "PONG") -> return ()
-        _                               -> expectationFailure "PING did not receive its own response"
-      readIORef sent `shouldReturn`
-        commandBytes ["CLIENT", "REPLY", "SKIP"] <> commandBytes ["PING"]
-      closeStandaloneClient client
-
-    it "rejects OFF before sending, leaving arbitrary later commands reply-safe" $ do
-      (client, replies, sent, sentEvent) <- createCommandClient
-      result <- try $ runStandaloneClient client
-        (clientReply OFF :: StandaloneCommandClient (Maybe RespData))
-        :: IO (Either ClientReplyModeUnsupported (Maybe RespData))
-      result `shouldBe` Left (ClientReplyModeUnsupported OFF)
+      forM_ [OFF, SKIP, SKIP] $ \mode -> do
+        result <- try $ runStandaloneClient client
+          (clientReply mode :: StandaloneCommandClient (Maybe RespData))
+          :: IO (Either ClientReplyModeUnsupported (Maybe RespData))
+        result `shouldBe` Left (ClientReplyModeUnsupported mode)
       tryTakeMVar sentEvent `shouldReturn` Nothing
       readIORef sent `shouldReturn` BS.empty
 
@@ -159,13 +138,38 @@ main = hspec $ do
 
       restored <- runSequential connection $ do
         _ <- clientReply OFF
-        sendWithoutReply ["SET", "filler-key", "filler-value"]
+        sendCommandWithoutReply ["SET", "filler-key", "filler-value"]
         clientReply ON
       restored `shouldBe` Just (RespSimpleString "OK")
       readIORef sent `shouldReturn`
         commandBytes ["CLIENT", "REPLY", "OFF"]
           <> commandBytes ["SET", "filler-key", "filler-value"]
           <> commandBytes ["CLIENT", "REPLY", "ON"]
+      putMVar replies "+PONG\r\n"
+      pinged <- runSequential connection (ping :: RedisCommandClient MockClient RespData)
+      pinged `shouldBe` RespSimpleString "PONG"
+      readIORef sent `shouldReturn`
+        commandBytes ["CLIENT", "REPLY", "OFF"]
+          <> commandBytes ["SET", "filler-key", "filler-value"]
+          <> commandBytes ["CLIENT", "REPLY", "ON"]
+          <> commandBytes ["PING"]
+
+    it "binds SKIP to its target and preserves the following response" $ do
+      closeCount <- newIORef 0
+      replies <- newEmptyMVar
+      sent <- newIORef BS.empty
+      sentEvent <- newEmptyMVar
+      let connection = MockConnected closeCount replies sent sentEvent
+      putMVar replies "+PONG\r\n"
+
+      response <- runSequential connection $ do
+        sendClientReplySkipAndCommand ["PING"]
+        ping
+      response `shouldBe` (RespSimpleString "PONG" :: RespData)
+      readIORef sent `shouldReturn`
+        commandBytes ["CLIENT", "REPLY", "SKIP"]
+          <> commandBytes ["PING"]
+          <> commandBytes ["PING"]
 
 createCommandClient
   :: IO (StandaloneClient, MVar ByteString, IORef ByteString, MVar ByteString)
@@ -197,8 +201,3 @@ awaitSent = timeout 1000000 . takeMVar
 runSequential :: MockClient 'Connected -> RedisCommandClient MockClient a -> IO a
 runSequential client action =
   State.evalStateT (runRedisCommandClient action) (ClientState client BS.empty)
-
-sendWithoutReply :: [ByteString] -> RedisCommandClient MockClient ()
-sendWithoutReply args = RedisCommandClient $ do
-  ClientState client _ <- State.get
-  liftIO $ send client (Builder.toLazyByteString (encodeCommandBuilder args))

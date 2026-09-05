@@ -16,6 +16,10 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     RedisCommandError "ERR full server cause"
       `shouldBe` RedisCommandError "ERR full server cause"
 
+  it "exports the explicit unsafe CLIENT REPLY mode error" $ do
+    ClientReplyModeUnsupported SKIP
+      `shouldBe` ClientReplyModeUnsupported SKIP
+
   it "keeps raw cluster frame execution out of public facades" $ do
     clientSource <- findSource
       [ "lib/cluster/Database/Redis/Cluster/Client.hs"
@@ -45,6 +49,7 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
       "Database.Redis.Cluster.Internal.CommandMetadata"
     rootFacade `shouldNotContain` "executeRawClusterCommand"
     rootFacade `shouldNotContain` "RawClusterRoute"
+    rootFacade `shouldNotContain` "sendClientReplySkipAndCommand"
     topLevelReexports <- takeWhile (/= "library resp") . lines <$> readFile cabalSource
     unlines topLevelReexports `shouldNotContain`
       "Database.Redis.Cluster.Internal.RawCommand"

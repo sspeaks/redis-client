@@ -232,6 +232,7 @@ test-suite ClusterCommandSpec
                     , client
                     , cluster
                     , containers >=0.6 && <0.8
+                    , redis-command-client
                     , resp
                     , stm >=2.5 && <2.6
                     , time >=1.12 && <1.13

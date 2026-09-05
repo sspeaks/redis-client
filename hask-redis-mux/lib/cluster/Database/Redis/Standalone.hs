@@ -70,7 +70,6 @@ import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
                                                       createMultiplexerFromConnector,
                                                       createSlotPool,
                                                       destroyMultiplexer,
-                                                      submitCommandNoResponsePooled,
                                                       submitCommandPooled)
 import           Database.Redis.Resp                 (RespData)
 
@@ -215,13 +214,6 @@ submitMux args = do
 submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a
 submitMuxAs args = submitMux args >>= convertResp
 
--- | Submit a command whose Redis semantics intentionally omit its response.
-submitMuxNoResponse :: [ByteString] -> StandaloneCommandClient ()
-submitMuxNoResponse args = do
-  client <- StandaloneCommandClient ask
-  liftIO $ submitCommandNoResponsePooled
-    (standalonePool client) (standaloneMux client) (encodeCommandBuilder args)
-
 instance RedisCommands StandaloneCommandClient where
   auth username password
     | BS.null username || username == "default" =
@@ -264,16 +256,10 @@ instance RedisCommands StandaloneCommandClient where
   clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
   clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
 
-  clientReply val = do
-    case val of
-      ON -> do
-        resp <- submitMux ["CLIENT", "REPLY", showBS val]
-        return (Just resp)
-      SKIP -> do
-        submitMuxNoResponse ["CLIENT", "REPLY", showBS val]
-        return Nothing
-      OFF ->
-        liftIO $ throwIO (ClientReplyModeUnsupported OFF)
+  clientReply ON =
+    Just <$> submitMux ["CLIENT", "REPLY", "ON"]
+  clientReply val =
+    liftIO $ throwIO (ClientReplyModeUnsupported val)
 
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members
