@@ -1366,6 +1366,8 @@ clusterAuthenticationSpec =
       timeout 1000000 (takeMVar workerFinished) `shouldReturn` Just ()
       records <- getRecords
       let record = findAuthRecord records node1 0
+      timeout 1000000 (awaitIORefValue (authRecordAborts record) 1)
+        `shouldReturn` Just ()
       readIORef (authRecordCloses record) `shouldReturn` 0
       readIORef (authRecordAborts record) `shouldReturn` 1
 
