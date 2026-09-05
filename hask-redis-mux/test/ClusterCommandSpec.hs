@@ -5,62 +5,65 @@
 
 module Main (main) where
 
-import           Control.Concurrent                       (forkFinally, forkIO,
-                                                           killThread,
-                                                           threadDelay)
-import           Control.Concurrent.MVar                  (newEmptyMVar,
-                                                           newMVar, putMVar,
-                                                           takeMVar,
-                                                           tryTakeMVar)
-import           Control.Concurrent.STM                   (TVar, atomically,
-                                                           check, modifyTVar',
-                                                           newTVarIO, readTVar,
-                                                           readTVarIO)
-import           Control.Exception                        (SomeAsyncException,
-                                                           SomeException,
-                                                           finally,
-                                                           fromException,
-                                                           throwIO, try)
-import qualified Control.Exception                        as Exception
-import           Control.Monad                            (forM_, replicateM_)
-import           Control.Monad.IO.Class                   (liftIO)
-import           Data.ByteString                          (ByteString)
-import qualified Data.ByteString                          as BS
-import qualified Data.ByteString.Builder                  as Builder
-import qualified Data.ByteString.Char8                    as BS8
-import qualified Data.ByteString.Lazy                     as LBS
-import           Data.IORef                               (IORef,
-                                                           atomicModifyIORef',
-                                                           newIORef, readIORef)
-import qualified Data.Map.Strict                          as Map
-import           Data.Time.Clock                          (getCurrentTime)
-import qualified Data.Vector                              as V
-import           Data.Word                                (Word16)
-import           Database.Redis.Client                    (Client (..),
-                                                           ConnectionStatus (..))
-import           Database.Redis.Cluster                   (ClusterNode (..),
-                                                           ClusterTopology (..),
-                                                           NodeAddress (..),
-                                                           NodeRole (..),
-                                                           SlotRange (..),
-                                                           calculateSlot,
-                                                           findNodeAddressForSlot)
+import           Control.Concurrent                         (forkFinally,
+                                                             forkIO, killThread,
+                                                             threadDelay)
+import           Control.Concurrent.MVar                    (newEmptyMVar,
+                                                             newMVar, putMVar,
+                                                             takeMVar,
+                                                             tryTakeMVar)
+import           Control.Concurrent.STM                     (TVar, atomically,
+                                                             check, modifyTVar',
+                                                             newTVarIO,
+                                                             readTVar,
+                                                             readTVarIO)
+import           Control.Exception                          (SomeAsyncException,
+                                                             SomeException,
+                                                             finally,
+                                                             fromException,
+                                                             throwIO, try)
+import qualified Control.Exception                          as Exception
+import           Control.Monad                              (forM_, replicateM_)
+import           Control.Monad.IO.Class                     (liftIO)
+import           Data.ByteString                            (ByteString)
+import qualified Data.ByteString                            as BS
+import qualified Data.ByteString.Builder                    as Builder
+import qualified Data.ByteString.Char8                      as BS8
+import qualified Data.ByteString.Lazy                       as LBS
+import           Data.IORef                                 (IORef,
+                                                             atomicModifyIORef',
+                                                             newIORef,
+                                                             readIORef)
+import qualified Data.Map.Strict                            as Map
+import           Data.Time.Clock                            (getCurrentTime)
+import qualified Data.Vector                                as V
+import           Data.Word                                  (Word16)
+import           Database.Redis.Client                      (Client (..),
+                                                             ConnectionStatus (..))
+import           Database.Redis.Cluster                     (ClusterNode (..),
+                                                             ClusterTopology (..),
+                                                             NodeAddress (..),
+                                                             NodeRole (..),
+                                                             SlotRange (..),
+                                                             calculateSlot,
+                                                             findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
-import           Database.Redis.Cluster.ConnectionPool    (PoolConfig (..),
-                                                           createPool)
-import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
-                                                           mergeRefreshedTopology,
-                                                           patchMovedSlot,
-                                                           provisionalMovedPatches)
-import           Database.Redis.Connector                 (ConnectionPhase (..),
-                                                           ConnectionSetupException (..),
-                                                           withConnectionTimeout)
-import           Database.Redis.Internal.MultiplexPool    (closeMultiplexPool,
-                                                           createMultiplexPool)
-import           Database.Redis.Resp                      (Encodable (..),
-                                                           RespData (..))
-import           GHC.Clock                                (getMonotonicTimeNSec)
-import           System.Timeout                           (timeout)
+import           Database.Redis.Cluster.ConnectionPool      (PoolConfig (..),
+                                                             createPool)
+import           Database.Redis.Cluster.Internal.RawCommand
+import           Database.Redis.Cluster.Internal.Topology   (commitRefreshedTopology,
+                                                             mergeRefreshedTopology,
+                                                             patchMovedSlot,
+                                                             provisionalMovedPatches)
+import           Database.Redis.Connector                   (ConnectionPhase (..),
+                                                             ConnectionSetupException (..),
+                                                             withConnectionTimeout)
+import           Database.Redis.Internal.MultiplexPool      (closeMultiplexPool,
+                                                             createMultiplexPool)
+import           Database.Redis.Resp                        (Encodable (..),
+                                                             RespData (..))
+import           GHC.Clock                                  (getMonotonicTimeNSec)
+import           System.Timeout                             (timeout)
 import           Test.Hspec
 
 main :: IO ()
@@ -327,6 +330,7 @@ spec = do
   clusterLifecycleSpec
   clusterAuthenticationSpec
   clusterErrorClassificationSpec
+  rawFrameIdentitySpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -864,6 +868,61 @@ nextScriptedReceive script = do
   case next of
     Just action -> action
     Nothing     -> throwIO $ userError "Mock response script exhausted"
+
+data PostWriteFailureClient (status :: ConnectionStatus) where
+  PostWriteFailureConnected
+    :: !(IORef ByteString)
+    -> !(TVar Int)
+    -> !(IO ByteString)
+    -> !(IORef Int)
+    -> PostWriteFailureClient 'Connected
+
+instance Client PostWriteFailureClient where
+  connect = error "PostWriteFailureClient: connect not supported"
+  close (PostWriteFailureConnected _ _ _ closes) =
+    liftIO $ incrementRef closes
+  send (PostWriteFailureConnected sent sendCount _ _) lbs =
+    liftIO $ do
+      atomicModifyIORef' sent $ \old ->
+        (old <> LBS.toStrict lbs, ())
+      atomically $ modifyTVar' sendCount (+ 1)
+  receive (PostWriteFailureConnected _ _ receiveAction _) =
+    liftIO receiveAction
+
+data PostWriteFailureRecord = PostWriteFailureRecord
+  { postWriteRecordIndex     :: !Int
+  , postWriteRecordSent      :: !(IORef ByteString)
+  , postWriteRecordSendCount :: !(TVar Int)
+  , postWriteRecordCloses    :: !(IORef Int)
+  }
+
+createPostWriteFailureConnector
+  :: IO
+      ( NodeAddress -> IO (PostWriteFailureClient 'Connected)
+      , IO [PostWriteFailureRecord]
+      )
+createPostWriteFailureConnector = do
+  connectionCount <- newIORef (0 :: Int)
+  records <- newIORef []
+  let connector _ = do
+        index <- atomicModifyIORef' connectionCount $ \count ->
+          (count + 1, count)
+        sent <- newIORef BS.empty
+        sendCount <- newTVarIO 0
+        closes <- newIORef 0
+        let receiveAction
+              | index == 0 = replyWith validClusterSlots
+              | index == 1 = do
+                  atomically $ do
+                    sentCommands <- readTVar sendCount
+                    check $ sentCommands == 1
+                  throwIO $ userError "injected transport failure after raw write"
+              | otherwise = replyWith $ RespSimpleString "OK"
+            record = PostWriteFailureRecord index sent sendCount closes
+        atomicModifyIORef' records $ \existing ->
+          (existing ++ [record], ())
+        return $ PostWriteFailureConnected sent sendCount receiveAction closes
+  return (connector, readIORef records)
 
 incrementRef :: IORef Int -> IO ()
 incrementRef ref =
@@ -2308,6 +2367,26 @@ awaitCommandCount record command expected = do
             check $ current > observed
           await
 
+awaitFrameCount :: AuthConnectionRecord -> ByteString -> Int -> IO ()
+awaitFrameCount record frame expected = do
+  observed <- timeout 5000000 await
+  case observed of
+    Just () -> return ()
+    Nothing ->
+      expectationFailure $
+        "Timed out waiting for " ++ show expected ++ " sends of raw RESP frame"
+  where
+    await = do
+      observed <- readTVarIO $ authRecordSendCount record
+      sent <- recordSentBytes record
+      if countOccurrences frame sent >= expected
+        then return ()
+        else do
+          atomically $ do
+            current <- readTVar $ authRecordSendCount record
+            check $ current > observed
+          await
+
 askRedirectSuccessSpec :: Spec
 askRedirectSuccessSpec = describe "successful command without ASK redirection" $ do
   it "successful command without redirection returns directly" $ do
@@ -2330,3 +2409,252 @@ askRedirectSuccessSpec = describe "successful command without ASK redirection" $
 
       closeMultiplexPool (clusterMultiplexPool client)
     result `shouldBe` Just ()
+
+rawFrameIdentitySpec :: Spec
+rawFrameIdentitySpec =
+  describe "raw RESP cluster execution preserves encoded frames" $ do
+    it "preserves nested arrays, integers, nulls, binary data, and empty bulk strings" $ do
+      forM_ rawFrames $ \frame -> do
+        let script _ index =
+              return $
+                if index == 0
+                  then [replyWith validClusterSlots]
+                  else [replyWith $ RespSimpleString "OK"]
+        (connector, getRecords) <- createAuthMockConnector script
+        client <- createClusterClient (retryTestConfig 1 1) connector
+        executeRawClusterCommand client (RawRouteByKey "raw-key") frame
+          `shouldReturn` Right (RespSimpleString "OK")
+        records <- getRecords
+        let commandRecord = findAuthRecord records node1 1
+        awaitFrameCount commandRecord (encodeResp frame) 1
+        recordSentBytes commandRecord
+          `shouldReturn` encodeResp frame
+        closeClusterClient client
+
+    it "reuses the raw frame on MOVED and does not prefix it with ASKING" $ do
+      let key = "raw-moved-key"
+          frame = rawFrame
+          script address index
+            | address == node1 && index == 0 =
+                return [replyWith validClusterSlots]
+            | address == node1 =
+                return [replyWith $ movedResponse (calculateSlot key) node2]
+            | address == node2 && index == 0 =
+                return [replyWith $ RespSimpleString "OK"]
+            | otherwise = return [replyWith validClusterSlots]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 1) connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp frame
+      recordSentBytes (findAuthRecord records node2 0)
+        `shouldReturn` encodeResp frame
+      closeClusterClient client
+
+    it "sends ASKING separately before the unchanged raw frame on ASK" $ do
+      let key = "raw-ask-key"
+          frame = rawFrame
+          script address index
+            | address == node1 && index == 0 =
+                return [replyWith validClusterSlots]
+            | address == node1 =
+                return
+                  [replyWith $ RespError $
+                    "ASK " <> BS8.pack (show $ calculateSlot key)
+                      <> " 127.0.0.2:6380"]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespSimpleString "OK"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 1) connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      records <- getRecords
+      let targetRecord = findAuthRecord records node2 0
+      awaitCommandCount targetRecord ["ASKING"] 1
+      recordSentBytes targetRecord
+        `shouldReturn` commandBytes ["ASKING"] <> encodeResp frame
+      closeClusterClient client
+
+    it "keeps the identical raw frame through TRYAGAIN and keyless retries" $ do
+      delays <- newIORef []
+      let frame = rawFrame
+          script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespSimpleString "OK"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client
+        RawRouteKeyless
+        frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [1, 2]
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 0)
+        `shouldReturn`
+          commandBytes ["CLUSTER", "SLOTS"]
+            <> encodeResp frame <> encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+    it "refreshes and reuses a keyed frame through CLUSTERDOWN" $ do
+      delays <- newIORef []
+      let key = "raw-clusterdown-key"
+          script _ index =
+            return $
+              if index == 0
+                then [replyWith validClusterSlots, replyWith validClusterSlots]
+                else [ replyWith $ RespError "CLUSTERDOWN unavailable"
+                     , replyWith $ RespSimpleString "OK"
+                     ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 5) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client (RawRouteByKey key) rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [5]
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp rawFrame <> encodeResp rawFrame
+      awaitCommandCount (findAuthRecord records node1 0) ["CLUSTER", "SLOTS"] 2
+      closeClusterClient client
+
+    it "refreshes and reuses a keyless frame through CLUSTERDOWN" $ do
+      delays <- newIORef []
+      let script _ _ =
+            return
+              [ replyWith validClusterSlots
+              , replyWith $ RespError "CLUSTERDOWN unavailable"
+              , replyWith validClusterSlots
+              , replyWith $ RespSimpleString "OK"
+              ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 6) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client RawRouteKeyless rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [6]
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 0)
+        `shouldReturn`
+          commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
+            <> commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
+      closeClusterClient client
+
+    it "reconnects after a transport failure following the first raw write" $ do
+      (connector, getRecords) <- createPostWriteFailureConnector
+      client <- createClusterClient (retryTestConfig 2 7) connector
+      executeRawClusterCommand client (RawRouteByKey "raw-reconnect-key") rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      records <- getRecords
+      case records of
+        [discovery, firstAttempt, reconnectedAttempt] -> do
+          postWriteRecordIndex discovery `shouldBe` 0
+          postWriteRecordIndex firstAttempt `shouldBe` 1
+          postWriteRecordIndex reconnectedAttempt `shouldBe` 2
+          readTVarIO (postWriteRecordSendCount firstAttempt) `shouldReturn` 1
+          readTVarIO (postWriteRecordSendCount reconnectedAttempt) `shouldReturn` 1
+          readIORef (postWriteRecordSent firstAttempt)
+            `shouldReturn` encodeResp rawFrame
+          readIORef (postWriteRecordSent reconnectedAttempt)
+            `shouldReturn` encodeResp rawFrame
+          firstFrame <- readIORef $ postWriteRecordSent firstAttempt
+          secondFrame <- readIORef $ postWriteRecordSent reconnectedAttempt
+          firstFrame `shouldBe` secondFrame
+          timeout 1000000 (awaitIORefValue (postWriteRecordCloses firstAttempt) 1)
+            `shouldReturn` Just ()
+        _ ->
+          expectationFailure $
+            "Expected discovery, failed, and reconnected transports; got "
+              ++ show (length records)
+      closeClusterClient client
+
+    it "retries after connection setup timeout before any raw write" $ do
+      delays <- newIORef []
+      connectorCalls <- newIORef (0 :: Int)
+      (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
+        return $ if index == 0
+          then [replyWith validClusterSlots]
+          else [replyWith $ RespSimpleString "OK"]
+      let timeoutError =
+            ConnectionSetupTimeout PlaintextConnectionSetup node1 1
+          connector address = do
+            call <- atomicModifyIORef' connectorCalls $ \count ->
+              (count + 1, count)
+            if call == 1
+              then throwIO timeoutError
+              else baseConnector address
+      client <- createClusterClient (retryTestConfig 2 8) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen ->
+          (seen ++ [delay], ()))
+        client (RawRouteByKey "raw-timeout-key") rawFrame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [8]
+      readIORef connectorCalls `shouldReturn` 3
+      awaitRawFrameCopies getRecords rawFrame 1
+      records <- getRecords
+      length records `shouldBe` 2
+      assertRawFrameCopies records rawFrame 1
+      closeClusterClient client
+
+assertRawFrameCopies :: [AuthConnectionRecord] -> RespData -> Int -> Expectation
+assertRawFrameCopies records frame expected = do
+  sent <- BS.concat <$> mapM recordSentBytes records
+  countOccurrences (encodeResp frame) sent `shouldBe` expected
+
+awaitRawFrameCopies
+  :: IO [AuthConnectionRecord]
+  -> RespData
+  -> Int
+  -> IO ()
+awaitRawFrameCopies getRecords frame expected = do
+  outcome <- timeout 5000000 await
+  case outcome of
+    Just () -> return ()
+    Nothing -> expectationFailure "Timed out waiting for raw frame copies"
+  where
+    await = do
+      records <- getRecords
+      sent <- BS.concat <$> mapM recordSentBytes records
+      if countOccurrences (encodeResp frame) sent >= expected
+        then return ()
+        else threadDelay 1000 >> await
+
+rawFrame :: RespData
+rawFrame =
+  RespArray
+    [ RespBulkString "EVAL"
+    , RespArray
+        [ RespBulkString ""
+        , RespInteger (-17)
+        , RespNullBulkString
+        , RespBulkString "\NUL\255"
+        ]
+    ]
+
+rawFrames :: [RespData]
+rawFrames =
+  [ rawFrame
+  , RespInteger 42
+  , RespNullBulkString
+  , RespBulkString ""
+  , RespBulkString "\NUL\255"
+  ]
