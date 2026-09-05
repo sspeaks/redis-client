@@ -2524,6 +2524,7 @@ rawFrameIdentitySpec =
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [7]
       readIORef connectorCalls `shouldReturn` 3
+      awaitRawFrameCopies getRecords rawFrame 1
       records <- getRecords
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
@@ -2551,6 +2552,7 @@ rawFrameIdentitySpec =
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [8]
       readIORef connectorCalls `shouldReturn` 3
+      awaitRawFrameCopies getRecords rawFrame 1
       records <- getRecords
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
@@ -2559,6 +2561,24 @@ assertRawFrameCopies :: [AuthConnectionRecord] -> RespData -> Int -> Expectation
 assertRawFrameCopies records frame expected = do
   sent <- BS.concat <$> mapM recordSentBytes records
   countOccurrences (encodeResp frame) sent `shouldBe` expected
+
+awaitRawFrameCopies
+  :: IO [AuthConnectionRecord]
+  -> RespData
+  -> Int
+  -> IO ()
+awaitRawFrameCopies getRecords frame expected = do
+  outcome <- timeout 5000000 await
+  case outcome of
+    Just () -> return ()
+    Nothing -> expectationFailure "Timed out waiting for raw frame copies"
+  where
+    await = do
+      records <- getRecords
+      sent <- BS.concat <$> mapM recordSentBytes records
+      if countOccurrences (encodeResp frame) sent >= expected
+        then return ()
+        else threadDelay 1000 >> await
 
 rawFrame :: RespData
 rawFrame =
