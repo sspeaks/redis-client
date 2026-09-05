@@ -115,6 +115,7 @@ library redis-command-client
 
 library cluster
     import:           defaults
+    visibility:       public
     hs-source-dirs:   lib/cluster
     exposed-modules:  Database.Redis.Cluster
                     , Database.Redis.Cluster.Client

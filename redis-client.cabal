@@ -87,6 +87,7 @@ test-suite ClusterTunnelSpec
     build-depends:    bytestring
                     , containers
                     , hask-redis-mux
+                    , hask-redis-mux:cluster
                     , mtl
                     , network
                     , stm
@@ -254,6 +255,7 @@ executable redis-client
                     , bytestring
                     , containers
                     , hask-redis-mux
+                    , hask-redis-mux:cluster
                     , mtl
                     , network
                     , process
