@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-credentials test-e2e-runner test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-metadata test-credentials test-e2e-runner test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
@@ -46,12 +46,15 @@ endif
 test: test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
-test-unit: test-credentials test-e2e-runner
+test-unit: test-metadata test-credentials test-e2e-runner
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all"
 else
 	cabal build all && cabal test all
 endif
+
+test-metadata:
+	python3 scripts/test-redis-command-metadata.py
 
 test-credentials:
 	python3 -m unittest scripts/test_azure_redis_connect.py
