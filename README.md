@@ -92,13 +92,35 @@ redis-client fill -h redis1.local -c --flush \
 ```
 
 For CI, use an explicitly disposable Redis fixture and keep the exact target
-in the command. This example has no credentials and cannot target a shared
-default port:
+in the command. This example has no credentials, publishes only to loopback on
+port 16379, waits at most 30 seconds for Redis to answer `PING`, prints its
+logs on a readiness failure, and always removes its uniquely named fixture:
 
 ```sh
-docker run --rm -d --name redis-client-flush-fixture -p 16379:6379 redis:7
-trap 'docker rm -f redis-client-flush-fixture' EXIT
-redis-client fill -h 127.0.0.1 -p 16379 --flush \
+fixture_name="redis-client-flush-fixture-$$"
+cleanup() {
+  docker rm -f "$fixture_name" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+docker run --rm -d --name "$fixture_name" -p 127.0.0.1:16379:6379 redis:7
+ready=false
+for attempt in $(seq 1 30); do
+  if docker exec "$fixture_name" redis-cli ping 2>/dev/null | grep -qx PONG; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" != true ]; then
+  echo "Redis fixture did not become ready within 30 seconds." >&2
+  docker logs "$fixture_name" >&2 || true
+  exit 1
+fi
+
+redis-client fill -h 127.0.0.1 -p 16379 -f \
   --confirm-flush 'redis://127.0.0.1:16379?tls=false&scope=single-node'
 ```
 
