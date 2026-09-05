@@ -16,6 +16,7 @@ extra-doc-files:    CHANGELOG.md
                   , README.md
 extra-source-files: lib/crc16/crc16.c
                   , data/cluster_slot_mapping.txt
+                  , data/redis-command-metadata.json
 homepage:           https://github.com/sspeaks/redis-client
 bug-reports:        https://github.com/sspeaks/redis-client/issues
 tested-with:        GHC == 9.10.3
@@ -124,6 +125,7 @@ library cluster
                     , Database.Redis.Internal.MultiplexPool
                     , Database.Redis.Internal.Multiplexer
                     , Database.Redis.Cluster.Internal.Topology
+                    , Database.Redis.Cluster.Internal.CommandMetadata
                     , Database.Redis.Standalone
     other-modules:    Database.Redis.Cluster.Internal.ClientImplementation
     build-depends:    attoparsec >=0.14 && <0.15
