@@ -11,6 +11,7 @@ import qualified Control.Monad.State.Strict      as State
 import qualified Data.ByteString.Builder         as Builder
 import qualified Data.ByteString.Char8           as BS8
 import           Database.Redis.Client           (Client (receive, send))
+import           Database.Redis.Cluster          (calculateSlot)
 import           Database.Redis.Cluster.Client   (ClusterError (..))
 import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
 import           Database.Redis.Cluster.Commands (CommandRouting (..),
@@ -27,7 +28,14 @@ routeAndExecuteCommand (cmd:args) = do
   case classifyCommand cmd args of
     KeylessRoute   -> executeKeylessCommand (cmd:args)
     KeyedRoute key -> executeKeyedCommand key (cmd:args)
+    MultiKeyRoute (key:keys)
+      | sameSlot (key:keys) -> executeKeyedCommand key (cmd:args)
+      | otherwise -> return $ Left "CROSSSLOT Keys in request don't hash to the same slot"
+    MultiKeyRoute [] -> return $ Left "Malformed command: expected at least one key"
     CommandError e -> return $ Left e
+  where
+    sameSlot []         = True
+    sameSlot (key:keys) = all ((== calculateSlot key) . calculateSlot) keys
 
 -- | Execute a keyless command (routing to any master node)
 executeKeylessCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)

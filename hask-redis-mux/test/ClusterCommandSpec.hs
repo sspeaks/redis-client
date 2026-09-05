@@ -46,6 +46,8 @@ import           Database.Redis.Cluster                   (ClusterNode (..),
                                                            calculateSlot,
                                                            findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
+import           Database.Redis.Cluster.Commands          (CommandRouting (..),
+                                                           classifyCommand)
 import           Database.Redis.Cluster.ConnectionPool    (PoolConfig (..),
                                                            createPool)
 import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
@@ -68,6 +70,50 @@ main = hspec spec
 
 spec :: Spec
 spec = do
+  describe "Redis 7.2 smart-proxy command grammar" $ do
+    let keyed command arguments key =
+          classifyCommand command arguments `shouldBe` KeyedRoute key
+        rejected command arguments =
+          classifyCommand command arguments `shouldSatisfy` isError
+        isError (CommandError _) = True
+        isError _                = False
+    it "extracts SET's key and rejects malformed option grammar" $ do
+      keyed "SET" ["{a}key", "value", "EX", "10", "GET"] "{a}key"
+      rejected "SET" ["key", "value", "EX", "0"]
+      rejected "SET" ["key", "value", "NX", "XX"]
+    it "classifies MEMORY and OBJECT subcommands without guessing" $ do
+      keyed "MEMORY" ["USAGE", "key", "SAMPLES", "5"] "key"
+      keyed "OBJECT" ["ENCODING", "key"] "key"
+      rejected "MEMORY" ["USAGE"]
+      rejected "OBJECT" ["HELP"]
+    it "validates counted sorted-set and function forms" $ do
+      classifyCommand "ZUNION" ["2", "{a}one", "{a}two", "WITHSCORES"]
+        `shouldBe` MultiKeyRoute ["{a}one", "{a}two"]
+      classifyCommand "ZINTERSTORE" ["{a}out", "2", "{a}one", "{a}two", "AGGREGATE", "SUM"]
+        `shouldBe` MultiKeyRoute ["{a}out", "{a}one", "{a}two"]
+      keyed "EVAL" ["return 1", "1", "script-key", "argument"] "script-key"
+      classifyCommand "FCALL" ["f", "2", "{a}one", "{a}two"]
+        `shouldBe` MultiKeyRoute ["{a}one", "{a}two"]
+      rejected "ZDIFF" ["2", "one"]
+      rejected "EVALSHA" ["sha", "-1"]
+    it "splits XREAD and XREADGROUP STREAMS keys from IDs" $ do
+      classifyCommand "XREAD" ["COUNT", "1", "STREAMS", "{a}one", "{a}two", "0", "$"]
+        `shouldBe` MultiKeyRoute ["{a}one", "{a}two"]
+      classifyCommand "XREADGROUP" ["GROUP", "g", "c", "NOACK", "STREAMS", "key", ">"]
+        `shouldBe` KeyedRoute "key"
+      rejected "XREAD" ["STREAMS", "key"]
+    it "accepts fractional blocking timeouts and validates multi-key forms" $ do
+      classifyCommand "BLPOP" ["{a}one", "{a}two", "0.25"]
+        `shouldBe` MultiKeyRoute ["{a}one", "{a}two"]
+      classifyCommand "MSET" ["{a}one", "1", "{a}two", "2"]
+        `shouldBe` MultiKeyRoute ["{a}one", "{a}two"]
+      classifyCommand "RENAME" ["{a}one", "{a}two"]
+        `shouldBe` MultiKeyRoute ["{a}one", "{a}two"]
+      rejected "MSET" ["key", "value", "orphan"]
+    it "fails closed for unknown commands and identifies GEO store targets" $ do
+      rejected "FUTURECOMMAND" ["not-a-key"]
+      classifyCommand "GEOSEARCH" ["{a}source", "FROMLONLAT", "0", "0", "BYRADIUS", "1", "km", "STORE", "{a}destination"]
+        `shouldBe` MultiKeyRoute ["{a}source", "{a}destination"]
   describe "Redirection error parsing" $ do
     describe "MOVED error parsing" $ do
       it "parses valid MOVED error" $ do

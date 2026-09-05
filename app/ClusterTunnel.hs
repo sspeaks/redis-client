@@ -28,7 +28,7 @@ import           Database.Redis.Client           (Client (..),
 import           Database.Redis.Cluster          (ClusterNode (..),
                                                   ClusterTopology (..),
                                                   NodeAddress (..),
-                                                  NodeRole (..))
+                                                  NodeRole (..), calculateSlot)
 import           Database.Redis.Cluster.Client   (ClusterClient (..),
                                                   ClusterError (..))
 import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
@@ -122,12 +122,23 @@ routeSmartProxyCommand :: (Client client) =>
 routeSmartProxyCommand clusterClient respData = do
   case respData of
     RespArray (RespBulkString cmd : args) -> do
-      let argKeys = [k | RespBulkString k <- args]
-      case classifyCommand cmd argKeys of
-        KeylessRoute   -> executeKeylessCommand clusterClient respData
-        KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : argKeys)
-        CommandError e -> return $ Left e
+      case traverse bulkArgument args of
+        Nothing -> return $ Left "Malformed command: all arguments must be RESP bulk strings"
+        Just commandArgs ->
+          case classifyCommand cmd commandArgs of
+            KeylessRoute   -> executeKeylessCommand clusterClient respData
+            KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : commandArgs)
+            MultiKeyRoute (key:keys)
+              | sameSlot (key:keys) -> executeKeyedCommand clusterClient key (cmd : commandArgs)
+              | otherwise -> return $ Left "CROSSSLOT Keys in request don't hash to the same slot"
+            MultiKeyRoute [] -> return $ Left "Malformed command: expected at least one key"
+            CommandError e -> return $ Left e
     _ -> return $ Left "Expected array command"
+  where
+    bulkArgument (RespBulkString value) = Just value
+    bulkArgument _                      = Nothing
+    sameSlot []         = True
+    sameSlot (key:keys) = all ((== calculateSlot key) . calculateSlot) keys
 
 -- | Execute a keyless command (route to any master)
 executeKeylessCommand :: (Client client) =>
