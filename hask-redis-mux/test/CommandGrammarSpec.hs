@@ -181,6 +181,11 @@ spec =
                 (\port -> shouldRejectAny "MIGRATE" ["host", port, "key", "0", "1000"])
                 ["+6379", "06379", "6379 ", "0x18eb", "6379x"]
 
+        it "matches Redis 7.2 string2ll for the complete signed Int64 edge corpus" $
+            mapM_
+                (\(value, expected) -> acceptsRedisInteger value `shouldBe` expected)
+                string2llCorpus
+
         it "validates XREAD mandatory STREAMS and stream/ID balance" $ do
             shouldRouteBy
                 "XREAD"
@@ -212,6 +217,22 @@ spec =
                 Just _ -> expectationFailure "expected keyed route for balanced XREAD lists"
                 Nothing -> expectationFailure "large XREAD grammar parse exceeded five seconds"
             shouldRejectAny "XREAD" (replicate 65537 "x")
+
+        it "completes near-cap repeated-key and repeated-scalar parses within ten seconds" $ do
+            let keyCount = 65535
+                memberCount = 65534
+            shouldCompleteWithin "MGET" (replicate keyCount "{same}:key")
+            shouldCompleteWithin "DEL" (replicate keyCount "{same}:key")
+            shouldCompleteWithin
+                "SADD"
+                ("{same}:key" : replicate memberCount "member")
+
+        it "fails closed above the parser frame cap within ten seconds" $ do
+            shouldRejectWithin "MGET" (replicate 65536 "{same}:key")
+            shouldRejectWithin "DEL" (replicate 65536 "{same}:key")
+            shouldRejectWithin
+                "SADD"
+                ("{same}:key" : replicate 65535 "member")
 
         it "validates XREADGROUP GROUP and STREAMS structural tokens" $ do
             shouldRouteBy
@@ -310,6 +331,78 @@ shouldRejectAny command arguments =
         CommandError _ -> pure ()
         KeylessRoute -> expectationFailure "expected command error, got keyless route"
         KeyedRoute _ -> expectationFailure "expected command error, got keyed route"
+
+acceptsRedisInteger :: BS.ByteString -> Bool
+acceptsRedisInteger value =
+    case classifyCommand "SET" ["{same}:key", "value", "EX", value] of
+        KeyedRoute _   -> True
+        KeylessRoute   -> False
+        CommandError _ -> False
+
+string2llCorpus :: [(BS.ByteString, Bool)]
+string2llCorpus =
+    [ ("", False)
+    , ("-", False)
+    , ("+", False)
+    , ("--1", False)
+    , ("+-1", False)
+    , ("-+1", False)
+    , ("0", True)
+    , ("-0", False)
+    , ("00", False)
+    , ("01", False)
+    , ("-00", False)
+    , ("-01", False)
+    , ("1", True)
+    , ("-1", True)
+    , (" 1", False)
+    , ("1 ", False)
+    , ("\t1", False)
+    , ("1\t", False)
+    , ("1\n", False)
+    , ("1 0", False)
+    , ("0x1", False)
+    , ("0X1", False)
+    , ("-0x1", False)
+    , ("1x", False)
+    , ("-1x", False)
+    , ("1.0", False)
+    , ("1\NUL", False)
+    , ("1-", False)
+    , ("9223372036854775807", True)
+    , ("-9223372036854775808", True)
+    , ("9223372036854775808", False)
+    , ("-9223372036854775809", False)
+    , ("18446744073709551615", False)
+    , ("-18446744073709551616", False)
+    , (BS.replicate 256 57, False)
+    , ("-" <> BS.replicate 256 57, False)
+    , (BS.replicate 256 48, False)
+    , (BS.pack [0], False)
+    , (BS.pack [128], False)
+    , (BS.pack [255], False)
+    , (BS.pack [49, 128], False)
+    , (BS.pack [45, 49, 255], False)
+    ]
+
+shouldCompleteWithin :: BS.ByteString -> [BS.ByteString] -> Expectation
+shouldCompleteWithin command arguments = do
+    result <- timeout 10000000 (evaluate $ classifyCommand command arguments)
+    case result of
+        Just (KeyedRoute key) -> key `shouldBe` "{same}:key"
+        Just KeylessRoute -> expectationFailure "expected keyed route, got keyless route"
+        Just (CommandError message) ->
+            expectationFailure $ "expected keyed route, got error: " ++ message
+        Nothing -> expectationFailure "near-cap grammar parse exceeded ten seconds"
+
+shouldRejectWithin :: BS.ByteString -> [BS.ByteString] -> Expectation
+shouldRejectWithin command arguments = do
+    result <- timeout 10000000 (evaluate $ classifyCommand command arguments)
+    case result of
+        Just (CommandError _) -> pure ()
+        Just KeylessRoute -> expectationFailure "expected command error, got keyless route"
+        Just (KeyedRoute _) -> expectationFailure "expected command error, got keyed route"
+        Nothing -> expectationFailure "over-cap grammar parse exceeded ten seconds"
 
 decimal :: Int -> BS.ByteString
 decimal = BS.pack . fmap (fromIntegral . fromEnum) . show

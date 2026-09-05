@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns             #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings        #-}
 
@@ -21,12 +22,13 @@ import           Data.Int                                        (Int64)
 import           Data.IntMap.Strict                              (IntMap)
 import qualified Data.IntMap.Strict                              as IntMap
 import           Data.List                                       (find, foldl',
-                                                                  nub)
+                                                                  nub,
+                                                                  partition)
 import qualified Data.Map.Strict                                 as Map
 import           Data.Maybe                                      (mapMaybe)
 import qualified Data.Set                                        as Set
 import qualified Data.Vector                                     as V
-import           Data.Word                                       (Word8)
+import           Data.Word                                       (Word64, Word8)
 import           Database.Redis.Cluster                          (calculateSlot)
 import           Database.Redis.Cluster.Internal.CommandMetadata
 import           Foreign.C.Error                                 (eRANGE,
@@ -247,12 +249,16 @@ parseRequiredArgument frame argument finalArgument state
     requiredResults
         | argumentMultiple argument =
             if argumentMultipleToken argument
-                then repeatOneOrMore (parseOneWithToken frame argument) state
+                then repeatArgument (parseOneWithToken frame argument) state
                 else
                     concatMap
-                        (repeatOneOrMore (parsePayload frame argument))
+                        (repeatArgument (parsePayload frame argument))
                         (consumeOuterToken frame argument state)
         | otherwise = parseOneWithToken frame argument state
+
+    repeatArgument
+        | finalArgument = repeatOneOrMoreFinal frame
+        | otherwise = repeatOneOrMore
 
 parseBalancedRepeatedBlock ::
     Frame ->
@@ -359,14 +365,43 @@ repeatOneOrMore ::
     ParseState ->
     [ParseState]
 repeatOneOrMore parseOne initial =
-    go [] (progressing initial (parseOne initial))
+    go 0 (boundedStates $ progressing initial (parseOne initial)) Set.empty
   where
-    go results [] = uniqueStates results
-    go results frontier =
-        let next =
-                uniqueStates $
-                    concatMap (\state -> progressing state (parseOne state)) frontier
-         in go (results <> frontier) next
+    go _ [] results = Set.toAscList results
+    go !rounds frontier results
+        | rounds >= maxFrameArguments = Set.toAscList results
+        | otherwise =
+            let next =
+                    boundedStates $
+                        concatMap
+                            (\state -> progressing state (parseOne state))
+                            frontier
+                results' = foldl' (flip insertBounded) results frontier
+             in go (rounds + 1) next results'
+
+repeatOneOrMoreFinal ::
+    Frame ->
+    (ParseState -> [ParseState]) ->
+    ParseState ->
+    [ParseState]
+repeatOneOrMoreFinal frame parseOne initial =
+    go 0 (boundedStates $ progressing initial (parseOne initial)) Set.empty
+  where
+    finalPosition = V.length frame
+
+    go _ [] results = Set.toAscList results
+    go !rounds frontier results
+        | rounds >= maxFrameArguments = Set.toAscList results
+        | otherwise =
+            let (completed, continuing) =
+                    partition ((== finalPosition) . parsePosition) frontier
+                next =
+                    boundedStates $
+                        concatMap
+                            (\state -> progressing state (parseOne state))
+                            continuing
+                results' = foldl' (flip insertBounded) results completed
+             in go (rounds + 1) next results'
 
 progressing :: ParseState -> [ParseState] -> [ParseState]
 progressing previous =
@@ -403,10 +438,17 @@ uniqueStates :: [ParseState] -> [ParseState]
 uniqueStates = boundedStates
 
 boundedStates :: [ParseState] -> [ParseState]
-boundedStates = take maxParserStates . Set.toAscList . Set.fromList
+boundedStates = Set.toAscList . foldl' (flip insertBounded) Set.empty
 
 boundedPairs :: [(ParseState, [Int])] -> [(ParseState, [Int])]
-boundedPairs = take maxParserStates . Set.toAscList . Set.fromList
+boundedPairs = Set.toAscList . foldl' (flip insertBounded) Set.empty
+
+insertBounded :: Ord value => value -> Set.Set value -> Set.Set value
+insertBounded value values
+    | Set.member value values = values
+    | Set.size values < maxParserStates = Set.insert value values
+    | value < Set.findMax values = Set.insert value (Set.deleteMax values)
+    | otherwise = values
 
 isOptionDirected :: CommandArgument -> Bool
 isOptionDirected argument =
@@ -598,36 +640,47 @@ isSignedInteger = maybe False (const True) . parseRedisInt64
 parseRedisInt64 :: ByteString -> Maybe Int64
 parseRedisInt64 value
     | BS.null value = Nothing
-    | otherwise =
+    | BS.length value >= 21 = Nothing
+    | value == "0" = Just 0
+    | otherwise = do
         let (negative, digits)
                 | BS.head value == 45 = (True, BS.tail value)
                 | otherwise = (False, value)
-         in if BS.null digits || not (validDecimal digits)
-                then Nothing
-                else
-                    let limit :: Integer
-                        limit
-                            | negative = 9223372036854775808
-                            | otherwise = 9223372036854775807
-                        magnitude =
-                            BS.foldl'
-                                (\number digit -> number * 10 + fromIntegral (digit - 48))
-                                (0 :: Integer)
-                                digits
-                     in if magnitude > limit
-                            then Nothing
-                            else
-                                Just $
-                                    if negative
-                                        then
-                                            if magnitude == 9223372036854775808
-                                                then minBound
-                                                else negate (fromIntegral magnitude)
-                                        else fromIntegral magnitude
+        (first, remaining) <- BS.uncons digits
+        if first < 49 || first > 57
+            then Nothing
+            else do
+                magnitude <- foldDecimal (fromIntegral $ first - 48) remaining
+                if negative
+                    then negativeInt64 magnitude
+                    else positiveInt64 magnitude
   where
-    validDecimal digits =
-        (BS.length digits == 1 || BS.head digits /= 48)
-            && BS.all isDecimalDigit digits
+    maxUnsigned = maxBound :: Word64
+    maxPositive = fromIntegral (maxBound :: Int64) :: Word64
+    maxNegative = maxPositive + 1
+
+    foldDecimal :: Word64 -> ByteString -> Maybe Word64
+    foldDecimal number remaining =
+        case BS.uncons remaining of
+            Nothing -> Just number
+            Just (digit, following)
+                | not (isDecimalDigit digit) -> Nothing
+                | number > maxUnsigned `div` 10 -> Nothing
+                | otherwise ->
+                    let multiplied = number * 10
+                        digitValue = fromIntegral (digit - 48)
+                     in if multiplied > maxUnsigned - digitValue
+                            then Nothing
+                            else foldDecimal (multiplied + digitValue) following
+
+    negativeInt64 magnitude
+        | magnitude > maxNegative = Nothing
+        | magnitude == maxNegative = Just minBound
+        | otherwise = Just (negate $ fromIntegral magnitude)
+
+    positiveInt64 magnitude
+        | magnitude > maxPositive = Nothing
+        | otherwise = Just (fromIntegral magnitude)
 
 -- Redis 7.2 validates doubles with strtod, including forms such as .5 and 1.
 isDouble :: ByteString -> Bool
