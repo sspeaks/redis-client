@@ -4,11 +4,10 @@ import           Control.Concurrent.Async (async, cancel, waitCatch)
 import           Control.Concurrent.MVar  (MVar, newEmptyMVar, putMVar,
                                            takeMVar)
 import           Control.Exception        (SomeException, bracket, finally,
-                                           throwIO)
+                                           mask, throwIO)
 import           Data.IORef               (IORef, atomicModifyIORef', newIORef,
                                            readIORef)
 import           StructuredConcurrency    (runConcurrentlyFailFast)
-import           System.Timeout           (timeout)
 import           Test.Hspec               (describe, hspec, it, shouldReturn,
                                            shouldSatisfy)
 
@@ -40,13 +39,13 @@ main = hspec $ do
         , putMVar siblingStarted () >> takeMVar siblingGate
             `finally` putMVar siblingCancelled ()
         ]
-      awaitPhase "response waiter start" siblingStarted
-      awaitPhase "response submission" sent
+      takeMVar siblingStarted
+      takeMVar sent
       putMVar response ()
       result <- waitCatch parent
       result `shouldSatisfy` isFailure
       readIORef sends `shouldReturn` 1
-      awaitPhase "response waiter cancellation" siblingCancelled
+      takeMVar siblingCancelled
 
   describe "benchmark workers" $ do
     it "fails fast when an actual async submission send fails" $ do
@@ -67,11 +66,11 @@ main = hspec $ do
             `finally` putMVar responseWaiterReleased ()
         , takeMVar failureGate >> throwIO (userError "benchmark send failed")
         ]
-      awaitPhase "benchmark response waiter start" responseWaiterStarted
+      takeMVar responseWaiterStarted
       putMVar failureGate ()
       result <- waitCatch parent
       result `shouldSatisfy` isFailure
-      awaitPhase "benchmark response waiter cancellation" responseWaiterReleased
+      takeMVar responseWaiterReleased
 
   describe "cancellation ownership" $ do
     it "cancels and joins siblings while bracketing connection, pool, and client cleanup" $ do
@@ -87,8 +86,8 @@ main = hspec $ do
                 takeMVar waitForCancel
         , putMVar siblingStarted () >> takeMVar waitForCancel
         ]
-      awaitPhase "bracketed worker start" started
-      awaitPhase "sibling worker start" siblingStarted
+      takeMVar started
+      takeMVar siblingStarted
       cancel parent
       result <- waitCatch parent
       result `shouldSatisfy` isFailure
@@ -102,21 +101,21 @@ assertFailFast failingWorker = do
   siblingCancelled <- newEmptyMVar
   parent <- async $ runConcurrentlyFailFast
     [ failingWorker failureGate siblingStarted
-    , putMVar siblingStarted () >> takeMVar siblingGate
+    , blockUntilCancelled siblingStarted siblingGate
         `finally` putMVar siblingCancelled ()
     ]
-  awaitPhase "sibling worker start" siblingStarted
+  takeMVar siblingStarted
   putMVar failureGate ()
   result <- waitCatch parent
   result `shouldSatisfy` isFailure
-  awaitPhase "sibling worker cancellation" siblingCancelled
+  takeMVar siblingCancelled
 
-awaitPhase :: String -> MVar a -> IO a
-awaitPhase label phase = do
-  completed <- timeout 2000000 (takeMVar phase)
-  case completed of
-    Just value -> return value
-    Nothing    -> throwIO (userError $ "timed out waiting for phase: " ++ label)
+-- | Publishing readiness while masked guarantees that cancellation is queued
+-- until this worker enters the restored, cancellable blocking operation.
+blockUntilCancelled :: MVar () -> MVar () -> IO ()
+blockUntilCancelled ready gate = mask $ \restore -> do
+  putMVar ready ()
+  restore (takeMVar gate)
 
 newCounter :: IO (IORef Int)
 newCounter = newIORef 0
