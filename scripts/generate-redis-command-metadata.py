@@ -23,6 +23,22 @@ DEFAULT_OUTPUT = ROOT / "hask-redis-mux/lib/cluster/Database/Redis/Cluster/Inter
 SCHEMA_VERSION = 1
 SUPPORTED_BEGIN_SEARCH = {"index", "keyword", "unknown"}
 SUPPORTED_FIND_KEYS = {"range", "keynum", "unknown"}
+COMMAND_FIELDS = {"name", "metadata"}
+COMMAND_METADATA_FIELDS = {
+    "acl_categories", "arguments", "arity", "command_flags", "command_tips",
+    "complexity", "container", "deprecated_since", "doc_flags", "function",
+    "get_keys_function", "group", "history", "key_specs", "replaced_by",
+    "reply_schema", "since", "summary",
+}
+KEY_SPEC_FIELDS = {"begin_search", "find_keys", "flags", "notes"}
+BEGIN_SEARCH_FIELDS = {
+    "index": {"pos"},
+    "keyword": {"keyword", "startfrom"},
+}
+FIND_KEYS_FIELDS = {
+    "range": {"lastkey", "step", "limit"},
+    "keynum": {"keynumidx", "firstkey", "step"},
+}
 SUPPORTED_REDIS_SOURCES = {
     "7.2.0": {
         "commit": "29622276ecd7b74312798e6772744858a8a6f9bf",
@@ -71,10 +87,26 @@ def expect_list(value, description):
     return value
 
 
+def reject_unexpected_fields(value, allowed_fields, description):
+    unexpected = sorted(set(value) - allowed_fields)
+    if unexpected:
+        raise AuditError("{} has unexpected field {}".format(description, unexpected[0]))
+
+
+def audit_string_list(value, description):
+    value = expect_list(value, description)
+    if not all(isinstance(item, str) for item in value):
+        raise AuditError("{} must contain only strings".format(description))
+    return value
+
+
 def audit_key_spec(identity, index, key_spec):
     key_spec = expect_mapping(key_spec, "{} key spec {}".format(identity, index))
+    reject_unexpected_fields(key_spec, KEY_SPEC_FIELDS, "{} key spec {}".format(identity, index))
     begin_search = expect_mapping(key_spec.get("begin_search"), "{} key spec {} begin_search".format(identity, index))
     find_keys = expect_mapping(key_spec.get("find_keys"), "{} key spec {} find_keys".format(identity, index))
+    reject_unexpected_fields(begin_search, SUPPORTED_BEGIN_SEARCH, "{} key spec {} begin_search".format(identity, index))
+    reject_unexpected_fields(find_keys, SUPPORTED_FIND_KEYS, "{} key spec {} find_keys".format(identity, index))
     if len(begin_search) != 1 or next(iter(begin_search)) not in SUPPORTED_BEGIN_SEARCH:
         raise AuditError("{} key spec {} has unsupported begin_search schema".format(identity, index))
     if len(find_keys) != 1 or next(iter(find_keys)) not in SUPPORTED_FIND_KEYS:
@@ -82,25 +114,30 @@ def audit_key_spec(identity, index, key_spec):
     begin_kind, begin_value = next(iter(begin_search.items()))
     find_kind, find_value = next(iter(find_keys.items()))
     if begin_kind == "index":
-        expect_mapping(begin_value, "{} key spec {} index".format(identity, index))
+        begin_value = expect_mapping(begin_value, "{} key spec {} index".format(identity, index))
+        reject_unexpected_fields(begin_value, BEGIN_SEARCH_FIELDS[begin_kind], "{} key spec {} index".format(identity, index))
         if not isinstance(begin_value.get("pos"), int):
             raise AuditError("{} key spec {} index position is invalid".format(identity, index))
     elif begin_kind == "keyword":
         begin_value = expect_mapping(begin_value, "{} key spec {} keyword".format(identity, index))
+        reject_unexpected_fields(begin_value, BEGIN_SEARCH_FIELDS[begin_kind], "{} key spec {} keyword".format(identity, index))
         if not isinstance(begin_value.get("keyword"), str) or not isinstance(begin_value.get("startfrom"), int):
             raise AuditError("{} key spec {} keyword is invalid".format(identity, index))
     elif begin_value is not None:
         raise AuditError("{} key spec {} unknown begin_search must be null".format(identity, index))
     if find_kind == "range":
         find_value = expect_mapping(find_value, "{} key spec {} range".format(identity, index))
+        reject_unexpected_fields(find_value, FIND_KEYS_FIELDS[find_kind], "{} key spec {} range".format(identity, index))
         if not all(isinstance(find_value.get(field), int) for field in ("lastkey", "step", "limit")):
             raise AuditError("{} key spec {} range is invalid".format(identity, index))
     elif find_kind == "keynum":
         find_value = expect_mapping(find_value, "{} key spec {} keynum".format(identity, index))
+        reject_unexpected_fields(find_value, FIND_KEYS_FIELDS[find_kind], "{} key spec {} keynum".format(identity, index))
         if not all(isinstance(find_value.get(field), int) for field in ("keynumidx", "firstkey", "step")):
             raise AuditError("{} key spec {} keynum is invalid".format(identity, index))
     elif find_value is not None:
         raise AuditError("{} key spec {} unknown find_keys must be null".format(identity, index))
+    audit_string_list(key_spec.get("flags"), "{} key spec {} flags".format(identity, index))
 
 
 def audit_canonical_source(source, canonical_source_path, commands):
@@ -169,9 +206,11 @@ def audit_snapshot(snapshot, canonical_source_path=None):
     kinds = {"fixed": 0, "range": 0, "keyword": 0, "movable": 0}
     for index, command in enumerate(commands):
         command = expect_mapping(command, "command {}".format(index))
+        reject_unexpected_fields(command, COMMAND_FIELDS, "command {}".format(index))
         if not isinstance(command.get("name"), str) or not command["name"]:
             raise AuditError("command {} has no name".format(index))
         metadata = expect_mapping(command.get("metadata"), "command {} metadata".format(command["name"]))
+        reject_unexpected_fields(metadata, COMMAND_METADATA_FIELDS, "{} metadata".format(command["name"]))
         identity = command_identity(command)
         identities.append(identity)
         if "container" in metadata:
@@ -180,6 +219,8 @@ def audit_snapshot(snapshot, canonical_source_path=None):
             top_level += 1
         if not isinstance(metadata.get("arity"), int):
             raise AuditError("{} is missing arity".format(identity))
+        if "command_flags" in metadata:
+            audit_string_list(metadata["command_flags"], "{} command_flags".format(identity))
         key_specs = expect_list(metadata.get("key_specs"), "{} key_specs".format(identity))
         for spec_index, key_spec in enumerate(key_specs):
             audit_key_spec(identity, spec_index, key_spec)
@@ -278,11 +319,13 @@ def render_module(commands, snapshot_path):
         "data KeySpec = KeySpec",
         "  { keySpecBeginSearch :: BeginSearch",
         "  , keySpecFindKeys    :: FindKeys",
+        "  , keySpecFlags       :: [ByteString]",
         "  } deriving (Eq, Show)",
         "",
         "data CommandMetadata = CommandMetadata",
         "  { commandIdentity :: ByteString",
         "  , commandArity    :: Int",
+        "  , commandFlags    :: [ByteString]",
         "  , commandKeySpecs :: [KeySpec]",
         "  } deriving (Eq, Show)",
         "",
@@ -295,11 +338,19 @@ def render_module(commands, snapshot_path):
         metadata = command["metadata"]
         specs = metadata["key_specs"]
         rendered_specs = ", ".join(
-            "KeySpec ({}) ({})".format(render_begin_search(spec), render_find_keys(spec)) for spec in specs
+            "KeySpec ({}) ({}) [{}]".format(
+                render_begin_search(spec),
+                render_find_keys(spec),
+                ", ".join(hs_string(flag) for flag in spec["flags"]),
+            )
+            for spec in specs
         )
         entries.append(
-            '    CommandMetadata {} {} [{}]'.format(
-                hs_string(command_identity(command)), "({})".format(metadata["arity"]), rendered_specs
+            '    CommandMetadata {} {} [{}] [{}]'.format(
+                hs_string(command_identity(command)),
+                "({})".format(metadata["arity"]),
+                ", ".join(hs_string(flag) for flag in metadata.get("command_flags", [])),
+                rendered_specs,
             )
         )
     lines.append(",\n".join(entries))

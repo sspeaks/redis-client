@@ -126,9 +126,9 @@ library cluster
                     , Database.Redis.Internal.MultiplexPool
                     , Database.Redis.Internal.Multiplexer
                     , Database.Redis.Cluster.Internal.Topology
-                    , Database.Redis.Cluster.Internal.CommandMetadata
                     , Database.Redis.Standalone
     other-modules:    Database.Redis.Cluster.Internal.ClientImplementation
+                    , Database.Redis.Cluster.Internal.CommandMetadata
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
                     , client
