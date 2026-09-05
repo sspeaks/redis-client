@@ -16,6 +16,7 @@ extra-doc-files:    CHANGELOG.md
                   , README.md
 extra-source-files: lib/crc16/crc16.c
                   , data/cluster_slot_mapping.txt
+                  , data/redis-7.2.12-command-metadata.md
 homepage:           https://github.com/sspeaks/redis-client
 bug-reports:        https://github.com/sspeaks/redis-client/issues
 tested-with:        GHC == 9.10.3
@@ -206,6 +207,13 @@ test-suite ClusterSpec
                     , resp
                     , time >=1.12 && <1.13
                     , vector >=0.13 && <0.14
+
+test-suite CommandRoutingSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          CommandRoutingSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , cluster
 
 test-suite ClusterCommandSpec
     import:           test-defaults

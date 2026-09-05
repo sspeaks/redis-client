@@ -28,7 +28,7 @@ import           Database.Redis.Client           (Client (..),
 import           Database.Redis.Cluster          (ClusterNode (..),
                                                   ClusterTopology (..),
                                                   NodeAddress (..),
-                                                  NodeRole (..))
+                                                  NodeRole (..), calculateSlot)
 import           Database.Redis.Cluster.Client   (ClusterClient (..),
                                                   ClusterError (..))
 import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
@@ -103,7 +103,7 @@ handleSmartProxyClient clusterClient clientSock = do
               loop
             Right respData -> do
               -- Route and execute the command
-              result <- routeSmartProxyCommand clusterClient respData
+              result <- routeSmartProxyCommand clusterClient dat respData
               case result of
                 Left err -> do
                   printf "Command execution error: %s\n" err
@@ -117,27 +117,36 @@ handleSmartProxyClient clusterClient clientSock = do
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>
   ClusterClient client ->
+  BS.ByteString ->
   RespData ->
   IO (Either String RespData)
-routeSmartProxyCommand clusterClient respData = do
+routeSmartProxyCommand clusterClient rawFrame respData = do
   case respData of
     RespArray (RespBulkString cmd : args) -> do
-      let argKeys = [k | RespBulkString k <- args]
-      case classifyCommand cmd argKeys of
-        KeylessRoute   -> executeKeylessCommand clusterClient respData
-        KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : argKeys)
-        CommandError e -> return $ Left e
+      case traverse asBulkString args of
+        Nothing -> return $ Left "supported commands require bulk-string arguments"
+        Just arguments -> case classifyCommand cmd arguments of
+          KeylessRoute   -> executeKeylessCommand clusterClient rawFrame
+          KeyedRoute []  -> executeKeylessCommand clusterClient rawFrame
+          KeyedRoute (key : keys)
+            | sameSlot key keys -> executeKeyedCommand clusterClient key rawFrame
+            | otherwise -> return $ Left "CROSSSLOT Keys in request don't hash to the same slot"
+          CommandError e -> return $ Left e
     _ -> return $ Left "Expected array command"
+  where
+    asBulkString (RespBulkString value) = Just value
+    asBulkString _                      = Nothing
+    sameSlot key = all ((== calculateSlot key) . calculateSlot)
 
 -- | Execute a keyless command (route to any master)
 executeKeylessCommand :: (Client client) =>
   ClusterClient client ->
-  RespData ->
+  BS.ByteString ->
   IO (Either String RespData)
-executeKeylessCommand clusterClient respData = do
+executeKeylessCommand clusterClient rawFrame = do
   result <- ClusterCommandClient.executeKeylessClusterCommand
               clusterClient
-              (sendRespCommand respData)
+              (sendRawRespCommand rawFrame)
   return $ case result of
     Left err   -> Left (show err)
     Right resp -> Right resp
@@ -146,24 +155,23 @@ executeKeylessCommand clusterClient respData = do
 executeKeyedCommand :: (Client client) =>
   ClusterClient client ->
   BS.ByteString ->
-  [BS.ByteString] ->
+  BS.ByteString ->
   IO (Either String RespData)
-executeKeyedCommand clusterClient key cmdArgs = do
-  result <- ClusterCommandClient.executeKeyedClusterCommand
+executeKeyedCommand clusterClient key rawFrame = do
+  result <- ClusterCommandClient.executeKeyedClusterCommandRaw
               clusterClient
               key
-              cmdArgs
+              (Builder.byteString rawFrame)
   return $ case result of
     Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
     Left err                  -> Left (show err)
     Right resp                -> Right resp
 
 -- | Send RESP command via RedisCommandClient
-sendRespCommand :: (Client client) => RespData -> RedisCommandClient client RespData
-sendRespCommand respData = do
+sendRawRespCommand :: (Client client) => BS.ByteString -> RedisCommandClient client RespData
+sendRawRespCommand rawFrame = do
   ClientState client _ <- State.get
-  let encoded = Builder.toLazyByteString $ encode respData
-  send client encoded
+  send client (LBS.fromStrict rawFrame)
   parseWith (receive client)
 
 -- | Pinned proxy mode: One listener per cluster node

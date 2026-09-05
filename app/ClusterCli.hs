@@ -25,9 +25,10 @@ routeAndExecuteCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandC
 routeAndExecuteCommand [] = return $ Left "Empty command"
 routeAndExecuteCommand (cmd:args) = do
   case classifyCommand cmd args of
-    KeylessRoute   -> executeKeylessCommand (cmd:args)
-    KeyedRoute key -> executeKeyedCommand key (cmd:args)
-    CommandError e -> return $ Left e
+    KeylessRoute         -> executeKeylessCommand (cmd:args)
+    KeyedRoute []        -> executeKeylessCommand (cmd:args)
+    KeyedRoute (key : _) -> executeKeyedCommand key (cmd:args)
+    CommandError e       -> return $ Left e
 
 -- | Execute a keyless command (routing to any master node)
 executeKeylessCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)

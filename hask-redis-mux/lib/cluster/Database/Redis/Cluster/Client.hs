@@ -62,6 +62,7 @@ module Database.Redis.Cluster.Client
     -- proxying. Prefer 'runClusterCommandClient' with 'RedisCommands' for
     -- normal Redis operations.
     executeKeyedClusterCommand,
+    executeKeyedClusterCommandRaw,
     executeKeyedClusterCommandUsingDelay,
     executeKeylessClusterCommand,
     executeKeylessClusterCommandUsingDelay,
@@ -964,6 +965,30 @@ executeKeyedClusterCommand ::
   IO (Either ClusterError RespData)
 executeKeyedClusterCommand =
   executeKeyedClusterCommandUsingDelay threadDelay
+
+-- | Execute an already encoded command through the normal keyed retry path.
+-- This is used by the smart proxy, whose wire frame must not be reconstructed.
+executeKeyedClusterCommandRaw ::
+  (Client client) =>
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterCommandRaw client key cmdBuilder = do
+  let muxPool = clusterMultiplexPool client
+      !slot = calculateSlot key
+  withRetryAndRefreshUsing
+    threadDelay client
+    (clusterMaxRetries $ clusterConfig client)
+    (clusterRetryDelay $ clusterConfig client) $ \route ->
+    case route of
+      RouteBySlot -> do
+        refreshResult <- tryClusterAction $ refreshTopologyIfStale client
+        case refreshResult of
+          Left err -> return $ Left err
+          Right () -> executeOnSlotMux client muxPool slot cmdBuilder
+      RouteMoved _ address -> executeOnNodeDirect muxPool address cmdBuilder
+      RouteAsk address -> executeOnNodeWithAsking client muxPool address cmdBuilder
 
 -- | Test seam for deterministic retry schedule and cancellation coverage.
 executeKeyedClusterCommandUsingDelay ::

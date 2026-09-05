@@ -7,20 +7,37 @@ import           ClusterE2E.Utils
 import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Exception             (bracket)
 import           Control.Monad                 (forM_, when)
+import qualified Control.Monad.State           as State
+import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Builder       as Builder
 import qualified Data.ByteString.Char8         as BS8
 import           Data.List                     (isInfixOf)
 import qualified Data.Map.Strict               as Map
-import           Database.Redis.Client         (PlainTextClient (NotConnectedPlainTextClient),
+import           Database.Redis.Client         (Client (..),
+                                                PlainTextClient (NotConnectedPlainTextClient),
                                                 close, connect)
 import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeAddress (..), NodeRole (..))
 import           Database.Redis.Cluster.Client (closeClusterClient,
                                                 clusterTopology)
-import           Database.Redis.Command        (RedisCommands (..))
-import           Database.Redis.Resp           (RespData (..))
+import           Database.Redis.Command        (ClientState (..),
+                                                RedisCommandClient (..),
+                                                RedisCommands (..), parseWith)
+import           Database.Redis.Resp           (Encodable (encode),
+                                                RespData (..))
 import           SlotMappingHelpers            (getKeyForNode)
 import           Test.Hspec
+
+raw :: [BS.ByteString] -> RedisCommandClient PlainTextClient RespData
+raw parts = do
+  ClientState client _ <- State.get
+  send client (Builder.toLazyByteString $ encode (RespArray $ map RespBulkString parts))
+  parseWith (receive client)
+
+isError :: RespData -> Bool
+isError (RespError _) = True
+isError _             = False
 
 spec :: Spec
 spec = describe "Cluster Tunnel Mode" $ do
@@ -91,6 +108,28 @@ spec = describe "Cluster Tunnel Mode" $ do
 
         bracket createTestClusterClient closeClusterClient $ \client -> do
           _ <- runCmd_ client (del ["various:test"])
+          pure ()
+
+    it "routes script, stream, keyless, binary, unknown, and cross-slot requests" $
+      withSmartProxy $ do
+        conn <- connect (NotConnectedPlainTextClient "localhost" (Just 6379))
+        let key = "{metadata}:stream"
+            binary = BS.pack [0, 255, 13, 10]
+        runRedisCommand_ conn (raw ["SET", key, binary])
+        eval <- runRedisCommand conn (raw ["EVAL", "return redis.call('GET', KEYS[1])", "1", key])
+        eval `shouldBe` RespBulkString binary
+        runRedisCommand_ conn (raw ["XADD", key, "*", "field", "value"])
+        xread <- runRedisCommand conn (raw ["XREAD", "COUNT", "1", "STREAMS", key, "0"])
+        xread `shouldSatisfy` (/= RespError "ERR unsupported command XREAD")
+        echo <- runRedisCommand conn (raw ["ECHO", binary])
+        echo `shouldBe` RespBulkString binary
+        unknown <- runRedisCommand conn (raw ["NOT_A_REDIS_COMMAND", "not-a-key"])
+        unknown `shouldSatisfy` isError
+        crossSlot <- runRedisCommand conn (raw ["MGET", "different-one", "different-two"])
+        crossSlot `shouldSatisfy` isError
+        close conn
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          _ <- runCmd_ client (del [key])
           pure ()
 
     it "smart mode handles multiple separate connections" $
