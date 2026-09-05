@@ -20,6 +20,17 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     ClientReplyModeUnsupported SKIP
       `shouldBe` ClientReplyModeUnsupported SKIP
 
+  it "documents SKIP rejection and uncertain-write connection closure" $ do
+    commandSource <- findSource
+      [ "lib/redis-command-client/Database/Redis/Command.hs"
+      , "hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs"
+      ]
+    source <- readFile commandSource
+    source `shouldContain` "@SKIP@ always throws"
+    source `shouldContain` "atomically bind it to the command"
+    source `shouldContain` "closes the physical"
+    source `shouldContain` "connection passed to this function must not be reused"
+
   it "keeps raw cluster frame execution out of public facades" $ do
     clientSource <- findSource
       [ "lib/cluster/Database/Redis/Cluster/Client.hs"

@@ -92,6 +92,7 @@ import           Database.Redis.Cluster.ConnectionPool (ConnectionPool (..),
                                                         getConnectionPoolStats,
                                                         withConnection)
 import           Database.Redis.Command                (ClientReplyModeUnsupported (..),
+                                                        ClientReplyUncertainWrite (..),
                                                         ClientReplyValues (..),
                                                         ClientState (..),
                                                         RedisCommandClient (..),

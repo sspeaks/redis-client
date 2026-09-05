@@ -16,6 +16,7 @@ module Database.Redis.Command
   , RedisCommands (..)
   , ClientReplyValues (..)
   , ClientReplyModeUnsupported (..)
+  , ClientReplyUncertainWrite (..)
   , sendCommandWithoutReply
   , sendClientReplySkipAndCommand
   , authenticatePassword
@@ -48,7 +49,12 @@ module Database.Redis.Command
   , convertResp
   ) where
 
-import           Control.Exception                (Exception, throwIO)
+import           Control.Exception                (Exception,
+                                                   SomeAsyncException,
+                                                   SomeException,
+                                                   displayException,
+                                                   fromException, mask, throwIO,
+                                                   try, uninterruptibleMask_)
 import           Control.Monad.IO.Class           (MonadIO (..))
 import           Control.Monad.State              as State (MonadState (get, put),
                                                             StateT)
@@ -65,6 +71,7 @@ import           Database.Redis.FromResp          (FromResp (..))
 import           Database.Redis.RedisError        (RedisError (..))
 import           Database.Redis.Resp              (Encodable (encode),
                                                    RespData (..), parseRespData)
+import           System.IO                        (hPutStrLn, stderr)
 
 
 -- | Mutable state carried through a 'RedisCommandClient' session: the live connection
@@ -151,10 +158,12 @@ class (MonadIO m) => RedisCommands m where
   lindex :: (FromResp a) => ByteString -> Int -> m a
   clientSetInfo :: (FromResp a) => [ByteString] -> m a
   -- | Change Redis reply behavior for the current physical connection.
-  -- @ON@ returns its server reply; @SKIP@ returns 'Nothing' because Redis
-  -- intentionally omits that command's reply. @OFF@ is supported only by a
-  -- dedicated sequential 'RedisCommandClient' connection; shared
-  -- multiplexed and cluster clients throw 'ClientReplyModeUnsupported'.
+  -- @ON@ returns its server reply. @OFF@ is supported only by a dedicated
+  -- sequential 'RedisCommandClient' connection; shared multiplexed and
+  -- cluster clients throw 'ClientReplyModeUnsupported'. @SKIP@ always throws
+  -- 'ClientReplyModeUnsupported': use
+  -- 'sendClientReplySkipAndCommand' on a dedicated sequential connection to
+  -- atomically bind it to the command whose reply Redis suppresses.
   clientReply :: ClientReplyValues -> m (Maybe RespData)
   zadd :: (FromResp a) => ByteString -> [(Int, ByteString)] -> m a
   zrange :: (FromResp a) => ByteString -> Int -> Int -> Bool -> m a
@@ -248,9 +257,14 @@ sendCommandWithoutReply args = do
   ClientState !client _ <- State.get
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
 
--- | Atomically send @CLIENT REPLY SKIP@ and its target command on a dedicated
--- sequential connection. Redis suppresses the target reply, so no reply is
--- read and the following command remains aligned.
+-- | Atomically transfer @CLIENT REPLY SKIP@ and its target command on a
+-- dedicated sequential connection. Redis suppresses the target reply, so no
+-- reply is read and the following command remains aligned.
+--
+-- If the transfer throws or is cancelled, this function closes the physical
+-- connection before propagating the transfer failure. The target may have
+-- executed, so callers must reconnect and decide whether retrying it is safe;
+-- the connection passed to this function must not be reused.
 sendClientReplySkipAndCommand
   :: (Client client)
   => [ByteString]
@@ -259,7 +273,52 @@ sendClientReplySkipAndCommand args = do
   ClientState !client _ <- State.get
   let builder =
         encode (wrapInRay ["CLIENT", "REPLY", "SKIP"]) <> encode (wrapInRay args)
-  liftIO $ send client (Builder.toLazyByteString builder)
+  liftIO $ sendSkipAndCommand client (Builder.toLazyByteString builder)
+
+-- | Transfer a reply-suppression pair while owning the connection on every
+-- exceptional path. The write is interruptible; once it has started we cannot
+-- distinguish no-byte from partial-byte delivery, so either outcome is
+-- terminal for this physical connection. Cleanup is uninterruptible only for
+-- the single close operation, preventing a second cancellation from leaving
+-- the connection eligible for accidental reuse.
+sendSkipAndCommand
+  :: (Client client)
+  => client 'Connected
+  -> LBS.ByteString
+  -> IO ()
+sendSkipAndCommand client bytes = mask $ \restore -> do
+  transfer <- try $ restore $ send client bytes
+  case transfer of
+    Right () -> return ()
+    Left (primary :: SomeException) -> do
+      closeResult <- uninterruptibleMask_ $ try $ close client
+      case closeResult of
+        Right () -> throwIO primary
+        Left (closeFailure :: SomeException) ->
+          resolveUncertainWrite primary closeFailure
+
+resolveUncertainWrite :: SomeException -> SomeException -> IO a
+resolveUncertainWrite primary closeFailure =
+  case fromException primary of
+    Just (async :: SomeAsyncException) -> do
+      reportClientReplyCloseFailure primary closeFailure
+      throwIO async
+    Nothing ->
+      case fromException closeFailure of
+        Just (async :: SomeAsyncException) -> do
+          reportClientReplyCloseFailure primary closeFailure
+          throwIO async
+        Nothing ->
+          throwIO $ ClientReplyUncertainWrite primary closeFailure
+
+reportClientReplyCloseFailure :: SomeException -> SomeException -> IO ()
+reportClientReplyCloseFailure primary closeFailure = do
+  _ <- (try (hPutStrLn stderr $
+    "CLIENT REPLY SKIP transfer failed before connection close: "
+      ++ displayException primary
+      ++ "\nConnection close also failed: "
+      ++ displayException closeFailure) :: IO (Either SomeException ()))
+  return ()
 
 -- | Convert a raw 'RespData' value using 'FromResp', throwing on failure.
 convertResp :: (FromResp a, MonadIO m) => RespData -> m a
@@ -376,6 +435,24 @@ data ClientReplyModeUnsupported
   deriving (Eq, Show, Typeable)
 
 instance Exception ClientReplyModeUnsupported
+
+-- | Both an atomic @CLIENT REPLY SKIP@ transfer and its required connection
+-- close failed. The primary transfer error and cleanup error are retained so
+-- callers can diagnose the uncertain command outcome without losing either.
+data ClientReplyUncertainWrite = ClientReplyUncertainWrite
+  { clientReplyPrimaryError :: SomeException
+  , clientReplyCloseError   :: SomeException
+  }
+  deriving Typeable
+
+instance Show ClientReplyUncertainWrite where
+  show failure =
+    "CLIENT REPLY SKIP transfer failed: "
+      ++ displayException (clientReplyPrimaryError failure)
+      ++ "\nConnection close also failed: "
+      ++ displayException (clientReplyCloseError failure)
+
+instance Exception ClientReplyUncertainWrite
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping = executeCommandAs ["PING"]

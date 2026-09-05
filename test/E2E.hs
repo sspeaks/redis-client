@@ -15,13 +15,16 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
 import           Database.Redis.Client      (Client (..), PlainTextClient)
-import           Database.Redis.Command     (ClientState (..),
+import           Database.Redis.Command     (ClientReplyValues (..),
+                                             ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),
                                              GeoSearchFrom (..),
                                              GeoSearchOption (..), GeoUnit (..),
                                              RedisCommandClient,
-                                             RedisCommands (..), parseManyWith)
+                                             RedisCommands (..), parseManyWith,
+                                             sendClientReplySkipAndCommand,
+                                             sendCommandWithoutReply)
 import           Database.Redis.Resp        (Encodable (encode), RespData (..),
                                              parseRespData)
 import           E2EHelpers                 (cleanupProcess, drainHandle,
@@ -89,6 +92,31 @@ main = do
   hspec $ do
     before_ (void $ runFlushAll) $ do
       describe "Can run basic operations: " $ do
+        it "keeps direct sequential CLIENT REPLY OFF and ON response-safe" $ do
+          (disabled, restored, response) <- runRedisAction $ do
+            disabledResult <- clientReply OFF
+            sendCommandWithoutReply ["SET", "client-reply-off", "value"]
+            restoredResult <- clientReply ON
+            nextResponse <- ping
+            return (disabledResult, restoredResult, nextResponse)
+          disabled `shouldBe` Nothing
+          restored `shouldBe` Just (RespSimpleString "OK")
+          response `shouldBe` (RespSimpleString "PONG" :: RespData)
+
+        it "keeps the next response aligned after a skipped successful target" $ do
+          runRedisAction
+            (do
+              sendClientReplySkipAndCommand ["PING"]
+              ping)
+            `shouldReturn` (RespSimpleString "PONG" :: RespData)
+
+        it "keeps the next response aligned after a skipped error target" $ do
+          runRedisAction
+            (do
+              sendClientReplySkipAndCommand ["NOT-A-REDIS-COMMAND"]
+              ping)
+            `shouldReturn` (RespSimpleString "PONG" :: RespData)
+
         it "get and set are encoded and respond properly" $ do
           runRedisAction (set "hello" "world") `shouldReturn` RespSimpleString "OK"
           runRedisAction (get "hello") `shouldReturn` RespBulkString "world"
