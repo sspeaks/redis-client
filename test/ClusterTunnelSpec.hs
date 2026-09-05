@@ -67,6 +67,35 @@ main = hspec $ do
         (RespArray [RespBulkString "GET", RespInteger 1])
         "Expected array command with bulk string arguments"
 
+    it "acquires no transport for every rejected smart-proxy frame shape" $ do
+      let rejectedFrames =
+            [ ( RespArray []
+              , "Expected array command with bulk string arguments"
+              )
+            , ( RespSimpleString "GET"
+              , "Expected array command with bulk string arguments"
+              )
+            , ( RespArray [RespSimpleString "GET", RespBulkString "key"]
+              , "Expected array command with bulk string arguments"
+              )
+            , ( commandFrame ["GET"]
+              , "GET has invalid arity: expected 2 argument(s), got 1"
+              )
+            , ( commandFrame ["DOESNOTEXIST", "key"]
+              , "unknown command"
+              )
+            , ( commandFrame ["SORT", "key", "STORE", "destination"]
+              , "SORT uses an unsupported dynamic key specification"
+              )
+            , ( commandFrame ["MSET", "one", "value", "two"]
+              , "MSET has malformed arguments"
+              )
+            , ( commandFrame ["MGET", "one", "two"]
+              , "CROSSSLOT Keys in request don't hash to the same slot"
+              )
+            ]
+      mapM_ (uncurry assertNoDispatch) rejectedFrames
+
   describe "rewriteClusterResponse" $ do
     it "rewrites exactly one complete RESP response" $ do
       rewriteClusterResponse "-MOVED 3999 redis.example:6381\r\n"

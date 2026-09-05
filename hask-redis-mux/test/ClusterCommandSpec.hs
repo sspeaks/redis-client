@@ -34,6 +34,7 @@ import           Data.IORef                                 (IORef,
                                                              atomicModifyIORef',
                                                              newIORef,
                                                              readIORef)
+import           Data.List                                  (isInfixOf)
 import qualified Data.Map.Strict                            as Map
 import           Data.Time.Clock                            (getCurrentTime)
 import qualified Data.Vector                                as V
@@ -332,6 +333,7 @@ spec = do
   clusterAuthenticationSpec
   clusterErrorClassificationSpec
   rawFrameIdentitySpec
+  rawDispatchReliabilitySpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -901,7 +903,8 @@ instance Client PostWriteFailureClient where
     liftIO receiveAction
 
 data PostWriteFailureRecord = PostWriteFailureRecord
-  { postWriteRecordIndex     :: !Int
+  { postWriteRecordAddress   :: !NodeAddress
+  , postWriteRecordIndex     :: !Int
   , postWriteRecordSent      :: !(IORef ByteString)
   , postWriteRecordSendCount :: !(TVar Int)
   , postWriteRecordCloses    :: !(IORef Int)
@@ -915,25 +918,23 @@ createPostWriteFailureConnector
 createPostWriteFailureConnector = do
   connectionCount <- newIORef (0 :: Int)
   records <- newIORef []
-  let connector _ = do
+  let connector address = do
         index <- atomicModifyIORef' connectionCount $ \count ->
           (count + 1, count)
         sent <- newIORef BS.empty
         sendCount <- newTVarIO 0
         closes <- newIORef 0
         let receiveAction
-              | index == 0 = replyWith validClusterSlots
+              | index == 0 =
+                  waitForSendCount sendCount 1 >> replyWith twoMasterClusterSlots
               | index == 1 = do
-                  atomically $ do
-                    sentCommands <- readTVar sendCount
-                    check $ sentCommands == 1
+                  waitForSendCount sendCount 1
                   throwIO $ userError "injected transport failure after raw write"
               | otherwise = do
-                  atomically $ do
-                    sentCommands <- readTVar sendCount
-                    check $ sentCommands == 1
+                  waitForSendCount sendCount 1
                   replyWith $ RespSimpleString "OK"
-            record = PostWriteFailureRecord index sent sendCount closes
+            record =
+              PostWriteFailureRecord address index sent sendCount closes
         atomicModifyIORef' records $ \existing ->
           (existing ++ [record], ())
         return $ PostWriteFailureConnected sent sendCount receiveAction closes
@@ -948,10 +949,14 @@ replyWith = return . encodeResp
 
 replyAfterSendCount :: TVar Int -> Int -> RespData -> IO ByteString
 replyAfterSendCount sendCount expected response = do
+  waitForSendCount sendCount expected
+  replyWith response
+
+waitForSendCount :: TVar Int -> Int -> IO ()
+waitForSendCount sendCount expected =
   atomically $ do
     sentCommands <- readTVar sendCount
-    check $ sentCommands == expected
-  replyWith response
+    check $ sentCommands >= expected
 
 commandBytes :: [ByteString] -> ByteString
 commandBytes =
@@ -2403,26 +2408,6 @@ awaitCommandCount record command expected = do
             check $ current > observed
           await
 
-awaitFrameCount :: AuthConnectionRecord -> ByteString -> Int -> IO ()
-awaitFrameCount record frame expected = do
-  observed <- timeout 5000000 await
-  case observed of
-    Just () -> return ()
-    Nothing ->
-      expectationFailure $
-        "Timed out waiting for " ++ show expected ++ " sends of raw RESP frame"
-  where
-    await = do
-      observed <- readTVarIO $ authRecordSendCount record
-      sent <- recordSentBytes record
-      if countOccurrences frame sent >= expected
-        then return ()
-        else do
-          atomically $ do
-            current <- readTVar $ authRecordSendCount record
-            check $ current > observed
-          await
-
 askRedirectSuccessSpec :: Spec
 askRedirectSuccessSpec = describe "successful command without ASK redirection" $ do
   it "successful command without redirection returns directly" $ do
@@ -2451,67 +2436,95 @@ rawFrameIdentitySpec =
   describe "raw RESP cluster execution preserves encoded frames" $ do
     it "preserves nested arrays, integers, nulls, binary data, and empty bulk strings" $ do
       forM_ rawFrames $ \frame -> do
-        let script _ index =
+        let script address index sendCount =
               return $
-                if index == 0
-                  then [replyWith validClusterSlots]
-                  else [replyWith $ RespSimpleString "OK"]
-        (connector, getRecords) <- createAuthMockConnector script
+                if address == node1 && index == 0
+                  then
+                    [replyAfterSendCount sendCount 1 validClusterSlots]
+                  else
+                    [replyAfterSendCount sendCount 1 $
+                      RespSimpleString "OK"]
+        (connector, getRecords) <- createAuthMockConnectorWithSendCount script
         client <- createClusterClient (retryTestConfig 1 1) connector
         executeRawClusterCommand client (RawRouteByKey "raw-key") frame
           `shouldReturn` Right (RespSimpleString "OK")
         records <- getRecords
+        map (\record -> (authRecordAddress record, authRecordIndex record)) records
+          `shouldBe` [(node1, 0), (node1, 1)]
+        mapM (readTVarIO . authRecordSendCount) records
+          `shouldReturn` [1, 1]
         let commandRecord = findAuthRecord records node1 1
-        awaitFrameCount commandRecord (encodeResp frame) 1
         recordSentBytes commandRecord
           `shouldReturn` encodeResp frame
         closeClusterClient client
 
     it "reuses the raw frame on MOVED and does not prefix it with ASKING" $ do
       let key = "raw-moved-key"
+          expectedSlot = 7582
           frame = rawFrame
-          script address index
+          script address index sendCount
             | address == node1 && index == 0 =
-                return [replyWith validClusterSlots]
+                return
+                  [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
             | address == node1 =
-                return [replyWith $ movedResponse (calculateSlot key) node2]
+                return
+                  [replyAfterSendCount sendCount 1 $
+                    movedResponse expectedSlot node2]
             | address == node2 && index == 0 =
-                return [replyWith $ RespSimpleString "OK"]
-            | otherwise = return [replyWith validClusterSlots]
-      (connector, getRecords) <- createAuthMockConnector script
+                return
+                  [replyAfterSendCount sendCount 1 $ RespSimpleString "OK"]
+            | otherwise =
+                return
+                  [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
       client <- createClusterClient (retryTestConfig 2 1) connector
       executeRawClusterCommand client (RawRouteByKey key) frame
         `shouldReturn` Right (RespSimpleString "OK")
       records <- getRecords
-      recordSentBytes (findAuthRecord records node1 1)
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1), (node2, 0), (node2, 1)]
+      mapM (readTVarIO . authRecordSendCount) records
+        `shouldReturn` [1, 1, 1, 1]
+      let sourceRecord = findAuthRecord records node1 1
+          targetRecord = findAuthRecord records node2 0
+      recordSentBytes sourceRecord
         `shouldReturn` encodeResp frame
-      recordSentBytes (findAuthRecord records node2 0)
+      recordSentBytes targetRecord
         `shouldReturn` encodeResp frame
       closeClusterClient client
 
     it "sends ASKING separately before the unchanged raw frame on ASK" $ do
-      let key = "raw-ask-key"
+      let key = "raw-ask-source"
+          expectedSlot = 6594
           frame = rawFrame
-          script address index
+          script address index sendCount
             | address == node1 && index == 0 =
-                return [replyWith validClusterSlots]
+                return
+                  [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
             | address == node1 =
                 return
-                  [replyWith $ RespError $
-                    "ASK " <> BS8.pack (show $ calculateSlot key)
+                  [replyAfterSendCount sendCount 1 $ RespError $
+                    "ASK " <> BS8.pack (show expectedSlot)
                       <> " 127.0.0.2:6380"]
             | otherwise =
                 return
-                  [ replyWith $ RespSimpleString "OK"
-                  , replyWith $ RespSimpleString "OK"
+                  [ replyAfterSendCount sendCount 1 $ RespSimpleString "OK"
+                  , replyAfterSendCount sendCount 1 $ RespSimpleString "OK"
                   ]
-      (connector, getRecords) <- createAuthMockConnector script
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
       client <- createClusterClient (retryTestConfig 2 1) connector
       executeRawClusterCommand client (RawRouteByKey key) frame
         `shouldReturn` Right (RespSimpleString "OK")
       records <- getRecords
-      let targetRecord = findAuthRecord records node2 0
-      awaitCommandCount targetRecord ["ASKING"] 1
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1), (node2, 0)]
+      mapM (readTVarIO . authRecordSendCount) records
+        `shouldReturn` [1, 1, 1]
+      let sourceRecord = findAuthRecord records node1 1
+          targetRecord = findAuthRecord records node2 0
+      recordSentBytes sourceRecord `shouldReturn` encodeResp frame
       recordSentBytes targetRecord
         `shouldReturn` commandBytes ["ASKING"] <> encodeResp frame
       closeClusterClient client
@@ -2519,17 +2532,20 @@ rawFrameIdentitySpec =
     it "keeps the identical raw frame through TRYAGAIN and keyless retries" $ do
       delays <- newIORef []
       let frame = rawFrame
-          script _ index =
+          script address index sendCount =
             return $
-              if index == 0
+              if address == node1 && index == 0
                 then
-                  [ replyWith validClusterSlots
-                  , replyWith $ RespError "TRYAGAIN first"
-                  , replyWith $ RespError "TRYAGAIN second"
-                  , replyWith $ RespSimpleString "OK"
+                  [ replyAfterSendCount sendCount 1 twoMasterClusterSlots
+                  , replyAfterSendCount sendCount 2 $
+                      RespError "TRYAGAIN first"
+                  , replyAfterSendCount sendCount 3 $
+                      RespError "TRYAGAIN second"
+                  , replyAfterSendCount sendCount 4 $
+                      RespSimpleString "OK"
                   ]
                 else []
-      (connector, getRecords) <- createAuthMockConnector script
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
       client <- createClusterClient (retryTestConfig 3 1) connector
       executeRawClusterCommandUsingDelay
         (\delay -> atomicModifyIORef' delays $ \seen ->
@@ -2540,7 +2556,11 @@ rawFrameIdentitySpec =
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [1, 2]
       records <- getRecords
-      recordSentBytes (findAuthRecord records node1 0)
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0)]
+      let record = findAuthRecord records node1 0
+      readTVarIO (authRecordSendCount record) `shouldReturn` 4
+      recordSentBytes record
         `shouldReturn`
           commandBytes ["CLUSTER", "SLOTS"]
             <> encodeResp frame <> encodeResp frame <> encodeResp frame
@@ -2548,7 +2568,8 @@ rawFrameIdentitySpec =
 
     it "refreshes and reuses a keyed frame through CLUSTERDOWN" $ do
       delays <- newIORef []
-      let key = "raw-clusterdown-key"
+      let key = "raw-clusterdown-low"
+          expectedSlot = 7039
           script address index sendCount =
             return $
               if address == node1 && index == 1
@@ -2556,11 +2577,13 @@ rawFrameIdentitySpec =
                   [ replyAfterSendCount sendCount 1 $ RespError "CLUSTERDOWN unavailable"
                   , replyAfterSendCount sendCount 2 $ RespSimpleString "OK"
                   ]
-                else if index == 0
-                then [replyWith validClusterSlots, replyWith validClusterSlots]
-                else [ replyWith $ RespError "CLUSTERDOWN unavailable"
-                     , replyWith $ RespSimpleString "OK"
-                     ]
+                else if address == node1 && index == 0
+                then
+                  [ replyAfterSendCount sendCount 1 twoMasterClusterSlots
+                  , replyAfterSendCount sendCount 2 twoMasterClusterSlots
+                  ]
+                else []
+      calculateSlot key `shouldBe` expectedSlot
       (connector, getRecords) <- createAuthMockConnectorWithSendCount script
       client <- createClusterClient (retryTestConfig 2 5) connector
       executeRawClusterCommandUsingDelay
@@ -2570,21 +2593,35 @@ rawFrameIdentitySpec =
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [5]
       records <- getRecords
-      recordSentBytes (findAuthRecord records node1 1)
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1)]
+      let discoveryRecord = findAuthRecord records node1 0
+          commandRecord = findAuthRecord records node1 1
+      readTVarIO (authRecordSendCount discoveryRecord) `shouldReturn` 2
+      readTVarIO (authRecordSendCount commandRecord) `shouldReturn` 2
+      recordSentBytes commandRecord
         `shouldReturn` encodeResp rawFrame <> encodeResp rawFrame
-      awaitCommandCount (findAuthRecord records node1 0) ["CLUSTER", "SLOTS"] 2
+      recordSentBytes discoveryRecord
+        `shouldReturn`
+          commandBytes ["CLUSTER", "SLOTS"]
+            <> commandBytes ["CLUSTER", "SLOTS"]
       closeClusterClient client
 
     it "refreshes and reuses a keyless frame through CLUSTERDOWN" $ do
       delays <- newIORef []
-      let script _ _ =
+      let script address index sendCount =
             return
-              [ replyWith validClusterSlots
-              , replyWith $ RespError "CLUSTERDOWN unavailable"
-              , replyWith validClusterSlots
-              , replyWith $ RespSimpleString "OK"
-              ]
-      (connector, getRecords) <- createAuthMockConnector script
+              $ if address == node1 && index == 0
+                then
+                  [ replyAfterSendCount sendCount 1 twoMasterClusterSlots
+                  , replyAfterSendCount sendCount 2 $
+                      RespError "CLUSTERDOWN unavailable"
+                  , replyAfterSendCount sendCount 3 twoMasterClusterSlots
+                  , replyAfterSendCount sendCount 4 $
+                      RespSimpleString "OK"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
       client <- createClusterClient (retryTestConfig 2 6) connector
       executeRawClusterCommandUsingDelay
         (\delay -> atomicModifyIORef' delays $ \seen ->
@@ -2593,25 +2630,37 @@ rawFrameIdentitySpec =
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [6]
       records <- getRecords
-      recordSentBytes (findAuthRecord records node1 0)
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0)]
+      let record = findAuthRecord records node1 0
+      readTVarIO (authRecordSendCount record) `shouldReturn` 4
+      recordSentBytes record
         `shouldReturn`
           commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
             <> commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
       closeClusterClient client
 
     it "reconnects after a transport failure following the first raw write" $ do
+      let key = "raw-reconnect-low"
+          expectedSlot = 5979
+      calculateSlot key `shouldBe` expectedSlot
       (connector, getRecords) <- createPostWriteFailureConnector
       client <- createClusterClient (retryTestConfig 2 7) connector
-      executeRawClusterCommand client (RawRouteByKey "raw-reconnect-key") rawFrame
+      executeRawClusterCommand client (RawRouteByKey key) rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
       records <- getRecords
       case records of
         [discovery, firstAttempt, reconnectedAttempt] -> do
+          map postWriteRecordAddress records
+            `shouldBe` [node1, node1, node1]
           postWriteRecordIndex discovery `shouldBe` 0
           postWriteRecordIndex firstAttempt `shouldBe` 1
           postWriteRecordIndex reconnectedAttempt `shouldBe` 2
+          readTVarIO (postWriteRecordSendCount discovery) `shouldReturn` 1
           readTVarIO (postWriteRecordSendCount firstAttempt) `shouldReturn` 1
           readTVarIO (postWriteRecordSendCount reconnectedAttempt) `shouldReturn` 1
+          readIORef (postWriteRecordSent discovery)
+            `shouldReturn` commandBytes ["CLUSTER", "SLOTS"]
           readIORef (postWriteRecordSent firstAttempt)
             `shouldReturn` encodeResp rawFrame
           readIORef (postWriteRecordSent reconnectedAttempt)
@@ -2621,63 +2670,289 @@ rawFrameIdentitySpec =
           firstFrame `shouldBe` secondFrame
           timeout 1000000 (awaitIORefValue (postWriteRecordCloses firstAttempt) 1)
             `shouldReturn` Just ()
+          readIORef (postWriteRecordCloses discovery) `shouldReturn` 0
+          readIORef (postWriteRecordCloses reconnectedAttempt) `shouldReturn` 0
+          closeClusterClient client
+          mapM (readIORef . postWriteRecordCloses) records
+            `shouldReturn` [1, 1, 1]
         _ ->
           expectationFailure $
             "Expected discovery, failed, and reconnected transports; got "
               ++ show (length records)
-      closeClusterClient client
 
     it "retries after connection setup timeout before any raw write" $ do
       delays <- newIORef []
       connectorCalls <- newIORef (0 :: Int)
-      (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
-        return $ if index == 0
-          then [replyWith validClusterSlots]
-          else [replyWith $ RespSimpleString "OK"]
+      requestedAddresses <- newIORef []
+      let key = "raw-timeout-low"
+          expectedSlot = 4198
+      (baseConnector, getRecords) <-
+        createAuthMockConnectorWithSendCount $ \address index sendCount ->
+          return $
+            if address == node1 && index == 0
+              then
+                [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
+              else
+                [replyAfterSendCount sendCount 1 $ RespSimpleString "OK"]
       let timeoutError =
             ConnectionSetupTimeout PlaintextConnectionSetup node1 1
           connector address = do
+            atomicModifyIORef' requestedAddresses $ \addresses ->
+              (addresses ++ [address], ())
             call <- atomicModifyIORef' connectorCalls $ \count ->
               (count + 1, count)
             if call == 1
               then throwIO timeoutError
               else baseConnector address
+      calculateSlot key `shouldBe` expectedSlot
       client <- createClusterClient (retryTestConfig 2 8) connector
       executeRawClusterCommandUsingDelay
         (\delay -> atomicModifyIORef' delays $ \seen ->
           (seen ++ [delay], ()))
-        client (RawRouteByKey "raw-timeout-key") rawFrame
+        client (RawRouteByKey key) rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [8]
       readIORef connectorCalls `shouldReturn` 3
-      awaitRawFrameCopies getRecords rawFrame 1
+      readIORef requestedAddresses `shouldReturn` [node1, node1, node1]
       records <- getRecords
       length records `shouldBe` 2
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1)]
+      mapM (readTVarIO . authRecordSendCount) records `shouldReturn` [1, 1]
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
+
+rawDispatchReliabilitySpec :: Spec
+rawDispatchReliabilitySpec =
+  describe "raw RESP dispatch retry reliability" $ do
+    it "keeps a keyed binary frame, slot route, and retry schedule stable through TRYAGAIN" $ do
+      delays <- newIORef []
+      let key = "{raw-retry}:key"
+          expectedSlot = 14438
+          frame =
+            RespArray
+              [ RespBulkString "SET"
+              , RespBulkString key
+              , RespBulkString "\NUL\255value"
+              , RespBulkString "PX"
+              , RespBulkString "10"
+              ]
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (address', 0)
+                  | address' == node1 ->
+                      [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
+                  | address' == node2 ->
+                      [ replyAfterSendCount sendCount 1 $ RespError "TRYAGAIN one"
+                      , replyAfterSendCount sendCount 2 $ RespError "TRYAGAIN two"
+                      , replyAfterSendCount sendCount 3 $ RespSimpleString "OK"
+                      ]
+                _ -> []
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 3 3) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen -> (seen ++ [delay], ()))
+        client
+        (RawRouteByKey key)
+        frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [3, 6]
+      records <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node2, 0)]
+      mapM (readTVarIO . authRecordSendCount) records
+        `shouldReturn` [1, 3]
+      let commandRecord = findAuthRecord records node2 0
+      recordSentBytes commandRecord
+        `shouldReturn` encodeResp frame <> encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+    it "rejects an authenticated transport before dispatching or retrying a raw frame" $ do
+      let credentials = ClusterPassword "test-only-password"
+          key = "authenticated-raw-key"
+          expectedSlot = 5865
+          frame = rawFrame
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (address', 0)
+                  | address' == node1 ->
+                      [ replyAfterSendCount sendCount 1 $
+                          RespSimpleString "OK"
+                      , replyAfterSendCount sendCount 2 twoMasterClusterSlots
+                      ]
+                (address', 1)
+                  | address' == node1 ->
+                      [replyAfterSendCount sendCount 1 $
+                        RespError "WRONGPASS invalid username-password pair"]
+                _ -> []
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClientWithAuthentication
+        (retryTestConfig 3 1)
+        credentials
+        connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn`
+          Left
+            (ClusterAuthenticationError $ ClusterAuthenticationFailed node1)
+      records <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1)]
+      mapM (readTVarIO . authRecordSendCount) records
+        `shouldReturn` [2, 1]
+      let discoveryRecord = findAuthRecord records node1 0
+          rejectedRecord = findAuthRecord records node1 1
+      recordSentBytes discoveryRecord
+        `shouldReturn`
+          authCommandFor credentials <> commandBytes ["CLUSTER", "SLOTS"]
+      recordSentBytes rejectedRecord
+        `shouldReturn` authCommandFor credentials
+      closeClusterClient client
+
+    it "keeps ASKING paired with each raw attempt so no response slot is orphaned" $ do
+      let key = "raw-ask-source"
+          expectedSlot = 6594
+          frame = rawFrame
+          ask = RespError $
+            "ASK " <> BS8.pack (show expectedSlot) <> " 127.0.0.2:6380"
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (_, 0) | address == node1 ->
+                  [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
+                (_, 1) | address == node1 ->
+                  [ replyAfterSendCount sendCount 1 ask
+                  , replyAfterSendCount sendCount 2 ask
+                  ]
+                (_, 0) | address == node2 ->
+                  [ replyAfterSendCount sendCount 1 $ RespSimpleString "OK"
+                  , replyAfterSendCount sendCount 1 $ RespSimpleString "first"
+                  , replyAfterSendCount sendCount 2 $ RespSimpleString "OK"
+                  , replyAfterSendCount sendCount 2 $ RespSimpleString "second"
+                  ]
+                _ -> []
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 2 1) connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "first")
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "second")
+      records <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1), (node2, 0)]
+      mapM (readTVarIO . authRecordSendCount) records
+        `shouldReturn` [1, 2, 2]
+      let sourceRecord = findAuthRecord records node1 1
+          targetRecord = findAuthRecord records node2 0
+      recordSentBytes sourceRecord
+        `shouldReturn` encodeResp frame <> encodeResp frame
+      recordSentBytes targetRecord
+        `shouldReturn`
+          commandBytes ["ASKING"] <> encodeResp frame
+            <> commandBytes ["ASKING"] <> encodeResp frame
+      closeClusterClient client
+
+    it "propagates the terminal raw retry error after the exact attempt budget" $ do
+      delays <- newIORef []
+      let key = "{raw-retry}:terminal"
+          expectedSlot = 14438
+          frame = rawFrame
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (address', 0)
+                  | address' == node1 ->
+                      [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
+                  | address' == node2 ->
+                      [ replyAfterSendCount sendCount 1 $
+                          RespError "TRYAGAIN first"
+                      , replyAfterSendCount sendCount 2 $
+                          RespError "TRYAGAIN final"
+                      ]
+                _ -> []
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 2 4) connector
+      result <- executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen -> (seen ++ [delay], ()))
+        client
+        (RawRouteByKey key)
+        frame
+      result `shouldSatisfy` \case
+        Left (MaxRetriesExceeded message) -> "TRYAGAIN final" `isInfixOf` message
+        _ -> False
+      readIORef delays `shouldReturn` [4]
+      records <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node2, 0)]
+      mapM (readTVarIO . authRecordSendCount) records
+        `shouldReturn` [1, 2]
+      let commandRecord = findAuthRecord records node2 0
+      recordSentBytes commandRecord
+        `shouldReturn` encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+    it "cancels an in-flight raw dispatch without retrying and tears down its transport" $ do
+      commandWritten <- newEmptyMVar
+      releaseCommand <- newEmptyMVar
+      finished <- newEmptyMVar
+      let key = "raw-cancel-low"
+          expectedSlot = 4920
+          frame = rawFrame
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (address', 0)
+                  | address' == node1 ->
+                      [replyAfterSendCount sendCount 1 twoMasterClusterSlots]
+                (address', 1)
+                  | address' == node1 ->
+                      [ waitForSendCount sendCount 1
+                          >> putMVar commandWritten ()
+                          >> takeMVar releaseCommand
+                      ]
+                _ -> []
+      calculateSlot key `shouldBe` expectedSlot
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeRawClusterCommand client (RawRouteByKey key) frame)
+        (putMVar finished)
+      takeMVar commandWritten
+      recordsBeforeCancel <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record))
+        recordsBeforeCancel
+        `shouldBe` [(node1, 0), (node1, 1)]
+      let commandRecord = findAuthRecord recordsBeforeCancel node1 1
+      readTVarIO (authRecordSendCount commandRecord) `shouldReturn` 1
+      recordSentBytes commandRecord `shouldReturn` encodeResp frame
+      killThread owner
+      outcome <- takeMVar finished
+      outcome `shouldSatisfy` \case
+        Left err ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        Right _ -> False
+      closeClusterClient client
+      records <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1)]
+      mapM (readIORef . authRecordCloses) records `shouldReturn` [1, 1]
+      mapM (readIORef . authRecordAborts) records `shouldReturn` [0, 0]
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Left ClusterClientClosed
+      recordsAfterClosedDispatch <- getRecords
+      length recordsAfterClosedDispatch `shouldBe` length records
 
 assertRawFrameCopies :: [AuthConnectionRecord] -> RespData -> Int -> Expectation
 assertRawFrameCopies records frame expected = do
   sent <- BS.concat <$> mapM recordSentBytes records
   countOccurrences (encodeResp frame) sent `shouldBe` expected
-
-awaitRawFrameCopies
-  :: IO [AuthConnectionRecord]
-  -> RespData
-  -> Int
-  -> IO ()
-awaitRawFrameCopies getRecords frame expected = do
-  outcome <- timeout 5000000 await
-  case outcome of
-    Just () -> return ()
-    Nothing -> expectationFailure "Timed out waiting for raw frame copies"
-  where
-    await = do
-      records <- getRecords
-      sent <- BS.concat <$> mapM recordSentBytes records
-      if countOccurrences (encodeResp frame) sent >= expected
-        then return ()
-        else threadDelay 1000 >> await
 
 rawFrame :: RespData
 rawFrame =
