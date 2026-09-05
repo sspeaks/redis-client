@@ -24123,19 +24123,7 @@
       "name": "ZUNIONSTORE"
     }
   ],
-  "counts": {
-    "subcommands": 150,
-    "top_level": 242,
-    "total": 392
-  },
-  "provenance": {
-    "commands_sha256": "58e3f6aa588a29341909507b05621460484a746ca63db8e79705bd1345f75867",
-    "redis_commit": "29622276ecd7b74312798e6772744858a8a6f9bf",
-    "redis_version_tag": "7.2.0",
-    "retrieved_at": "2026-09-04",
-    "source_path": "src/commands/*.json",
-    "source_sha256": "b33d68cd54eb28d43dcf9bd1fb23e81c0c2762e944c3fde8c9cdc33f0798e14c",
-    "source_url": "https://github.com/redis/redis/tree/29622276ecd7b74312798e6772744858a8a6f9bf/src/commands"
-  },
-  "schema_version": 1
+  "redis_commit": "29622276ecd7b74312798e6772744858a8a6f9bf",
+  "source_path": "src/commands/*.json",
+  "source_url": "https://github.com/redis/redis/tree/29622276ecd7b74312798e6772744858a8a6f9bf/src/commands"
 }

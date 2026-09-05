@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Generate and audit the checked-in Redis command metadata artifact."""
+"""Generate and audit checked-in Redis command metadata.
+
+``source_sha256`` is the SHA-256 of the exact UTF-8 bytes in the checked-in,
+canonical JSON source bundle named by the supported source record.  The bundle
+contains the immutable Redis commit, URL, path, and command data.  The
+retrieval date is informational only and is validated solely as YYYY-MM-DD.
+"""
 
 import argparse
 import copy
+import datetime
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -18,9 +26,16 @@ SUPPORTED_FIND_KEYS = {"range", "keynum", "unknown"}
 SUPPORTED_REDIS_SOURCES = {
     "7.2.0": {
         "commit": "29622276ecd7b74312798e6772744858a8a6f9bf",
+        "source_url": "https://github.com/redis/redis/tree/29622276ecd7b74312798e6772744858a8a6f9bf/src/commands",
+        "source_path": "src/commands/*.json",
+        "source_sha256": "b33d68cd54eb28d43dcf9bd1fb23e81c0c2762e944c3fde8c9cdc33f0798e14c",
+        "canonical_source": "hask-redis-mux/data/redis-7.2.0-commands.json",
         "counts": {"top_level": 242, "subcommands": 150, "total": 392},
     }
 }
+FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+ISO_CALENDAR_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 
 
 class AuditError(Exception):
@@ -88,7 +103,32 @@ def audit_key_spec(identity, index, key_spec):
         raise AuditError("{} key spec {} unknown find_keys must be null".format(identity, index))
 
 
-def audit_snapshot(snapshot):
+def audit_canonical_source(source, canonical_source_path, commands):
+    try:
+        contents = canonical_source_path.read_text(encoding="utf-8")
+        canonical_source = json.loads(contents)
+    except (OSError, json.JSONDecodeError) as error:
+        raise AuditError("cannot read canonical source {}: {}".format(canonical_source_path, error)) from error
+    if contents != canonical_json(canonical_source):
+        raise AuditError("canonical source is not canonical, sorted JSON")
+    canonical_source = expect_mapping(canonical_source, "canonical source")
+    for field in ("redis_commit", "source_url", "source_path", "commands"):
+        if field not in canonical_source:
+            raise AuditError("canonical source {} is missing".format(field))
+    if (
+        canonical_source["redis_commit"] != source["commit"]
+        or canonical_source["source_url"] != source["source_url"]
+        or canonical_source["source_path"] != source["source_path"]
+    ):
+        raise AuditError("canonical source provenance is not bound to the supported Redis source")
+    if canonical_source["commands"] != commands:
+        raise AuditError("snapshot commands do not match the canonical source")
+    source_sha256 = hashlib.sha256(contents.encode("utf-8")).hexdigest()
+    if source_sha256 != source["source_sha256"]:
+        raise AuditError("canonical source digest mismatch")
+
+
+def audit_snapshot(snapshot, canonical_source_path=None):
     snapshot = expect_mapping(snapshot, "snapshot")
     if snapshot.get("schema_version") != SCHEMA_VERSION:
         raise AuditError("unsupported snapshot schema version")
@@ -105,11 +145,23 @@ def audit_snapshot(snapshot):
     for field in required_provenance:
         if not isinstance(provenance.get(field), str) or not provenance[field]:
             raise AuditError("provenance {} is missing".format(field))
-    if len(provenance["redis_commit"]) != 40:
+    if not FULL_GIT_SHA.fullmatch(provenance["redis_commit"]):
         raise AuditError("provenance redis_commit must be a full SHA")
+    if not SHA256.fullmatch(provenance["source_sha256"]):
+        raise AuditError("provenance source_sha256 must be a lowercase SHA-256")
+    try:
+        if not ISO_CALENDAR_DATE.fullmatch(provenance["retrieved_at"]):
+            raise ValueError
+        datetime.datetime.strptime(provenance["retrieved_at"], "%Y-%m-%d")
+    except ValueError:
+        raise AuditError("provenance retrieved_at must be an ISO calendar date")
     source = SUPPORTED_REDIS_SOURCES.get(provenance["redis_version_tag"])
-    if source is None or source["commit"] != provenance["redis_commit"]:
+    if source is None:
         raise AuditError("unsupported Redis source provenance")
+    for field in ("redis_commit", "source_url", "source_path", "source_sha256"):
+        source_field = "commit" if field == "redis_commit" else field
+        if provenance[field] != source[source_field]:
+            raise AuditError("provenance {} is not bound to the supported Redis source".format(field))
     commands = expect_list(snapshot.get("commands"), "commands")
     identities = []
     top_level = 0
@@ -157,6 +209,11 @@ def audit_snapshot(snapshot):
         raise AuditError("command counts do not match the immutable Redis source")
     if provenance["commands_sha256"] != commands_digest(commands):
         raise AuditError("snapshot command digest mismatch")
+    audit_canonical_source(
+        source,
+        canonical_source_path or ROOT / source["canonical_source"],
+        commands,
+    )
     if not all(kinds.values()):
         raise AuditError("snapshot lacks a representative fixed, range, keyword, or movable key spec")
     return commands
@@ -265,11 +322,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, default=DEFAULT_SNAPSHOT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--canonical-source",
+        type=Path,
+        help="override the checked-in canonical source bundle for audit testing",
+    )
     parser.add_argument("--audit", action="store_true", help="verify snapshot and generated module without writing")
     args = parser.parse_args()
     try:
         snapshot = load_snapshot(args.snapshot)
-        commands = audit_snapshot(snapshot)
+        commands = audit_snapshot(snapshot, args.canonical_source)
         rendered = render_module(commands, args.snapshot)
         if args.audit:
             if not args.output.is_file() or args.output.read_text(encoding="utf-8") != rendered:
