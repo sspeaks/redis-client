@@ -21,7 +21,6 @@ data CommandRouting
   = KeylessRoute        -- ^ Route to any master node
   | KeyedRoute ByteString  -- ^ Route by this key's hash slot
   | CommandError String    -- ^ Invalid command (e.g., missing required key)
-  deriving (Eq, Show)
 
 -- | Classify a Redis command for cluster routing.
 -- Returns 'KeylessRoute' for commands like PING or AUTH that can go to any master,

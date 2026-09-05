@@ -130,6 +130,44 @@ class CommandMetadataAuditSpec(unittest.TestCase):
         path = self.write_snapshot("unsupported.json", mutate)
         self.assert_audit_fails(path, "begin_search has unexpected field unsupported")
 
+    def test_rejects_invalid_key_spec_bounds(self):
+        def first_range(value):
+            return next(
+                spec["find_keys"]["range"]
+                for command in value["commands"]
+                for spec in command["metadata"]["key_specs"]
+                if "range" in spec["find_keys"]
+            )
+
+        def first_keynum(value):
+            return next(
+                spec["find_keys"]["keynum"]
+                for command in value["commands"]
+                for spec in command["metadata"]["key_specs"]
+                if "keynum" in spec["find_keys"]
+            )
+
+        zero_step = self.write_snapshot(
+            "zero-range-step.json",
+            lambda value: first_range(value).update(step=0),
+        )
+        negative_limit = self.write_snapshot(
+            "negative-range-limit.json",
+            lambda value: first_range(value).update(limit=-1),
+        )
+        invalid_limited_last = self.write_snapshot(
+            "invalid-limited-last.json",
+            lambda value: first_range(value).update(lastkey=-2, limit=2),
+        )
+        negative_keynum_index = self.write_snapshot(
+            "negative-keynum-index.json",
+            lambda value: first_keynum(value).update(keynumidx=-1),
+        )
+        self.assert_audit_fails(zero_step, "range bounds are invalid")
+        self.assert_audit_fails(negative_limit, "range bounds are invalid")
+        self.assert_audit_fails(invalid_limited_last, "range bounds are invalid")
+        self.assert_audit_fails(negative_keynum_index, "keynum bounds are invalid")
+
     def test_rejects_unexpected_schema_fields_at_every_audited_level(self):
         def first_spec(value):
             return next(command["metadata"]["key_specs"][0] for command in value["commands"] if command["metadata"]["key_specs"])
@@ -150,10 +188,75 @@ class CommandMetadataAuditSpec(unittest.TestCase):
             "unexpected-find-keys.json",
             lambda value: first_spec(value)["find_keys"].update(unexpected=True),
         )
+        argument = self.write_snapshot(
+            "unexpected-argument.json",
+            lambda value: next(
+                command["metadata"]["arguments"][0]
+                for command in value["commands"]
+                if command["metadata"].get("arguments")
+            ).update(unexpected=True),
+        )
         self.assert_audit_fails(command, "command 0 has unexpected field unexpected")
         self.assert_audit_fails(key_spec, "key spec 0 has unexpected field unexpected")
         self.assert_audit_fails(begin_search, "key spec 0 begin_search has unexpected field unexpected")
         self.assert_audit_fails(find_keys, "key spec 0 find_keys has unexpected field unexpected")
+        self.assert_audit_fails(argument, "argument 0 has unexpected field unexpected")
+
+    def test_rejects_invalid_argument_schema(self):
+        def first_argument(value):
+            return next(
+                command["metadata"]["arguments"][0]
+                for command in value["commands"]
+                if command["metadata"].get("arguments")
+            )
+
+        unsupported_type = self.write_snapshot(
+            "unsupported-argument-type.json",
+            lambda value: first_argument(value).update(type="opaque"),
+        )
+        invalid_optional = self.write_snapshot(
+            "invalid-argument-optional.json",
+            lambda value: first_argument(value).update(optional="yes"),
+        )
+        invalid_key_spec = self.write_snapshot(
+            "invalid-argument-key-spec.json",
+            lambda value: next(
+                argument
+                for command in value["commands"]
+                for argument in command["metadata"].get("arguments", [])
+                if argument.get("type") == "key"
+            ).update(key_spec_index=999),
+        )
+        self.assert_audit_fails(unsupported_type, "argument 0 has unsupported type")
+        self.assert_audit_fails(invalid_optional, "argument 0 optional must be boolean")
+        self.assert_audit_fails(invalid_key_spec, "key_spec_index is invalid")
+
+    def test_rejects_invalid_nested_argument_schema(self):
+        def mutate(value):
+            parent = next(
+                argument
+                for command in value["commands"]
+                for argument in command["metadata"].get("arguments", [])
+                if argument.get("arguments")
+            )
+            parent["arguments"][0]["unexpected"] = True
+
+        path = self.write_snapshot("invalid-nested-argument.json", mutate)
+        self.assert_audit_fails(path, "argument 0.0 has unexpected field unexpected")
+
+    def test_rejects_unlinked_routing_key_spec(self):
+        def mutate(value):
+            argument = next(
+                argument
+                for command in value["commands"]
+                for argument in command["metadata"].get("arguments", [])
+                if argument.get("type") == "key"
+                and "key_spec_index" in argument
+            )
+            argument.pop("key_spec_index")
+
+        path = self.write_snapshot("unlinked-key-spec.json", mutate)
+        self.assert_audit_fails(path, "is not linked from its argument grammar")
 
     def test_rejects_missing_arity_and_key_specs(self):
         arity = self.write_snapshot("missing-arity.json", lambda value: value["commands"][0]["metadata"].pop("arity"))
@@ -167,9 +270,23 @@ class CommandMetadataAuditSpec(unittest.TestCase):
         generated = GENERATOR.render_module(commands, SNAPSHOT)
         rows = re.findall(r"^    CommandMetadata .+$", generated, re.MULTILINE)
         expected_key_spec_count = sum(len(command["metadata"]["key_specs"]) for command in commands)
+        expected_argument_count = 0
+        def count_arguments(arguments):
+            return sum(
+                1 + count_arguments(argument.get("arguments", []))
+                for argument in arguments
+            )
+        expected_argument_count = sum(
+            count_arguments(command["metadata"].get("arguments", []))
+            for command in commands
+        )
         self.assertEqual(len(rows), snapshot["counts"]["total"])
         self.assertEqual(len(commands), snapshot["counts"]["total"])
         self.assertEqual(len(re.findall(r"KeySpec \(", generated)) - 1, expected_key_spec_count)
+        self.assertEqual(
+            len(re.findall(r'CommandArgument "', generated)),
+            expected_argument_count,
+        )
         append = next(command for command in commands if command["name"] == "APPEND")
         self.assertEqual(append["metadata"]["command_flags"], ["WRITE", "DENYOOM", "FAST"])
         self.assertEqual(append["metadata"]["key_specs"][0]["flags"], ["RW", "INSERT"])
@@ -188,6 +305,14 @@ class CommandMetadataAuditSpec(unittest.TestCase):
                     ", ".join(GENERATOR.hs_string(flag) for flag in key_spec["flags"]),
                 )
                 self.assertIn(expected, generated)
+
+    def test_preserves_hyphenated_subcommand_identities(self):
+        snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+        commands = GENERATOR.audit_snapshot(snapshot)
+        generated = GENERATOR.render_module(commands, SNAPSHOT)
+        self.assertIn('CommandMetadata "CLIENT NO-EVICT"', generated)
+        self.assertIn('CommandMetadata "CLUSTER SET-CONFIG-EPOCH"', generated)
+        self.assertNotIn('CommandMetadata "CLIENT NO_EVICT"', generated)
 
     def test_generation_is_offline_deterministic_and_byte_identical(self):
         first = WORK / "first.hs"
