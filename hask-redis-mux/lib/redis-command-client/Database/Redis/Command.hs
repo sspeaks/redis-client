@@ -276,9 +276,17 @@ sendCommandWithoutReply args = do
 -- reply is read and the following command remains aligned.
 --
 -- If the transfer throws or is cancelled, this function closes the physical
--- connection before propagating the transfer failure. The target may have
--- executed, so callers must reconnect and decide whether retrying it is safe;
--- the connection passed to this function must not be reused.
+-- connection before propagating an error. If close succeeds, the original
+-- transfer error is rethrown unchanged. If transfer and close both fail
+-- synchronously, 'ClientReplyUncertainWrite' retains both failures. An
+-- asynchronous transfer failure takes precedence over any close failure;
+-- otherwise an asynchronous close failure takes precedence over the
+-- synchronous transfer failure. When exactly one failure is asynchronous, the
+-- synchronous counterpart is reported to standard error. If both failures are
+-- asynchronous, the transfer failure wins and the close failure is reported.
+--
+-- The target may have executed, so callers must reconnect and decide whether
+-- retrying it is safe; the connection passed to this function must not be reused.
 sendClientReplySkipAndCommand
   :: (Client client)
   => [ByteString]
@@ -451,8 +459,16 @@ data ClientReplyModeUnsupported
 instance Exception ClientReplyModeUnsupported
 
 -- | Both an atomic @CLIENT REPLY SKIP@ transfer and its required connection
--- close failed. The primary transfer error and cleanup error are retained so
--- callers can diagnose the uncertain command outcome without losing either.
+-- close failed synchronously. The primary transfer error and cleanup error are
+-- retained so callers can diagnose the uncertain command outcome without
+-- losing either.
+--
+-- This exception never wraps an asynchronous exception. An asynchronous
+-- transfer failure wins over the close failure; otherwise an asynchronous
+-- close failure wins over the synchronous transfer failure. When exactly one
+-- failure is asynchronous, the synchronous counterpart is reported to
+-- standard error. If both failures are asynchronous, the transfer failure wins
+-- and the close failure is reported.
 data ClientReplyUncertainWrite = ClientReplyUncertainWrite
   { clientReplyPrimaryError :: SomeException
   , clientReplyCloseError   :: SomeException
