@@ -115,10 +115,22 @@ test-suite StructuredConcurrencySpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
     main-is:          StructuredConcurrencySpec.hs
-    other-modules:    StructuredConcurrency
+    other-modules:    ClusterFiller
+                    , FillHelpers
+                    , Filler
+                    , ProcessLifecycle
+                    , StructuredConcurrency
     hs-source-dirs:   test
                     , app
     build-depends:    async
+                    , bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , process
+                    , stm
+                    , time
+                    , vector
 
 -- ---------------------------------------------------------------------------
 -- Flags
@@ -234,6 +246,7 @@ executable redis-client
                     , FillProcess
                     , FlushConfirmation
                     , Filler
+                    , ProcessLifecycle
                     , SlotMappingHelpers
                     , StructuredConcurrency
     build-depends:    attoparsec

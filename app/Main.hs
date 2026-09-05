@@ -3,7 +3,8 @@
 
 module Main where
 
-import           ClusterFiller                         (fillClusterWithData)
+import           ClusterFiller                         (fillClusterWithData,
+                                                        withClusterFillClient)
 import           Database.Redis.Client                 (Client (receive, send),
                                                         TLSClient (..), serve)
 import           Database.Redis.Cluster.Client         (ClusterClient (..),
@@ -71,6 +72,7 @@ import           FillProcess                           (buildChildArgs)
 import           FlushConfirmation                     (canonicalFlushTarget,
                                                         confirmFlush)
 import           Numeric                               (showHex)
+import           ProcessLifecycle                      (waitForChildProcesses)
 import           StructuredConcurrency                 (runConcurrentlyFailFast,
                                                         withSubmittedSlots)
 import           System.Console.GetOpt                 (ArgDescr (..),
@@ -86,8 +88,7 @@ import           System.IO                             (hIsTerminalDevice,
                                                         hPutStrLn, isEOF,
                                                         stderr, stdin)
 import           System.Process                        (ProcessHandle,
-                                                        createProcess, proc,
-                                                        waitForProcess)
+                                                        createProcess, proc)
 import           System.Random                         (randomIO)
 import           Text.Printf                           (printf)
 
@@ -327,8 +328,8 @@ spawnFillProcesses state nprocs = do
   -- Spawn child processes
   handles <- mapM (spawnChildProcess exePath state baseGB remainder) [0..nprocs-1]
 
-  -- Wait for all processes to complete
-  mapM_ waitForProcess handles
+  -- Wait for all children and propagate the first non-zero child status.
+  waitForChildProcesses handles
   printf "All %d processes completed\n" nprocs
 
 -- | Spawn a single child process with its portion of data
@@ -348,13 +349,13 @@ flushCache state
       printf "Flushing all primary cluster nodes (seed node: '%s')\n" (host state)
       if useTLS state
         then do
-          clusterClient <- createClusterClientFromState state (createTLSConnector state)
-          flushAllClusterNodes clusterClient (createTLSConnector state)
-          closeClusterClient clusterClient
+          let connector = createTLSConnector state
+          bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+            flushAllClusterNodes clusterClient connector
         else do
-          clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-          flushAllClusterNodes clusterClient (createPlaintextConnector state)
-          closeClusterClient clusterClient
+          let connector = createPlaintextConnector state
+          bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+            flushAllClusterNodes clusterClient connector
   | otherwise = do
       printf "Flushing cache '%s'\n" (host state)
       if useTLS state
@@ -412,15 +413,15 @@ fillCluster state = do
     -- Create cluster client and fill data
     if useTLS state
       then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        fillClusterWithData clusterClient (createTLSConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
-        closeClusterClient clusterClient
+        let connector = createTLSConnector state
+        withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
+          fillClusterWithData clusterClient connector
+            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
       else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        fillClusterWithData clusterClient (createPlaintextConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
-        closeClusterClient clusterClient
+        let connector = createPlaintextConnector state
+        withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
+          fillClusterWithData clusterClient connector
+            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
 
 cli :: RunState -> IO ()
 cli state = do

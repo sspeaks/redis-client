@@ -2,21 +2,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module ClusterFiller
-  ( fillClusterWithData
+  ( executeClusterFillJob
+  , fillClusterWithData
+  , withClusterFillClient
+  , withClusterFillConnection
+  , fillNodeWithDataWithTimeout
   ) where
 
-import           Control.Concurrent                 (MVar, forkIO, newEmptyMVar,
-                                                     putMVar, takeMVar,
-                                                     threadDelay)
+import           Control.Concurrent                 (threadDelay)
 import           Control.Concurrent.STM             (readTVarIO)
-import           Control.Exception                  (SomeException, bracket,
-                                                     catch)
-import           Control.Monad                      (when)
+import           Control.Exception                  (bracket, throwIO)
+import           Control.Monad                      (unless, when)
 import qualified Control.Monad.State                as State
 import qualified Data.ByteString                    as BS
 import qualified Data.ByteString.Builder            as Builder
 import           Data.ByteString.Char8              (ByteString)
-import qualified Data.ByteString.Char8              as BS8
 import qualified Data.ByteString.Lazy               as LBS
 import           Data.List                          (find)
 import           Data.Map.Strict                    (Map)
@@ -31,7 +31,8 @@ import           Database.Redis.Cluster             (ClusterNode (..),
                                                      NodeAddress (..),
                                                      NodeRole (..),
                                                      SlotRange (..))
-import           Database.Redis.Cluster.Client      (ClusterClient (..))
+import           Database.Redis.Cluster.Client      (ClusterClient (..),
+                                                     closeClusterClient)
 import           Database.Redis.Cluster.SlotMapping (slotMappings)
 import           Database.Redis.Command             (ClientReplyValues (..),
                                                      ClientState (..),
@@ -43,6 +44,7 @@ import           Filler                             (sendChunkedFill)
 import           FillHelpers                        (generateBytes,
                                                      generateBytesWithHashTag,
                                                      nextLCG, threadSeedSpacing)
+import           StructuredConcurrency              (runConcurrentlyFailFast)
 import           System.Timeout                     (timeout)
 import           Text.Printf                        (printf)
 
@@ -67,8 +69,7 @@ fillClusterWithData clusterClient _connector totalGB threadsPerNode baseSeed key
       numMasters = length masterNodes
 
   when (numMasters == 0) $ do
-    putStrLn "Error: No master nodes found in cluster"
-    return ()
+    ioError $ userError "No master nodes found in cluster"
 
   -- Calculate slot distribution for each master
   let slotRanges = calculateSlotRangesPerMaster topology masterNodes
@@ -87,12 +88,11 @@ fillClusterWithData clusterClient _connector totalGB threadsPerNode baseSeed key
   let jobs = concatMap (createJobsForNode baseMBPerNode mbRemainder threadsPerNode)
                        (zip [0..] masterNodes)
 
-  -- Execute jobs in parallel
-  mvars <- mapM
-    (executeJob clusterClient (clusterConnector clusterClient)
-      slotRanges baseSeed keySize valueSize pipelineBatchSize)
-    jobs
-  mapM_ takeMVar mvars
+  runConcurrentlyFailFast
+    [ executeClusterFillJob clusterClient (clusterConnector clusterClient)
+        slotRanges baseSeed keySize valueSize pipelineBatchSize job
+    | job <- jobs
+    ]
 
   putStrLn "Cluster fill complete!"
   where
@@ -120,7 +120,7 @@ fillClusterWithData clusterClient _connector totalGB threadsPerNode baseSeed key
     expandSlotRanges = concatMap (\r -> [slotStart r .. slotEnd r])
 
 -- | Execute a single fill job on a specific node
-executeJob ::
+executeClusterFillJob ::
   (Client client) =>
   ClusterClient client ->
   Connector client ->
@@ -130,63 +130,50 @@ executeJob ::
   Int ->                              -- Value size in bytes
   Int ->                              -- Pipeline batch size
   (NodeAddress, Int, Int) ->  -- (address, threadIdx, mbToFill)
-  IO (MVar ())
-executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize (addr, threadIdx, mbToFill) = do
-  -- If this thread has no work, return immediately
-  if mbToFill <= 0
-    then do
-      mvar <- newEmptyMVar
-      putMVar mvar ()
-      return mvar
-    else do
-      mvar <- newEmptyMVar
-      _ <- forkIO $ do
-        -- Wrap the entire thread work in exception handler to ensure mvar is always filled
-        catch (do
-          -- Suppress per-thread logging to reduce spam with many processes/threads
-          -- Only log if something goes wrong
+  IO ()
+executeClusterFillJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize (addr, threadIdx, mbToFill)
+  | mbToFill <= 0 = pure ()
+  | otherwise = do
+      threadDelay (threadIdx * 50000)
+      withClusterFillConnection connector addr $ \conn -> do
+        topology <- readTVarIO (clusterTopology clusterClient)
+        let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+            maybeNode = findNodeByAddress masters addr
 
-          -- Stagger connection creation to avoid overwhelming TLS handshakes
-          -- With many processes/threads hitting the same nodes simultaneously,
-          -- we can get "bad record mac" errors if TLS handshakes collide
-          threadDelay (threadIdx * 50000)  -- 50ms per thread index
-
-          -- Create a unique connection for this thread using connector directly
-          -- This avoids connection pool contention where threads share connections
-          bracket (connector addr) close $ \conn -> do
-            -- Find which slots this node owns
-            topology <- readTVarIO (clusterTopology clusterClient)
-            let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
-                maybeNode = findNodeByAddress masters addr
-
-            case maybeNode of
-              Nothing -> do
-                printf "Warning: Could not find node for address %s:%d\n"
-                       (nodeHost addr) (nodePort addr)
-              Just node -> do
-                let nId = nodeId node
-                    slots = Map.findWithDefault [] nId slotRanges
-
-                when (null slots) $ do
-                  printf "Warning: Node %s has no assigned slots\n" (BS8.unpack nId)
-
-                -- Fill data for this node using its slots
-                fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
-          ) (\e -> do
-            -- If any exception occurs, log it and continue
-            printf "Error in thread %d for node %s:%d: %s\n"
-                   threadIdx (nodeHost addr) (nodePort addr) (show (e :: SomeException))
-          )
-
-        -- Always signal completion, even if there was an error
-        putMVar mvar ()
-
-      return mvar
+        case maybeNode of
+          Nothing ->
+            ioError . userError $
+              "Cluster fill worker lost its assigned node "
+                ++ nodeHost addr ++ ":" ++ show (nodePort addr)
+          Just node -> do
+            let nId = nodeId node
+                slots = Map.findWithDefault [] nId slotRanges
+            when (null slots) $
+              ioError . userError $
+                "Cluster fill worker found no slots for node " ++ show nId
+            fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
   where
     -- | Find a cluster node by its address
     -- Returns the first node matching the address, or Nothing if not found
     findNodeByAddress :: [ClusterNode] -> NodeAddress -> Maybe ClusterNode
     findNodeByAddress nodes nodeAddr = find (\n -> nodeAddress n == nodeAddr) nodes
+
+-- | Scope the parent cluster client, including both backing pools.
+withClusterFillClient
+  :: (Client client)
+  => IO (ClusterClient client)
+  -> (ClusterClient client -> IO a)
+  -> IO a
+withClusterFillClient acquire = bracket acquire closeClusterClient
+
+-- | A fill worker owns its direct transport for the duration of its job.
+withClusterFillConnection
+  :: (Client client)
+  => Connector client
+  -> NodeAddress
+  -> (client 'Connected -> IO a)
+  -> IO a
+withClusterFillConnection connector addr = bracket (connector addr) close
 
 -- | Fill a specific node with data using its assigned slots
 -- Uses MB for finer-grained allocation, matching standalone mode behavior
@@ -201,18 +188,32 @@ fillNodeWithData ::
   Int ->       -- Value size in bytes
   Int ->       -- Pipeline batch size
   IO ()
-fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize = do
-  when (null slots) $ return ()
+fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize =
+  fillNodeWithDataWithTimeout 600 conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
 
+-- | The production worker uses a ten-minute deadline.  Keeping the deadline
+-- explicit makes the same worker path testable with a short deterministic one.
+fillNodeWithDataWithTimeout ::
+  (Client client) =>
+  Int ->       -- timeout in seconds
+  client 'Connected ->
+  [Word16] ->
+  Int ->       -- mbToFill (megabytes to fill)
+  Word64 ->
+  Int ->
+  Int ->       -- Key size in bytes
+  Int ->       -- Value size in bytes
+  Int ->       -- Pipeline batch size
+  IO ()
+fillNodeWithDataWithTimeout timeoutSeconds conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize =
+  unless (null slots) $ do
   -- Convert slots list to Vector for O(1) access in the hot loop
-  let !slotsVec = VU.fromList slots
+    let !slotsVec = VU.fromList slots
 
   -- Deterministic seed for this thread
-  let threadSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
-      genChunk batchSize seed = generateClusterChunk slotsVec batchSize keySize valueSize seed
+    let threadSeed = baseSeed + (fromIntegral threadIdx * threadSeedSpacing)
+        genChunk batchSize seed = generateClusterChunk slotsVec batchSize keySize valueSize seed
 
-  -- Wrap in exception handler and timeout
-  catch (do
     let clientState = ClientState conn BS.empty
         fillAction = do
           _ <- clientReply OFF
@@ -221,14 +222,13 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipeli
           (_ :: RespData) <- dbsize
           return ()
 
-    result <- timeout (600 * 1000000) $ State.evalStateT (runRedisCommandClient fillAction) clientState
+    result <- timeout (timeoutSeconds * 1000000) $
+      State.evalStateT (runRedisCommandClient fillAction) clientState
     case result of
-      Just _ -> return ()
-      Nothing -> printf "Thread %d for slots timed out after 10 minutes\n" threadIdx
-    ) (\e -> do
-      printf "Thread %d failed with error: %s\n" threadIdx (show (e :: SomeException))
-    )
-  return ()
+      Just _  -> pure ()
+      Nothing -> throwIO $ userError $
+        "Cluster fill worker timed out after " ++ show timeoutSeconds
+          ++ " seconds (thread " ++ show threadIdx ++ ")"
 
 -- | Generate a chunk of SET commands using hash tags for proper slot routing
 -- Uses Vector for O(1) slot lookup instead of list indexing
