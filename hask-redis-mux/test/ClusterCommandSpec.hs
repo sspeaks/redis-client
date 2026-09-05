@@ -34,6 +34,7 @@ import           Data.IORef                                 (IORef,
                                                              atomicModifyIORef',
                                                              newIORef,
                                                              readIORef)
+import           Data.List                                  (isInfixOf)
 import qualified Data.Map.Strict                            as Map
 import           Data.Time.Clock                            (getCurrentTime)
 import qualified Data.Vector                                as V
@@ -332,6 +333,7 @@ spec = do
   clusterAuthenticationSpec
   clusterErrorClassificationSpec
   rawFrameIdentitySpec
+  rawDispatchReliabilitySpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -2630,10 +2632,10 @@ rawFrameIdentitySpec =
     it "retries after connection setup timeout before any raw write" $ do
       delays <- newIORef []
       connectorCalls <- newIORef (0 :: Int)
-      (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
+      (baseConnector, getRecords) <- createAuthMockConnectorWithSendCount $ \_ index sendCount ->
         return $ if index == 0
           then [replyWith validClusterSlots]
-          else [replyWith $ RespSimpleString "OK"]
+          else [replyAfterSendCount sendCount 1 $ RespSimpleString "OK"]
       let timeoutError =
             ConnectionSetupTimeout PlaintextConnectionSetup node1 1
           connector address = do
@@ -2650,34 +2652,179 @@ rawFrameIdentitySpec =
         `shouldReturn` Right (RespSimpleString "OK")
       readIORef delays `shouldReturn` [8]
       readIORef connectorCalls `shouldReturn` 3
-      awaitRawFrameCopies getRecords rawFrame 1
       records <- getRecords
       length records `shouldBe` 2
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
 
+rawDispatchReliabilitySpec :: Spec
+rawDispatchReliabilitySpec =
+  describe "raw RESP dispatch retry reliability" $ do
+    it "keeps a keyed binary frame, slot route, and retry schedule stable through TRYAGAIN" $ do
+      delays <- newIORef []
+      let key = "{raw-retry}:key"
+          frame =
+            RespArray
+              [ RespBulkString "SET"
+              , RespBulkString key
+              , RespBulkString "\NUL\255value"
+              , RespBulkString "PX"
+              , RespBulkString "10"
+              ]
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (_, 0) ->
+                  [replyWith validClusterSlots]
+                (address', 1)
+                  | address' == node1 ->
+                      [ replyAfterSendCount sendCount 1 $ RespError "TRYAGAIN one"
+                      , replyAfterSendCount sendCount 2 $ RespError "TRYAGAIN two"
+                      , replyAfterSendCount sendCount 3 $ RespSimpleString "OK"
+                      ]
+                _ -> []
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 3 3) connector
+      executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen -> (seen ++ [delay], ()))
+        client
+        (RawRouteByKey key)
+        frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      readIORef delays `shouldReturn` [3, 6]
+      records <- getRecords
+      map authRecordAddress records `shouldBe` [node1, node1]
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp frame <> encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+    it "rejects an authenticated transport before dispatching or retrying a raw frame" $ do
+      let credentials = ClusterPassword "test-only-password"
+          frame = rawFrame
+          script _ index =
+            return $
+              case index of
+                0 ->
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith validClusterSlots
+                  ]
+                1 -> [replyWith $ RespError "WRONGPASS invalid username-password pair"]
+                _ -> []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClientWithAuthentication
+        (retryTestConfig 3 1)
+        credentials
+        connector
+      executeRawClusterCommand client (RawRouteByKey "authenticated-raw-key") frame
+        `shouldReturn`
+          Left
+            (ClusterAuthenticationError $ ClusterAuthenticationFailed node1)
+      records <- getRecords
+      map (\record -> (authRecordAddress record, authRecordIndex record)) records
+        `shouldBe` [(node1, 0), (node1, 1)]
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` authCommandFor credentials
+      closeClusterClient client
+
+    it "keeps ASKING paired with each raw attempt so no response slot is orphaned" $ do
+      let key = "raw-asking-slots"
+          frame = rawFrame
+          ask = RespError $
+            "ASK " <> BS8.pack (show $ calculateSlot key) <> " 127.0.0.2:6380"
+          script address index sendCount =
+            return $
+              case (address, index) of
+                (_, 0) | address == node1 -> [replyWith validClusterSlots]
+                (_, 1) | address == node1 -> [replyWith ask, replyWith ask]
+                (_, 0) | address == node2 ->
+                  [ replyAfterSendCount sendCount 1 $ RespSimpleString "OK"
+                  , replyAfterSendCount sendCount 1 $ RespSimpleString "first"
+                  , replyAfterSendCount sendCount 2 $ RespSimpleString "OK"
+                  , replyAfterSendCount sendCount 2 $ RespSimpleString "second"
+                  ]
+                _ -> []
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 2 1) connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "first")
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "second")
+      records <- getRecords
+      map authRecordAddress records `shouldBe` [node1, node1, node2]
+      recordSentBytes (findAuthRecord records node2 0)
+        `shouldReturn`
+          commandBytes ["ASKING"] <> encodeResp frame
+            <> commandBytes ["ASKING"] <> encodeResp frame
+      closeClusterClient client
+
+    it "propagates the terminal raw retry error after the exact attempt budget" $ do
+      delays <- newIORef []
+      let frame = rawFrame
+          script _ index sendCount =
+            return $
+              case index of
+                0 -> [replyWith validClusterSlots]
+                1 ->
+                  [ replyAfterSendCount sendCount 1 $ RespError "TRYAGAIN first"
+                  , replyAfterSendCount sendCount 2 $ RespError "TRYAGAIN final"
+                  ]
+                _ -> []
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 2 4) connector
+      result <- executeRawClusterCommandUsingDelay
+        (\delay -> atomicModifyIORef' delays $ \seen -> (seen ++ [delay], ()))
+        client
+        (RawRouteByKey "raw-terminal-retry")
+        frame
+      result `shouldSatisfy` \case
+        Left (MaxRetriesExceeded message) -> "TRYAGAIN final" `isInfixOf` message
+        _ -> False
+      readIORef delays `shouldReturn` [4]
+      records <- getRecords
+      map authRecordAddress records `shouldBe` [node1, node1]
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+    it "cancels an in-flight raw dispatch without retrying and tears down its transport" $ do
+      commandRead <- newEmptyMVar
+      releaseCommand <- newEmptyMVar
+      finished <- newEmptyMVar
+      let frame = rawFrame
+          script _ index =
+            return $
+              case index of
+                0 -> [replyWith validClusterSlots]
+                1 -> [putMVar commandRead () >> takeMVar releaseCommand]
+                _ -> []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      owner <- forkFinally
+        (executeRawClusterCommand client (RawRouteByKey "cancel-raw-key") frame)
+        (putMVar finished)
+      takeMVar commandRead
+      killThread owner
+      outcome <- takeMVar finished
+      outcome `shouldSatisfy` \case
+        Left err ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just _  -> True
+            Nothing -> False
+        Right _ -> False
+      closeClusterClient client
+      records <- getRecords
+      let commandRecord = findAuthRecord records node1 1
+      recordSentBytes commandRecord `shouldReturn` encodeResp frame
+      readIORef (authRecordCloses commandRecord) `shouldReturn` 1
+      executeRawClusterCommand client (RawRouteByKey "cancel-raw-key") frame
+        `shouldReturn` Left ClusterClientClosed
+      recordsAfterClosedDispatch <- getRecords
+      length recordsAfterClosedDispatch `shouldBe` length records
+
 assertRawFrameCopies :: [AuthConnectionRecord] -> RespData -> Int -> Expectation
 assertRawFrameCopies records frame expected = do
   sent <- BS.concat <$> mapM recordSentBytes records
   countOccurrences (encodeResp frame) sent `shouldBe` expected
-
-awaitRawFrameCopies
-  :: IO [AuthConnectionRecord]
-  -> RespData
-  -> Int
-  -> IO ()
-awaitRawFrameCopies getRecords frame expected = do
-  outcome <- timeout 5000000 await
-  case outcome of
-    Just () -> return ()
-    Nothing -> expectationFailure "Timed out waiting for raw frame copies"
-  where
-    await = do
-      records <- getRecords
-      sent <- BS.concat <$> mapM recordSentBytes records
-      if countOccurrences (encodeResp frame) sent >= expected
-        then return ()
-        else threadDelay 1000 >> await
 
 rawFrame :: RespData
 rawFrame =
