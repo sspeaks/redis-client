@@ -35,6 +35,10 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     rootFacade <- readFile rootSource
     rootFacade `shouldNotContain`
       "Database.Redis.Cluster.Internal.RawCommand"
+    rootFacade `shouldNotContain`
+      "Database.Redis.Cluster.Internal.CommandGrammar"
+    rootFacade `shouldNotContain`
+      "Database.Redis.Cluster.Internal.CommandMetadata"
     rootFacade `shouldNotContain` "executeRawClusterCommand"
     rootFacade `shouldNotContain` "RawClusterRoute"
     topLevelReexports <- takeWhile (/= "library resp") . lines <$> readFile cabalSource
