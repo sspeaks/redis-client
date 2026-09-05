@@ -129,6 +129,7 @@ test-suite StructuredConcurrencySpec
                     , mtl
                     , process
                     , stm
+                    , time
                     , vector
 
 -- ---------------------------------------------------------------------------

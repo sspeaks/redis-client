@@ -2,7 +2,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module ClusterFiller
-  ( fillClusterWithData
+  ( executeClusterFillJob
+  , fillClusterWithData
+  , withClusterFillClient
   , withClusterFillConnection
   , fillNodeWithDataWithTimeout
   ) where
@@ -29,7 +31,8 @@ import           Database.Redis.Cluster             (ClusterNode (..),
                                                      NodeAddress (..),
                                                      NodeRole (..),
                                                      SlotRange (..))
-import           Database.Redis.Cluster.Client      (ClusterClient (..))
+import           Database.Redis.Cluster.Client      (ClusterClient (..),
+                                                     closeClusterClient)
 import           Database.Redis.Cluster.SlotMapping (slotMappings)
 import           Database.Redis.Command             (ClientReplyValues (..),
                                                      ClientState (..),
@@ -86,7 +89,7 @@ fillClusterWithData clusterClient _connector totalGB threadsPerNode baseSeed key
                        (zip [0..] masterNodes)
 
   runConcurrentlyFailFast
-    [ executeJob clusterClient (clusterConnector clusterClient)
+    [ executeClusterFillJob clusterClient (clusterConnector clusterClient)
         slotRanges baseSeed keySize valueSize pipelineBatchSize job
     | job <- jobs
     ]
@@ -117,7 +120,7 @@ fillClusterWithData clusterClient _connector totalGB threadsPerNode baseSeed key
     expandSlotRanges = concatMap (\r -> [slotStart r .. slotEnd r])
 
 -- | Execute a single fill job on a specific node
-executeJob ::
+executeClusterFillJob ::
   (Client client) =>
   ClusterClient client ->
   Connector client ->
@@ -128,7 +131,7 @@ executeJob ::
   Int ->                              -- Pipeline batch size
   (NodeAddress, Int, Int) ->  -- (address, threadIdx, mbToFill)
   IO ()
-executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize (addr, threadIdx, mbToFill)
+executeClusterFillJob clusterClient connector slotRanges baseSeed keySize valueSize pipelineBatchSize (addr, threadIdx, mbToFill)
   | mbToFill <= 0 = pure ()
   | otherwise = do
       threadDelay (threadIdx * 50000)
@@ -154,6 +157,14 @@ executeJob clusterClient connector slotRanges baseSeed keySize valueSize pipelin
     -- Returns the first node matching the address, or Nothing if not found
     findNodeByAddress :: [ClusterNode] -> NodeAddress -> Maybe ClusterNode
     findNodeByAddress nodes nodeAddr = find (\n -> nodeAddress n == nodeAddr) nodes
+
+-- | Scope the parent cluster client, including both backing pools.
+withClusterFillClient
+  :: (Client client)
+  => IO (ClusterClient client)
+  -> (ClusterClient client -> IO a)
+  -> IO a
+withClusterFillClient acquire = bracket acquire closeClusterClient
 
 -- | A fill worker owns its direct transport for the duration of its job.
 withClusterFillConnection

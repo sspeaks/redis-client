@@ -3,7 +3,8 @@
 
 module Main where
 
-import           ClusterFiller                         (fillClusterWithData)
+import           ClusterFiller                         (fillClusterWithData,
+                                                        withClusterFillClient)
 import           Database.Redis.Client                 (Client (receive, send),
                                                         TLSClient (..), serve)
 import           Database.Redis.Cluster.Client         (ClusterClient (..),
@@ -413,12 +414,12 @@ fillCluster state = do
     if useTLS state
       then do
         let connector = createTLSConnector state
-        bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+        withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
           fillClusterWithData clusterClient connector
             (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
       else do
         let connector = createPlaintextConnector state
-        bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+        withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
           fillClusterWithData clusterClient connector
             (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
 
