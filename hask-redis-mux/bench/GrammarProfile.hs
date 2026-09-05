@@ -35,13 +35,23 @@ main = do
 workloadFrame :: String -> Int -> (BS.ByteString, [BS.ByteString])
 workloadFrame workload itemCount =
     case workload of
+        "command-docs" ->
+            ("COMMAND", "DOCS" : replicate itemCount "GET")
+        "acl-setuser" ->
+            ("ACL", ["SETUSER", "profile-user"] <> replicate itemCount "on")
+        "punsubscribe" ->
+            ("PUNSUBSCRIBE", replicate itemCount "channel*")
+        "geohash" ->
+            ("GEOHASH", "{profile}:key" : replicate itemCount "member")
         "mget" -> ("MGET", replicate itemCount "{profile}:key")
         "del" -> ("DEL", replicate itemCount "{profile}:key")
         "sadd" -> ("SADD", "{profile}:key" : replicate itemCount "member")
         "xread" ->
             let streams = ["{profile}:" <> decimal index | index <- [1 .. itemCount]]
              in ("XREAD", ["COUNT", "1", "BLOCK", "0", "STREAMS"] <> streams <> replicate itemCount "0-0")
-        _ -> error "workload must be one of: xread, mget, del, sadd"
+        _ ->
+            error
+                "workload must be one of: xread, mget, del, sadd, command-docs, acl-setuser, punsubscribe, geohash"
 
 loop :: BS.ByteString -> Int -> [BS.ByteString] -> Int -> IO Int
 loop command remaining arguments checksum
@@ -50,7 +60,8 @@ loop command remaining arguments checksum
         case classifyCommand command arguments of
             KeyedRoute key ->
                 loop command (remaining - 1) arguments (checksum + BS.length key)
-            KeylessRoute -> fail "expected a keyed route"
+            KeylessRoute ->
+                loop command (remaining - 1) arguments (checksum + 1)
             CommandError message -> fail message
 
 decimal :: Int -> BS.ByteString
