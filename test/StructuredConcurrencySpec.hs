@@ -3,229 +3,232 @@
 
 module Main where
 
-import           ClusterFiller            (withClusterFillConnection)
-import           Control.Concurrent.Async (async, cancel, waitCatch)
-import           Control.Concurrent.MVar  (MVar, newEmptyMVar, putMVar,
-                                           takeMVar)
-import           Control.Exception        (SomeException, bracket, finally,
-                                           mask, throwIO, try)
+import           ClusterFiller            (fillNodeWithDataWithTimeout,
+                                           withClusterFillConnection)
+import           Control.Concurrent.Async (Async, async, waitCatch)
+import           Control.Concurrent.STM   (TMVar, atomically, newEmptyTMVarIO,
+                                           putTMVar, readTMVar, retry)
+import           Control.Exception        (SomeException, bracket,
+                                           fromException, throwIO, try)
 import           Control.Monad.IO.Class   (liftIO)
 import qualified Data.ByteString.Lazy     as LBS
 import           Data.IORef               (IORef, atomicModifyIORef', newIORef,
                                            readIORef, writeIORef)
+import           Data.List                (isInfixOf)
+import qualified Data.Map.Strict          as Map
+import qualified Data.Set                 as Set
 import           Database.Redis.Client    (Client (..), ConnectionStatus (..))
 import           Database.Redis.Cluster   (NodeAddress (..))
-import           StructuredConcurrency    (runConcurrentlyFailFast)
-import           Test.Hspec               (anyException, describe, hspec, it,
-                                           shouldReturn, shouldSatisfy,
-                                           shouldThrow)
+import           ProcessLifecycle         (ChildProcessFailure (..),
+                                           waitForChildProcesses)
+import           StructuredConcurrency    (ConcurrentFailure (..),
+                                           runConcurrentlyFailFast)
+import           System.Exit              (ExitCode (ExitFailure))
+import           System.Process           (createProcess, proc)
+import           System.Timeout           (timeout)
+import           Test.Hspec
+
+phaseTimeout :: Int
+phaseTimeout = 1000000
 
 main :: IO ()
 main = hspec $ do
-  describe "standalone fill workers" $ do
-    it "propagates a failure before connecting after joining a started sibling" $
-      assertFailFast $ \release _ ->
-        takeMVar release >> throwIO (userError "connect failed")
-
-    it "propagates a failure during an actual send after joining a started sibling" $ do
-      sends <- newCounter
-      assertFailFast $ \release _ -> do
-        takeMVar release
-        record sends
-        throwIO (userError "send failed")
-      readIORef sends `shouldReturn` 1
-
-    it "propagates a failure while awaiting a response after joining a started sibling" $ do
-      sends <- newCounter
-      sent <- newEmptyMVar
-      response <- newEmptyMVar
-      siblingGate <- newEmptyMVar
-      siblingStarted <- newEmptyMVar
-      siblingCancelled <- newEmptyMVar
+  describe "structured worker ownership" $ do
+    it "propagates a body failure after cancelling and joining a blocked sibling" $ do
+      ready <- newPhase
+      release <- newPhase
       parent <- async $ runConcurrentlyFailFast
-        [ record sends >> putMVar sent () >> takeMVar response
-            >> throwIO (userError "response wait failed")
-        , putMVar siblingStarted () >> takeMVar siblingGate
-            `finally` putMVar siblingCancelled ()
+        [ awaitPhase release >> throwIO (userError "connect failure")
+        , blockingWorker ready
         ]
-      takeMVar siblingStarted
-      takeMVar sent
-      putMVar response ()
-      result <- waitCatch parent
+      awaitPhase ready
+      signalPhase release
+      result <- awaitResult parent
       result `shouldSatisfy` isFailure
-      readIORef sends `shouldReturn` 1
-      takeMVar siblingCancelled
 
-  describe "benchmark workers" $ do
-    it "fails fast when an actual async submission send fails" $ do
-      sends <- newCounter
-      assertFailFast $ \release _ -> do
-        takeMVar release
-        record sends
-        throwIO (userError "benchmark submit send failed")
-      readIORef sends `shouldReturn` 1
-
-    it "cancels a worker blocked awaiting a submitted response" $ do
-      responseWaiterStarted <- newEmptyMVar
-      failureGate <- newEmptyMVar
-      responseGate <- newEmptyMVar
-      responseWaiterReleased <- newEmptyMVar
+    it "preserves a body failure and reports a sibling close failure" $ do
+      ready <- newPhase
+      release <- newPhase
       parent <- async $ runConcurrentlyFailFast
-        [ putMVar responseWaiterStarted () >> takeMVar responseGate
-            `finally` putMVar responseWaiterReleased ()
-        , takeMVar failureGate >> throwIO (userError "benchmark send failed")
+        [ awaitPhase release >> throwIO (userError "send failure")
+        , bracket (pure ()) (\() -> throwIO (userError "sibling close failure")) $ \() ->
+            blockingWorker ready
         ]
-      takeMVar responseWaiterStarted
-      putMVar failureGate ()
-      result <- waitCatch parent
-      result `shouldSatisfy` isFailure
-      takeMVar responseWaiterReleased
+      awaitPhase ready
+      signalPhase release
+      result <- awaitResult parent
+      assertConcurrentFailure "send failure" 1 result
 
-  describe "cancellation ownership" $ do
-    it "cancels and joins siblings while bracketing connection, pool, and client cleanup" $ do
-      started <- newEmptyMVar
-      siblingStarted <- newEmptyMVar
-      waitForCancel <- newEmptyMVar
-      closed <- newCounter
+    it "reports every simultaneous sibling cleanup failure" $ do
+      readyOne <- newPhase
+      readyTwo <- newPhase
+      release <- newPhase
       parent <- async $ runConcurrentlyFailFast
-        [ bracket (pure ()) (\() -> record closed) $ \() ->
-            bracket (pure ()) (\() -> record closed) $ \() ->
-              bracket (pure ()) (\() -> record closed) $ \() -> do
-                putMVar started ()
-                takeMVar waitForCancel
-        , putMVar siblingStarted () >> takeMVar waitForCancel
+        [ awaitPhase release >> throwIO (userError "primary body failure")
+        , failingCleanupWorker readyOne "close one"
+        , failingCleanupWorker readyTwo "close two"
         ]
-      takeMVar started
-      takeMVar siblingStarted
-      cancel parent
-      result <- waitCatch parent
-      result `shouldSatisfy` isFailure
-      readIORef closed `shouldReturn` 3
+      awaitPhase readyOne
+      awaitPhase readyTwo
+      signalPhase release
+      result <- awaitResult parent
+      assertConcurrentFailure "primary body failure" 2 result
 
-  describe "cluster fill connection ownership" $ do
-    it "closes a direct connection exactly once after normal use" $ do
-      tracker <- newTracker
+  describe "cluster fill worker connection ownership" $ do
+    it "closes each acquired direct transport exactly once after success" $ do
+      tracker <- newTracker False False
       withClusterFillConnection (trackedConnector tracker) testAddress $ \conn ->
         send conn LBS.empty
-      assertClosedExactlyOnce tracker
+      assertAllConnectionsClosedOnce tracker 1
 
-    it "closes a direct connection when its job fails" $ do
-      tracker <- newTracker
-      result <- try $ withClusterFillConnection (trackedConnector tracker) testAddress $ \conn -> do
+    it "does not close when direct transport acquisition fails" $ do
+      tracker <- newTracker False False
+      result <- try (withClusterFillConnection (failingConnector tracker) testAddress (\_ -> pure ())) :: IO (Either SomeException ())
+      result `shouldSatisfy` isFailure
+      assertAllConnectionsClosedOnce tracker 0
+
+    it "closes a worker transport after a send/body failure" $ do
+      tracker <- newTracker False False
+      result <- try (withClusterFillConnection (trackedConnector tracker) testAddress $ \conn -> do
         send conn LBS.empty
-        throwIO $ userError "cluster fill send failed"
+        throwIO (userError "send failure")) :: IO (Either SomeException ())
       result `shouldSatisfy` isFailure
-      assertClosedExactlyOnce tracker
+      assertAllConnectionsClosedOnce tracker 1
 
-    it "cancels a worker blocked awaiting a send response and closes its connection" $ do
-      tracker <- newTracker
-      responseWaitStarted <- newEmptyMVar
-      responseGate <- newEmptyMVar
-      failureGate <- newEmptyMVar
-      parent <- async $ runConcurrentlyFailFast
-        [ withClusterFillConnection (trackedConnector tracker) testAddress $ \conn -> do
-            send conn LBS.empty
-            putMVar responseWaitStarted ()
-            takeMVar responseGate
-        , takeMVar failureGate >> throwIO (userError "sibling send failed")
-        ]
-      takeMVar responseWaitStarted
-      putMVar failureGate ()
-      result <- waitCatch parent
-      result `shouldSatisfy` isFailure
-      assertClosedExactlyOnce tracker
+    it "surfaces close failure over a same-resource body failure after closing it" $ do
+      tracker <- newTracker True False
+      result <- try (withClusterFillConnection (trackedConnector tracker) testAddress $ \_ ->
+        throwIO (userError "body failure")) :: IO (Either SomeException ())
+      show result `shouldSatisfy` isInfixOf "close failure"
+      assertAllConnectionsClosedOnce tracker 1
 
-    it "closes a blocked child worker connection when its parent is cancelled" $ do
-      tracker <- newTracker
-      started <- newEmptyMVar
-      waitGate <- newEmptyMVar
-      parent <- async $ withClusterFillConnection (trackedConnector tracker) testAddress $ \conn -> do
-        send conn LBS.empty
-        putMVar started ()
-        takeMVar waitGate
-      takeMVar started
-      cancel parent
-      result <- waitCatch parent
-      result `shouldSatisfy` isFailure
-      assertClosedExactlyOnce tracker
+    it "times out through the production fill worker and closes the transport" $ do
+      tracker <- newTracker False True
+      result <- try (withClusterFillConnection (trackedConnector tracker) testAddress $ \conn ->
+        fillNodeWithDataWithTimeout 1 conn [0] 1 1 0 8 8 1) :: IO (Either SomeException ())
+      show result `shouldSatisfy` isInfixOf "timed out"
+      assertAllConnectionsClosedOnce tracker 1
 
-    it "rejects use of a connection after its job scope closes" $ do
-      tracker <- newTracker
+    it "rejects a production-scoped transport after it has closed" $ do
+      tracker <- newTracker False False
+      escaped <- newIORef Nothing
       withClusterFillConnection (trackedConnector tracker) testAddress $ \conn ->
-        send conn LBS.empty
-      send (TrackingClient tracker) LBS.empty `shouldThrow` anyException
+        writeIORef escaped (Just conn)
+      Just conn <- readIORef escaped
+      send conn LBS.empty `shouldThrow` anyException
+      assertAllConnectionsClosedOnce tracker 1
 
-assertFailFast :: (MVar () -> MVar () -> IO ()) -> IO ()
-assertFailFast failingWorker = do
-  failureGate <- newEmptyMVar
-  siblingGate <- newEmptyMVar
-  siblingStarted <- newEmptyMVar
-  siblingCancelled <- newEmptyMVar
-  parent <- async $ runConcurrentlyFailFast
-    [ failingWorker failureGate siblingStarted
-    , blockUntilCancelled siblingStarted siblingGate
-        `finally` putMVar siblingCancelled ()
-    ]
-  takeMVar siblingStarted
-  putMVar failureGate ()
-  result <- waitCatch parent
-  result `shouldSatisfy` isFailure
-  takeMVar siblingCancelled
+  describe "multiprocess fill ownership" $
+    it "waits for every real child then propagates its non-zero exit status" $ do
+      (_, _, _, successfulChild) <- createProcess (proc "/bin/sh" ["-c", "exit 0"])
+      (_, _, _, failingChild) <- createProcess (proc "/bin/sh" ["-c", "exit 7"])
+      result <- try (waitForChildProcesses [successfulChild, failingChild]) :: IO (Either SomeException ())
+      case result of
+        Left exception ->
+          case fromException exception :: Maybe ChildProcessFailure of
+            Nothing -> expectationFailure $ "unexpected result: " ++ show exception
+            Just (ChildProcessFailure index exitCode) -> do
+              index `shouldBe` 1
+              exitCode `shouldBe` ExitFailure 7
+        Right () -> expectationFailure "expected a non-zero child exit to fail the parent"
 
--- | Publishing readiness while masked guarantees that cancellation is queued
--- until this worker enters the restored, cancellable blocking operation.
-blockUntilCancelled :: MVar () -> MVar () -> IO ()
-blockUntilCancelled ready gate = mask $ \restore -> do
-  putMVar ready ()
-  restore (takeMVar gate)
+newPhase :: IO (TMVar ())
+newPhase = newEmptyTMVarIO
 
-newCounter :: IO (IORef Int)
-newCounter = newIORef 0
+signalPhase :: TMVar () -> IO ()
+signalPhase phase = atomically $ putTMVar phase ()
 
-record :: IORef Int -> IO ()
-record ref = atomicModifyIORef' ref (\count -> (count + 1, ()))
+awaitPhase :: TMVar () -> IO ()
+awaitPhase phase = do
+  result <- timeout phaseTimeout (atomically $ readTMVar phase)
+  result `shouldBe` Just ()
+
+awaitResult :: Async () -> IO (Either SomeException ())
+awaitResult worker = do
+  result <- timeout phaseTimeout (waitCatch worker)
+  case result of
+    Nothing -> expectationFailure "worker did not finish within the diagnostic phase bound" >> error "unreachable"
+    Just outcome -> pure outcome
+
+failingCleanupWorker :: TMVar () -> String -> IO ()
+failingCleanupWorker ready message =
+  bracket (pure ()) (\() -> throwIO (userError message)) $ \() -> do
+    blockingWorker ready
+
+blockingWorker :: TMVar () -> IO ()
+blockingWorker ready = do
+  never <- newPhase
+  signalPhase ready
+  awaitPhase never
+
+assertConcurrentFailure :: String -> Int -> Either SomeException () -> Expectation
+assertConcurrentFailure primary expectedCleanup result =
+  case result of
+    Left exception ->
+      case fromException exception :: Maybe ConcurrentFailure of
+        Nothing -> expectationFailure $ "expected ConcurrentFailure, got: " ++ show exception
+        Just failure -> do
+          show (concurrentPrimaryFailure failure) `shouldSatisfy` isInfixOf primary
+          length (concurrentSiblingCleanupFailures failure) `shouldBe` expectedCleanup
+    Right () -> expectationFailure "expected worker failure"
 
 isFailure :: Either SomeException () -> Bool
-isFailure (Left _)   = True
-isFailure (Right ()) = False
+isFailure (Left _)  = True
+isFailure (Right _) = False
 
 data Tracker = Tracker
-  { trackerOpen   :: IORef Bool
-  , trackerClosed :: IORef Int
+  { trackerNextId        :: IORef Int
+  , trackerLive          :: IORef (Set.Set Int)
+  , trackerCloseCounts   :: IORef (Map.Map Int Int)
+  , trackerCloseFails    :: Bool
+  , trackerBlocksReceive :: Bool
   }
 
-data TrackingClient (status :: ConnectionStatus) = TrackingClient Tracker
+data TrackingClient (status :: ConnectionStatus) = TrackingClient Tracker Int
 
 instance Client TrackingClient where
-  connect (TrackingClient tracker) = liftIO (assertOpen tracker) >> pure (TrackingClient tracker)
-  close (TrackingClient tracker) = liftIO $ do
-    isOpen <- readIORef (trackerOpen tracker)
-    if isOpen
-      then do
-        writeIORef (trackerOpen tracker) False
-        record (trackerClosed tracker)
-      else throwIO $ userError "connection closed more than once"
+  connect (TrackingClient tracker connectionId) =
+    liftIO (assertOpen tracker connectionId) >> pure (TrackingClient tracker connectionId)
+  close (TrackingClient tracker connectionId) = liftIO $ do
+    assertOpen tracker connectionId
+    atomicModifyIORef' (trackerLive tracker) (\live -> (Set.delete connectionId live, ()))
+    atomicModifyIORef' (trackerCloseCounts tracker)
+      (\counts -> (Map.insertWith (+) connectionId 1 counts, ()))
+    if trackerCloseFails tracker
+      then throwIO (userError "close failure")
+      else pure ()
   abort = close
-  send (TrackingClient tracker) _ = liftIO $ assertOpen tracker
-  receive (TrackingClient tracker) = liftIO (assertOpen tracker) >> pure mempty
+  send (TrackingClient tracker connectionId) _ = liftIO $ assertOpen tracker connectionId
+  receive (TrackingClient tracker connectionId) = liftIO $ do
+    assertOpen tracker connectionId
+    if trackerBlocksReceive tracker then atomically retry else pure mempty
 
-newTracker :: IO Tracker
-newTracker = Tracker <$> newIORef True <*> newCounter
+newTracker :: Bool -> Bool -> IO Tracker
+newTracker closeFails blocksReceive =
+  Tracker <$> newIORef 0 <*> newIORef Set.empty <*> newIORef Map.empty
+    <*> pure closeFails <*> pure blocksReceive
 
 trackedConnector :: Tracker -> NodeAddress -> IO (TrackingClient 'Connected)
 trackedConnector tracker _ = do
-  writeIORef (trackerOpen tracker) True
-  pure $ TrackingClient tracker
+  connectionId <- atomicModifyIORef' (trackerNextId tracker) (\n -> (n + 1, n))
+  atomicModifyIORef' (trackerLive tracker) (\live -> (Set.insert connectionId live, ()))
+  pure $ TrackingClient tracker connectionId
 
-assertClosedExactlyOnce :: Tracker -> IO ()
-assertClosedExactlyOnce tracker = do
-  readIORef (trackerClosed tracker) `shouldReturn` 1
-  readIORef (trackerOpen tracker) `shouldReturn` False
+failingConnector :: Tracker -> NodeAddress -> IO (TrackingClient 'Connected)
+failingConnector _ _ = throwIO $ userError "acquire failure"
 
-assertOpen :: Tracker -> IO ()
-assertOpen tracker = do
-  isOpen <- readIORef (trackerOpen tracker)
-  if isOpen
+assertAllConnectionsClosedOnce :: Tracker -> Int -> IO ()
+assertAllConnectionsClosedOnce tracker expected = do
+  live <- readIORef (trackerLive tracker)
+  counts <- readIORef (trackerCloseCounts tracker)
+  Set.null live `shouldBe` True
+  Map.size counts `shouldBe` expected
+  mapM_ (`shouldBe` 1) (Map.elems counts)
+
+assertOpen :: Tracker -> Int -> IO ()
+assertOpen tracker connectionId = do
+  live <- readIORef (trackerLive tracker)
+  if Set.member connectionId live
     then pure ()
     else throwIO $ userError "use after close"
 
