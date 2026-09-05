@@ -2,12 +2,14 @@
 
 module Main (main) where
 
+import           Control.Exception               (evaluate)
 import qualified Data.ByteString                 as BS
 import           Database.Redis.Cluster          (calculateSlot)
 import           Database.Redis.Cluster.Commands (CommandRouting (..),
                                                   classifyCommand,
                                                   keylessCommands,
                                                   requiresKeyCommands)
+import           System.Timeout                  (timeout)
 import           Test.Hspec
 
 main :: IO ()
@@ -144,6 +146,41 @@ spec =
                 ["key", "0", "0", "nan", "km"]
                 "GEORADIUS has malformed arguments"
 
+        it "accepts Redis unordered options and rejects duplicate options" $ do
+            shouldRouteBy "SET" ["{same}:key", "value", "EX", "10", "NX"] "{same}:key"
+            shouldRouteBy "SET" ["{same}:key", "value", "NX", "PX", "10", "GET"] "{same}:key"
+            shouldRouteBy
+                "GEORADIUS"
+                ["{same}:key", "0", "0", "1", "km", "DESC", "WITHDIST", "COUNT", "1"]
+                "{same}:key"
+            shouldRejectAny "SET" ["key", "value", "NX", "NX"]
+            shouldRejectAny "GEORADIUS" ["key", "0", "0", "1", "km", "DESC", "DESC"]
+
+        it "uses Redis string2ll decimal syntax for integer and key-count fields" $ do
+            shouldRouteBy
+                "EVAL"
+                ["return 1", "1", "{same}:key"]
+                "{same}:key"
+            mapM_
+                (\count -> shouldRejectAny "EVAL" ["return 1", count, "{same}:key"])
+                [ " 1"
+                , "1 "
+                , "+1"
+                , "01"
+                , "-01"
+                , "0x1"
+                , "1x"
+                , "9223372036854775808"
+                , "-9223372036854775809"
+                ]
+            shouldRouteBy
+                "MIGRATE"
+                ["host", "6379", "{same}:key", "0", "1000"]
+                "{same}:key"
+            mapM_
+                (\port -> shouldRejectAny "MIGRATE" ["host", port, "key", "0", "1000"])
+                ["+6379", "06379", "6379 ", "0x18eb", "6379x"]
+
         it "validates XREAD mandatory STREAMS and stream/ID balance" $ do
             shouldRouteBy
                 "XREAD"
@@ -154,6 +191,27 @@ spec =
                 "XREAD"
                 ["STREAMS", "key", "0-0", "another"]
                 "XREAD has malformed key arguments"
+
+        it "accepts XREAD option permutations and bounded large paired lists" $ do
+            shouldRouteBy
+                "XREAD"
+                ["BLOCK", "0", "COUNT", "1", "STREAMS", "{same}:one", "0-0"]
+                "{same}:one"
+            shouldRouteBy
+                "XREADGROUP"
+                ["GROUP", "group", "consumer", "NOACK", "BLOCK", "0", "COUNT", "1", "STREAMS", "{same}:one", ">"]
+                "{same}:one"
+            shouldRejectAny "XREAD" ["COUNT", "1", "COUNT", "2", "STREAMS", "key", "0-0"]
+            shouldRejectAny "XREADGROUP" ["GROUP", "g", "c", "NOACK", "NOACK", "STREAMS", "key", ">"]
+            let streamCount = 4096
+                streams = ["{same}:" <> decimal index | index <- [1 .. streamCount]]
+                arguments = ["BLOCK", "0", "COUNT", "1", "STREAMS"] <> streams <> replicate streamCount "0-0"
+            result <- timeout 5000000 (evaluate (classifyCommand "XREAD" arguments))
+            case result of
+                Just (KeyedRoute key) -> key `shouldBe` "{same}:1"
+                Just _ -> expectationFailure "expected keyed route for balanced XREAD lists"
+                Nothing -> expectationFailure "large XREAD grammar parse exceeded five seconds"
+            shouldRejectAny "XREAD" (replicate 65537 "x")
 
         it "validates XREADGROUP GROUP and STREAMS structural tokens" $ do
             shouldRouteBy
@@ -208,6 +266,9 @@ spec =
             shouldRouteKeyless
                 "CLIENT"
                 ["TRACKING", "ON", "PREFIX", "one", "PREFIX", "two"]
+            shouldRouteKeyless
+                "CLIENT"
+                ["TRACKING", "ON", "PREFIX", "one", "NOLOOP", "PREFIX", "two"]
             shouldRouteBy
                 "BITFIELD_RO"
                 ["key", "GET", "i8", "0", "GET", "i8", "1"]
@@ -242,3 +303,13 @@ shouldReject command arguments expected =
         CommandError actual -> actual `shouldBe` expected
         KeylessRoute -> expectationFailure "expected command error, got keyless route"
         KeyedRoute _ -> expectationFailure "expected command error, got keyed route"
+
+shouldRejectAny :: BS.ByteString -> [BS.ByteString] -> Expectation
+shouldRejectAny command arguments =
+    case classifyCommand command arguments of
+        CommandError _ -> pure ()
+        KeylessRoute -> expectationFailure "expected command error, got keyless route"
+        KeyedRoute _ -> expectationFailure "expected command error, got keyed route"
+
+decimal :: Int -> BS.ByteString
+decimal = BS.pack . fmap (fromIntegral . fromEnum) . show

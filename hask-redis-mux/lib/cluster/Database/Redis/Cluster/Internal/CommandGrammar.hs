@@ -20,9 +20,12 @@ import qualified Data.ByteString.Char8                           as BS8
 import           Data.Int                                        (Int64)
 import           Data.IntMap.Strict                              (IntMap)
 import qualified Data.IntMap.Strict                              as IntMap
-import           Data.List                                       (find, nub)
+import           Data.List                                       (find, foldl',
+                                                                  nub)
 import qualified Data.Map.Strict                                 as Map
 import           Data.Maybe                                      (mapMaybe)
+import qualified Data.Set                                        as Set
+import qualified Data.Vector                                     as V
 import           Data.Word                                       (Word8)
 import           Database.Redis.Cluster                          (calculateSlot)
 import           Database.Redis.Cluster.Internal.CommandMetadata
@@ -63,13 +66,20 @@ data ParseState = ParseState
     }
     deriving (Eq, Ord, Show)
 
+type Frame = V.Vector ByteString
+
+maxFrameArguments, maxParserStates :: Int
+maxFrameArguments = 65536
+maxParserStates = 4096
+
 classifyCommandFrame :: [ByteString] -> Either CommandGrammarError CommandFrameRouting
 classifyCommandFrame [] = Left EmptyCommandFrame
 classifyCommandFrame frame@(_ : _) = do
     metadata <- resolveCommand frame
     validateArity metadata frame
-    validateKeyNumCounts metadata frame
-    keys <- validateArgumentsAndExtractKeys metadata frame
+    let vectorFrame = V.fromList frame
+    validateKeyNumCounts metadata vectorFrame
+    keys <- validateArgumentsAndExtractKeys metadata vectorFrame
     pure $ case keys of
         [] -> FrameKeyless
         firstKey : remainingKeys
@@ -105,7 +115,7 @@ validateArity metadata frame
 
 validateKeyNumCounts ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     Either CommandGrammarError ()
 validateKeyNumCounts metadata frame =
     mapM_ validateSpec (commandKeySpecs metadata)
@@ -127,9 +137,11 @@ validateKeyNumCounts metadata frame =
 
 validateArgumentsAndExtractKeys ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     Either CommandGrammarError [ByteString]
 validateArgumentsAndExtractKeys metadata frame
+    | V.length frame > maxFrameArguments =
+        Left (InvalidArguments (commandIdentity metadata))
     | null (commandArguments metadata) =
         extractKeysForParse metadata frame (ParseState identityLength IntMap.empty)
     | otherwise =
@@ -139,15 +151,18 @@ validateArgumentsAndExtractKeys metadata frame
                 case firstFailure of
                     Just failure -> Left failure
                     Nothing ->
-                        case missingRequiredKeyword metadata frame of
-                            Just keyword ->
-                                Left (MissingRequiredKeyword (commandIdentity metadata) keyword)
-                            Nothing -> Left (InvalidArguments (commandIdentity metadata))
+                        if hasUnbalancedTerminalRepeatedBlock metadata frame
+                            then Left (InvalidKeySpec (commandIdentity metadata))
+                            else
+                                case missingRequiredKeyword metadata frame of
+                                    Just keyword ->
+                                        Left (MissingRequiredKeyword (commandIdentity metadata) keyword)
+                                    Nothing -> Left (InvalidArguments (commandIdentity metadata))
   where
     identityLength = commandTokenCount metadata
     initial = ParseState identityLength IntMap.empty
     completeParses =
-        filter ((== length frame) . parsePosition) $
+        filter ((== V.length frame) . parsePosition) $
             parseSequence frame (commandArguments metadata) initial
     outcomes = map (extractKeysForParse metadata frame) completeParses
     validResults = [keys | Right keys <- outcomes]
@@ -155,17 +170,80 @@ validateArgumentsAndExtractKeys metadata frame
         failure : _ -> Just failure
         []          -> Nothing
 
-parseSequence :: [ByteString] -> [CommandArgument] -> ParseState -> [ParseState]
-parseSequence _ [] state = [state]
-parseSequence frame (argument : remaining) state =
-    uniqueStates $
-        concatMap (parseSequence frame remaining) (parseArgument frame argument state)
-
-parseArgument :: [ByteString] -> CommandArgument -> ParseState -> [ParseState]
-parseArgument frame argument state =
-    uniqueStates $ optionalResult <> requiredResults
+parseSequence :: Frame -> [CommandArgument] -> ParseState -> [ParseState]
+parseSequence frame arguments initial = parseStages arguments [initial]
   where
-    optionalResult = [state | argumentOptional argument]
+    parseStages [] states = boundedStates states
+    parseStages remaining states =
+        case span argumentOptional remaining of
+            (options, required : following) ->
+                let afterOptions
+                        | all isOptionDirected options =
+                            concatMap (parseUnorderedOptions frame options) states
+                        | otherwise =
+                            foldl'
+                                (\current option -> concatMap (parseArgument frame option) current)
+                                states
+                                options
+                    afterRequired =
+                        concatMap
+                            (parseRequiredArgument frame required (null following))
+                            (boundedStates afterOptions)
+                 in parseStages following (boundedStates afterRequired)
+            (options, []) ->
+                boundedStates $
+                    if all isOptionDirected options
+                        then concatMap (parseUnorderedOptions frame options) states
+                        else
+                            foldl'
+                                (\current option -> concatMap (parseArgument frame option) current)
+                                states
+                                options
+
+parseUnorderedOptions ::
+    Frame ->
+    [CommandArgument] ->
+    ParseState ->
+    [ParseState]
+parseUnorderedOptions frame options initial =
+    go Set.empty [(initial, [0 .. length options - 1])] []
+  where
+    go _ [] results = boundedStates results
+    go visited ((state, available) : frontier) results
+        | Set.member (state, available) visited = go visited frontier results
+        | Set.size visited >= maxParserStates = []
+        | otherwise =
+            let next =
+                    [ (parsed, remainingOptions option index available)
+                    | index <- available
+                    , let option = options !! index
+                    , parsed <- parseRequiredArgument frame option False state
+                    ]
+             in go
+                    (Set.insert (state, available) visited)
+                    (boundedPairs (frontier <> next))
+                    (state : results)
+
+    remainingOptions option index available
+        | argumentMultiple option = available
+        | otherwise = filter (/= index) available
+
+parseRequiredArgument ::
+    Frame ->
+    CommandArgument ->
+    Bool ->
+    ParseState ->
+    [ParseState]
+parseRequiredArgument frame argument finalArgument state
+    | finalArgument =
+        case argumentKind argument of
+            ArgumentBlock children
+                | not (null children)
+                    && all argumentMultiple children ->
+                    parseBalancedRepeatedBlock frame argument children state
+            _ -> requiredResults
+    | otherwise = requiredResults
+  where
     requiredResults
         | argumentMultiple argument =
             if argumentMultipleToken argument
@@ -176,8 +254,44 @@ parseArgument frame argument state =
                         (consumeOuterToken frame argument state)
         | otherwise = parseOneWithToken frame argument state
 
+parseBalancedRepeatedBlock ::
+    Frame ->
+    CommandArgument ->
+    [CommandArgument] ->
+    ParseState ->
+    [ParseState]
+parseBalancedRepeatedBlock frame argument children state =
+    concatMap parseBalanced (consumeOuterToken frame argument state)
+  where
+    parseBalanced parsedState
+        | remaining <= 0 || remaining `mod` length children /= 0 = []
+        | otherwise =
+            foldl'
+                (\states child ->
+                    concatMap (repeatExactly items (parseOneWithToken frame child)) states
+                )
+                [parsedState]
+                children
+      where
+        remaining = V.length frame - parsePosition parsedState
+        items = remaining `div` length children
+
+repeatExactly :: Int -> (ParseState -> [ParseState]) -> ParseState -> [ParseState]
+repeatExactly count parseOne initial =
+    foldl'
+        (\states _ -> boundedStates (concatMap parseOne states))
+        [initial]
+        [1 .. count]
+
+parseArgument :: Frame -> CommandArgument -> ParseState -> [ParseState]
+parseArgument frame argument state =
+    uniqueStates $ optionalResult <> requiredResults
+  where
+    optionalResult = [state | argumentOptional argument]
+    requiredResults = parseRequiredArgument frame argument False state
+
 parseOneWithToken ::
-    [ByteString] ->
+    Frame ->
     CommandArgument ->
     ParseState ->
     [ParseState]
@@ -187,7 +301,7 @@ parseOneWithToken frame argument state =
         (consumeOuterToken frame argument state)
 
 consumeOuterToken ::
-    [ByteString] ->
+    Frame ->
     CommandArgument ->
     ParseState ->
     [ParseState]
@@ -199,7 +313,7 @@ consumeOuterToken frame argument state
             Just token -> consumeToken frame token state
 
 parsePayload ::
-    [ByteString] ->
+    Frame ->
     CommandArgument ->
     ParseState ->
     [ParseState]
@@ -220,13 +334,13 @@ parsePayload frame argument state =
                     uniqueStates $
                         concatMap
                             (\choice -> progressing state (parseArgument frame choice state))
-                            (filter isTokenDirected alternatives)
+                    (filter isOptionDirected alternatives)
              in if null tokenResults
                     then
                         uniqueStates $
                             concatMap
                                 (\choice -> progressing state (parseArgument frame choice state))
-                                (filter (not . isTokenDirected) alternatives)
+                                (filter (not . isOptionDirected) alternatives)
                     else tokenResults
         ArgumentBlock arguments ->
             parseSequence frame arguments state
@@ -266,13 +380,13 @@ recordArgumentKey argument position state =
             state
                 { parseKeyPositions =
                     IntMap.insertWith
-                        (flip (<>))
+                        (<>)
                         index
                         [position]
                         (parseKeyPositions state)
                 }
 
-consumeToken :: [ByteString] -> ByteString -> ParseState -> [ParseState]
+consumeToken :: Frame -> ByteString -> ParseState -> [ParseState]
 consumeToken frame token state =
     case valueAt frame (parsePosition state) of
         Just value
@@ -286,16 +400,27 @@ tokenMatches value token
     | otherwise = asciiCaseEqual value token
 
 uniqueStates :: [ParseState] -> [ParseState]
-uniqueStates = nub
+uniqueStates = boundedStates
 
-isTokenDirected :: CommandArgument -> Bool
-isTokenDirected argument =
+boundedStates :: [ParseState] -> [ParseState]
+boundedStates = take maxParserStates . Set.toAscList . Set.fromList
+
+boundedPairs :: [(ParseState, [Int])] -> [(ParseState, [Int])]
+boundedPairs = take maxParserStates . Set.toAscList . Set.fromList
+
+isOptionDirected :: CommandArgument -> Bool
+isOptionDirected argument =
     argumentKind argument == ArgumentPureToken
         || argumentToken argument /= Nothing
+        || case argumentKind argument of
+            ArgumentOneOf alternatives -> all isOptionDirected alternatives
+            ArgumentBlock (first : _)  -> isOptionDirected first
+            ArgumentBlock []           -> False
+            _                          -> False
 
 extractKeysForParse ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     ParseState ->
     Either CommandGrammarError [ByteString]
 extractKeysForParse metadata frame parsed = do
@@ -319,7 +444,7 @@ extractKeysForParse metadata frame parsed = do
             case IntMap.lookup index (parseKeyPositions parsed) of
                 Nothing -> pure keys
                 Just positions
-                    | mapMaybe (valueAt frame) positions == keys -> pure keys
+                    | mapMaybe (valueAt frame) (reverse positions) == keys -> pure keys
                     | otherwise -> Left (InvalidKeySpec (commandIdentity metadata))
         | otherwise = pure []
 
@@ -342,7 +467,7 @@ validateKeyCountPolicy metadata spec keys
 
 extractKeySpec ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     KeySpec ->
     Either CommandGrammarError [ByteString]
 extractKeySpec metadata frame spec
@@ -356,13 +481,13 @@ extractKeySpec metadata frame spec
 
 locateFirstKey ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     KeySpec ->
     Either CommandGrammarError (Maybe Int)
 locateFirstKey metadata frame spec =
     case keySpecBeginSearch spec of
         Fixed position
-            | position > 0 && position < length frame -> Right (Just position)
+            | position > 0 && position < V.length frame -> Right (Just position)
             | otherwise -> Left (InvalidKeySpec (commandIdentity metadata))
         Keyword keyword startFrom ->
             Right (keywordPosition frame keyword startFrom)
@@ -370,7 +495,7 @@ locateFirstKey metadata frame spec =
 
 findKeys ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     KeySpec ->
     Int ->
     Either CommandGrammarError [ByteString]
@@ -382,17 +507,17 @@ findKeys metadata frame spec first =
             extractKeyNum metadata frame first keyNumIndex firstKey step
         UnknownFindKeys -> Left (UnsupportedKeySpec (commandIdentity metadata))
 
-keywordPosition :: [ByteString] -> ByteString -> Int -> Maybe Int
+keywordPosition :: Frame -> ByteString -> Int -> Maybe Int
 keywordPosition frame keyword startFrom =
     (+ 1)
         <$> find
             ( \position ->
                 inArgumentBounds frame position
-                    && asciiCaseEqual (frame !! position) keyword
+                    && asciiCaseEqual (frame V.! position) keyword
             )
             positions
   where
-    argumentCount = length frame
+    argumentCount = V.length frame
     start = if startFrom > 0 then startFrom else argumentCount + startFrom
     positions
         | startFrom > 0 = [start .. argumentCount - 2]
@@ -400,7 +525,7 @@ keywordPosition frame keyword startFrom =
 
 extractRange ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     Int ->
     Int ->
     Int ->
@@ -409,19 +534,19 @@ extractRange ::
 extractRange metadata frame first lastKey step limit
     | step <= 0 || limit < 0 = Left invalid
     | lastKey < -1 && limit /= 0 = Left invalid
-    | limit > 0 && (length frame - first) `mod` limit /= 0 = Left invalid
+    | limit > 0 && (V.length frame - first) `mod` limit /= 0 = Left invalid
     | otherwise =
         let lastPosition
                 | lastKey >= 0 = first + lastKey
-                | limit == 0 = length frame + lastKey
-                | otherwise = first + ((length frame - first) `div` limit + lastKey)
+                | limit == 0 = V.length frame + lastKey
+                | otherwise = first + ((V.length frame - first) `div` limit + lastKey)
          in keysAtPositions metadata frame [first, first + step .. lastPosition]
   where
     invalid = InvalidKeySpec (commandIdentity metadata)
 
 extractKeyNum ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     Int ->
     Int ->
     Int ->
@@ -431,7 +556,7 @@ extractKeyNum metadata frame first keyNumIndex firstKey step
     | step <= 0 = Left invalid
     | not (inFrameBounds frame keyCountPosition) = Left invalid
     | otherwise =
-        case parseNonNegativeDecimal (frame !! keyCountPosition) of
+        case parseNonNegativeDecimal (frame V.! keyCountPosition) of
             Nothing -> Left (InvalidKeyCount (commandIdentity metadata))
             Just keyCount
                 | keyCount == 0 -> Right []
@@ -447,38 +572,62 @@ extractKeyNum metadata frame first keyNumIndex firstKey step
     maximumCount
         | first + firstKey < 0 = 0
         | otherwise =
-            max 0 ((length frame - 1 - (first + firstKey)) `div` max 1 step + 1)
+            max 0 ((V.length frame - 1 - (first + firstKey)) `div` max 1 step + 1)
 
 keysAtPositions ::
     CommandMetadata ->
-    [ByteString] ->
+    Frame ->
     [Int] ->
     Either CommandGrammarError [ByteString]
 keysAtPositions metadata frame positions
     | null positions = Left (InvalidKeySpec (commandIdentity metadata))
-    | all (inFrameBounds frame) positions = Right (map (frame !!) positions)
+    | all (inFrameBounds frame) positions = Right (map (frame V.!) positions)
     | otherwise = Left (InvalidKeySpec (commandIdentity metadata))
 
 parseNonNegativeDecimal :: ByteString -> Maybe Int
-parseNonNegativeDecimal value
-    | BS.null value || not (BS.all isDecimalDigit value) = Nothing
-    | otherwise =
-        let parsed =
-                BS.foldl'
-                    (\number digit -> number * 10 + fromIntegral (digit - 48))
-                    (0 :: Integer)
-                    value
-         in if parsed > fromIntegral (maxBound :: Int)
-                then Nothing
-                else Just (fromIntegral parsed)
+parseNonNegativeDecimal value = do
+    parsed <- parseRedisInt64 value
+    if parsed < 0 || parsed > fromIntegral (maxBound :: Int)
+        then Nothing
+        else Just (fromIntegral parsed)
 
 isSignedInteger :: ByteString -> Bool
-isSignedInteger value =
-    case reads (BS8.unpack value) :: [(Integer, String)] of
-        [(parsed, "")] ->
-            parsed >= fromIntegral (minBound :: Int64)
-                && parsed <= fromIntegral (maxBound :: Int64)
-        _ -> False
+isSignedInteger = maybe False (const True) . parseRedisInt64
+
+-- Redis 7.2 string2ll accepts a complete signed base-10 Int64 only.
+parseRedisInt64 :: ByteString -> Maybe Int64
+parseRedisInt64 value
+    | BS.null value = Nothing
+    | otherwise =
+        let (negative, digits)
+                | BS.head value == 45 = (True, BS.tail value)
+                | otherwise = (False, value)
+         in if BS.null digits || not (validDecimal digits)
+                then Nothing
+                else
+                    let limit :: Integer
+                        limit
+                            | negative = 9223372036854775808
+                            | otherwise = 9223372036854775807
+                        magnitude =
+                            BS.foldl'
+                                (\number digit -> number * 10 + fromIntegral (digit - 48))
+                                (0 :: Integer)
+                                digits
+                     in if magnitude > limit
+                            then Nothing
+                            else
+                                Just $
+                                    if negative
+                                        then
+                                            if magnitude == 9223372036854775808
+                                                then minBound
+                                                else negate (fromIntegral magnitude)
+                                        else fromIntegral magnitude
+  where
+    validDecimal digits =
+        (BS.length digits == 1 || BS.head digits /= 48)
+            && BS.all isDecimalDigit digits
 
 -- Redis 7.2 validates doubles with strtod, including forms such as .5 and 1.
 isDouble :: ByteString -> Bool
@@ -506,7 +655,7 @@ isKeynumSpec spec =
         Keynum _ _ _ -> True
         _            -> False
 
-beginSearchPresent :: [ByteString] -> KeySpec -> Bool
+beginSearchPresent :: Frame -> KeySpec -> Bool
 beginSearchPresent frame spec =
     case keySpecBeginSearch spec of
         Fixed position       -> inArgumentBounds frame position
@@ -523,7 +672,20 @@ linkedKeySpecIndices = nub . concatMap go
                 ArgumentBlock children -> linkedKeySpecIndices children
                 _                      -> []
 
-missingRequiredKeyword :: CommandMetadata -> [ByteString] -> Maybe ByteString
+hasUnbalancedTerminalRepeatedBlock :: CommandMetadata -> Frame -> Bool
+hasUnbalancedTerminalRepeatedBlock metadata frame =
+    case reverse (commandArguments metadata) of
+        CommandArgument _ (ArgumentBlock children) token _ _ _ _ : _
+            | not (null children)
+                && all argumentMultiple children ->
+                case token >>= (\blockToken -> keywordPosition frame blockToken 1) of
+                    Just firstPayload ->
+                        let payloadCount = V.length frame - firstPayload
+                         in payloadCount <= 0 || payloadCount `mod` length children /= 0
+                    Nothing -> False
+        _ -> False
+
+missingRequiredKeyword :: CommandMetadata -> Frame -> Maybe ByteString
 missingRequiredKeyword metadata frame
     | null specs || not (all isKeywordSpec specs) = Nothing
     | otherwise =
@@ -549,21 +711,18 @@ commandTokenCount :: CommandMetadata -> Int
 commandTokenCount =
     length . BS8.split ' ' . commandIdentity
 
-valueAt :: [a] -> Int -> Maybe a
+valueAt :: V.Vector a -> Int -> Maybe a
 valueAt values position
     | position < 0 = Nothing
-    | otherwise =
-        case drop position values of
-            value : _ -> Just value
-            []        -> Nothing
+    | otherwise = values V.!? position
 
-inFrameBounds :: [a] -> Int -> Bool
+inFrameBounds :: V.Vector a -> Int -> Bool
 inFrameBounds frame position =
-    position >= 0 && position < length frame
+    position >= 0 && position < V.length frame
 
-inArgumentBounds :: [a] -> Int -> Bool
+inArgumentBounds :: V.Vector a -> Int -> Bool
 inArgumentBounds frame position =
-    position >= 1 && position < length frame
+    position >= 1 && position < V.length frame
 
 isDecimalDigit :: Word8 -> Bool
 isDecimalDigit byte =
