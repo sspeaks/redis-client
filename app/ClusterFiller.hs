@@ -4,6 +4,7 @@
 module ClusterFiller
   ( fillClusterWithData
   , withClusterFillConnection
+  , fillNodeWithDataWithTimeout
   ) where
 
 import           Control.Concurrent                 (threadDelay)
@@ -177,6 +178,23 @@ fillNodeWithData ::
   Int ->       -- Pipeline batch size
   IO ()
 fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize =
+  fillNodeWithDataWithTimeout 600 conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize
+
+-- | The production worker uses a ten-minute deadline.  Keeping the deadline
+-- explicit makes the same worker path testable with a short deterministic one.
+fillNodeWithDataWithTimeout ::
+  (Client client) =>
+  Int ->       -- timeout in seconds
+  client 'Connected ->
+  [Word16] ->
+  Int ->       -- mbToFill (megabytes to fill)
+  Word64 ->
+  Int ->
+  Int ->       -- Key size in bytes
+  Int ->       -- Value size in bytes
+  Int ->       -- Pipeline batch size
+  IO ()
+fillNodeWithDataWithTimeout timeoutSeconds conn slots mbToFill baseSeed threadIdx keySize valueSize pipelineBatchSize =
   unless (null slots) $ do
   -- Convert slots list to Vector for O(1) access in the hot loop
     let !slotsVec = VU.fromList slots
@@ -193,12 +211,13 @@ fillNodeWithData conn slots mbToFill baseSeed threadIdx keySize valueSize pipeli
           (_ :: RespData) <- dbsize
           return ()
 
-    result <- timeout (600 * 1000000) $
+    result <- timeout (timeoutSeconds * 1000000) $
       State.evalStateT (runRedisCommandClient fillAction) clientState
     case result of
       Just _  -> pure ()
       Nothing -> throwIO $ userError $
-        "Cluster fill worker timed out after 10 minutes (thread " ++ show threadIdx ++ ")"
+        "Cluster fill worker timed out after " ++ show timeoutSeconds
+          ++ " seconds (thread " ++ show threadIdx ++ ")"
 
 -- | Generate a chunk of SET commands using hash tags for proper slot routing
 -- Uses Vector for O(1) slot lookup instead of list indexing

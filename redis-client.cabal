@@ -118,6 +118,7 @@ test-suite StructuredConcurrencySpec
     other-modules:    ClusterFiller
                     , FillHelpers
                     , Filler
+                    , ProcessLifecycle
                     , StructuredConcurrency
     hs-source-dirs:   test
                     , app
@@ -126,6 +127,7 @@ test-suite StructuredConcurrencySpec
                     , containers
                     , hask-redis-mux
                     , mtl
+                    , process
                     , stm
                     , vector
 
@@ -243,6 +245,7 @@ executable redis-client
                     , FillProcess
                     , FlushConfirmation
                     , Filler
+                    , ProcessLifecycle
                     , SlotMappingHelpers
                     , StructuredConcurrency
     build-depends:    attoparsec
