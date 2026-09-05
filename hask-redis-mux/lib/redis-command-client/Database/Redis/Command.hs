@@ -15,6 +15,7 @@ module Database.Redis.Command
   , RedisCommandClient (..)
   , RedisCommands (..)
   , ClientReplyValues (..)
+  , ClientReplyModeUnsupported (..)
   , authenticatePassword
   , authenticateACL
     -- * Errors
@@ -45,7 +46,7 @@ module Database.Redis.Command
   , convertResp
   ) where
 
-import           Control.Exception                (throwIO)
+import           Control.Exception                (Exception, throwIO)
 import           Control.Monad.IO.Class           (MonadIO (..))
 import           Control.Monad.State              as State (MonadState (get, put),
                                                             StateT)
@@ -55,6 +56,7 @@ import qualified Data.ByteString.Builder          as Builder
 import qualified Data.ByteString.Char8            as BS8
 import qualified Data.ByteString.Lazy             as LBS
 import           Data.Kind                        (Type)
+import           Data.Typeable                    (Typeable)
 import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
 import           Database.Redis.FromResp          (FromResp (..))
@@ -146,6 +148,11 @@ class (MonadIO m) => RedisCommands m where
   llen :: (FromResp a) => ByteString -> m a
   lindex :: (FromResp a) => ByteString -> Int -> m a
   clientSetInfo :: (FromResp a) => [ByteString] -> m a
+  -- | Change Redis reply behavior for the current physical connection.
+  -- @ON@ returns its server reply; @SKIP@ returns 'Nothing' because Redis
+  -- intentionally omits that command's reply. @OFF@ is supported only by a
+  -- dedicated sequential 'RedisCommandClient' connection; shared
+  -- multiplexed and cluster clients throw 'ClientReplyModeUnsupported'.
   clientReply :: ClientReplyValues -> m (Maybe RespData)
   zadd :: (FromResp a) => ByteString -> [(Int, ByteString)] -> m a
   zrange :: (FromResp a) => ByteString -> Int -> Int -> Bool -> m a
@@ -335,6 +342,17 @@ geoSearchOptionToList opt =
 -- | Values for the CLIENT REPLY command.
 data ClientReplyValues = OFF | ON | SKIP
   deriving (Eq, Show)
+
+-- | A reply mode that cannot be represented safely by a client backend.
+--
+-- Multiplexed and cluster clients reject @OFF@ because it suppresses replies
+-- for later commands on a shared connection.  Use a dedicated
+-- 'RedisCommandClient' connection for that connection-scoped mode.
+data ClientReplyModeUnsupported
+  = ClientReplyModeUnsupported ClientReplyValues
+  deriving (Eq, Show, Typeable)
+
+instance Exception ClientReplyModeUnsupported
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping = executeCommandAs ["PING"]

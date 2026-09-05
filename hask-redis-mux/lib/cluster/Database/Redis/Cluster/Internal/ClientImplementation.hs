@@ -124,7 +124,9 @@ import           Database.Redis.Cluster.ConnectionPool    (ConnectionPool,
                                                            withConnectionBounded)
 import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
                                                            patchMovedSlot)
-import           Database.Redis.Command                   (ClientState (..),
+import           Database.Redis.Command                   (ClientReplyModeUnsupported (..),
+                                                           ClientReplyValues (OFF),
+                                                           ClientState (..),
                                                            RedisCommandClient (..),
                                                            RedisCommands (..),
                                                            convertResp,
@@ -1185,6 +1187,7 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   llen k = executeKeyedAs k ["LLEN", k]
   lindex k idx = executeKeyedAs k ["LINDEX", k, showBS idx]
   clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
+  clientReply OFF = liftIO $ throwIO (ClientReplyModeUnsupported OFF)
   clientReply val = executeKeylessMaybe (RedisCommandClient.clientReply val)
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members

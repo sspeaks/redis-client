@@ -1388,6 +1388,17 @@ clusterAuthenticationSpec =
       sentAfter `shouldBe` sentBefore
       closeClusterClient client
 
+    it "rejects runtime CLIENT REPLY OFF without touching a connection" $ do
+      topology <- mkTopology node1
+      client <- mkClusterClient
+        (\_ -> error "CLIENT REPLY OFF must not acquire a cluster connection")
+        topology
+      result <- try $ runClusterCommandClient client
+        (clientReply OFF :: ClusterCommandClient MockClient (Maybe RespData))
+        :: IO (Either ClientReplyModeUnsupported (Maybe RespData))
+      result `shouldBe` Left (ClientReplyModeUnsupported OFF)
+      closeClusterClient client
+
 movedRedirectSpec :: Spec
 movedRedirectSpec =
   describe "MOVED redirect recovery" $ do

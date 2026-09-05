@@ -45,14 +45,16 @@ module Database.Redis.Standalone
   ) where
 
 import           Control.Exception                   (SomeException, bracket,
-                                                      catch, onException)
+                                                      catch, onException,
+                                                      throwIO)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
 import qualified Data.ByteString                     as BS
 import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
-import           Database.Redis.Command              (ClientReplyValues (..),
+import           Database.Redis.Command              (ClientReplyModeUnsupported (..),
+                                                      ClientReplyValues (..),
                                                       RedisCommands (..),
                                                       convertResp,
                                                       encodeCommandBuilder,
@@ -68,6 +70,7 @@ import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
                                                       createMultiplexerFromConnector,
                                                       createSlotPool,
                                                       destroyMultiplexer,
+                                                      submitCommandNoResponsePooled,
                                                       submitCommandPooled)
 import           Database.Redis.Resp                 (RespData)
 
@@ -212,6 +215,13 @@ submitMux args = do
 submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a
 submitMuxAs args = submitMux args >>= convertResp
 
+-- | Submit a command whose Redis semantics intentionally omit its response.
+submitMuxNoResponse :: [ByteString] -> StandaloneCommandClient ()
+submitMuxNoResponse args = do
+  client <- StandaloneCommandClient ask
+  liftIO $ submitCommandNoResponsePooled
+    (standalonePool client) (standaloneMux client) (encodeCommandBuilder args)
+
 instance RedisCommands StandaloneCommandClient where
   auth username password
     | BS.null username || username == "default" =
@@ -259,10 +269,11 @@ instance RedisCommands StandaloneCommandClient where
       ON -> do
         resp <- submitMux ["CLIENT", "REPLY", showBS val]
         return (Just resp)
-      -- OFF/SKIP: Redis does not send a response, which would desync the
-      -- multiplexer. These are inherently incompatible with pipelined
-      -- multiplexing, so we silently ignore them.
-      _ -> return Nothing
+      SKIP -> do
+        submitMuxNoResponse ["CLIENT", "REPLY", showBS val]
+        return Nothing
+      OFF ->
+        liftIO $ throwIO (ClientReplyModeUnsupported OFF)
 
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members

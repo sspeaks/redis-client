@@ -1,6 +1,7 @@
-{-# LANGUAGE DataKinds  #-}
-{-# LANGUAGE GADTs      #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE DataKinds         #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Multiplexed command pipelining over a single Redis connection.
 --
@@ -28,8 +29,10 @@ module Database.Redis.Internal.Multiplexer
   , createMultiplexerFromConnectorWithHandoffHook
   , submitCommand
   , submitCommandPooled
+  , submitCommandNoResponsePooled
   , submitCommandPairPooled
   , submitCommandAsync
+  , submitCommandNoResponseAsync
   , waitSlot
   , sameResponseSlot
   , destroyMultiplexer
@@ -68,7 +71,7 @@ import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
 import           Database.Redis.Cluster           (NodeAddress)
 import           Database.Redis.Connector         (Connector)
-import           Database.Redis.Resp              (RespData, parseRespData)
+import           Database.Redis.Resp              (RespData (..), parseRespData)
 import qualified GHC.Conc                         as GHC (threadCapability)
 
 -- | Exception thrown when submitting to a dead multiplexer.
@@ -152,8 +155,9 @@ releaseSlot sp slot = do
 
 -- | A command waiting to be sent, paired with a response slot.
 data PendingCommand = PendingCommand
-  { pcBuilder :: !Builder.Builder
-  , pcSlot    :: !ResponseSlot
+  { pcBuilder         :: !Builder.Builder
+  , pcExpectsResponse :: !Bool
+  , pcSlot            :: !ResponseSlot
   }
 
 -- | SPSC queue for pending response slots.
@@ -319,6 +323,14 @@ commandBatchTransferred cq =
     (state { cqsActive = [] }, ())
 {-# INLINE commandBatchTransferred #-}
 
+-- | Transfer only response-bearing commands to reader ownership. Commands
+-- without a Redis response remain writer-owned until their send completes.
+commandResponseSlotsTransferred :: CommandQueue -> IO ()
+commandResponseSlotsTransferred cq =
+  atomicModifyIORef' (cqState cq) $ \state ->
+    (state { cqsActive = filter (not . pcExpectsResponse) (cqsActive state) }, ())
+{-# INLINE commandResponseSlotsTransferred #-}
+
 -- | Atomically stop accepting submissions. Returns whether this call closed it.
 commandClose :: CommandQueue -> IO Bool
 commandClose cq = do
@@ -457,7 +469,7 @@ submitCommand mux cmdBuilder = do
   resultRef <- newIORef Nothing
   signal <- newEmptyMVar
   let slot = ResponseSlot resultRef signal
-      pending = PendingCommand cmdBuilder slot
+      pending = PendingCommand cmdBuilder True slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
   if accepted
     then do
@@ -474,7 +486,7 @@ submitCommand mux cmdBuilder = do
 submitCommandPooled :: SlotPool -> Multiplexer -> Builder.Builder -> IO RespData
 submitCommandPooled pool mux cmdBuilder = mask $ \_ -> do
   slot <- acquireSlot pool
-  let pending = PendingCommand cmdBuilder slot
+  let pending = PendingCommand cmdBuilder True slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
     `onException` releaseSlot pool slot
   if accepted
@@ -483,6 +495,16 @@ submitCommandPooled pool mux cmdBuilder = mask $ \_ -> do
       releaseSlot pool slot
       throwIO multiplexerDestroyed
 {-# INLINE submitCommandPooled #-}
+
+-- | Submit a command for which Redis intentionally sends no response.
+--
+-- The caller still waits until the writer has either sent the command or
+-- failed it. Its slot is never made visible to the reader, so the next
+-- server response remains paired with the next response-bearing command.
+submitCommandNoResponsePooled :: SlotPool -> Multiplexer -> Builder.Builder -> IO ()
+submitCommandNoResponsePooled pool mux cmdBuilder =
+  void (submitCommandNoResponseAsync pool mux cmdBuilder >>= waitSlot pool)
+{-# INLINE submitCommandNoResponsePooled #-}
 
 -- | Submit two commands atomically as a pair. Both are enqueued in a single
 -- atomic operation so no other command can be interleaved between them.
@@ -493,8 +515,8 @@ submitCommandPairPooled :: SlotPool -> Multiplexer -> Builder.Builder -> Builder
 submitCommandPairPooled pool mux firstBuilder secondBuilder = mask $ \_ -> do
   slot1 <- acquireSlot pool
   slot2 <- acquireSlot pool `onException` releaseSlot pool slot1
-  let pending1 = PendingCommand firstBuilder slot1
-      pending2 = PendingCommand secondBuilder slot2
+  let pending1 = PendingCommand firstBuilder True slot1
+      pending2 = PendingCommand secondBuilder True slot2
   accepted <- commandEnqueuePair (muxCommandQueue mux) pending1 pending2
     `onException` (releaseSlot pool slot1 >> releaseSlot pool slot2)
   if accepted
@@ -515,7 +537,7 @@ submitCommandPairPooled pool mux firstBuilder secondBuilder = mask $ \_ -> do
 submitCommandAsync :: SlotPool -> Multiplexer -> Builder.Builder -> IO ResponseSlot
 submitCommandAsync pool mux cmdBuilder = mask $ \_ -> do
   slot <- acquireSlot pool
-  let pending = PendingCommand cmdBuilder slot
+  let pending = PendingCommand cmdBuilder True slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
     `onException` releaseSlot pool slot
   if accepted
@@ -524,6 +546,22 @@ submitCommandAsync pool mux cmdBuilder = mask $ \_ -> do
       releaseSlot pool slot
       throwIO multiplexerDestroyed
 {-# INLINE submitCommandAsync #-}
+
+-- | Asynchronously submit a command which intentionally has no Redis reply.
+-- The returned slot is completed by the writer once the command has been
+-- sent, or failed by transport teardown. It is never queued for the reader.
+submitCommandNoResponseAsync :: SlotPool -> Multiplexer -> Builder.Builder -> IO ResponseSlot
+submitCommandNoResponseAsync pool mux cmdBuilder = mask $ \_ -> do
+  slot <- acquireSlot pool
+  let pending = PendingCommand cmdBuilder False slot
+  accepted <- commandEnqueue (muxCommandQueue mux) pending
+    `onException` releaseSlot pool slot
+  if accepted
+    then return slot
+    else do
+      releaseSlot pool slot
+      throwIO multiplexerDestroyed
+{-# INLINE submitCommandNoResponseAsync #-}
 
 -- | Wait for an async submission's result and release the slot back to the pool.
 waitSlot :: SlotPool -> ResponseSlot -> IO RespData
@@ -612,17 +650,26 @@ writerLoop transferLock cmdQueue pendingQueue conn alive = go
           if null allCmds
             then return ()
             else do
-              -- Single-pass: extract slots (as Seq) and build the combined Builder
-              let (!slots, !builder) = foldl'
-                    (\(!sAcc, !bAcc) pc -> (sAcc Seq.|> pcSlot pc, bAcc <> pcBuilder pc))
-                    (Seq.empty, mempty)
+              -- No-response slots remain writer-owned until send succeeds;
+              -- response slots transfer to the reader in pipeline order.
+              let (!responseSlots, !noResponseSlots, !builder) = foldl'
+                    (\(!responseAcc, !noResponseAcc, !builderAcc) pc ->
+                      ( if pcExpectsResponse pc
+                          then responseAcc Seq.|> pcSlot pc
+                          else responseAcc
+                      , if pcExpectsResponse pc
+                          then noResponseAcc
+                          else noResponseAcc Seq.|> pcSlot pc
+                      , builderAcc <> pcBuilder pc
+                      ))
+                    (Seq.empty, Seq.empty, mempty)
                     allCmds
 
               transferred <- withMVar transferLock $ \() -> mask_ $ do
                 stillAlive <- readIORef alive
                 when stillAlive $ do
-                  pendingEnqueueSeq pendingQueue slots
-                  commandBatchTransferred cmdQueue
+                  commandResponseSlotsTransferred cmdQueue
+                  pendingEnqueueSeq pendingQueue responseSlots
                 return stillAlive
 
               when transferred $ do
@@ -635,7 +682,12 @@ writerLoop transferLock cmdQueue pendingQueue conn alive = go
                     !chunks = LBS.toChunks lbs
                 result <- try $ sendChunks conn chunks
                 case result of
-                  Right () -> go
+                  Right () -> do
+                    uninterruptibleMask_ $ do
+                      forM_ noResponseSlots $ \slot ->
+                        void $ completeSlot slot (Right (RespSimpleString "OK"))
+                      commandBatchTransferred cmdQueue
+                    go
                   Left (e :: SomeException) ->
                     failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
 
