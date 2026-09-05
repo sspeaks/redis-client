@@ -412,15 +412,15 @@ fillCluster state = do
     -- Create cluster client and fill data
     if useTLS state
       then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        fillClusterWithData clusterClient (createTLSConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
-        closeClusterClient clusterClient
+        let connector = createTLSConnector state
+        bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+          fillClusterWithData clusterClient connector
+            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
       else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        fillClusterWithData clusterClient (createPlaintextConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
-        closeClusterClient clusterClient
+        let connector = createPlaintextConnector state
+        bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+          fillClusterWithData clusterClient connector
+            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
 
 cli :: RunState -> IO ()
 cli state = do

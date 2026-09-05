@@ -115,10 +115,19 @@ test-suite StructuredConcurrencySpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
     main-is:          StructuredConcurrencySpec.hs
-    other-modules:    StructuredConcurrency
+    other-modules:    ClusterFiller
+                    , FillHelpers
+                    , Filler
+                    , StructuredConcurrency
     hs-source-dirs:   test
                     , app
     build-depends:    async
+                    , bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , stm
+                    , vector
 
 -- ---------------------------------------------------------------------------
 -- Flags
