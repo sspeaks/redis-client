@@ -8,6 +8,7 @@ module Main (main) where
 import           Control.Concurrent                  (forkFinally, forkIO,
                                                       forkOn, killThread,
                                                       threadDelay)
+import           Control.Concurrent.Async            (async, cancel, waitCatch)
 import           Control.Concurrent.MVar             (MVar, newEmptyMVar,
                                                       putMVar, takeMVar,
                                                       tryPutMVar)
@@ -298,6 +299,55 @@ responseSlotSpec = describe "ResponseSlot" $ do
     resp <- waitSlot pool slot
     resp `shouldBe` RespBulkString "delayed"
     destroyMultiplexer mux
+
+  it "reclaims a cancelled async wait only after its submitted response completes" $ do
+    pool <- createSlotPool 1
+    (client, awaitSend, _) <- createBlockingClient
+    mux <- createMultiplexer client (receive client)
+    slot <- submitCommandAsync pool mux (encodeCmd ["GET", "blocked"])
+    awaitSend
+
+    waiter <- async (waitSlot pool slot)
+    threadDelay 10000
+    cancel waiter
+    cancelled <- waitCatch waiter
+    cancelled `shouldSatisfy` isFailure
+
+    -- Teardown supplies the pending response failure.  The reaper installed by
+    -- waitSlot owns the slot until this signal, so it cannot be reused early.
+    destroyMultiplexer mux
+    threadDelay 10000
+
+    (reuseClient, addRecv) <- createMockClient
+    reuseMux <- createMultiplexer reuseClient (receive reuseClient)
+    reuseSlot <- submitCommandAsync pool reuseMux (encodeCmd ["PING"])
+    addRecv (encodeResp (RespSimpleString "OK"))
+    waitSlot pool reuseSlot `shouldReturn` RespSimpleString "OK"
+    destroyMultiplexer reuseMux
+
+  it "reclaims both ASKING pair slots when the first wait fails" $ do
+    pool <- createSlotPool 1
+    (client, awaitSend, _) <- createBlockingClient
+    mux <- createMultiplexer client (receive client)
+    pair <- async $
+      submitCommandPairPooled pool mux (encodeCmd ["ASKING"]) (encodeCmd ["GET", "blocked"])
+    awaitSend
+    destroyMultiplexer mux
+    failed <- waitCatch pair
+    failed `shouldSatisfy` isMultiplexerDead
+
+    -- The second slot is owned by the pair cleanup after the first response
+    -- failure.  It must become available exactly once after mux teardown.
+    threadDelay 10000
+    (reuseClient, addRecv) <- createMockClient
+    reuseMux <- createMultiplexer reuseClient (receive reuseClient)
+    slots <- replicateM 2 (submitCommandAsync pool reuseMux (encodeCmd ["PING"]))
+    case slots of
+      [firstSlot, secondSlot] -> sameResponseSlot firstSlot secondSlot `shouldBe` False
+      _                       -> expectationFailure "expected exactly two reuse slots"
+    addRecv (encodeResp (RespSimpleString "OK") <> encodeResp (RespSimpleString "OK"))
+    mapM_ (waitSlot pool) slots
+    destroyMultiplexer reuseMux
 
 commandQueueBatchingSpec :: Spec
 commandQueueBatchingSpec = describe "Command queue batching" $ do
@@ -602,7 +652,12 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
       premature <- timeout 50000 (waitSlot pool reusedSlot)
       premature `shouldBe` Nothing
       addRecv $ encodeResp (RespSimpleString "OK")
-      completed <- timeout 1000000 (waitSlot pool reusedSlot)
+      -- Cancellation transfers ownership of reusedSlot to waitSlot's reaper;
+      -- submit a fresh command after it drains instead of waiting twice.
+      threadDelay 10000
+      recoveredSlot <- submitCommandAsync pool reuseMux (encodeCmd ["PING"])
+      addRecv $ encodeResp (RespSimpleString "OK")
+      completed <- timeout 1000000 (waitSlot pool recoveredSlot)
       completed `shouldBe` Just (RespSimpleString "OK")
       destroyMultiplexer reuseMux
 
@@ -720,6 +775,10 @@ isTimedThreadKilled (Just (Left e)) =
     Just ThreadKilled -> True
     _                 -> False
 isTimedThreadKilled _ = False
+
+isFailure :: Either SomeException a -> Bool
+isFailure (Left _)  = True
+isFailure (Right _) = False
 
 isMultiplexerDead :: Either SomeException RespData -> Bool
 isMultiplexerDead (Left e) =
