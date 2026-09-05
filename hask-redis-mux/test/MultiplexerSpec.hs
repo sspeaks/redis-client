@@ -11,7 +11,8 @@ import           Control.Concurrent                  (forkFinally, forkIO,
 import           Control.Concurrent.MVar             (MVar, newEmptyMVar,
                                                       putMVar, takeMVar,
                                                       tryPutMVar)
-import           Control.Exception                   (SomeException,
+import           Control.Exception                   (AsyncException (ThreadKilled),
+                                                      SomeException,
                                                       fromException, throwIO,
                                                       try, uninterruptibleMask_)
 import           Control.Monad                       (replicateM, replicateM_,
@@ -119,16 +120,16 @@ instance Client TeardownClient where
     liftIO $ do
       void $ tryPutMVar closeStarted ()
       takeMVar releaseClose
-  send (TeardownConnected sendCount firstSent secondStarted releaseSecond _ _ _ _) _ =
+  send (TeardownConnected sendCount firstSent secondSendGated releaseSecond _ _ _ _) _ =
     liftIO $ do
       sendNumber <- atomicModifyIORef' sendCount $ \count ->
         let next = count + 1
         in (next, next)
       case sendNumber of
         1 -> void $ tryPutMVar firstSent ()
-        2 -> do
-          void $ tryPutMVar secondStarted ()
-          uninterruptibleMask_ $ takeMVar releaseSecond
+        2 -> uninterruptibleMask_ $ do
+          void $ tryPutMVar secondSendGated ()
+          takeMVar releaseSecond
         _ -> return ()
   receive (TeardownConnected _ _ _ _ receiveStarted replies _ _) =
     liftIO $ do
@@ -148,7 +149,7 @@ createTeardownClient
 createTeardownClient = do
   sendCount <- newIORef 0
   firstSent <- newEmptyMVar
-  secondStarted <- newEmptyMVar
+  secondSendGated <- newEmptyMVar
   releaseSecond <- newEmptyMVar
   receiveStarted <- newEmptyMVar
   replies <- newEmptyMVar
@@ -159,10 +160,10 @@ createTeardownClient = do
         observed `shouldBe` Just ()
   return
     ( TeardownConnected
-        sendCount firstSent secondStarted releaseSecond receiveStarted replies
+        sendCount firstSent secondSendGated releaseSecond receiveStarted replies
         closeStarted releaseClose
     , await firstSent
-    , await secondStarted
+    , await secondSendGated
     , await receiveStarted
     , putMVar releaseSecond ()
     , await closeStarted
@@ -459,7 +460,7 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
     pool <- createSlotPool 16
     ( client
       , awaitFirstSend
-      , awaitSecondSend
+      , awaitSecondSendGate
       , awaitReceive
       , releaseSecondSend
       , awaitCloseStart
@@ -474,7 +475,9 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
 
     secondSlot <- submitCommandAsync pool mux (encodeCmd ["GET", "pending"])
     secondResult <- waitForSlotInThread pool secondSlot
-    awaitSecondSend
+    -- This barrier is emitted inside the writer's uninterruptible send gate,
+    -- immediately before its deliberately blocked operation.
+    awaitSecondSendGate
 
     queuedSlots <- mapM
       (\idx -> submitCommandAsync pool mux
@@ -483,16 +486,13 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
     queuedResults <- mapM (waitForSlotInThread pool) queuedSlots
     ownerFinished <- newEmptyMVar
     owner <- forkFinally (destroyMultiplexer mux) (putMVar ownerFinished)
-    -- The finalizer owns close in a separate thread. This barrier proves the
-    -- destroy owner has reached teardown without relying on muxAlive's early
-    -- admission-closure transition.
+    -- This is a separate barrier: it proves the owner entered destroy's
+    -- teardown sequence after the writer was already inside its send gate.
     awaitCloseStart
 
     killThread owner
     cancelledOwner <- timeout 1000000 (takeMVar ownerFinished)
-    cancelledOwner `shouldSatisfy` \case
-      Just (Left _) -> True
-      _             -> False
+    cancelledOwner `shouldSatisfy` isTimedThreadKilled
 
     releaseClose
     releaseSecondSend
@@ -504,6 +504,34 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
     results `shouldSatisfy` \case
       Just completed -> all isMultiplexerDead completed
       Nothing        -> False
+
+    -- Each failed waiter must return its slot once. Reacquire all eight from
+    -- the same pool concurrently, verify their identities are distinct, then
+    -- complete them independently on a fresh multiplexer.
+    (reuseClient, addReuseResponse) <- createMockClient
+    reuseMux <- createMultiplexer reuseClient (receive reuseClient)
+    reuseSlots <- replicateM 8 newEmptyMVar
+    reuseResults <- replicateM 8 newEmptyMVar
+    mapM_ (\(slotVar, resultVar) -> do
+      _ <- forkIO $ do
+        slot <- submitCommandAsync pool reuseMux (encodeCmd ["PING"])
+        putMVar slotVar slot
+        result <- try (waitSlot pool slot) :: IO (Either SomeException RespData)
+        putMVar resultVar result
+      return ()
+      ) (zip reuseSlots reuseResults)
+    acquired <- timeout 1000000 $ mapM takeMVar reuseSlots
+    case acquired of
+      Just slots ->
+        allDistinctResponseSlots slots `shouldBe` True
+      Nothing ->
+        expectationFailure "same-pool reuse did not acquire every returned slot"
+    addReuseResponse $ mconcat $ replicate 8 (encodeResp (RespSimpleString "OK"))
+    reused <- timeout 1000000 $ mapM takeMVar reuseResults
+    reused `shouldSatisfy` \case
+      Just completed -> all isOkResponse completed
+      Nothing        -> False
+    destroyMultiplexer reuseMux
 
   it "concurrent destroy calls are idempotent and wake the waiter once" $ do
     pool <- createSlotPool 16
@@ -682,6 +710,13 @@ isTimedMultiplexerDead
 isTimedMultiplexerDead (Just result) = isMultiplexerDead result
 isTimedMultiplexerDead Nothing       = False
 
+isTimedThreadKilled :: Maybe (Either SomeException ()) -> Bool
+isTimedThreadKilled (Just (Left e)) =
+  case fromException e of
+    Just ThreadKilled -> True
+    _                 -> False
+isTimedThreadKilled _ = False
+
 isMultiplexerDead :: Either SomeException RespData -> Bool
 isMultiplexerDead (Left e) =
   case fromException e of
@@ -697,6 +732,14 @@ isMultiplexerFailure (Left e) =
     Just MultiplexerConnectionClosed -> True
     Nothing                          -> False
 isMultiplexerFailure (Right _) = False
+
+allDistinctResponseSlots :: [ResponseSlot] -> Bool
+allDistinctResponseSlots slots =
+  and
+    [ not (sameResponseSlot left right)
+    | (index, left) <- zip [0 :: Int ..] slots
+    , right <- drop (index + 1) slots
+    ]
 
 isTimedMultiplexerParseFailure
   :: Maybe (Either SomeException RespData)
