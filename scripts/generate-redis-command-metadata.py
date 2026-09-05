@@ -39,6 +39,14 @@ FIND_KEYS_FIELDS = {
     "range": {"lastkey", "step", "limit"},
     "keynum": {"keynumidx", "firstkey", "step"},
 }
+ARGUMENT_FIELDS = {
+    "arguments", "deprecated_since", "display", "key_spec_index", "multiple",
+    "multiple_token", "name", "optional", "since", "token", "type",
+}
+ARGUMENT_TYPES = {
+    "block", "double", "integer", "key", "oneof", "pattern", "pure-token",
+    "string", "unix-time",
+}
 SUPPORTED_REDIS_SOURCES = {
     "7.2.0": {
         "commit": "29622276ecd7b74312798e6772744858a8a6f9bf",
@@ -72,7 +80,7 @@ def command_identity(command):
     container = command["metadata"].get("container")
     if container is None:
         return name
-    return "{} {}".format(container.upper(), name.replace("-", "_").replace(":", ""))
+    return "{} {}".format(container.upper(), name)
 
 
 def expect_mapping(value, description):
@@ -118,10 +126,14 @@ def audit_key_spec(identity, index, key_spec):
         reject_unexpected_fields(begin_value, BEGIN_SEARCH_FIELDS[begin_kind], "{} key spec {} index".format(identity, index))
         if not isinstance(begin_value.get("pos"), int):
             raise AuditError("{} key spec {} index position is invalid".format(identity, index))
+        if begin_value["pos"] <= 0:
+            raise AuditError("{} key spec {} index position must be positive".format(identity, index))
     elif begin_kind == "keyword":
         begin_value = expect_mapping(begin_value, "{} key spec {} keyword".format(identity, index))
         reject_unexpected_fields(begin_value, BEGIN_SEARCH_FIELDS[begin_kind], "{} key spec {} keyword".format(identity, index))
         if not isinstance(begin_value.get("keyword"), str) or not isinstance(begin_value.get("startfrom"), int):
+            raise AuditError("{} key spec {} keyword is invalid".format(identity, index))
+        if not begin_value["keyword"] or begin_value["startfrom"] == 0:
             raise AuditError("{} key spec {} keyword is invalid".format(identity, index))
     elif begin_value is not None:
         raise AuditError("{} key spec {} unknown begin_search must be null".format(identity, index))
@@ -130,14 +142,78 @@ def audit_key_spec(identity, index, key_spec):
         reject_unexpected_fields(find_value, FIND_KEYS_FIELDS[find_kind], "{} key spec {} range".format(identity, index))
         if not all(isinstance(find_value.get(field), int) for field in ("lastkey", "step", "limit")):
             raise AuditError("{} key spec {} range is invalid".format(identity, index))
+        if (
+            find_value["step"] <= 0
+            or find_value["limit"] < 0
+            or (find_value["lastkey"] < -1 and find_value["limit"] != 0)
+        ):
+            raise AuditError("{} key spec {} range bounds are invalid".format(identity, index))
     elif find_kind == "keynum":
         find_value = expect_mapping(find_value, "{} key spec {} keynum".format(identity, index))
         reject_unexpected_fields(find_value, FIND_KEYS_FIELDS[find_kind], "{} key spec {} keynum".format(identity, index))
         if not all(isinstance(find_value.get(field), int) for field in ("keynumidx", "firstkey", "step")):
             raise AuditError("{} key spec {} keynum is invalid".format(identity, index))
+        if (
+            find_value["keynumidx"] < 0
+            or find_value["firstkey"] < 0
+            or find_value["step"] <= 0
+        ):
+            raise AuditError("{} key spec {} keynum bounds are invalid".format(identity, index))
     elif find_value is not None:
         raise AuditError("{} key spec {} unknown find_keys must be null".format(identity, index))
     audit_string_list(key_spec.get("flags"), "{} key spec {} flags".format(identity, index))
+
+
+def audit_argument(identity, path, argument, key_spec_count):
+    description = "{} argument {}".format(identity, path)
+    argument = expect_mapping(argument, description)
+    reject_unexpected_fields(argument, ARGUMENT_FIELDS, description)
+    if not isinstance(argument.get("name"), str) or not argument["name"]:
+        raise AuditError("{} has no name".format(description))
+    argument_type = argument.get("type")
+    if argument_type not in ARGUMENT_TYPES:
+        raise AuditError("{} has unsupported type".format(description))
+    for field in ("optional", "multiple", "multiple_token"):
+        if field in argument and not isinstance(argument[field], bool):
+            raise AuditError("{} {} must be boolean".format(description, field))
+    for field in ("token", "display", "since", "deprecated_since"):
+        if field in argument and (
+            not isinstance(argument[field], str)
+            or (field == "token" and not argument[field])
+        ):
+            raise AuditError("{} {} must be a non-empty string".format(description, field))
+    if argument.get("multiple_token", False) and (
+        not argument.get("multiple", False) or "token" not in argument
+    ):
+        raise AuditError("{} multiple_token requires multiple and token".format(description))
+    if "key_spec_index" in argument:
+        key_spec_index = argument["key_spec_index"]
+        if (
+            argument_type not in {"key", "pattern"}
+            or not isinstance(key_spec_index, int)
+            or isinstance(key_spec_index, bool)
+            or key_spec_index < 0
+            or key_spec_index >= key_spec_count
+        ):
+            raise AuditError("{} key_spec_index is invalid".format(description))
+    children = argument.get("arguments")
+    if argument_type in {"block", "oneof"}:
+        children = expect_list(children, "{} arguments".format(description))
+        if not children:
+            raise AuditError("{} arguments must not be empty".format(description))
+        for index, child in enumerate(children):
+            audit_argument(identity, "{}.{}".format(path, index), child, key_spec_count)
+    elif children is not None:
+        raise AuditError("{} arguments are only valid for block or oneof".format(description))
+
+
+def argument_key_spec_indices(arguments):
+    indices = []
+    for argument in arguments:
+        if "key_spec_index" in argument:
+            indices.append(argument["key_spec_index"])
+        indices.extend(argument_key_spec_indices(argument.get("arguments", [])))
+    return indices
 
 
 def audit_canonical_source(source, canonical_source_path, commands):
@@ -234,8 +310,21 @@ def audit_snapshot(snapshot, canonical_source_path=None):
                 kinds["keyword"] += 1
             if find_kind == "keynum":
                 kinds["movable"] += 1
-    if identities != sorted(identities):
-        raise AuditError("command identities are not sorted")
+        arguments = metadata.get("arguments", [])
+        arguments = expect_list(arguments, "{} arguments".format(identity))
+        for argument_index, argument in enumerate(arguments):
+            audit_argument(identity, str(argument_index), argument, len(key_specs))
+        linked_key_specs = set(argument_key_spec_indices(arguments))
+        for spec_index, key_spec in enumerate(key_specs):
+            if (
+                spec_index not in linked_key_specs
+                and "NOT_KEY" not in key_spec["flags"]
+            ):
+                raise AuditError(
+                    "{} key spec {} is not linked from its argument grammar".format(
+                        identity, spec_index
+                    )
+                )
     if len(identities) != len(set(identities)):
         raise AuditError("duplicate command identity")
     counts = expect_mapping(snapshot.get("counts"), "counts")
@@ -290,6 +379,48 @@ def render_find_keys(spec):
     return "UnknownFindKeys"
 
 
+def hs_maybe_string(value):
+    return "Nothing" if value is None else "Just {}".format(hs_string(value))
+
+
+def hs_maybe_int(value):
+    return "Nothing" if value is None else "Just {}".format(hs_int(value))
+
+
+def render_argument(argument):
+    argument_type = argument["type"]
+    if argument_type == "string":
+        kind = "ArgumentString"
+    elif argument_type == "integer":
+        kind = "ArgumentInteger"
+    elif argument_type == "double":
+        kind = "ArgumentDouble"
+    elif argument_type == "unix-time":
+        kind = "ArgumentUnixTime"
+    elif argument_type == "key":
+        kind = "ArgumentKey"
+    elif argument_type == "pattern":
+        kind = "ArgumentPattern"
+    elif argument_type == "pure-token":
+        kind = "ArgumentPureToken"
+    else:
+        children = ", ".join(render_argument(child) for child in argument["arguments"])
+        constructor = "ArgumentBlock" if argument_type == "block" else "ArgumentOneOf"
+        kind = "{} [{}]".format(constructor, children)
+    token = argument.get("token")
+    if argument_type == "pure-token" and token is None:
+        token = argument["name"]
+    return "CommandArgument {} ({}) ({}) {} {} {} ({})".format(
+        hs_string(argument["name"]),
+        kind,
+        hs_maybe_string(token),
+        str(argument.get("optional", False)),
+        str(argument.get("multiple", False)),
+        str(argument.get("multiple_token", False)),
+        hs_maybe_int(argument.get("key_spec_index")),
+    )
+
+
 def render_module(commands, snapshot_path):
     try:
         snapshot_reference = snapshot_path.relative_to(ROOT).as_posix()
@@ -304,11 +435,15 @@ def render_module(commands, snapshot_path):
         "  ( BeginSearch (..)",
         "  , FindKeys (..)",
         "  , KeySpec (..)",
+        "  , ArgumentKind (..)",
+        "  , CommandArgument (..)",
         "  , CommandMetadata (..)",
         "  , commandMetadata",
+        "  , commandMetadataByIdentity",
         "  ) where",
         "",
         "import           Data.ByteString (ByteString)",
+        "import qualified Data.Map.Strict as Map",
         "",
         "data BeginSearch = Fixed Int | Keyword ByteString Int | UnknownBeginSearch",
         "  deriving (Eq, Show)",
@@ -322,11 +457,35 @@ def render_module(commands, snapshot_path):
         "  , keySpecFlags       :: [ByteString]",
         "  } deriving (Eq, Show)",
         "",
+        "data ArgumentKind",
+        "  = ArgumentString",
+        "  | ArgumentInteger",
+        "  | ArgumentDouble",
+        "  | ArgumentUnixTime",
+        "  | ArgumentKey",
+        "  | ArgumentPattern",
+        "  | ArgumentPureToken",
+        "  | ArgumentOneOf [CommandArgument]",
+        "  | ArgumentBlock [CommandArgument]",
+        "  deriving (Eq, Show)",
+        "",
+        "data CommandArgument = CommandArgument",
+        "  { argumentName          :: ByteString",
+        "  , argumentKind          :: ArgumentKind",
+        "  , argumentToken         :: Maybe ByteString",
+        "  , argumentOptional      :: Bool",
+        "  , argumentMultiple      :: Bool",
+        "  , argumentMultipleToken :: Bool",
+        "  , argumentKeySpecIndex  :: Maybe Int",
+        "  } deriving (Eq, Show)",
+        "",
         "data CommandMetadata = CommandMetadata",
-        "  { commandIdentity :: ByteString",
-        "  , commandArity    :: Int",
-        "  , commandFlags    :: [ByteString]",
-        "  , commandKeySpecs :: [KeySpec]",
+        "  { commandIdentity       :: ByteString",
+        "  , commandArity          :: Int",
+        "  , commandFlags          :: [ByteString]",
+        "  , commandKeySpecs       :: [KeySpec]",
+        "  , commandArguments      :: [CommandArgument]",
+        "  , commandHasSubcommands :: Bool",
         "  } deriving (Eq, Show)",
         "",
         "commandMetadata :: [CommandMetadata]",
@@ -334,9 +493,15 @@ def render_module(commands, snapshot_path):
         "  [",
     ]
     entries = []
+    container_identities = {
+        command_identity(command).split(" ", 1)[0]
+        for command in commands
+        if "container" in command["metadata"]
+    }
     for command in commands:
         metadata = command["metadata"]
         specs = metadata["key_specs"]
+        arguments = metadata.get("arguments", [])
         rendered_specs = ", ".join(
             "KeySpec ({}) ({}) [{}]".format(
                 render_begin_search(spec),
@@ -345,16 +510,27 @@ def render_module(commands, snapshot_path):
             )
             for spec in specs
         )
+        rendered_arguments = ", ".join(render_argument(argument) for argument in arguments)
+        identity = command_identity(command)
         entries.append(
-            '    CommandMetadata {} {} [{}] [{}]'.format(
-                hs_string(command_identity(command)),
+            '    CommandMetadata {} {} [{}] [{}] [{}] {}'.format(
+                hs_string(identity),
                 "({})".format(metadata["arity"]),
                 ", ".join(hs_string(flag) for flag in metadata.get("command_flags", [])),
                 rendered_specs,
+                rendered_arguments,
+                str(identity in container_identities),
             )
         )
     lines.append(",\n".join(entries))
-    lines.extend(["  ]", ""])
+    lines.extend([
+        "  ]",
+        "",
+        "commandMetadataByIdentity :: Map.Map ByteString CommandMetadata",
+        "commandMetadataByIdentity =",
+        "  Map.fromList [(commandIdentity metadata, metadata) | metadata <- commandMetadata]",
+        "",
+    ])
     return "\n".join(lines)
 
 
