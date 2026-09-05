@@ -17,8 +17,7 @@ import           ClusterSetup                          (createClusterClientFromS
                                                         flushAllClusterNodes)
 import           ClusterTunnel                         (servePinnedProxy,
                                                         serveSmartProxy)
-import           Control.Concurrent                    (forkIO, newEmptyMVar,
-                                                        putMVar, takeMVar)
+import           Control.Exception                     (bracket, mask)
 
 import           AppConfig                             (RunState (..),
                                                         defaultRunState,
@@ -72,6 +71,8 @@ import           FillProcess                           (buildChildArgs)
 import           FlushConfirmation                     (canonicalFlushTarget,
                                                         confirmFlush)
 import           Numeric                               (showHex)
+import           StructuredConcurrency                 (runConcurrentlyFailFast,
+                                                        withSubmittedSlots)
 import           System.Console.GetOpt                 (ArgDescr (..),
                                                         ArgOrder (..),
                                                         OptDescr (Option),
@@ -385,15 +386,12 @@ fillStandalone state = do
             -- Jobs: (connectionIdx, mbForThisConnection)
             jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
         printf "Filling %dGB with %d parallel connections\n" (dataGBs state) (length jobs)
-        mvars <- mapM (\(idx, mb) -> do
-            mv <- newEmptyMVar
-            _ <- forkIO $ do
-                 if useTLS state
-                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
-                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
-                 putMVar mv ()
-            return mv) jobs
-        mapM_ takeMVar mvars
+        runConcurrentlyFailFast
+          [ if useTLS state
+              then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+              else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+          | (idx, mb) <- jobs
+          ]
 
 
 fillCluster :: RunState -> IO ()
@@ -554,47 +552,40 @@ bench state = do
 
 -- | Run the benchmark with a specific connector type
 benchWithConnector :: (Client client) => RunState -> Connector client -> String -> Int -> Int -> Int -> Int -> IO ()
-benchWithConnector state connector op duration nConns kSize vSize = do
-  clusterClient <- createClusterClientFromState state connector
-  muxPool <- createMultiplexPool
-    (clusterConnector clusterClient) (muxCount state)
+benchWithConnector state connector op duration nConns kSize vSize =
+  bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+    bracket (createMultiplexPool (clusterConnector clusterClient) (muxCount state)) closeMultiplexPool $ \muxPool -> do
 
-  -- Pre-populate keys for GET and mixed workloads
-  when (op `elem` ["get", "mixed"]) $ do
-    hPutStrLn stderr "Pre-populating keys for GET workload..."
-    let numKeys = 100000
-    benchPrePopulate muxPool clusterClient numKeys kSize vSize
-    hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
+      -- Pre-populate keys for GET and mixed workloads
+      when (op `elem` ["get", "mixed"]) $ do
+        hPutStrLn stderr "Pre-populating keys for GET workload..."
+        let numKeys = 100000
+        benchPrePopulate muxPool clusterClient numKeys kSize vSize
+        hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
 
-  -- Run the benchmark
-  opsCounter <- newIORef (0 :: Int)
-  startTime <- getCurrentTime
+      -- Run the benchmark
+      opsCounter <- newIORef (0 :: Int)
+      startTime <- getCurrentTime
 
-  mvars <- mapM (\tid -> do
-    mvar <- newEmptyMVar
-    _ <- forkIO $ do
-      benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
-      putMVar mvar ()
-    return mvar
-    ) [0 .. nConns - 1]
+      runConcurrentlyFailFast
+        [ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
+        | tid <- [0 .. nConns - 1]
+        ]
 
-  mapM_ takeMVar mvars
-  endTime <- getCurrentTime
+      endTime <- getCurrentTime
 
-  totalOps <- readIORef opsCounter
-  let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
-      opsPerSec = fromIntegral totalOps / elapsed
+      totalOps <- readIORef opsCounter
+      let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
+          opsPerSec = fromIntegral totalOps / elapsed
 
-  -- Output JSON to stdout
-  putStrLn $ "{\"operation\":\"" ++ op
-    ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
-    ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
-    ++ ",\"total_ops\":" ++ show totalOps
-    ++ "}"
+      -- Output JSON to stdout
+      putStrLn $ "{\"operation\":\"" ++ op
+        ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
+        ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
+        ++ ",\"total_ops\":" ++ show totalOps
+        ++ "}"
 
-  closeMultiplexPool muxPool
-  closeClusterClient clusterClient
-  exitSuccess
+      exitSuccess
 
 -- | Pre-populate keys for GET workload
 benchPrePopulate :: (Client client) => MultiplexPool client -> ClusterClient client -> Int -> Int -> Int -> IO ()
@@ -616,7 +607,7 @@ benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
 -- | Worker thread that submits commands for the specified duration
 -- Uses async pipelining: fires a batch of commands, then waits for all results.
 benchWorker :: (Client client) => MultiplexPool client -> ClusterClient client -> String -> Int -> Int -> Int -> Int -> IORef Int -> IO ()
-benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
+benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = mask $ \_ -> do
   topology <- readTVarIO (clusterTopology clusterClient)
   let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
       batchSize = 64 -- fire 64 commands per batch before waiting
@@ -627,17 +618,15 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
       now <- getCurrentTime
       let elapsed = realToFrac (diffUTCTime now startTime) :: Double
       when (elapsed < fromIntegral duration) $ do
-        -- Fire a batch of commands asynchronously
-        slots <- fireBatch topology counter batchSz []
-        let completedCount = length slots
-        -- Wait for all results
-        mapM_ (\slot -> waitSlotResult muxPool slot) slots
-        -- Count completed ops
-        atomicModifyIORef' opsCounter (\n -> (n + completedCount, ()))
+        withSubmittedSlots (waitSlotResult muxPool) $ \submitted waitSubmitted -> do
+          slots <- fireBatch topology counter batchSz [] submitted
+          let completedCount = length slots
+          mapM_ waitSubmitted slots
+          atomicModifyIORef' opsCounter (\n -> (n + completedCount, ()))
         go topology masters startTime (counter + batchSz) batchSz
 
-    fireBatch _ _ 0 acc = return (reverse acc)
-    fireBatch topology !counter !remaining acc = do
+    fireBatch _ _ 0 acc _ = return (reverse acc)
+    fireBatch topology !counter !remaining acc submitted = do
       let key = benchKey kSize counter
           val = benchValue vSize counter
           !slot = calculateSlot key
@@ -651,6 +640,6 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
                     then encodeSetBuilder key val
                     else encodeGetBuilder key
                 _ -> encodeSetBuilder key val
-          s <- submitToNodeAsync muxPool addr cmd
-          fireBatch topology (counter + 1) (remaining - 1) (s : acc)
-        Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
+          s <- submitted (submitToNodeAsync muxPool addr cmd)
+          fireBatch topology (counter + 1) (remaining - 1) (s : acc) submitted
+        Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc submitted

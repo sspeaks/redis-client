@@ -111,6 +111,15 @@ test-suite NodeTargetingSpec
                     , time
                     , vector
 
+test-suite StructuredConcurrencySpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          StructuredConcurrencySpec.hs
+    other-modules:    StructuredConcurrency
+    hs-source-dirs:   test
+                    , app
+    build-depends:    async
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------
@@ -226,7 +235,9 @@ executable redis-client
                     , FlushConfirmation
                     , Filler
                     , SlotMappingHelpers
+                    , StructuredConcurrency
     build-depends:    attoparsec
+                    , async
                     , bytestring
                     , containers
                     , hask-redis-mux

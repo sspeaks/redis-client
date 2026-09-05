@@ -36,8 +36,9 @@ module Database.Redis.Internal.Multiplexer
   , isMultiplexerAlive
   ) where
 
-import           Control.Concurrent               (ThreadId, forkIOWithUnmask,
-                                                   killThread, myThreadId)
+import           Control.Concurrent               (ThreadId, forkIO,
+                                                   forkIOWithUnmask, killThread,
+                                                   myThreadId)
 import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
@@ -87,6 +88,7 @@ data ResponseSlot = ResponseSlot
   { slotResult :: !(IORef (Maybe (Either SomeException RespData)))
   , slotSignal :: !(MVar ())
   }
+  deriving Eq
 
 -- | Test and diagnostics identity for a pooled response slot.
 sameResponseSlot :: ResponseSlot -> ResponseSlot -> Bool
@@ -470,19 +472,13 @@ submitCommand mux cmdBuilder = do
 -- | Like 'submitCommand', but acquires a 'ResponseSlot' from the pool
 -- instead of allocating a fresh IORef+MVar per call.
 submitCommandPooled :: SlotPool -> Multiplexer -> Builder.Builder -> IO RespData
-submitCommandPooled pool mux cmdBuilder = do
+submitCommandPooled pool mux cmdBuilder = mask $ \_ -> do
   slot <- acquireSlot pool
   let pending = PendingCommand cmdBuilder slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
+    `onException` releaseSlot pool slot
   if accepted
-    then do
-      takeMVar (slotSignal slot)
-      mResult <- readIORef (slotResult slot)
-      releaseSlot pool slot
-      case mResult of
-        Just (Right resp) -> return resp
-        Just (Left e)     -> throwIO e
-        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+    then awaitSlotResult pool slot
     else do
       releaseSlot pool slot
       throwIO multiplexerDestroyed
@@ -494,25 +490,20 @@ submitCommandPooled pool mux cmdBuilder = do
 -- Used for ASKING + command sequences where ASKING must immediately precede
 -- the target command on the same connection.
 submitCommandPairPooled :: SlotPool -> Multiplexer -> Builder.Builder -> Builder.Builder -> IO RespData
-submitCommandPairPooled pool mux firstBuilder secondBuilder = do
+submitCommandPairPooled pool mux firstBuilder secondBuilder = mask $ \_ -> do
   slot1 <- acquireSlot pool
-  slot2 <- acquireSlot pool
+  slot2 <- acquireSlot pool `onException` releaseSlot pool slot1
   let pending1 = PendingCommand firstBuilder slot1
       pending2 = PendingCommand secondBuilder slot2
   accepted <- commandEnqueuePair (muxCommandQueue mux) pending1 pending2
+    `onException` (releaseSlot pool slot1 >> releaseSlot pool slot2)
   if accepted
     then do
       -- Wait for and discard the first response (ASKING → +OK)
-      takeMVar (slotSignal slot1)
-      releaseSlot pool slot1
+      void (awaitSlotResult pool slot1)
+        `onException` releaseAfterSignal pool slot2
       -- Wait for the actual command response
-      takeMVar (slotSignal slot2)
-      mResult <- readIORef (slotResult slot2)
-      releaseSlot pool slot2
-      case mResult of
-        Just (Right resp) -> return resp
-        Just (Left e)     -> throwIO e
-        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+      awaitSlotResult pool slot2
     else do
       releaseSlot pool slot1
       releaseSlot pool slot2
@@ -522,10 +513,11 @@ submitCommandPairPooled pool mux firstBuilder secondBuilder = do
 -- | Submit a command asynchronously: enqueue it and return the ResponseSlot.
 -- The caller must later call 'waitSlot' to get the result, then 'releaseSlot'.
 submitCommandAsync :: SlotPool -> Multiplexer -> Builder.Builder -> IO ResponseSlot
-submitCommandAsync pool mux cmdBuilder = do
+submitCommandAsync pool mux cmdBuilder = mask $ \_ -> do
   slot <- acquireSlot pool
   let pending = PendingCommand cmdBuilder slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
+    `onException` releaseSlot pool slot
   if accepted
     then return slot
     else do
@@ -535,15 +527,27 @@ submitCommandAsync pool mux cmdBuilder = do
 
 -- | Wait for an async submission's result and release the slot back to the pool.
 waitSlot :: SlotPool -> ResponseSlot -> IO RespData
-waitSlot pool slot = do
-  takeMVar (slotSignal slot)
+waitSlot = awaitSlotResult
+{-# INLINE waitSlot #-}
+
+-- | The synchronous callers own their slot for the whole request. Cancellation
+-- leaves a reaper responsible for returning it only after its completion.
+awaitSlotResult :: SlotPool -> ResponseSlot -> IO RespData
+awaitSlotResult pool slot = mask $ \restore -> do
+  restore (takeMVar (slotSignal slot)) `onException` releaseAfterSignal pool slot
   mResult <- readIORef (slotResult slot)
   releaseSlot pool slot
   case mResult of
     Just (Right resp) -> return resp
     Just (Left e)     -> throwIO e
     Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
-{-# INLINE waitSlot #-}
+
+releaseAfterSignal :: SlotPool -> ResponseSlot -> IO ()
+releaseAfterSignal pool slot = do
+  _ <- forkIO $ mask_ $ do
+    takeMVar (slotSignal slot)
+    releaseSlot pool slot
+  return ()
 
 -- | Tear down the multiplexer: kill both threads and fail all pending commands.
 destroyMultiplexer :: Multiplexer -> IO ()
