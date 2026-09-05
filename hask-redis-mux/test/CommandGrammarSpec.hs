@@ -227,12 +227,72 @@ spec =
                 "SADD"
                 ("{same}:key" : replicate memberCount "member")
 
+        it "accepts empty, one, and many terminal optional repeated scalars" $ do
+            shouldRouteKeyless "COMMAND" ["DOCS"]
+            shouldRouteKeyless "COMMAND" ["DOCS", "GET"]
+            shouldRouteKeyless "COMMAND" ["DOCS", "GET", "SET", "MGET"]
+            shouldRouteKeyless "ACL" ["SETUSER", "profile-user"]
+            shouldRouteKeyless "ACL" ["SETUSER", "profile-user", "on"]
+            shouldRouteKeyless
+                "ACL"
+                ["SETUSER", "profile-user", "on", ">password", "+get"]
+            shouldRouteKeyless "PUNSUBSCRIBE" []
+            shouldRouteKeyless "PUNSUBSCRIBE" ["channel*"]
+            shouldRouteKeyless "PUNSUBSCRIBE" ["one*", "two*", "three*"]
+            shouldRouteBy "GEOHASH" ["{same}:key"] "{same}:key"
+            shouldRouteBy "GEOHASH" ["{same}:key", "member"] "{same}:key"
+            shouldRouteBy
+                "GEOHASH"
+                ["{same}:key", "one", "two", "three"]
+                "{same}:key"
+
+        it "completes near-cap terminal optional repeats within ten seconds" $ do
+            shouldCompleteKeylessWithin
+                "COMMAND"
+                ("DOCS" : replicate 65534 "GET")
+            shouldCompleteKeylessWithin
+                "ACL"
+                (["SETUSER", "profile-user"] <> replicate 65533 "on")
+            shouldCompleteKeylessWithin
+                "PUNSUBSCRIBE"
+                (replicate 65535 "channel*")
+            shouldCompleteWithin
+                "GEOHASH"
+                ("{same}:key" : replicate 65534 "member")
+
         it "fails closed above the parser frame cap within ten seconds" $ do
             shouldRejectWithin "MGET" (replicate 65536 "{same}:key")
             shouldRejectWithin "DEL" (replicate 65536 "{same}:key")
             shouldRejectWithin
                 "SADD"
                 ("{same}:key" : replicate 65535 "member")
+            shouldRejectWithin
+                "COMMAND"
+                ("DOCS" : replicate 65535 "GET")
+            shouldRejectWithin
+                "ACL"
+                (["SETUSER", "profile-user"] <> replicate 65534 "on")
+            shouldRejectWithin
+                "PUNSUBSCRIBE"
+                (replicate 65536 "channel*")
+            shouldRejectWithin
+                "GEOHASH"
+                ("{same}:key" : replicate 65535 "member")
+
+        it "bounds over-cap traversal before vector conversion" $ do
+            shouldRejectWithin "MGET" (repeat "{same}:key")
+            let poisonedTail =
+                    replicate 65535 "{same}:key"
+                        <> (error "over-cap element was forced" : error "over-cap tail was traversed")
+            shouldRejectWithin "MGET" poisonedTail
+
+        it "preserves bounded MGET, DEL, and XREAD parsing" $ do
+            shouldRouteBy "MGET" ["{same}:one", "{same}:two"] "{same}:one"
+            shouldRouteBy "DEL" ["{same}:one", "{same}:two"] "{same}:one"
+            shouldRouteBy
+                "XREAD"
+                ["COUNT", "1", "STREAMS", "{same}:one", "{same}:two", "0-0", "0-0"]
+                "{same}:one"
 
         it "validates XREADGROUP GROUP and STREAMS structural tokens" $ do
             shouldRouteBy
@@ -393,6 +453,16 @@ shouldCompleteWithin command arguments = do
         Just KeylessRoute -> expectationFailure "expected keyed route, got keyless route"
         Just (CommandError message) ->
             expectationFailure $ "expected keyed route, got error: " ++ message
+        Nothing -> expectationFailure "near-cap grammar parse exceeded ten seconds"
+
+shouldCompleteKeylessWithin :: BS.ByteString -> [BS.ByteString] -> Expectation
+shouldCompleteKeylessWithin command arguments = do
+    result <- timeout 10000000 (evaluate $ classifyCommand command arguments)
+    case result of
+        Just KeylessRoute -> pure ()
+        Just (KeyedRoute _) -> expectationFailure "expected keyless route, got keyed route"
+        Just (CommandError message) ->
+            expectationFailure $ "expected keyless route, got error: " ++ message
         Nothing -> expectationFailure "near-cap grammar parse exceeded ten seconds"
 
 shouldRejectWithin :: BS.ByteString -> [BS.ByteString] -> Expectation

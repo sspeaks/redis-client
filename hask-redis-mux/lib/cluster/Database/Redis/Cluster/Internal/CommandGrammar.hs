@@ -7,6 +7,11 @@
 The generated metadata preserves the Redis 7.2 argument grammar as well as
 its key specifications. A frame is routable only when one complete argument
 parse agrees with every selected key specification.
+
+Frame ingestion first performs an O(n) bounded-length traversal with O(1)
+auxiliary space. Accepted frames are then converted to an O(n) vector, while
+over-cap frames are rejected without vector conversion or traversal past the
+first element beyond the limit.
 -}
 module Database.Redis.Cluster.Internal.CommandGrammar (
     CommandFrameRouting (..),
@@ -78,8 +83,13 @@ classifyCommandFrame :: [ByteString] -> Either CommandGrammarError CommandFrameR
 classifyCommandFrame [] = Left EmptyCommandFrame
 classifyCommandFrame frame@(_ : _) = do
     metadata <- resolveCommand frame
-    validateArity metadata frame
-    let vectorFrame = V.fromList frame
+    frameLength <-
+        maybe
+            (Left $ InvalidArguments $ commandIdentity metadata)
+            Right
+            (boundedFrameLength frame)
+    validateArity metadata frameLength
+    let vectorFrame = V.fromListN frameLength frame
     validateKeyNumCounts metadata vectorFrame
     keys <- validateArgumentsAndExtractKeys metadata vectorFrame
     pure $ case keys of
@@ -107,12 +117,20 @@ resolveCommand (command : arguments) =
   where
     commandName = asciiUpper command
 
-validateArity :: CommandMetadata -> [ByteString] -> Either CommandGrammarError ()
-validateArity metadata frame
-    | commandArity metadata > 0 && length frame /= commandArity metadata =
-        Left (InvalidArity (commandIdentity metadata) (commandArity metadata) (length frame))
-    | commandArity metadata < 0 && length frame < negate (commandArity metadata) =
-        Left (InvalidArity (commandIdentity metadata) (negate (commandArity metadata)) (length frame))
+boundedFrameLength :: [value] -> Maybe Int
+boundedFrameLength = go 0
+  where
+    go !count [] = Just count
+    go !count (_ : remaining)
+        | count == maxFrameArguments = Nothing
+        | otherwise = go (count + 1) remaining
+
+validateArity :: CommandMetadata -> Int -> Either CommandGrammarError ()
+validateArity metadata frameLength
+    | commandArity metadata > 0 && frameLength /= commandArity metadata =
+        Left (InvalidArity (commandIdentity metadata) (commandArity metadata) frameLength)
+    | commandArity metadata < 0 && frameLength < negate (commandArity metadata) =
+        Left (InvalidArity (commandIdentity metadata) (negate (commandArity metadata)) frameLength)
     | otherwise = Right ()
 
 validateKeyNumCounts ::
@@ -196,11 +214,27 @@ parseSequence frame arguments initial = parseStages arguments [initial]
                 boundedStates $
                     if all isOptionDirected options
                         then concatMap (parseUnorderedOptions frame options) states
-                        else
-                            foldl'
-                                (\current option -> concatMap (parseArgument frame option) current)
-                                states
-                                options
+                        else parseOrderedTrailingOptions frame options states
+
+parseOrderedTrailingOptions ::
+    Frame ->
+    [CommandArgument] ->
+    [ParseState] ->
+    [ParseState]
+parseOrderedTrailingOptions frame = go
+  where
+    go [] states = states
+    go [argument] states
+        | argumentOptional argument && argumentMultiple argument =
+            concatMap parseTerminal states
+      where
+        parseTerminal state =
+            [state | parsePosition state == V.length frame]
+                <> parseRequiredArgument frame argument True state
+    go (argument : following) states =
+        go
+            following
+            (boundedStates $ concatMap (parseArgument frame argument) states)
 
 parseUnorderedOptions ::
     Frame ->
