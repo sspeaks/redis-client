@@ -63,6 +63,8 @@ module Database.Redis.Cluster.Client
     -- normal Redis operations.
     executeKeyedClusterCommand,
     executeKeyedClusterCommandUsingDelay,
+    executeKeyedClusterCommandBuilder,
+    executeKeyedClusterCommandBuilderUsingDelay,
     executeKeylessClusterCommand,
     executeKeylessClusterCommandUsingDelay,
     -- * Re-export RedisCommands for convenience
@@ -974,8 +976,27 @@ executeKeyedClusterCommandUsingDelay ::
   [ByteString] ->
   IO (Either ClusterError RespData)
 executeKeyedClusterCommandUsingDelay delayAction client key cmdArgs = do
+  let cmdBuilder = encodeCommandBuilder cmdArgs
+  executeKeyedClusterCommandBuilderUsingDelay delayAction client key cmdBuilder
+
+executeKeyedClusterCommandBuilder ::
+  (Client client) =>
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterCommandBuilder =
+  executeKeyedClusterCommandBuilderUsingDelay threadDelay
+
+executeKeyedClusterCommandBuilderUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterCommandBuilderUsingDelay delayAction client key cmdBuilder = do
   let muxPool = clusterMultiplexPool client
-      cmdBuilder = encodeCommandBuilder cmdArgs
       !slot = calculateSlot key
   withRetryAndRefreshUsing delayAction
     client
