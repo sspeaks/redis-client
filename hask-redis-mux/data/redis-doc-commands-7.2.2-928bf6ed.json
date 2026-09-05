@@ -1,0 +1,3872 @@
+{
+  "commandCount": 70,
+  "entries": [
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "value",
+          "name": "value",
+          "type": "string"
+        }
+      ],
+      "arity": 3,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "APPEND",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "APPEND"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "username",
+          "name": "username",
+          "optional": true,
+          "since": "6.0.0",
+          "type": "string"
+        },
+        {
+          "display_text": "password",
+          "name": "password",
+          "type": "string"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "allow_busy",
+        "fast",
+        "loading",
+        "no_auth",
+        "noscript",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "AUTH",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "AUTH"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "arguments": [
+            {
+              "display_text": "libname",
+              "name": "libname",
+              "token": "LIB-NAME",
+              "type": "string"
+            },
+            {
+              "display_text": "libver",
+              "name": "libver",
+              "token": "LIB-VER",
+              "type": "string"
+            }
+          ],
+          "name": "attr",
+          "type": "oneof"
+        }
+      ],
+      "arity": 4,
+      "flags": [
+        "loading",
+        "noscript",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "CLIENT SETINFO",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "CLIENT",
+        "SETINFO"
+      ]
+    },
+    {
+      "arguments": [],
+      "arity": 2,
+      "flags": [
+        "loading",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "CLUSTER SLOTS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "CLUSTER",
+        "SLOTS"
+      ]
+    },
+    {
+      "arguments": [],
+      "arity": -1,
+      "flags": [
+        "loading",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "COMMAND",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "COMMAND"
+      ]
+    },
+    {
+      "arguments": [],
+      "arity": 1,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": null,
+      "name": "DBSIZE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "DBSIZE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "DECR",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "DECR"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "multiple": true,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": -1,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "DEL",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "DEL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "message",
+          "name": "message",
+          "type": "string"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "loading",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "ECHO",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "ECHO"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "script",
+          "name": "script",
+          "type": "string"
+        },
+        {
+          "display_text": "numkeys",
+          "name": "numkeys",
+          "type": "integer"
+        },
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "multiple": true,
+          "name": "key",
+          "optional": true,
+          "type": "key"
+        },
+        {
+          "display_text": "arg",
+          "multiple": true,
+          "name": "arg",
+          "optional": true,
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "movablekeys",
+        "no_mandatory_keys",
+        "noscript",
+        "skip_monitor",
+        "stale"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 2,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": 1,
+          "keynumidx": 0,
+          "keystep": 1,
+          "lastkey": null,
+          "limit": null,
+          "tag": "FindKeyNum"
+        }
+      },
+      "name": "EVAL",
+      "syntax": "SyntaxEval",
+      "tokens": [
+        "EVAL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "sha1",
+          "name": "sha1",
+          "type": "string"
+        },
+        {
+          "display_text": "numkeys",
+          "name": "numkeys",
+          "type": "integer"
+        },
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "multiple": true,
+          "name": "key",
+          "optional": true,
+          "type": "key"
+        },
+        {
+          "display_text": "arg",
+          "multiple": true,
+          "name": "arg",
+          "optional": true,
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "movablekeys",
+        "no_mandatory_keys",
+        "noscript",
+        "skip_monitor",
+        "stale"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 2,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": 1,
+          "keynumidx": 0,
+          "keystep": 1,
+          "lastkey": null,
+          "limit": null,
+          "tag": "FindKeyNum"
+        }
+      },
+      "name": "EVALSHA",
+      "syntax": "SyntaxEval",
+      "tokens": [
+        "EVALSHA"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "multiple": true,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": -1,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "EXISTS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "EXISTS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "seconds",
+          "name": "seconds",
+          "type": "integer"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "nx",
+              "name": "nx",
+              "token": "NX",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "xx",
+              "name": "xx",
+              "token": "XX",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "gt",
+              "name": "gt",
+              "token": "GT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "lt",
+              "name": "lt",
+              "token": "LT",
+              "type": "pure-token"
+            }
+          ],
+          "name": "condition",
+          "optional": true,
+          "since": "7.0.0",
+          "type": "oneof"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "EXPIRE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "EXPIRE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "arguments": [
+            {
+              "display_text": "async",
+              "name": "async",
+              "since": "4.0.0",
+              "token": "ASYNC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "sync",
+              "name": "sync",
+              "since": "6.2.0",
+              "token": "SYNC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "flush-type",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -1,
+      "flags": [
+        "write"
+      ],
+      "key_spec": null,
+      "name": "FLUSHALL",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "FLUSHALL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "arguments": [
+            {
+              "display_text": "async",
+              "name": "async",
+              "since": "4.0.0",
+              "token": "ASYNC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "sync",
+              "name": "sync",
+              "since": "6.2.0",
+              "token": "SYNC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "flush-type",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -1,
+      "flags": [
+        "write"
+      ],
+      "key_spec": null,
+      "name": "FLUSHDB",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "FLUSHDB"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "nx",
+              "name": "nx",
+              "token": "NX",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "xx",
+              "name": "xx",
+              "token": "XX",
+              "type": "pure-token"
+            }
+          ],
+          "name": "condition",
+          "optional": true,
+          "since": "6.2.0",
+          "type": "oneof"
+        },
+        {
+          "display_text": "change",
+          "name": "change",
+          "optional": true,
+          "since": "6.2.0",
+          "token": "CH",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "longitude",
+              "name": "longitude",
+              "type": "double"
+            },
+            {
+              "display_text": "latitude",
+              "name": "latitude",
+              "type": "double"
+            },
+            {
+              "display_text": "member",
+              "name": "member",
+              "type": "string"
+            }
+          ],
+          "multiple": true,
+          "name": "data",
+          "type": "block"
+        }
+      ],
+      "arity": -5,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEOADD",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEOADD"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member1",
+          "name": "member1",
+          "type": "string"
+        },
+        {
+          "display_text": "member2",
+          "name": "member2",
+          "type": "string"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "m",
+              "name": "m",
+              "token": "M",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "km",
+              "name": "km",
+              "token": "KM",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "ft",
+              "name": "ft",
+              "token": "FT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "mi",
+              "name": "mi",
+              "token": "MI",
+              "type": "pure-token"
+            }
+          ],
+          "name": "unit",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -4,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEODIST",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEODIST"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member",
+          "multiple": true,
+          "name": "member",
+          "optional": true,
+          "type": "string"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEOHASH",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEOHASH"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member",
+          "multiple": true,
+          "name": "member",
+          "optional": true,
+          "type": "string"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEOPOS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEOPOS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "longitude",
+          "name": "longitude",
+          "type": "double"
+        },
+        {
+          "display_text": "latitude",
+          "name": "latitude",
+          "type": "double"
+        },
+        {
+          "display_text": "radius",
+          "name": "radius",
+          "type": "double"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "m",
+              "name": "m",
+              "token": "M",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "km",
+              "name": "km",
+              "token": "KM",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "ft",
+              "name": "ft",
+              "token": "FT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "mi",
+              "name": "mi",
+              "token": "MI",
+              "type": "pure-token"
+            }
+          ],
+          "name": "unit",
+          "type": "oneof"
+        },
+        {
+          "display_text": "withcoord",
+          "name": "withcoord",
+          "optional": true,
+          "token": "WITHCOORD",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withdist",
+          "name": "withdist",
+          "optional": true,
+          "token": "WITHDIST",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withhash",
+          "name": "withhash",
+          "optional": true,
+          "token": "WITHHASH",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "count",
+              "name": "count",
+              "token": "COUNT",
+              "type": "integer"
+            },
+            {
+              "display_text": "any",
+              "name": "any",
+              "optional": true,
+              "since": "6.2.0",
+              "token": "ANY",
+              "type": "pure-token"
+            }
+          ],
+          "name": "count-block",
+          "optional": true,
+          "type": "block"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "asc",
+              "name": "asc",
+              "token": "ASC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "desc",
+              "name": "desc",
+              "token": "DESC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "order",
+          "optional": true,
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "key",
+              "key_spec_index": 1,
+              "name": "storekey",
+              "token": "STORE",
+              "type": "key"
+            },
+            {
+              "display_text": "key",
+              "key_spec_index": 2,
+              "name": "storedistkey",
+              "token": "STOREDIST",
+              "type": "key"
+            }
+          ],
+          "name": "store",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -6,
+      "flags": [
+        "denyoom",
+        "movablekeys",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEORADIUS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEORADIUS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member",
+          "name": "member",
+          "type": "string"
+        },
+        {
+          "display_text": "radius",
+          "name": "radius",
+          "type": "double"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "m",
+              "name": "m",
+              "token": "M",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "km",
+              "name": "km",
+              "token": "KM",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "ft",
+              "name": "ft",
+              "token": "FT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "mi",
+              "name": "mi",
+              "token": "MI",
+              "type": "pure-token"
+            }
+          ],
+          "name": "unit",
+          "type": "oneof"
+        },
+        {
+          "display_text": "withcoord",
+          "name": "withcoord",
+          "optional": true,
+          "token": "WITHCOORD",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withdist",
+          "name": "withdist",
+          "optional": true,
+          "token": "WITHDIST",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withhash",
+          "name": "withhash",
+          "optional": true,
+          "token": "WITHHASH",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "count",
+              "name": "count",
+              "token": "COUNT",
+              "type": "integer"
+            },
+            {
+              "display_text": "any",
+              "name": "any",
+              "optional": true,
+              "token": "ANY",
+              "type": "pure-token"
+            }
+          ],
+          "name": "count-block",
+          "optional": true,
+          "type": "block"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "asc",
+              "name": "asc",
+              "token": "ASC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "desc",
+              "name": "desc",
+              "token": "DESC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "order",
+          "optional": true,
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "key",
+              "key_spec_index": 1,
+              "name": "storekey",
+              "token": "STORE",
+              "type": "key"
+            },
+            {
+              "display_text": "key",
+              "key_spec_index": 2,
+              "name": "storedistkey",
+              "token": "STOREDIST",
+              "type": "key"
+            }
+          ],
+          "name": "store",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -5,
+      "flags": [
+        "denyoom",
+        "movablekeys",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEORADIUSBYMEMBER",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEORADIUSBYMEMBER"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member",
+          "name": "member",
+          "type": "string"
+        },
+        {
+          "display_text": "radius",
+          "name": "radius",
+          "type": "double"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "m",
+              "name": "m",
+              "token": "M",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "km",
+              "name": "km",
+              "token": "KM",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "ft",
+              "name": "ft",
+              "token": "FT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "mi",
+              "name": "mi",
+              "token": "MI",
+              "type": "pure-token"
+            }
+          ],
+          "name": "unit",
+          "type": "oneof"
+        },
+        {
+          "display_text": "withcoord",
+          "name": "withcoord",
+          "optional": true,
+          "token": "WITHCOORD",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withdist",
+          "name": "withdist",
+          "optional": true,
+          "token": "WITHDIST",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withhash",
+          "name": "withhash",
+          "optional": true,
+          "token": "WITHHASH",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "count",
+              "name": "count",
+              "token": "COUNT",
+              "type": "integer"
+            },
+            {
+              "display_text": "any",
+              "name": "any",
+              "optional": true,
+              "token": "ANY",
+              "type": "pure-token"
+            }
+          ],
+          "name": "count-block",
+          "optional": true,
+          "type": "block"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "asc",
+              "name": "asc",
+              "token": "ASC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "desc",
+              "name": "desc",
+              "token": "DESC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "order",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -5,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEORADIUSBYMEMBER_RO",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEORADIUSBYMEMBER_RO"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "longitude",
+          "name": "longitude",
+          "type": "double"
+        },
+        {
+          "display_text": "latitude",
+          "name": "latitude",
+          "type": "double"
+        },
+        {
+          "display_text": "radius",
+          "name": "radius",
+          "type": "double"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "m",
+              "name": "m",
+              "token": "M",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "km",
+              "name": "km",
+              "token": "KM",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "ft",
+              "name": "ft",
+              "token": "FT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "mi",
+              "name": "mi",
+              "token": "MI",
+              "type": "pure-token"
+            }
+          ],
+          "name": "unit",
+          "type": "oneof"
+        },
+        {
+          "display_text": "withcoord",
+          "name": "withcoord",
+          "optional": true,
+          "token": "WITHCOORD",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withdist",
+          "name": "withdist",
+          "optional": true,
+          "token": "WITHDIST",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withhash",
+          "name": "withhash",
+          "optional": true,
+          "token": "WITHHASH",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "count",
+              "name": "count",
+              "token": "COUNT",
+              "type": "integer"
+            },
+            {
+              "display_text": "any",
+              "name": "any",
+              "optional": true,
+              "since": "6.2.0",
+              "token": "ANY",
+              "type": "pure-token"
+            }
+          ],
+          "name": "count-block",
+          "optional": true,
+          "type": "block"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "asc",
+              "name": "asc",
+              "token": "ASC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "desc",
+              "name": "desc",
+              "token": "DESC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "order",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -6,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEORADIUS_RO",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEORADIUS_RO"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "member",
+              "name": "member",
+              "token": "FROMMEMBER",
+              "type": "string"
+            },
+            {
+              "arguments": [
+                {
+                  "display_text": "longitude",
+                  "name": "longitude",
+                  "type": "double"
+                },
+                {
+                  "display_text": "latitude",
+                  "name": "latitude",
+                  "type": "double"
+                }
+              ],
+              "name": "fromlonlat",
+              "token": "FROMLONLAT",
+              "type": "block"
+            }
+          ],
+          "name": "from",
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "arguments": [
+                {
+                  "display_text": "radius",
+                  "name": "radius",
+                  "token": "BYRADIUS",
+                  "type": "double"
+                },
+                {
+                  "arguments": [
+                    {
+                      "display_text": "m",
+                      "name": "m",
+                      "token": "M",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "km",
+                      "name": "km",
+                      "token": "KM",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "ft",
+                      "name": "ft",
+                      "token": "FT",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "mi",
+                      "name": "mi",
+                      "token": "MI",
+                      "type": "pure-token"
+                    }
+                  ],
+                  "name": "unit",
+                  "type": "oneof"
+                }
+              ],
+              "name": "circle",
+              "type": "block"
+            },
+            {
+              "arguments": [
+                {
+                  "display_text": "width",
+                  "name": "width",
+                  "token": "BYBOX",
+                  "type": "double"
+                },
+                {
+                  "display_text": "height",
+                  "name": "height",
+                  "type": "double"
+                },
+                {
+                  "arguments": [
+                    {
+                      "display_text": "m",
+                      "name": "m",
+                      "token": "M",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "km",
+                      "name": "km",
+                      "token": "KM",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "ft",
+                      "name": "ft",
+                      "token": "FT",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "mi",
+                      "name": "mi",
+                      "token": "MI",
+                      "type": "pure-token"
+                    }
+                  ],
+                  "name": "unit",
+                  "type": "oneof"
+                }
+              ],
+              "name": "box",
+              "type": "block"
+            }
+          ],
+          "name": "by",
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "asc",
+              "name": "asc",
+              "token": "ASC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "desc",
+              "name": "desc",
+              "token": "DESC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "order",
+          "optional": true,
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "count",
+              "name": "count",
+              "token": "COUNT",
+              "type": "integer"
+            },
+            {
+              "display_text": "any",
+              "name": "any",
+              "optional": true,
+              "token": "ANY",
+              "type": "pure-token"
+            }
+          ],
+          "name": "count-block",
+          "optional": true,
+          "type": "block"
+        },
+        {
+          "display_text": "withcoord",
+          "name": "withcoord",
+          "optional": true,
+          "token": "WITHCOORD",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withdist",
+          "name": "withdist",
+          "optional": true,
+          "token": "WITHDIST",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "withhash",
+          "name": "withhash",
+          "optional": true,
+          "token": "WITHHASH",
+          "type": "pure-token"
+        }
+      ],
+      "arity": -7,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEOSEARCH",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEOSEARCH"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "destination",
+          "key_spec_index": 0,
+          "name": "destination",
+          "type": "key"
+        },
+        {
+          "display_text": "source",
+          "key_spec_index": 1,
+          "name": "source",
+          "type": "key"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "member",
+              "name": "member",
+              "token": "FROMMEMBER",
+              "type": "string"
+            },
+            {
+              "arguments": [
+                {
+                  "display_text": "longitude",
+                  "name": "longitude",
+                  "type": "double"
+                },
+                {
+                  "display_text": "latitude",
+                  "name": "latitude",
+                  "type": "double"
+                }
+              ],
+              "name": "fromlonlat",
+              "token": "FROMLONLAT",
+              "type": "block"
+            }
+          ],
+          "name": "from",
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "arguments": [
+                {
+                  "display_text": "radius",
+                  "name": "radius",
+                  "token": "BYRADIUS",
+                  "type": "double"
+                },
+                {
+                  "arguments": [
+                    {
+                      "display_text": "m",
+                      "name": "m",
+                      "token": "M",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "km",
+                      "name": "km",
+                      "token": "KM",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "ft",
+                      "name": "ft",
+                      "token": "FT",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "mi",
+                      "name": "mi",
+                      "token": "MI",
+                      "type": "pure-token"
+                    }
+                  ],
+                  "name": "unit",
+                  "type": "oneof"
+                }
+              ],
+              "name": "circle",
+              "type": "block"
+            },
+            {
+              "arguments": [
+                {
+                  "display_text": "width",
+                  "name": "width",
+                  "token": "BYBOX",
+                  "type": "double"
+                },
+                {
+                  "display_text": "height",
+                  "name": "height",
+                  "type": "double"
+                },
+                {
+                  "arguments": [
+                    {
+                      "display_text": "m",
+                      "name": "m",
+                      "token": "M",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "km",
+                      "name": "km",
+                      "token": "KM",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "ft",
+                      "name": "ft",
+                      "token": "FT",
+                      "type": "pure-token"
+                    },
+                    {
+                      "display_text": "mi",
+                      "name": "mi",
+                      "token": "MI",
+                      "type": "pure-token"
+                    }
+                  ],
+                  "name": "unit",
+                  "type": "oneof"
+                }
+              ],
+              "name": "box",
+              "type": "block"
+            }
+          ],
+          "name": "by",
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "asc",
+              "name": "asc",
+              "token": "ASC",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "desc",
+              "name": "desc",
+              "token": "DESC",
+              "type": "pure-token"
+            }
+          ],
+          "name": "order",
+          "optional": true,
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "count",
+              "name": "count",
+              "token": "COUNT",
+              "type": "integer"
+            },
+            {
+              "display_text": "any",
+              "name": "any",
+              "optional": true,
+              "token": "ANY",
+              "type": "pure-token"
+            }
+          ],
+          "name": "count-block",
+          "optional": true,
+          "type": "block"
+        },
+        {
+          "display_text": "storedist",
+          "name": "storedist",
+          "optional": true,
+          "token": "STOREDIST",
+          "type": "pure-token"
+        }
+      ],
+      "arity": -8,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GEOSEARCHSTORE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GEOSEARCHSTORE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GET",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GETDEL",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GETDEL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "seconds",
+              "name": "seconds",
+              "token": "EX",
+              "type": "integer"
+            },
+            {
+              "display_text": "milliseconds",
+              "name": "milliseconds",
+              "token": "PX",
+              "type": "integer"
+            },
+            {
+              "display_text": "unix-time-seconds",
+              "name": "unix-time-seconds",
+              "token": "EXAT",
+              "type": "unix-time"
+            },
+            {
+              "display_text": "unix-time-milliseconds",
+              "name": "unix-time-milliseconds",
+              "token": "PXAT",
+              "type": "unix-time"
+            },
+            {
+              "display_text": "persist",
+              "name": "persist",
+              "token": "PERSIST",
+              "type": "pure-token"
+            }
+          ],
+          "name": "expiration",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GETEX",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GETEX"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "start",
+          "name": "start",
+          "type": "integer"
+        },
+        {
+          "display_text": "end",
+          "name": "end",
+          "type": "integer"
+        }
+      ],
+      "arity": 4,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "GETRANGE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "GETRANGE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "field",
+          "multiple": true,
+          "name": "field",
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HDEL",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HDEL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "field",
+          "name": "field",
+          "type": "string"
+        }
+      ],
+      "arity": 3,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HEXISTS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HEXISTS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "field",
+          "name": "field",
+          "type": "string"
+        }
+      ],
+      "arity": 3,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HGET",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HGET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HGETALL",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HGETALL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HKEYS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HKEYS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "field",
+          "multiple": true,
+          "name": "field",
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HMGET",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HMGET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "field",
+              "name": "field",
+              "type": "string"
+            },
+            {
+              "display_text": "value",
+              "name": "value",
+              "type": "string"
+            }
+          ],
+          "multiple": true,
+          "name": "data",
+          "type": "block"
+        }
+      ],
+      "arity": -4,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HSET",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HSET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "HVALS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "HVALS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "INCR",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "INCR"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "section",
+          "multiple": true,
+          "name": "section",
+          "optional": true,
+          "type": "string"
+        }
+      ],
+      "arity": -1,
+      "flags": [
+        "loading",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "INFO",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "INFO"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "index",
+          "name": "index",
+          "type": "integer"
+        }
+      ],
+      "arity": 3,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "LINDEX",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "LINDEX"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "LLEN",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "LLEN"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "count",
+          "name": "count",
+          "optional": true,
+          "since": "6.2.0",
+          "type": "integer"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "LPOP",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "LPOP"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "element",
+          "multiple": true,
+          "name": "element",
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "LPUSH",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "LPUSH"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "start",
+          "name": "start",
+          "type": "integer"
+        },
+        {
+          "display_text": "stop",
+          "name": "stop",
+          "type": "integer"
+        }
+      ],
+      "arity": 4,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "LRANGE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "LRANGE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "count",
+          "name": "count",
+          "optional": true,
+          "token": "SAMPLES",
+          "type": "integer"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 2,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "MEMORY USAGE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "MEMORY",
+        "USAGE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "multiple": true,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": -1,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "MGET",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "MGET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "arguments": [
+            {
+              "display_text": "key",
+              "key_spec_index": 0,
+              "name": "key",
+              "type": "key"
+            },
+            {
+              "display_text": "value",
+              "name": "value",
+              "type": "string"
+            }
+          ],
+          "multiple": true,
+          "name": "data",
+          "type": "block"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 2,
+          "lastkey": -1,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "MSET",
+      "syntax": "SyntaxPairs",
+      "tokens": [
+        "MSET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "arguments": [
+            {
+              "display_text": "key",
+              "key_spec_index": 0,
+              "name": "key",
+              "type": "key"
+            },
+            {
+              "display_text": "value",
+              "name": "value",
+              "type": "string"
+            }
+          ],
+          "multiple": true,
+          "name": "data",
+          "type": "block"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 2,
+          "lastkey": -1,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "MSETNX",
+      "syntax": "SyntaxPairs",
+      "tokens": [
+        "MSETNX"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "PERSIST",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "PERSIST"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "message",
+          "name": "message",
+          "optional": true,
+          "type": "string"
+        }
+      ],
+      "arity": -1,
+      "flags": [
+        "fast"
+      ],
+      "key_spec": null,
+      "name": "PING",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "PING"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "milliseconds",
+          "name": "milliseconds",
+          "type": "integer"
+        },
+        {
+          "display_text": "value",
+          "name": "value",
+          "type": "string"
+        }
+      ],
+      "arity": 4,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "PSETEX",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "PSETEX"
+      ]
+    },
+    {
+      "arguments": [],
+      "arity": -1,
+      "flags": [
+        "allow_busy",
+        "fast",
+        "loading",
+        "no_auth",
+        "noscript",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "QUIT",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "QUIT"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "count",
+          "name": "count",
+          "optional": true,
+          "since": "6.2.0",
+          "type": "integer"
+        }
+      ],
+      "arity": -2,
+      "flags": [
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "RPOP",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "RPOP"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "element",
+          "multiple": true,
+          "name": "element",
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "RPUSH",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "RPUSH"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member",
+          "multiple": true,
+          "name": "member",
+          "type": "string"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SADD",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SADD"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SCARD",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SCARD"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "value",
+          "name": "value",
+          "type": "string"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "nx",
+              "name": "nx",
+              "token": "NX",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "xx",
+              "name": "xx",
+              "token": "XX",
+              "type": "pure-token"
+            }
+          ],
+          "name": "condition",
+          "optional": true,
+          "since": "2.6.12",
+          "type": "oneof"
+        },
+        {
+          "display_text": "get",
+          "name": "get",
+          "optional": true,
+          "since": "6.2.0",
+          "token": "GET",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "seconds",
+              "name": "seconds",
+              "since": "2.6.12",
+              "token": "EX",
+              "type": "integer"
+            },
+            {
+              "display_text": "milliseconds",
+              "name": "milliseconds",
+              "since": "2.6.12",
+              "token": "PX",
+              "type": "integer"
+            },
+            {
+              "display_text": "unix-time-seconds",
+              "name": "unix-time-seconds",
+              "since": "6.2.0",
+              "token": "EXAT",
+              "type": "unix-time"
+            },
+            {
+              "display_text": "unix-time-milliseconds",
+              "name": "unix-time-milliseconds",
+              "since": "6.2.0",
+              "token": "PXAT",
+              "type": "unix-time"
+            },
+            {
+              "display_text": "keepttl",
+              "name": "keepttl",
+              "since": "6.0.0",
+              "token": "KEEPTTL",
+              "type": "pure-token"
+            }
+          ],
+          "name": "expiration",
+          "optional": true,
+          "type": "oneof"
+        }
+      ],
+      "arity": -3,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SET",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SET"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "seconds",
+          "name": "seconds",
+          "type": "integer"
+        },
+        {
+          "display_text": "value",
+          "name": "value",
+          "type": "string"
+        }
+      ],
+      "arity": 4,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SETEX",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SETEX"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "value",
+          "name": "value",
+          "type": "string"
+        }
+      ],
+      "arity": 3,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SETNX",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SETNX"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "offset",
+          "name": "offset",
+          "type": "integer"
+        },
+        {
+          "display_text": "value",
+          "name": "value",
+          "type": "string"
+        }
+      ],
+      "arity": 4,
+      "flags": [
+        "denyoom",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SETRANGE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SETRANGE"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "member",
+          "name": "member",
+          "type": "string"
+        }
+      ],
+      "arity": 3,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SISMEMBER",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SISMEMBER"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "SMEMBERS",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "SMEMBERS"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "STRLEN",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "STRLEN"
+      ]
+    },
+    {
+      "arguments": [],
+      "arity": 1,
+      "flags": [
+        "fast",
+        "loading",
+        "stale"
+      ],
+      "key_spec": null,
+      "name": "TIME",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "TIME"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "TTL",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "TTL"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "count",
+          "name": "count",
+          "optional": true,
+          "token": "COUNT",
+          "type": "integer"
+        },
+        {
+          "display_text": "milliseconds",
+          "name": "milliseconds",
+          "optional": true,
+          "token": "BLOCK",
+          "type": "integer"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "key",
+              "key_spec_index": 0,
+              "multiple": true,
+              "name": "key",
+              "type": "key"
+            },
+            {
+              "display_text": "id",
+              "multiple": true,
+              "name": "id",
+              "type": "string"
+            }
+          ],
+          "name": "streams",
+          "token": "STREAMS",
+          "type": "block"
+        }
+      ],
+      "arity": -4,
+      "flags": [
+        "blocking",
+        "movablekeys",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": null,
+          "keyword": "STREAMS",
+          "startfrom": 1,
+          "tag": "BeginAfterKeyword"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": -1,
+          "limit": 2,
+          "tag": "FindRange"
+        }
+      },
+      "name": "XREAD",
+      "syntax": "SyntaxXRead",
+      "tokens": [
+        "XREAD"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "arguments": [
+            {
+              "display_text": "group",
+              "name": "group",
+              "type": "string"
+            },
+            {
+              "display_text": "consumer",
+              "name": "consumer",
+              "type": "string"
+            }
+          ],
+          "name": "group-block",
+          "token": "GROUP",
+          "type": "block"
+        },
+        {
+          "display_text": "count",
+          "name": "count",
+          "optional": true,
+          "token": "COUNT",
+          "type": "integer"
+        },
+        {
+          "display_text": "milliseconds",
+          "name": "milliseconds",
+          "optional": true,
+          "token": "BLOCK",
+          "type": "integer"
+        },
+        {
+          "display_text": "noack",
+          "name": "noack",
+          "optional": true,
+          "token": "NOACK",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "key",
+              "key_spec_index": 0,
+              "multiple": true,
+              "name": "key",
+              "type": "key"
+            },
+            {
+              "display_text": "id",
+              "multiple": true,
+              "name": "id",
+              "type": "string"
+            }
+          ],
+          "name": "streams",
+          "token": "STREAMS",
+          "type": "block"
+        }
+      ],
+      "arity": -7,
+      "flags": [
+        "blocking",
+        "movablekeys",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": null,
+          "keyword": "STREAMS",
+          "startfrom": 4,
+          "tag": "BeginAfterKeyword"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": -1,
+          "limit": 2,
+          "tag": "FindRange"
+        }
+      },
+      "name": "XREADGROUP",
+      "syntax": "SyntaxXReadGroup",
+      "tokens": [
+        "XREADGROUP"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "nx",
+              "name": "nx",
+              "token": "NX",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "xx",
+              "name": "xx",
+              "token": "XX",
+              "type": "pure-token"
+            }
+          ],
+          "name": "condition",
+          "optional": true,
+          "since": "3.0.2",
+          "type": "oneof"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "gt",
+              "name": "gt",
+              "token": "GT",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "lt",
+              "name": "lt",
+              "token": "LT",
+              "type": "pure-token"
+            }
+          ],
+          "name": "comparison",
+          "optional": true,
+          "since": "6.2.0",
+          "type": "oneof"
+        },
+        {
+          "display_text": "change",
+          "name": "change",
+          "optional": true,
+          "since": "3.0.2",
+          "token": "CH",
+          "type": "pure-token"
+        },
+        {
+          "display_text": "increment",
+          "name": "increment",
+          "optional": true,
+          "since": "3.0.2",
+          "token": "INCR",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "score",
+              "name": "score",
+              "type": "double"
+            },
+            {
+              "display_text": "member",
+              "name": "member",
+              "type": "string"
+            }
+          ],
+          "multiple": true,
+          "name": "data",
+          "type": "block"
+        }
+      ],
+      "arity": -4,
+      "flags": [
+        "denyoom",
+        "fast",
+        "write"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "ZADD",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "ZADD"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        }
+      ],
+      "arity": 2,
+      "flags": [
+        "fast",
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "ZCARD",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "ZCARD"
+      ]
+    },
+    {
+      "arguments": [
+        {
+          "display_text": "key",
+          "key_spec_index": 0,
+          "name": "key",
+          "type": "key"
+        },
+        {
+          "display_text": "start",
+          "name": "start",
+          "type": "string"
+        },
+        {
+          "display_text": "stop",
+          "name": "stop",
+          "type": "string"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "byscore",
+              "name": "byscore",
+              "token": "BYSCORE",
+              "type": "pure-token"
+            },
+            {
+              "display_text": "bylex",
+              "name": "bylex",
+              "token": "BYLEX",
+              "type": "pure-token"
+            }
+          ],
+          "name": "sortby",
+          "optional": true,
+          "since": "6.2.0",
+          "type": "oneof"
+        },
+        {
+          "display_text": "rev",
+          "name": "rev",
+          "optional": true,
+          "since": "6.2.0",
+          "token": "REV",
+          "type": "pure-token"
+        },
+        {
+          "arguments": [
+            {
+              "display_text": "offset",
+              "name": "offset",
+              "type": "integer"
+            },
+            {
+              "display_text": "count",
+              "name": "count",
+              "type": "integer"
+            }
+          ],
+          "name": "limit",
+          "optional": true,
+          "since": "6.2.0",
+          "token": "LIMIT",
+          "type": "block"
+        },
+        {
+          "display_text": "withscores",
+          "name": "withscores",
+          "optional": true,
+          "token": "WITHSCORES",
+          "type": "pure-token"
+        }
+      ],
+      "arity": -4,
+      "flags": [
+        "readonly"
+      ],
+      "key_spec": {
+        "begin": {
+          "index": 1,
+          "keyword": null,
+          "startfrom": null,
+          "tag": "BeginAtIndex"
+        },
+        "find": {
+          "firstkey": null,
+          "keynumidx": null,
+          "keystep": 1,
+          "lastkey": 0,
+          "limit": 0,
+          "tag": "FindRange"
+        }
+      },
+      "name": "ZRANGE",
+      "syntax": "SyntaxNone",
+      "tokens": [
+        "ZRANGE"
+      ]
+    }
+  ],
+  "redisDocSha": "928bf6ed9848b76b53429adf81f96f9db3b06800",
+  "redisDocUrl": "https://raw.githubusercontent.com/redis/redis-doc/928bf6ed9848b76b53429adf81f96f9db3b06800/commands.json"
+}

@@ -63,8 +63,12 @@ module Database.Redis.Cluster.Client
     -- normal Redis operations.
     executeKeyedClusterCommand,
     executeKeyedClusterCommandUsingDelay,
+    executeKeyedClusterFrame,
+    executeKeyedClusterFrameUsingDelay,
     executeKeylessClusterCommand,
     executeKeylessClusterCommandUsingDelay,
+    executeKeylessClusterFrame,
+    executeKeylessClusterFrameUsingDelay,
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)
@@ -664,6 +668,29 @@ executeKeylessClusterCommandUsingDelay delayAction client action =
     (clusterRetryDelay $ clusterConfig client)
     (const $ executeKeylessAttempt client action)
 
+executeKeylessClusterFrame ::
+  (Client client) =>
+  ClusterClient client ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeylessClusterFrame =
+  executeKeylessClusterFrameUsingDelay threadDelay
+
+executeKeylessClusterFrameUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeylessClusterFrameUsingDelay delayAction client cmdBuilder =
+  withRetryAndRefreshPolicyUsing
+    KeylessRetryPolicy
+    delayAction
+    client
+    (clusterMaxRetries $ clusterConfig client)
+    (clusterRetryDelay $ clusterConfig client)
+    (const $ executeKeylessFrameAttempt client cmdBuilder)
+
 executeKeylessAttempt ::
   (Client client) =>
   ClusterClient client ->
@@ -676,6 +703,19 @@ executeKeylessAttempt client action = do
   case masterNodes of
     []       -> return $ Left $ TopologyError "No master nodes available"
     (node:_) -> executeOnNode client (nodeAddress node) action connector
+
+executeKeylessFrameAttempt ::
+  (Client client) =>
+  ClusterClient client ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeylessFrameAttempt client cmdBuilder = do
+  let muxPool = clusterMultiplexPool client
+  topology <- readTVarIO (clusterTopology client)
+  let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  case masterNodes of
+    []       -> return $ Left $ TopologyError "No master nodes available"
+    (node:_) -> executeOnNodeDirect muxPool (nodeAddress node) cmdBuilder
 
 -- | Retry logic for transient failures and Redis redirections.
 --
@@ -974,8 +1014,30 @@ executeKeyedClusterCommandUsingDelay ::
   [ByteString] ->
   IO (Either ClusterError RespData)
 executeKeyedClusterCommandUsingDelay delayAction client key cmdArgs = do
+  executeKeyedClusterFrameUsingDelay
+    delayAction
+    client
+    key
+    (encodeCommandBuilder cmdArgs)
+
+executeKeyedClusterFrame ::
+  (Client client) =>
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterFrame =
+  executeKeyedClusterFrameUsingDelay threadDelay
+
+executeKeyedClusterFrameUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  ByteString ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeyedClusterFrameUsingDelay delayAction client key cmdBuilder = do
   let muxPool = clusterMultiplexPool client
-      cmdBuilder = encodeCommandBuilder cmdArgs
       !slot = calculateSlot key
   withRetryAndRefreshUsing delayAction
     client

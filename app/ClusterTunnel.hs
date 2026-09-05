@@ -6,6 +6,8 @@ module ClusterTunnel
   ( serveSmartProxy
   , servePinnedProxy
   , rewriteClusterResponse
+  , routeSmartProxyCommand
+  , routeSmartProxyCommandWith
   ) where
 
 import           Control.Concurrent              (MVar, forkIO, newEmptyMVar,
@@ -33,7 +35,7 @@ import           Database.Redis.Cluster.Client   (ClusterClient (..),
                                                   ClusterError (..))
 import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
 import           Database.Redis.Cluster.Commands (CommandRouting (..),
-                                                  classifyCommand)
+                                                  classifyCommandResp)
 import           Database.Redis.Command          (ClientState (..),
                                                   RedisCommandClient, parseWith)
 import           Database.Redis.Connector        (Connector)
@@ -103,7 +105,7 @@ handleSmartProxyClient clusterClient clientSock = do
               loop
             Right respData -> do
               -- Route and execute the command
-              result <- routeSmartProxyCommand clusterClient respData
+              result <- routeSmartProxyCommand clusterClient dat respData
               case result of
                 Left err -> do
                   printf "Command execution error: %s\n" err
@@ -117,27 +119,39 @@ handleSmartProxyClient clusterClient clientSock = do
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>
   ClusterClient client ->
+  BS.ByteString ->
   RespData ->
   IO (Either String RespData)
-routeSmartProxyCommand clusterClient respData = do
-  case respData of
-    RespArray (RespBulkString cmd : args) -> do
-      let argKeys = [k | RespBulkString k <- args]
-      case classifyCommand cmd argKeys of
-        KeylessRoute   -> executeKeylessCommand clusterClient respData
-        KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : argKeys)
-        CommandError e -> return $ Left e
-    _ -> return $ Left "Expected array command"
+routeSmartProxyCommand clusterClient rawFrame respData =
+  routeSmartProxyCommandWith
+    classifyCommandResp
+    (executeKeylessCommand clusterClient)
+    (executeKeyedCommand clusterClient)
+    rawFrame
+    respData
+
+routeSmartProxyCommandWith ::
+  (RespData -> CommandRouting) ->
+  (BS.ByteString -> IO (Either String RespData)) ->
+  (BS.ByteString -> BS.ByteString -> IO (Either String RespData)) ->
+  BS.ByteString ->
+  RespData ->
+  IO (Either String RespData)
+routeSmartProxyCommandWith classifier executeKeyless executeKeyed rawFrame respData =
+  case classifier respData of
+    KeylessRoute   -> executeKeyless rawFrame
+    KeyedRoute key -> executeKeyed key rawFrame
+    CommandError e -> return $ Left e
 
 -- | Execute a keyless command (route to any master)
 executeKeylessCommand :: (Client client) =>
   ClusterClient client ->
-  RespData ->
+  BS.ByteString ->
   IO (Either String RespData)
-executeKeylessCommand clusterClient respData = do
+executeKeylessCommand clusterClient rawFrame = do
   result <- ClusterCommandClient.executeKeylessClusterCommand
               clusterClient
-              (sendRespCommand respData)
+              (sendRawCommand rawFrame)
   return $ case result of
     Left err   -> Left (show err)
     Right resp -> Right resp
@@ -146,24 +160,23 @@ executeKeylessCommand clusterClient respData = do
 executeKeyedCommand :: (Client client) =>
   ClusterClient client ->
   BS.ByteString ->
-  [BS.ByteString] ->
+  BS.ByteString ->
   IO (Either String RespData)
-executeKeyedCommand clusterClient key cmdArgs = do
-  result <- ClusterCommandClient.executeKeyedClusterCommand
+executeKeyedCommand clusterClient key rawFrame = do
+  result <- ClusterCommandClient.executeKeyedClusterFrame
               clusterClient
               key
-              cmdArgs
+              (Builder.byteString rawFrame)
   return $ case result of
     Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
     Left err                  -> Left (show err)
     Right resp                -> Right resp
 
--- | Send RESP command via RedisCommandClient
-sendRespCommand :: (Client client) => RespData -> RedisCommandClient client RespData
-sendRespCommand respData = do
+-- | Send raw RESP command via RedisCommandClient
+sendRawCommand :: (Client client) => BS.ByteString -> RedisCommandClient client RespData
+sendRawCommand rawFrame = do
   ClientState client _ <- State.get
-  let encoded = Builder.toLazyByteString $ encode respData
-  send client encoded
+  send client (LBS.fromStrict rawFrame)
   parseWith (receive client)
 
 -- | Pinned proxy mode: One listener per cluster node
