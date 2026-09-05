@@ -109,12 +109,17 @@ data TeardownClient (a :: ConnectionStatus) where
     -> !(MVar ())
     -> !(MVar ())
     -> !(MVar ByteString)
+    -> !(MVar ())
+    -> !(MVar ())
     -> TeardownClient 'Connected
 
 instance Client TeardownClient where
   connect = error "TeardownClient: connect not supported"
-  close _ = return ()
-  send (TeardownConnected sendCount firstSent secondStarted releaseSecond _ _) _ =
+  close (TeardownConnected _ _ _ _ _ _ closeStarted releaseClose) =
+    liftIO $ do
+      void $ tryPutMVar closeStarted ()
+      takeMVar releaseClose
+  send (TeardownConnected sendCount firstSent secondStarted releaseSecond _ _ _ _) _ =
     liftIO $ do
       sendNumber <- atomicModifyIORef' sendCount $ \count ->
         let next = count + 1
@@ -125,7 +130,7 @@ instance Client TeardownClient where
           void $ tryPutMVar secondStarted ()
           uninterruptibleMask_ $ takeMVar releaseSecond
         _ -> return ()
-  receive (TeardownConnected _ _ _ _ receiveStarted replies) =
+  receive (TeardownConnected _ _ _ _ receiveStarted replies _ _) =
     liftIO $ do
       void $ tryPutMVar receiveStarted ()
       takeMVar replies
@@ -133,6 +138,8 @@ instance Client TeardownClient where
 createTeardownClient
   :: IO
        ( TeardownClient 'Connected
+       , IO ()
+       , IO ()
        , IO ()
        , IO ()
        , IO ()
@@ -145,16 +152,21 @@ createTeardownClient = do
   releaseSecond <- newEmptyMVar
   receiveStarted <- newEmptyMVar
   replies <- newEmptyMVar
+  closeStarted <- newEmptyMVar
+  releaseClose <- newEmptyMVar
   let await barrier = do
         observed <- timeout 1000000 (takeMVar barrier)
         observed `shouldBe` Just ()
   return
     ( TeardownConnected
         sendCount firstSent secondStarted releaseSecond receiveStarted replies
+        closeStarted releaseClose
     , await firstSent
     , await secondStarted
     , await receiveStarted
     , putMVar releaseSecond ()
+    , await closeStarted
+    , putMVar releaseClose ()
     )
 
 data AcquisitionClient (a :: ConnectionStatus) where
@@ -445,7 +457,14 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
 
   it "a later destroy resumes cancelled teardown across active, pending, and queued slots" $ do
     pool <- createSlotPool 16
-    (client, awaitFirstSend, awaitSecondSend, awaitReceive, releaseSecondSend) <-
+    ( client
+      , awaitFirstSend
+      , awaitSecondSend
+      , awaitReceive
+      , releaseSecondSend
+      , awaitCloseStart
+      , releaseClose
+      ) <-
       createTeardownClient
     mux <- createMultiplexer client (receive client)
     firstSlot <- submitCommandAsync pool mux (encodeCmd ["GET", "reader-owned"])
@@ -462,11 +481,12 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
         (encodeCmd ["GET", LBS.toStrict $ Builder.toLazyByteString $ Builder.intDec idx]))
       [1 :: Int .. 6]
     queuedResults <- mapM (waitForSlotInThread pool) queuedSlots
-
     ownerFinished <- newEmptyMVar
     owner <- forkFinally (destroyMultiplexer mux) (putMVar ownerFinished)
-    closureStarted <- timeout 1000000 (waitUntilTeardownStarted mux)
-    closureStarted `shouldBe` Just ()
+    -- The finalizer owns close in a separate thread. This barrier proves the
+    -- destroy owner has reached teardown without relying on muxAlive's early
+    -- admission-closure transition.
+    awaitCloseStart
 
     killThread owner
     cancelledOwner <- timeout 1000000 (takeMVar ownerFinished)
@@ -474,6 +494,7 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
       Just (Left _) -> True
       _             -> False
 
+    releaseClose
     releaseSecondSend
     resumedDestroy <- timeout 1000000 (destroyMultiplexer mux)
     resumedDestroy `shouldBe` Just ()
@@ -642,13 +663,6 @@ waitForSlotInThread pool slot = do
     result <- try $ waitSlot pool slot
     putMVar resultVar result
   return resultVar
-
-waitUntilTeardownStarted :: Multiplexer -> IO ()
-waitUntilTeardownStarted mux = do
-  alive <- isMultiplexerAlive mux
-  if alive
-    then threadDelay 1000 >> waitUntilTeardownStarted mux
-    else return ()
 
 runOnCapabilityZero :: IO () -> IO ()
 runOnCapabilityZero action = do
