@@ -124,6 +124,8 @@ library cluster
                     , Database.Redis.Internal.Multiplexer
                     , Database.Redis.Cluster.Internal.Topology
                     , Database.Redis.Standalone
+    other-modules:    Database.Redis.Cluster.Commands.Generated
+                    , Database.Redis.Cluster.Commands.Spec
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
                     , client
@@ -264,3 +266,10 @@ test-suite MultiplexPoolSpec
                     , client
                     , cluster
                     , resp
+
+test-suite ClusterRoutingSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterRoutingSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , cluster

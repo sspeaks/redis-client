@@ -112,6 +112,23 @@ fail the typed command instead of appearing as values. The planned breaking
 nesting these same structured cluster/server causes; this change does not add a
 second compatibility runner.
 
+## Generated command routing source of truth
+
+`Database.Redis.Cluster.Commands` is generated from the immutable Redis 7.2.6
+command metadata snapshot in `../vendor/redis-7.2.6-commands/`
+(SHA `ae6a2aa95cd094b032e7a69b8b59f64dd1ed085f`).
+
+Use:
+
+```sh
+scripts/generate_cluster_routing.py
+scripts/audit_cluster_routing.sh
+```
+
+`audit_cluster_routing.sh` performs semantic drift detection against canonical
+generator output; deliberate mutation of any generated routing entry fails the
+audit.
+
 ## Custom Configuration
 
 ```haskell

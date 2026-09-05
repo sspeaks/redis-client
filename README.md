@@ -271,6 +271,25 @@ make redis-cluster-stop     # Stop Redis cluster
 
 Note: Do NOT start Redis manually before running E2E tests (`make test-e2e` or `make test-cluster-e2e`). Those tests manage their own Docker instances.
 
+### Regenerating cluster routing grammar
+
+Cluster smart-proxy routing is generated from immutable Redis 7.2.6 command
+metadata vendored at:
+
+`vendor/redis-7.2.6-commands/` (source SHA `ae6a2aa95cd094b032e7a69b8b59f64dd1ed085f`)
+
+Update and audit commands:
+
+```sh
+# Regenerate hask-redis-mux/lib/.../Commands/Generated.hs deterministically
+scripts/generate_cluster_routing.py
+
+# Semantic drift check (fails on any routing-entry mutation)
+scripts/audit_cluster_routing.sh
+```
+
+The generator is deterministic: same source metadata => identical generated file.
+
 ### Profiling
 
 Profile before and after changes to detect regressions:
