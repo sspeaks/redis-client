@@ -45,14 +45,16 @@ module Database.Redis.Standalone
   ) where
 
 import           Control.Exception                   (SomeException, bracket,
-                                                      catch, onException)
+                                                      catch, onException,
+                                                      throwIO)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
 import qualified Data.ByteString                     as BS
 import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
-import           Database.Redis.Command              (ClientReplyValues (..),
+import           Database.Redis.Command              (ClientReplyModeUnsupported (..),
+                                                      ClientReplyValues (..),
                                                       RedisCommands (..),
                                                       convertResp,
                                                       encodeCommandBuilder,
@@ -254,15 +256,10 @@ instance RedisCommands StandaloneCommandClient where
   clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
   clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
 
-  clientReply val = do
-    case val of
-      ON -> do
-        resp <- submitMux ["CLIENT", "REPLY", showBS val]
-        return (Just resp)
-      -- OFF/SKIP: Redis does not send a response, which would desync the
-      -- multiplexer. These are inherently incompatible with pipelined
-      -- multiplexing, so we silently ignore them.
-      _ -> return Nothing
+  clientReply ON =
+    Just <$> submitMux ["CLIENT", "REPLY", "ON"]
+  clientReply val =
+    liftIO $ throwIO (ClientReplyModeUnsupported val)
 
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members

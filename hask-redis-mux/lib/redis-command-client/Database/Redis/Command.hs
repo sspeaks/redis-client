@@ -15,6 +15,10 @@ module Database.Redis.Command
   , RedisCommandClient (..)
   , RedisCommands (..)
   , ClientReplyValues (..)
+  , ClientReplyModeUnsupported (..)
+  , ClientReplyUncertainWrite (..)
+  , sendCommandWithoutReply
+  , sendClientReplySkipAndCommand
   , authenticatePassword
   , authenticateACL
     -- * Errors
@@ -45,7 +49,12 @@ module Database.Redis.Command
   , convertResp
   ) where
 
-import           Control.Exception                (throwIO)
+import           Control.Exception                (Exception,
+                                                   SomeAsyncException,
+                                                   SomeException,
+                                                   displayException,
+                                                   fromException, mask, throwIO,
+                                                   try, uninterruptibleMask_)
 import           Control.Monad.IO.Class           (MonadIO (..))
 import           Control.Monad.State              as State (MonadState (get, put),
                                                             StateT)
@@ -55,12 +64,14 @@ import qualified Data.ByteString.Builder          as Builder
 import qualified Data.ByteString.Char8            as BS8
 import qualified Data.ByteString.Lazy             as LBS
 import           Data.Kind                        (Type)
+import           Data.Typeable                    (Typeable)
 import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
 import           Database.Redis.FromResp          (FromResp (..))
 import           Database.Redis.RedisError        (RedisError (..))
 import           Database.Redis.Resp              (Encodable (encode),
                                                    RespData (..), parseRespData)
+import           System.IO                        (hPutStrLn, stderr)
 
 
 -- | Mutable state carried through a 'RedisCommandClient' session: the live connection
@@ -146,6 +157,24 @@ class (MonadIO m) => RedisCommands m where
   llen :: (FromResp a) => ByteString -> m a
   lindex :: (FromResp a) => ByteString -> Int -> m a
   clientSetInfo :: (FromResp a) => [ByteString] -> m a
+  -- | Change Redis reply behavior for the current physical connection.
+  --
+  -- @ON@ returns its server reply. @OFF@ is supported only by a dedicated
+  -- sequential 'RedisCommandClient' connection. It sends @CLIENT REPLY OFF@
+  -- without reading a reply, so it returns 'Nothing'. While replies are
+  -- disabled, every intervening command /must/ use
+  -- 'sendCommandWithoutReply' (or an equivalent documented raw no-read
+  -- operation); ordinary reply-waiting commands are invalid and may block or
+  -- desynchronize the connection. @ON@ uses the normal reply-reading path,
+  -- consumes its own @OK@ reply, and restores normal replies for subsequent
+  -- commands.
+  --
+  -- Shared multiplexed and cluster clients synchronously reject @OFF@ and
+  -- @SKIP@ with 'ClientReplyModeUnsupported' /before/ connection acquisition,
+  -- queueing, bytes sent, slot allocation, or reply-stream/state mutation.
+  -- @SKIP@ is not composable through 'clientReply': use
+  -- 'sendClientReplySkipAndCommand' on a dedicated sequential connection to
+  -- atomically bind it to the command whose reply Redis suppresses.
   clientReply :: ClientReplyValues -> m (Maybe RespData)
   zadd :: (FromResp a) => ByteString -> [(Int, ByteString)] -> m a
   zrange :: (FromResp a) => ByteString -> Int -> Int -> Bool -> m a
@@ -231,6 +260,87 @@ executeCommand args = do
   ClientState !client _ <- State.get
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
   parseWith (receive client)
+
+-- | Send a command without reading a response on a dedicated sequential
+-- connection whose reply mode is already @OFF@. This is the required
+-- fire-and-forget operation while replies are disabled; do not use ordinary
+-- reply-waiting command functions until @CLIENT REPLY ON@ has consumed its
+-- own @OK@ reply.
+sendCommandWithoutReply :: (Client client) => [ByteString] -> RedisCommandClient client ()
+sendCommandWithoutReply args = do
+  ClientState !client _ <- State.get
+  liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
+
+-- | Atomically transfer @CLIENT REPLY SKIP@ and its target command on a
+-- dedicated sequential connection. Redis suppresses the target reply, so no
+-- reply is read and the following command remains aligned.
+--
+-- If the transfer throws or is cancelled, this function closes the physical
+-- connection before propagating an error. If close succeeds, the original
+-- transfer error is rethrown unchanged. If transfer and close both fail
+-- synchronously, 'ClientReplyUncertainWrite' retains both failures. An
+-- asynchronous transfer failure takes precedence over any close failure;
+-- otherwise an asynchronous close failure takes precedence over the
+-- synchronous transfer failure. When exactly one failure is asynchronous, the
+-- synchronous counterpart is reported to standard error. If both failures are
+-- asynchronous, the transfer failure wins and the close failure is reported.
+--
+-- The target may have executed, so callers must reconnect and decide whether
+-- retrying it is safe; the connection passed to this function must not be reused.
+sendClientReplySkipAndCommand
+  :: (Client client)
+  => [ByteString]
+  -> RedisCommandClient client ()
+sendClientReplySkipAndCommand args = do
+  ClientState !client _ <- State.get
+  let builder =
+        encode (wrapInRay ["CLIENT", "REPLY", "SKIP"]) <> encode (wrapInRay args)
+  liftIO $ sendSkipAndCommand client (Builder.toLazyByteString builder)
+
+-- | Transfer a reply-suppression pair while owning the connection on every
+-- exceptional path. The write is interruptible; once it has started we cannot
+-- distinguish no-byte from partial-byte delivery, so either outcome is
+-- terminal for this physical connection. Cleanup is uninterruptible only for
+-- the single close operation, preventing a second cancellation from leaving
+-- the connection eligible for accidental reuse.
+sendSkipAndCommand
+  :: (Client client)
+  => client 'Connected
+  -> LBS.ByteString
+  -> IO ()
+sendSkipAndCommand client bytes = mask $ \restore -> do
+  transfer <- try $ restore $ send client bytes
+  case transfer of
+    Right () -> return ()
+    Left (primary :: SomeException) -> do
+      closeResult <- uninterruptibleMask_ $ try $ close client
+      case closeResult of
+        Right () -> throwIO primary
+        Left (closeFailure :: SomeException) ->
+          resolveUncertainWrite primary closeFailure
+
+resolveUncertainWrite :: SomeException -> SomeException -> IO a
+resolveUncertainWrite primary closeFailure =
+  case fromException primary of
+    Just (async :: SomeAsyncException) -> do
+      reportClientReplyCloseFailure primary closeFailure
+      throwIO async
+    Nothing ->
+      case fromException closeFailure of
+        Just (async :: SomeAsyncException) -> do
+          reportClientReplyCloseFailure primary closeFailure
+          throwIO async
+        Nothing ->
+          throwIO $ ClientReplyUncertainWrite primary closeFailure
+
+reportClientReplyCloseFailure :: SomeException -> SomeException -> IO ()
+reportClientReplyCloseFailure primary closeFailure = do
+  _ <- (try (hPutStrLn stderr $
+    "CLIENT REPLY SKIP transfer failed before connection close: "
+      ++ displayException primary
+      ++ "\nConnection close also failed: "
+      ++ displayException closeFailure) :: IO (Either SomeException ()))
+  return ()
 
 -- | Convert a raw 'RespData' value using 'FromResp', throwing on failure.
 convertResp :: (FromResp a, MonadIO m) => RespData -> m a
@@ -336,6 +446,44 @@ geoSearchOptionToList opt =
 data ClientReplyValues = OFF | ON | SKIP
   deriving (Eq, Show)
 
+-- | A reply mode that cannot be represented safely by the requested API.
+--
+-- Multiplexed and cluster clients reject @OFF@ and @SKIP@ because both alter
+-- the reply stream of a shared connection. Sequential clients reject @SKIP@
+-- from 'clientReply'; use 'sendClientReplySkipAndCommand' to bind it to its
+-- target command atomically.
+data ClientReplyModeUnsupported
+  = ClientReplyModeUnsupported ClientReplyValues
+  deriving (Eq, Show, Typeable)
+
+instance Exception ClientReplyModeUnsupported
+
+-- | Both an atomic @CLIENT REPLY SKIP@ transfer and its required connection
+-- close failed synchronously. The primary transfer error and cleanup error are
+-- retained so callers can diagnose the uncertain command outcome without
+-- losing either.
+--
+-- This exception never wraps an asynchronous exception. An asynchronous
+-- transfer failure wins over the close failure; otherwise an asynchronous
+-- close failure wins over the synchronous transfer failure. When exactly one
+-- failure is asynchronous, the synchronous counterpart is reported to
+-- standard error. If both failures are asynchronous, the transfer failure wins
+-- and the close failure is reported.
+data ClientReplyUncertainWrite = ClientReplyUncertainWrite
+  { clientReplyPrimaryError :: SomeException
+  , clientReplyCloseError   :: SomeException
+  }
+  deriving Typeable
+
+instance Show ClientReplyUncertainWrite where
+  show failure =
+    "CLIENT REPLY SKIP transfer failed: "
+      ++ displayException (clientReplyPrimaryError failure)
+      ++ "\nConnection close also failed: "
+      ++ displayException (clientReplyCloseError failure)
+
+instance Exception ClientReplyUncertainWrite
+
 instance (Client client) => RedisCommands (RedisCommandClient client) where
   ping = executeCommandAs ["PING"]
   set k v = executeCommandAs ["SET", k, v]
@@ -379,11 +527,10 @@ instance (Client client) => RedisCommands (RedisCommandClient client) where
   clusterSlots = executeCommandAs ["CLUSTER", "SLOTS"]
 
   clientReply val = do
-    ClientState !client _ <- State.get
-    liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay ["CLIENT", "REPLY", showBS val])
     case val of
-      ON -> Just <$> parseWith (receive client)
-      _  -> return Nothing
+      ON -> Just <$> executeCommand ["CLIENT", "REPLY", showBS val]
+      OFF -> sendCommandWithoutReply ["CLIENT", "REPLY", showBS val] >> return Nothing
+      SKIP -> liftIO $ throwIO (ClientReplyModeUnsupported SKIP)
 
   zadd key members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members

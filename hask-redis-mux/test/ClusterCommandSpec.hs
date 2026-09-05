@@ -55,6 +55,7 @@ import           Database.Redis.Cluster.Internal.Topology   (commitRefreshedTopo
                                                              mergeRefreshedTopology,
                                                              patchMovedSlot,
                                                              provisionalMovedPatches)
+import           Database.Redis.Command                     (ClientReplyValues (..))
 import           Database.Redis.Connector                   (ConnectionPhase (..),
                                                              ConnectionSetupException (..),
                                                              withConnectionTimeout)
@@ -1386,6 +1387,18 @@ clusterAuthenticationSpec =
       recordsAfter <- getRecords
       sentAfter <- recordSentBytes $ findAuthRecord recordsAfter node1 0
       sentAfter `shouldBe` sentBefore
+      closeClusterClient client
+
+    it "rejects runtime CLIENT REPLY OFF and SKIP without touching a connection" $ do
+      topology <- mkTopology node1
+      client <- mkClusterClient
+        (\_ -> error "CLIENT REPLY mode must not acquire a cluster connection")
+        topology
+      forM_ [OFF, SKIP] $ \mode -> do
+        result <- try $ runClusterCommandClient client
+          (clientReply mode :: ClusterCommandClient MockClient (Maybe RespData))
+          :: IO (Either ClientReplyModeUnsupported (Maybe RespData))
+        result `shouldBe` Left (ClientReplyModeUnsupported mode)
       closeClusterClient client
 
 movedRedirectSpec :: Spec
