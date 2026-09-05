@@ -55,6 +55,14 @@ test-suite CredentialSpec
                     , hask-redis-mux
                     , mtl
 
+test-suite FlushConfirmationSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          FlushConfirmationSpec.hs
+    other-modules:    FlushConfirmation
+    hs-source-dirs:   test
+                    , app
+
 test-suite ClusterSetupSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
@@ -215,6 +223,7 @@ executable redis-client
                     , CredentialConfig
                     , FillHelpers
                     , FillProcess
+                    , FlushConfirmation
                     , Filler
                     , SlotMappingHelpers
     build-depends:    attoparsec
