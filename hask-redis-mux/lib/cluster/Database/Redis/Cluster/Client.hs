@@ -65,6 +65,9 @@ module Database.Redis.Cluster.Client
     executeKeyedClusterCommandUsingDelay,
     executeKeylessClusterCommand,
     executeKeylessClusterCommandUsingDelay,
+    executeRawClusterCommand,
+    executeRawClusterCommandUsingDelay,
+    RawClusterRoute (..),
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)
@@ -131,6 +134,7 @@ import           Database.Redis.Command                   (ClientState (..),
                                                            geoSearchFromToList,
                                                            geoSearchOptionToList,
                                                            geoUnitKeyword,
+                                                           parseWith,
                                                            runRedisCommandClient,
                                                            showBS)
 import qualified Database.Redis.Command                   as RedisCommandClient
@@ -147,7 +151,8 @@ import           Database.Redis.Internal.MultiplexPool    (MultiplexPool,
                                                            createMultiplexPool,
                                                            submitToNode,
                                                            submitToNodeWithAsking)
-import           Database.Redis.Resp                      (RespData (..))
+import           Database.Redis.Resp                      (Encodable (..),
+                                                           RespData (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError
@@ -182,6 +187,15 @@ data RetryRoute
   = RouteBySlot
   | RouteMoved !Word16 !NodeAddress
   | RouteAsk !NodeAddress
+
+-- | Explicit routing policy for a pre-parsed RESP frame.
+--
+-- This is deliberately separate from 'RetryRoute': callers choose the initial
+-- cluster routing policy, while retry routes are determined from server replies.
+data RawClusterRoute
+  = RawRouteByKey !ByteString
+  | RawRouteKeyless
+  deriving (Eq, Show)
 
 -- | Configuration for a cluster client.
 data ClusterConfig = ClusterConfig
@@ -991,6 +1005,97 @@ executeKeyedClusterCommandUsingDelay delayAction client key cmdArgs = do
         executeOnNodeDirect muxPool address cmdBuilder
       RouteAsk address ->
         executeOnNodeWithAsking client muxPool address cmdBuilder
+
+-- | Execute an already parsed RESP frame with an explicit cluster routing
+-- policy.  The frame is encoded once and that exact builder is reused for each
+-- retry, redirect, and reconnect attempt.
+--
+-- This is intentionally a low-level API for protocol adapters.  It does not
+-- classify commands or convert RESP values to command argument lists.
+executeRawClusterCommand ::
+  (Client client) =>
+  ClusterClient client ->
+  RawClusterRoute ->
+  RespData ->
+  IO (Either ClusterError RespData)
+executeRawClusterCommand =
+  executeRawClusterCommandUsingDelay threadDelay
+
+-- | Deterministic-delay variant of 'executeRawClusterCommand'.
+executeRawClusterCommandUsingDelay ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  RawClusterRoute ->
+  RespData ->
+  IO (Either ClusterError RespData)
+executeRawClusterCommandUsingDelay delayAction client rawRoute frame =
+  case rawRoute of
+    RawRouteByKey key ->
+      executeRawKeyed
+        delayAction client (calculateSlot key) frameBuilder
+    RawRouteKeyless ->
+      withRetryAndRefreshPolicyUsing
+        KeylessRetryPolicy
+        delayAction
+        client
+        (clusterMaxRetries $ clusterConfig client)
+        (clusterRetryDelay $ clusterConfig client)
+        (const $ executeKeylessFrameAttempt client frameBuilder)
+  where
+    frameBuilder = encode frame
+
+executeRawKeyed ::
+  (Client client) =>
+  (Int -> IO ()) ->
+  ClusterClient client ->
+  Word16 ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeRawKeyed delayAction client slot frameBuilder =
+  withRetryAndRefreshUsing
+    delayAction
+    client
+    (clusterMaxRetries $ clusterConfig client)
+    (clusterRetryDelay $ clusterConfig client) $ \route ->
+    case route of
+      RouteBySlot -> do
+        refreshResult <- tryClusterAction $ refreshTopologyIfStale client
+        case refreshResult of
+          Left err -> return $ Left err
+          Right () ->
+            executeOnSlotMux client (clusterMultiplexPool client) slot frameBuilder
+      RouteMoved _ address ->
+        executeOnNodeDirect (clusterMultiplexPool client) address frameBuilder
+      RouteAsk address ->
+        executeOnNodeWithAsking client (clusterMultiplexPool client) address frameBuilder
+
+executeKeylessFrameAttempt ::
+  (Client client) =>
+  ClusterClient client ->
+  Builder.Builder ->
+  IO (Either ClusterError RespData)
+executeKeylessFrameAttempt client frameBuilder = do
+  topology <- readTVarIO $ clusterTopology client
+  let masterNodes =
+        [ node
+        | node <- Map.elems $ topologyNodes topology
+        , nodeRole node == Master
+        ]
+  case masterNodes of
+    []       -> return $ Left $ TopologyError "No master nodes available"
+    (node:_) ->
+      executeOnNode
+        client
+        (nodeAddress node)
+        (rawFrameAction frameBuilder)
+        (clusterConnector client)
+
+rawFrameAction :: (Client client) => Builder.Builder -> RedisCommandClient client RespData
+rawFrameAction frameBuilder = RedisCommandClient $ do
+  ClientState conn _ <- State.get
+  liftIO $ send conn (Builder.toLazyByteString frameBuilder)
+  parseWith (receive conn)
 
 -- | Execute a pre-encoded command via multiplexer on the node for a given slot.
 -- Uses findNodeAddressForSlot for O(1) direct address lookup (no Map needed).

@@ -327,6 +327,7 @@ spec = do
   clusterLifecycleSpec
   clusterAuthenticationSpec
   clusterErrorClassificationSpec
+  rawFrameIdentitySpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -2308,6 +2309,26 @@ awaitCommandCount record command expected = do
             check $ current > observed
           await
 
+awaitFrameCount :: AuthConnectionRecord -> ByteString -> Int -> IO ()
+awaitFrameCount record frame expected = do
+  observed <- timeout 5000000 await
+  case observed of
+    Just () -> return ()
+    Nothing ->
+      expectationFailure $
+        "Timed out waiting for " ++ show expected ++ " sends of raw RESP frame"
+  where
+    await = do
+      observed <- readTVarIO $ authRecordSendCount record
+      sent <- recordSentBytes record
+      if countOccurrences frame sent >= expected
+        then return ()
+        else do
+          atomically $ do
+            current <- readTVar $ authRecordSendCount record
+            check $ current > observed
+          await
+
 askRedirectSuccessSpec :: Spec
 askRedirectSuccessSpec = describe "successful command without ASK redirection" $ do
   it "successful command without redirection returns directly" $ do
@@ -2330,3 +2351,121 @@ askRedirectSuccessSpec = describe "successful command without ASK redirection" $
 
       closeMultiplexPool (clusterMultiplexPool client)
     result `shouldBe` Just ()
+
+rawFrameIdentitySpec :: Spec
+rawFrameIdentitySpec =
+  describe "raw RESP cluster execution preserves encoded frames" $ do
+    it "preserves nested arrays, integers, nulls, binary data, and empty bulk strings" $ do
+      forM_ rawFrames $ \frame -> do
+        let script _ index =
+              return $
+                if index == 0
+                  then [replyWith validClusterSlots]
+                  else [replyWith $ RespSimpleString "OK"]
+        (connector, getRecords) <- createAuthMockConnector script
+        client <- createClusterClient (retryTestConfig 1 1) connector
+        executeRawClusterCommand client (RawRouteByKey "raw-key") frame
+          `shouldReturn` Right (RespSimpleString "OK")
+        records <- getRecords
+        let commandRecord = findAuthRecord records node1 1
+        awaitFrameCount commandRecord (encodeResp frame) 1
+        recordSentBytes commandRecord
+          `shouldReturn` encodeResp frame
+        closeClusterClient client
+
+    it "reuses the raw frame on MOVED and does not prefix it with ASKING" $ do
+      let key = "raw-moved-key"
+          frame = rawFrame
+          script address index
+            | address == node1 && index == 0 =
+                return [replyWith validClusterSlots]
+            | address == node1 =
+                return [replyWith $ movedResponse (calculateSlot key) node2]
+            | address == node2 && index == 0 =
+                return [replyWith $ RespSimpleString "OK"]
+            | otherwise = return [replyWith validClusterSlots]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 1) connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp frame
+      recordSentBytes (findAuthRecord records node2 0)
+        `shouldReturn` encodeResp frame
+      closeClusterClient client
+
+    it "sends ASKING separately before the unchanged raw frame on ASK" $ do
+      let key = "raw-ask-key"
+          frame = rawFrame
+          script address index
+            | address == node1 && index == 0 =
+                return [replyWith validClusterSlots]
+            | address == node1 =
+                return
+                  [replyWith $ RespError $
+                    "ASK " <> BS8.pack (show $ calculateSlot key)
+                      <> " 127.0.0.2:6380"]
+            | otherwise =
+                return
+                  [ replyWith $ RespSimpleString "OK"
+                  , replyWith $ RespSimpleString "OK"
+                  ]
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 2 1) connector
+      executeRawClusterCommand client (RawRouteByKey key) frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      records <- getRecords
+      let targetRecord = findAuthRecord records node2 0
+      awaitCommandCount targetRecord ["ASKING"] 1
+      recordSentBytes targetRecord
+        `shouldReturn` commandBytes ["ASKING"] <> encodeResp frame
+      closeClusterClient client
+
+    it "keeps the identical raw frame through TRYAGAIN and keyless retries" $ do
+      let frame = rawFrame
+          script _ index =
+            return $
+              if index == 0
+                then
+                  [ replyWith validClusterSlots
+                  , replyWith $ RespError "TRYAGAIN first"
+                  , replyWith $ RespError "TRYAGAIN second"
+                  , replyWith $ RespSimpleString "OK"
+                  ]
+                else []
+      (connector, getRecords) <- createAuthMockConnector script
+      client <- createClusterClient (retryTestConfig 3 1) connector
+      executeRawClusterCommandUsingDelay
+        (const $ return ())
+        client
+        RawRouteKeyless
+        frame
+        `shouldReturn` Right (RespSimpleString "OK")
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 0)
+        `shouldReturn`
+          commandBytes ["CLUSTER", "SLOTS"]
+            <> encodeResp frame <> encodeResp frame <> encodeResp frame
+      closeClusterClient client
+
+rawFrame :: RespData
+rawFrame =
+  RespArray
+    [ RespBulkString "EVAL"
+    , RespArray
+        [ RespBulkString ""
+        , RespInteger (-17)
+        , RespNullBulkString
+        , RespBulkString "\NUL\255"
+        ]
+    ]
+
+rawFrames :: [RespData]
+rawFrames =
+  [ rawFrame
+  , RespInteger 42
+  , RespNullBulkString
+  , RespBulkString ""
+  , RespBulkString "\NUL\255"
+  ]
