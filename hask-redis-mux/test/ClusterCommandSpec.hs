@@ -869,6 +869,61 @@ nextScriptedReceive script = do
     Just action -> action
     Nothing     -> throwIO $ userError "Mock response script exhausted"
 
+data PostWriteFailureClient (status :: ConnectionStatus) where
+  PostWriteFailureConnected
+    :: !(IORef ByteString)
+    -> !(TVar Int)
+    -> !(IO ByteString)
+    -> !(IORef Int)
+    -> PostWriteFailureClient 'Connected
+
+instance Client PostWriteFailureClient where
+  connect = error "PostWriteFailureClient: connect not supported"
+  close (PostWriteFailureConnected _ _ _ closes) =
+    liftIO $ incrementRef closes
+  send (PostWriteFailureConnected sent sendCount _ _) lbs =
+    liftIO $ do
+      atomicModifyIORef' sent $ \old ->
+        (old <> LBS.toStrict lbs, ())
+      atomically $ modifyTVar' sendCount (+ 1)
+  receive (PostWriteFailureConnected _ _ receiveAction _) =
+    liftIO receiveAction
+
+data PostWriteFailureRecord = PostWriteFailureRecord
+  { postWriteRecordIndex     :: !Int
+  , postWriteRecordSent      :: !(IORef ByteString)
+  , postWriteRecordSendCount :: !(TVar Int)
+  , postWriteRecordCloses    :: !(IORef Int)
+  }
+
+createPostWriteFailureConnector
+  :: IO
+      ( NodeAddress -> IO (PostWriteFailureClient 'Connected)
+      , IO [PostWriteFailureRecord]
+      )
+createPostWriteFailureConnector = do
+  connectionCount <- newIORef (0 :: Int)
+  records <- newIORef []
+  let connector _ = do
+        index <- atomicModifyIORef' connectionCount $ \count ->
+          (count + 1, count)
+        sent <- newIORef BS.empty
+        sendCount <- newTVarIO 0
+        closes <- newIORef 0
+        let receiveAction
+              | index == 0 = replyWith validClusterSlots
+              | index == 1 = do
+                  atomically $ do
+                    sentCommands <- readTVar sendCount
+                    check $ sentCommands == 1
+                  throwIO $ userError "injected transport failure after raw write"
+              | otherwise = replyWith $ RespSimpleString "OK"
+            record = PostWriteFailureRecord index sent sendCount closes
+        atomicModifyIORef' records $ \existing ->
+          (existing ++ [record], ())
+        return $ PostWriteFailureConnected sent sendCount receiveAction closes
+  return (connector, readIORef records)
+
 incrementRef :: IORef Int -> IO ()
 incrementRef ref =
   atomicModifyIORef' ref $ \count -> (count + 1, ())
@@ -2503,33 +2558,35 @@ rawFrameIdentitySpec =
             <> commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
       closeClusterClient client
 
-    it "reconnects and retries a keyed frame after connection failure" $ do
-      delays <- newIORef []
-      connectorCalls <- newIORef (0 :: Int)
-      (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
-        return $ if index == 0
-          then [replyWith validClusterSlots]
-          else [replyWith $ RespSimpleString "OK"]
-      let connector address = do
-            call <- atomicModifyIORef' connectorCalls $ \count ->
-              (count + 1, count)
-            if call == 1
-              then throwIO $ userError "injected raw frame connection failure"
-              else baseConnector address
+    it "reconnects after a transport failure following the first raw write" $ do
+      (connector, getRecords) <- createPostWriteFailureConnector
       client <- createClusterClient (retryTestConfig 2 7) connector
-      executeRawClusterCommandUsingDelay
-        (\delay -> atomicModifyIORef' delays $ \seen ->
-          (seen ++ [delay], ()))
-        client (RawRouteByKey "raw-reconnect-key") rawFrame
+      executeRawClusterCommand client (RawRouteByKey "raw-reconnect-key") rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
-      readIORef delays `shouldReturn` [7]
-      readIORef connectorCalls `shouldReturn` 3
-      awaitRawFrameCopies getRecords rawFrame 1
       records <- getRecords
-      assertRawFrameCopies records rawFrame 1
+      case records of
+        [discovery, firstAttempt, reconnectedAttempt] -> do
+          postWriteRecordIndex discovery `shouldBe` 0
+          postWriteRecordIndex firstAttempt `shouldBe` 1
+          postWriteRecordIndex reconnectedAttempt `shouldBe` 2
+          readTVarIO (postWriteRecordSendCount firstAttempt) `shouldReturn` 1
+          readTVarIO (postWriteRecordSendCount reconnectedAttempt) `shouldReturn` 1
+          readIORef (postWriteRecordSent firstAttempt)
+            `shouldReturn` encodeResp rawFrame
+          readIORef (postWriteRecordSent reconnectedAttempt)
+            `shouldReturn` encodeResp rawFrame
+          firstFrame <- readIORef $ postWriteRecordSent firstAttempt
+          secondFrame <- readIORef $ postWriteRecordSent reconnectedAttempt
+          firstFrame `shouldBe` secondFrame
+          timeout 1000000 (awaitIORefValue (postWriteRecordCloses firstAttempt) 1)
+            `shouldReturn` Just ()
+        _ ->
+          expectationFailure $
+            "Expected discovery, failed, and reconnected transports; got "
+              ++ show (length records)
       closeClusterClient client
 
-    it "retries the identical keyed frame after a connection timeout" $ do
+    it "retries after connection setup timeout before any raw write" $ do
       delays <- newIORef []
       connectorCalls <- newIORef (0 :: Int)
       (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
@@ -2554,6 +2611,7 @@ rawFrameIdentitySpec =
       readIORef connectorCalls `shouldReturn` 3
       awaitRawFrameCopies getRecords rawFrame 1
       records <- getRecords
+      length records `shouldBe` 2
       assertRawFrameCopies records rawFrame 1
       closeClusterClient client
 

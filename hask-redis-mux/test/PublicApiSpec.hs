@@ -21,6 +21,10 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
       [ "lib/cluster/Database/Redis/Cluster/Client.hs"
       , "hask-redis-mux/lib/cluster/Database/Redis/Cluster/Client.hs"
       ]
+    rootSource <- findSource
+      [ "lib/redis/Database/Redis.hs"
+      , "hask-redis-mux/lib/redis/Database/Redis.hs"
+      ]
     cabalSource <- findSource
       [ "hask-redis-mux.cabal"
       , "hask-redis-mux/hask-redis-mux.cabal"
@@ -28,6 +32,11 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     publicExports <- takeWhile (/= ") where") . lines <$> readFile clientSource
     unlines publicExports `shouldNotContain` "executeRawClusterCommand"
     unlines publicExports `shouldNotContain` "RawClusterRoute"
+    rootFacade <- readFile rootSource
+    rootFacade `shouldNotContain`
+      "Database.Redis.Cluster.Internal.RawCommand"
+    rootFacade `shouldNotContain` "executeRawClusterCommand"
+    rootFacade `shouldNotContain` "RawClusterRoute"
     topLevelReexports <- takeWhile (/= "library resp") . lines <$> readFile cabalSource
     unlines topLevelReexports `shouldNotContain`
       "Database.Redis.Cluster.Internal.RawCommand"
