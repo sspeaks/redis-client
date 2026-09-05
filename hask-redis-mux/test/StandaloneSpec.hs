@@ -8,8 +8,9 @@ import           Control.Concurrent        (forkFinally, forkIO, killThread,
                                             threadDelay)
 import           Control.Concurrent.MVar   (MVar, newEmptyMVar, putMVar,
                                             takeMVar, tryPutMVar, tryTakeMVar)
-import           Control.Exception         (SomeException, displayException,
-                                            fromException, throwIO, try)
+import           Control.Exception         (SomeException, bracket,
+                                            displayException, fromException,
+                                            throwIO, try)
 import           Control.Monad             (forM_, void, when)
 import           Control.Monad.IO.Class    (liftIO)
 import qualified Control.Monad.State       as State
@@ -126,25 +127,21 @@ main = hspec $ do
       readIORef closeCount `shouldReturn` 1
 
   describe "Standalone authentication protocol" $ do
-    it "uses one-argument AUTH for the default user" $ do
-      (client, replies, sent, _) <- createCommandClient
-      putMVar replies "+OK\r\n"
-      runStandaloneClient client
-        (auth "default" "password-secret" :: StandaloneCommandClient RespData)
-        `shouldReturn` RespSimpleString "OK"
-      readIORef sent `shouldReturn`
-        commandBytes ["AUTH", "password-secret"]
-      closeStandaloneClient client
+    it "uses one-argument AUTH for the default user" $
+      expectAuthenticationExchange
+        "default"
+        "password-secret"
+        (commandBytes ["AUTH", "password-secret"])
+        "+OK\r\n"
+        (RespSimpleString "OK")
 
-    it "uses HELLO 2 AUTH for a named ACL user" $ do
-      (client, replies, sent, _) <- createCommandClient
-      putMVar replies "*2\r\n$5\r\nproto\r\n:2\r\n"
-      runStandaloneClient client
-        (auth "acl-user" "acl-secret" :: StandaloneCommandClient RespData)
-        `shouldReturn` RespArray [RespBulkString "proto", RespInteger 2]
-      readIORef sent `shouldReturn`
-        commandBytes ["HELLO", "2", "AUTH", "acl-user", "acl-secret"]
-      closeStandaloneClient client
+    it "uses HELLO 2 AUTH for a named ACL user" $
+      expectAuthenticationExchange
+        "acl-user"
+        "acl-secret"
+        (commandBytes ["HELLO", "2", "AUTH", "acl-user", "acl-secret"])
+        "*2\r\n$5\r\nproto\r\n:2\r\n"
+        (RespArray [RespBulkString "proto", RespInteger 2])
 
   describe "Standalone CLIENT REPLY protocol" $ do
     it "rejects OFF and SKIP before sending, leaving later commands reply-safe" $ do
@@ -332,6 +329,37 @@ createCommandClient = do
     (const $ return $ MockConnected closeCount replies sent sentEvent)
     (NodeAddress "127.0.0.1" 6379)
   return (client, replies, sent, sentEvent)
+
+expectAuthenticationExchange
+  :: ByteString
+  -> ByteString
+  -> ByteString
+  -> ByteString
+  -> RespData
+  -> IO ()
+expectAuthenticationExchange username password expectedBytes reply expectedResponse =
+  bracket createCommandClient closeCommandClient $
+    \(client, replies, sent, sentEvent) -> do
+      completed <- newEmptyMVar
+      bracket
+        (forkFinally
+          (runStandaloneClient client
+            (auth username password :: StandaloneCommandClient RespData))
+          (putMVar completed))
+        killThread $
+        \_ -> do
+          awaitSent sentEvent `shouldReturn` Just expectedBytes
+          readIORef sent `shouldReturn` expectedBytes
+          putMVar replies reply
+          result <- timeout 1000000 (takeMVar completed)
+          case result of
+            Just (Right response) -> response `shouldBe` expectedResponse
+            Just (Left failure) ->
+              expectationFailure $
+                "authentication failed: " <> displayException failure
+            Nothing -> expectationFailure "authentication did not complete"
+  where
+    closeCommandClient (client, _, _, _) = closeStandaloneClient client
 
 commandBytes :: [ByteString] -> ByteString
 commandBytes =
