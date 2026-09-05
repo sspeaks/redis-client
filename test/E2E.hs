@@ -333,6 +333,13 @@ main = do
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
 
+      it "fill propagates a worker connection failure as a non-zero CLI exit" $ do
+        (code, _, _) <-
+          runRedisClient
+            ["fill", "--host", "127.0.0.1", "--port", "1", "--data", "1", "--connections", "2"]
+            ""
+        code `shouldNotBe` ExitSuccess
+
       it "fill rejects absent or mismatched non-interactive confirmation without flushing" $ do
         threadDelay 200000
         runRedisAction dbsize `shouldReturn` RespInteger 1048576

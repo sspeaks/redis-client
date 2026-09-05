@@ -36,8 +36,9 @@ module Database.Redis.Internal.Multiplexer
   , isMultiplexerAlive
   ) where
 
-import           Control.Concurrent               (ThreadId, forkIOWithUnmask,
-                                                   killThread, myThreadId)
+import           Control.Concurrent               (ThreadId, forkIO,
+                                                   forkIOWithUnmask, killThread,
+                                                   myThreadId)
 import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
@@ -475,14 +476,7 @@ submitCommandPooled pool mux cmdBuilder = do
   let pending = PendingCommand cmdBuilder slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
   if accepted
-    then do
-      takeMVar (slotSignal slot)
-      mResult <- readIORef (slotResult slot)
-      releaseSlot pool slot
-      case mResult of
-        Just (Right resp) -> return resp
-        Just (Left e)     -> throwIO e
-        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+    then awaitSlotResult pool slot
     else do
       releaseSlot pool slot
       throwIO multiplexerDestroyed
@@ -503,16 +497,9 @@ submitCommandPairPooled pool mux firstBuilder secondBuilder = do
   if accepted
     then do
       -- Wait for and discard the first response (ASKING → +OK)
-      takeMVar (slotSignal slot1)
-      releaseSlot pool slot1
+      void $ awaitSlotResult pool slot1
       -- Wait for the actual command response
-      takeMVar (slotSignal slot2)
-      mResult <- readIORef (slotResult slot2)
-      releaseSlot pool slot2
-      case mResult of
-        Just (Right resp) -> return resp
-        Just (Left e)     -> throwIO e
-        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+      awaitSlotResult pool slot2
     else do
       releaseSlot pool slot1
       releaseSlot pool slot2
@@ -544,6 +531,25 @@ waitSlot pool slot = do
     Just (Left e)     -> throwIO e
     Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
 {-# INLINE waitSlot #-}
+
+-- | The synchronous callers own their slot for the whole request. Cancellation
+-- leaves a reaper responsible for returning it only after its completion.
+awaitSlotResult :: SlotPool -> ResponseSlot -> IO RespData
+awaitSlotResult pool slot = mask $ \restore -> do
+  restore (takeMVar (slotSignal slot)) `onException` releaseAfterSignal pool slot
+  mResult <- readIORef (slotResult slot)
+  releaseSlot pool slot
+  case mResult of
+    Just (Right resp) -> return resp
+    Just (Left e)     -> throwIO e
+    Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+
+releaseAfterSignal :: SlotPool -> ResponseSlot -> IO ()
+releaseAfterSignal pool slot = do
+  _ <- forkIO $ mask_ $ do
+    takeMVar (slotSignal slot)
+    releaseSlot pool slot
+  return ()
 
 -- | Tear down the multiplexer: kill both threads and fail all pending commands.
 destroyMultiplexer :: Multiplexer -> IO ()
