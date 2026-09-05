@@ -841,7 +841,17 @@ createAuthMockConnector
       ( NodeAddress -> IO (AuthMockClient 'Connected)
       , IO [AuthConnectionRecord]
       )
-createAuthMockConnector scriptFor = do
+createAuthMockConnector scriptFor =
+  createAuthMockConnectorWithSendCount $ \address index _ ->
+    scriptFor address index
+
+createAuthMockConnectorWithSendCount
+  :: (NodeAddress -> Int -> TVar Int -> IO [IO ByteString])
+  -> IO
+      ( NodeAddress -> IO (AuthMockClient 'Connected)
+      , IO [AuthConnectionRecord]
+      )
+createAuthMockConnectorWithSendCount scriptFor = do
   counts <- newIORef Map.empty
   records <- newIORef []
   let connector addr = do
@@ -850,7 +860,7 @@ createAuthMockConnector scriptFor = do
           in (Map.insert addr (index + 1) current, index)
         sent <- newIORef BS.empty
         sendCount <- newTVarIO 0
-        script <- scriptFor addr index >>= newIORef
+        script <- scriptFor addr index sendCount >>= newIORef
         closes <- newIORef 0
         aborts <- newIORef 0
         let record = AuthConnectionRecord
@@ -934,6 +944,13 @@ incrementRef ref =
 
 replyWith :: RespData -> IO ByteString
 replyWith = return . encodeResp
+
+replyAfterSendCount :: TVar Int -> Int -> RespData -> IO ByteString
+replyAfterSendCount sendCount expected response = do
+  atomically $ do
+    sentCommands <- readTVar sendCount
+    check $ sentCommands == expected
+  replyWith response
 
 commandBytes :: [ByteString] -> ByteString
 commandBytes =
@@ -2517,14 +2534,19 @@ rawFrameIdentitySpec =
     it "refreshes and reuses a keyed frame through CLUSTERDOWN" $ do
       delays <- newIORef []
       let key = "raw-clusterdown-key"
-          script _ index =
+          script address index sendCount =
             return $
-              if index == 0
+              if address == node1 && index == 1
+                then
+                  [ replyAfterSendCount sendCount 1 $ RespError "CLUSTERDOWN unavailable"
+                  , replyAfterSendCount sendCount 2 $ RespSimpleString "OK"
+                  ]
+                else if index == 0
                 then [replyWith validClusterSlots, replyWith validClusterSlots]
                 else [ replyWith $ RespError "CLUSTERDOWN unavailable"
                      , replyWith $ RespSimpleString "OK"
                      ]
-      (connector, getRecords) <- createAuthMockConnector script
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
       client <- createClusterClient (retryTestConfig 2 5) connector
       executeRawClusterCommandUsingDelay
         (\delay -> atomicModifyIORef' delays $ \seen ->
