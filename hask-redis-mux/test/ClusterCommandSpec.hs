@@ -2503,54 +2503,60 @@ rawFrameIdentitySpec =
             <> commandBytes ["CLUSTER", "SLOTS"] <> encodeResp rawFrame
       closeClusterClient client
 
-    it "reconnects and preserves a keyed frame after connection failure" $ do
+    it "reconnects and retries a keyed frame after connection failure" $ do
       delays <- newIORef []
-      let script _ index =
-            return $ case index of
-              0 -> [replyWith validClusterSlots]
-              1 -> [throwIO $ userError "injected raw frame connection failure"]
-              _ -> [replyWith $ RespSimpleString "OK"]
-      (connector, getRecords) <- createAuthMockConnector script
+      connectorCalls <- newIORef (0 :: Int)
+      (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
+        return $ if index == 0
+          then [replyWith validClusterSlots]
+          else [replyWith $ RespSimpleString "OK"]
+      let connector address = do
+            call <- atomicModifyIORef' connectorCalls $ \count ->
+              (count + 1, count)
+            if call == 1
+              then throwIO $ userError "injected raw frame connection failure"
+              else baseConnector address
       client <- createClusterClient (retryTestConfig 2 7) connector
       executeRawClusterCommandUsingDelay
         (\delay -> atomicModifyIORef' delays $ \seen ->
           (seen ++ [delay], ()))
         client (RawRouteByKey "raw-reconnect-key") rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
-      -- The multiplex pool reconnects and retries this transport failure
-      -- internally, so cluster retry backoff is intentionally not invoked.
-      readIORef delays `shouldReturn` []
+      readIORef delays `shouldReturn` [7]
       records <- getRecords
-      recordSentBytes (findAuthRecord records node1 1)
-        `shouldReturn` encodeResp rawFrame
-      recordSentBytes (findAuthRecord records node1 2)
-        `shouldReturn` encodeResp rawFrame
+      assertRawFrameCopies records rawFrame 1
       closeClusterClient client
 
     it "retries the identical keyed frame after a connection timeout" $ do
       delays <- newIORef []
+      connectorCalls <- newIORef (0 :: Int)
+      (baseConnector, getRecords) <- createAuthMockConnector $ \_ index ->
+        return $ if index == 0
+          then [replyWith validClusterSlots]
+          else [replyWith $ RespSimpleString "OK"]
       let timeoutError =
             ConnectionSetupTimeout PlaintextConnectionSetup node1 1
-          script _ index =
-            return $ case index of
-              0 -> [replyWith validClusterSlots]
-              1 -> [throwIO timeoutError]
-              _ -> [replyWith $ RespSimpleString "OK"]
-      (connector, getRecords) <- createAuthMockConnector script
+          connector address = do
+            call <- atomicModifyIORef' connectorCalls $ \count ->
+              (count + 1, count)
+            if call == 1
+              then throwIO timeoutError
+              else baseConnector address
       client <- createClusterClient (retryTestConfig 2 8) connector
       executeRawClusterCommandUsingDelay
         (\delay -> atomicModifyIORef' delays $ \seen ->
           (seen ++ [delay], ()))
         client (RawRouteByKey "raw-timeout-key") rawFrame
         `shouldReturn` Right (RespSimpleString "OK")
-      -- Timeout-triggered reconnect is likewise owned by the multiplex pool.
-      readIORef delays `shouldReturn` []
+      readIORef delays `shouldReturn` [8]
       records <- getRecords
-      recordSentBytes (findAuthRecord records node1 1)
-        `shouldReturn` encodeResp rawFrame
-      recordSentBytes (findAuthRecord records node1 2)
-        `shouldReturn` encodeResp rawFrame
+      assertRawFrameCopies records rawFrame 1
       closeClusterClient client
+
+assertRawFrameCopies :: [AuthConnectionRecord] -> RespData -> Int -> Expectation
+assertRawFrameCopies records frame expected = do
+  sent <- BS.concat <$> mapM recordSentBytes records
+  countOccurrences (encodeResp frame) sent `shouldBe` expected
 
 rawFrame :: RespData
 rawFrame =
