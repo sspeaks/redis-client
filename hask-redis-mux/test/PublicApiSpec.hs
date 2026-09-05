@@ -20,14 +20,21 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     ClientReplyModeUnsupported SKIP
       `shouldBe` ClientReplyModeUnsupported SKIP
 
-  it "documents SKIP rejection and uncertain-write connection closure" $ do
+  it "documents synchronous reply-mode rejection and safe sequential transitions" $ do
     commandSource <- findSource
       [ "lib/redis-command-client/Database/Redis/Command.hs"
       , "hask-redis-mux/lib/redis-command-client/Database/Redis/Command.hs"
       ]
     source <- readFile commandSource
-    source `shouldContain` "@SKIP@ always throws"
+    source `shouldContain` "@SKIP@ is not composable through 'clientReply'"
     source `shouldContain` "atomically bind it to the command"
+    source `shouldContain` "synchronously reject @OFF@ and"
+    source `shouldContain` "/before/ connection acquisition,"
+    source `shouldContain` "queueing, bytes sent, slot allocation, or reply-stream/state mutation"
+    source `shouldContain` "without reading a reply, so it returns 'Nothing'"
+    source `shouldContain` "every intervening command /must/ use"
+    source `shouldContain` "ordinary reply-waiting commands are invalid and may block or"
+    source `shouldContain` "consumes its own @OK@ reply, and restores normal replies"
     source `shouldContain` "closes the physical"
     source `shouldContain` "connection passed to this function must not be reused"
 

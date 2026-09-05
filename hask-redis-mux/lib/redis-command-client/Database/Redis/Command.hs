@@ -158,10 +158,21 @@ class (MonadIO m) => RedisCommands m where
   lindex :: (FromResp a) => ByteString -> Int -> m a
   clientSetInfo :: (FromResp a) => [ByteString] -> m a
   -- | Change Redis reply behavior for the current physical connection.
+  --
   -- @ON@ returns its server reply. @OFF@ is supported only by a dedicated
-  -- sequential 'RedisCommandClient' connection; shared multiplexed and
-  -- cluster clients throw 'ClientReplyModeUnsupported'. @SKIP@ always throws
-  -- 'ClientReplyModeUnsupported': use
+  -- sequential 'RedisCommandClient' connection. It sends @CLIENT REPLY OFF@
+  -- without reading a reply, so it returns 'Nothing'. While replies are
+  -- disabled, every intervening command /must/ use
+  -- 'sendCommandWithoutReply' (or an equivalent documented raw no-read
+  -- operation); ordinary reply-waiting commands are invalid and may block or
+  -- desynchronize the connection. @ON@ uses the normal reply-reading path,
+  -- consumes its own @OK@ reply, and restores normal replies for subsequent
+  -- commands.
+  --
+  -- Shared multiplexed and cluster clients synchronously reject @OFF@ and
+  -- @SKIP@ with 'ClientReplyModeUnsupported' /before/ connection acquisition,
+  -- queueing, bytes sent, slot allocation, or reply-stream/state mutation.
+  -- @SKIP@ is not composable through 'clientReply': use
   -- 'sendClientReplySkipAndCommand' on a dedicated sequential connection to
   -- atomically bind it to the command whose reply Redis suppresses.
   clientReply :: ClientReplyValues -> m (Maybe RespData)
@@ -251,7 +262,10 @@ executeCommand args = do
   parseWith (receive client)
 
 -- | Send a command without reading a response on a dedicated sequential
--- connection whose reply mode is already @OFF@.
+-- connection whose reply mode is already @OFF@. This is the required
+-- fire-and-forget operation while replies are disabled; do not use ordinary
+-- reply-waiting command functions until @CLIENT REPLY ON@ has consumed its
+-- own @OK@ reply.
 sendCommandWithoutReply :: (Client client) => [ByteString] -> RedisCommandClient client ()
 sendCommandWithoutReply args = do
   ClientState !client _ <- State.get
