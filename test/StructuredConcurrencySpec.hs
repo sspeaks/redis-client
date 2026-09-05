@@ -8,6 +8,7 @@ import           Control.Exception        (SomeException, bracket, finally,
 import           Data.IORef               (IORef, atomicModifyIORef', newIORef,
                                            readIORef)
 import           StructuredConcurrency    (runConcurrentlyFailFast)
+import           System.Timeout           (timeout)
 import           Test.Hspec               (describe, hspec, it, shouldReturn,
                                            shouldSatisfy)
 
@@ -30,21 +31,22 @@ main = hspec $ do
       sends <- newCounter
       sent <- newEmptyMVar
       response <- newEmptyMVar
+      siblingGate <- newEmptyMVar
       siblingStarted <- newEmptyMVar
-      siblingReleased <- newEmptyMVar
+      siblingCancelled <- newEmptyMVar
       parent <- async $ runConcurrentlyFailFast
         [ record sends >> putMVar sent () >> takeMVar response
             >> throwIO (userError "response wait failed")
-        , putMVar siblingStarted () >> takeMVar siblingReleased
-            `finally` putMVar siblingReleased ()
+        , putMVar siblingStarted () >> takeMVar siblingGate
+            `finally` putMVar siblingCancelled ()
         ]
-      takeMVar siblingStarted
-      takeMVar sent
+      awaitPhase "response waiter start" siblingStarted
+      awaitPhase "response submission" sent
       putMVar response ()
       result <- waitCatch parent
       result `shouldSatisfy` isFailure
       readIORef sends `shouldReturn` 1
-      takeMVar siblingReleased
+      awaitPhase "response waiter cancellation" siblingCancelled
 
   describe "benchmark workers" $ do
     it "fails fast when an actual async submission send fails" $ do
@@ -65,11 +67,11 @@ main = hspec $ do
             `finally` putMVar responseWaiterReleased ()
         , takeMVar failureGate >> throwIO (userError "benchmark send failed")
         ]
-      takeMVar responseWaiterStarted
+      awaitPhase "benchmark response waiter start" responseWaiterStarted
       putMVar failureGate ()
       result <- waitCatch parent
       result `shouldSatisfy` isFailure
-      takeMVar responseWaiterReleased
+      awaitPhase "benchmark response waiter cancellation" responseWaiterReleased
 
   describe "cancellation ownership" $ do
     it "cancels and joins siblings while bracketing connection, pool, and client cleanup" $ do
@@ -85,8 +87,8 @@ main = hspec $ do
                 takeMVar waitForCancel
         , putMVar siblingStarted () >> takeMVar waitForCancel
         ]
-      takeMVar started
-      takeMVar siblingStarted
+      awaitPhase "bracketed worker start" started
+      awaitPhase "sibling worker start" siblingStarted
       cancel parent
       result <- waitCatch parent
       result `shouldSatisfy` isFailure
@@ -94,19 +96,27 @@ main = hspec $ do
 
 assertFailFast :: (MVar () -> MVar () -> IO ()) -> IO ()
 assertFailFast failingWorker = do
-  releaseFailure <- newEmptyMVar
+  failureGate <- newEmptyMVar
+  siblingGate <- newEmptyMVar
   siblingStarted <- newEmptyMVar
-  siblingReleased <- newEmptyMVar
+  siblingCancelled <- newEmptyMVar
   parent <- async $ runConcurrentlyFailFast
-    [ failingWorker releaseFailure siblingStarted
-    , putMVar siblingStarted () >> takeMVar siblingReleased
-        `finally` putMVar siblingReleased ()
+    [ failingWorker failureGate siblingStarted
+    , putMVar siblingStarted () >> takeMVar siblingGate
+        `finally` putMVar siblingCancelled ()
     ]
-  takeMVar siblingStarted
-  putMVar releaseFailure ()
+  awaitPhase "sibling worker start" siblingStarted
+  putMVar failureGate ()
   result <- waitCatch parent
   result `shouldSatisfy` isFailure
-  takeMVar siblingReleased
+  awaitPhase "sibling worker cancellation" siblingCancelled
+
+awaitPhase :: String -> MVar a -> IO a
+awaitPhase label phase = do
+  completed <- timeout 2000000 (takeMVar phase)
+  case completed of
+    Just value -> return value
+    Nothing    -> throwIO (userError $ "timed out waiting for phase: " ++ label)
 
 newCounter :: IO (IORef Int)
 newCounter = newIORef 0
