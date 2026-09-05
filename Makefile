@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-credentials test-e2e-runner test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-credentials test-grammar-audit test-e2e-runner test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
@@ -46,7 +46,7 @@ endif
 test: test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
-test-unit: test-credentials test-e2e-runner
+test-unit: test-credentials test-grammar-audit test-e2e-runner
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all"
 else
@@ -60,6 +60,9 @@ ifeq ($(HAS_NIX),yes)
 else
 	cabal build redis-client && cabal test CredentialSpec && ./scripts/test-credential-handling.sh
 endif
+
+test-grammar-audit:
+	python3 -m unittest scripts/test_redis_command_grammar_audit.py
 
 test-e2e-runner:
 	./scripts/test-run-e2e-tests.sh

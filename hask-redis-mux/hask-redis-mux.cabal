@@ -124,6 +124,7 @@ library cluster
                     , Database.Redis.Internal.Multiplexer
                     , Database.Redis.Cluster.Internal.Topology
                     , Database.Redis.Standalone
+    other-modules:    Database.Redis.Cluster.Commands.Generated
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
                     , client
@@ -219,6 +220,14 @@ test-suite ClusterCommandSpec
                     , stm >=2.5 && <2.6
                     , time >=1.12 && <1.13
                     , vector >=0.13 && <0.14
+
+test-suite ClusterGrammarSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterGrammarSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , cluster
+                    , containers >=0.6 && <0.8
 
 test-suite MultiplexerSpec
     import:           test-defaults

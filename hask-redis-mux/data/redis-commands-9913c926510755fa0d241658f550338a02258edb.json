@@ -1,0 +1,8339 @@
+{
+  "entries": [
+    {
+      "arity": -2,
+      "command_flags": [
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "CAT"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "DELUSER"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "DRYRUN"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "GENPASS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "GETUSER"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "LIST"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "LOAD"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "LOG"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "SAVE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "SETUSER"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "USERS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ACL",
+        "WHOAMI"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "APPEND"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ASKING"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "NO_AUTH",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "AUTH"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "BGREWRITEAOF"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "BGSAVE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "BITCOUNT"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE",
+            "ACCESS",
+            "VARIABLE_FLAGS"
+          ]
+        }
+      ],
+      "tokens": [
+        "BITFIELD"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "BITFIELD_RO"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 3
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "BITOP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "BITPOS"
+      ]
+    },
+    {
+      "arity": 6,
+      "command_flags": [
+        "BLOCKING",
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "BLMOVE"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "BLOCKING",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "BLMPOP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "BLOCKING",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -2,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "BLPOP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "BLOCKING",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -2,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "BRPOP"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "BLOCKING",
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "BRPOPLPUSH"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "BLOCKING",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "BZMPOP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "BLOCKING",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -2,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "BZPOPMAX"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "BLOCKING",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -2,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "BZPOPMIN"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "CACHING"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "GETNAME"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "GETREDIR"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "ID"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "INFO"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "KILL"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "LIST"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "NO-EVICT"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "NO-TOUCH"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "PAUSE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "REPLY"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "SETINFO"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "SETNAME"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "TRACKING"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "TRACKINGINFO"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "UNBLOCK"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLIENT",
+        "UNPAUSE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "ADDSLOTS"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "ADDSLOTSRANGE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "BUMPEPOCH"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "COUNT-FAILURE-REPORTS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "COUNTKEYSINSLOT"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "DELSLOTS"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "DELSLOTSRANGE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "FAILOVER"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "FLUSHSLOTS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "FORGET"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "GETKEYSINSLOT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "INFO"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "KEYSLOT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "LINKS"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "MEET"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "MYID"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "MYSHARDID"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "NODES"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "REPLICAS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "REPLICATE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "RESET"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "SAVECONFIG"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "SET-CONFIG-EPOCH"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "SETSLOT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "SHARDS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "SLAVES"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CLUSTER",
+        "SLOTS"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "COUNT"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "DOCS"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "GETKEYS"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "GETKEYSANDFLAGS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "HELP"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "INFO"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "COMMAND",
+        "LIST"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "CONFIG"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CONFIG",
+        "GET"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CONFIG",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CONFIG",
+        "RESETSTAT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CONFIG",
+        "REWRITE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "CONFIG",
+        "SET"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "COPY"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "DBSIZE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "PROTECTED",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "DEBUG"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "DECR"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "DECRBY"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RM",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "DEL"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "DISCARD"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "DUMP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ECHO"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "MAY_REPLICATE",
+        "NOSCRIPT",
+        "NO_MANDATORY_KEYS",
+        "SKIP_MONITOR",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "EVAL"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "MAY_REPLICATE",
+        "NOSCRIPT",
+        "NO_MANDATORY_KEYS",
+        "SKIP_MONITOR",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "EVALSHA"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "NOSCRIPT",
+        "NO_MANDATORY_KEYS",
+        "READONLY",
+        "SKIP_MONITOR",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "EVALSHA_RO"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "NOSCRIPT",
+        "NO_MANDATORY_KEYS",
+        "READONLY",
+        "SKIP_MONITOR",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "EVAL_RO"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "SKIP_SLOWLOG",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "EXEC"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "EXISTS"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "EXPIRE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "EXPIREAT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "EXPIRETIME"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FAILOVER"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "MAY_REPLICATE",
+        "NOSCRIPT",
+        "NO_MANDATORY_KEYS",
+        "SKIP_MONITOR",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "FCALL"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "NOSCRIPT",
+        "NO_MANDATORY_KEYS",
+        "READONLY",
+        "SKIP_MONITOR",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "FCALL_RO"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FLUSHALL"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FLUSHDB"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "NOSCRIPT",
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "DELETE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "DUMP"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "NOSCRIPT",
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "FLUSH"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "KILL"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "LIST"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "NOSCRIPT",
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "LOAD"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "NOSCRIPT",
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "RESTORE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "FUNCTION",
+        "STATS"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEOADD"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEODIST"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEOHASH"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEOPOS"
+      ]
+    },
+    {
+      "arity": -6,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        },
+        {
+          "begin_search": {
+            "keyword": "STORE",
+            "kind": "keyword",
+            "startfrom": 6
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "keyword": "STOREDIST",
+            "kind": "keyword",
+            "startfrom": 6
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEORADIUS"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        },
+        {
+          "begin_search": {
+            "keyword": "STORE",
+            "kind": "keyword",
+            "startfrom": 5
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "keyword": "STOREDIST",
+            "kind": "keyword",
+            "startfrom": 5
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEORADIUSBYMEMBER"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEORADIUSBYMEMBER_RO"
+      ]
+    },
+    {
+      "arity": -6,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEORADIUS_RO"
+      ]
+    },
+    {
+      "arity": -7,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEOSEARCH"
+      ]
+    },
+    {
+      "arity": -8,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GEOSEARCHSTORE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GET"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GETBIT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "GETDEL"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "GETEX"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "GETRANGE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "GETSET"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "HDEL"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "NO_AUTH",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "HELLO"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "HEXISTS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HGET"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HGETALL"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "HINCRBY"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "HINCRBYFLOAT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HKEYS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "HLEN"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HMGET"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "HMSET"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HRANDFIELD"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HSCAN"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "HSET"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "HSETNX"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "HSTRLEN"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "HVALS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "INCR"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "INCRBY"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "INCRBYFLOAT"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "LOADING",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "INFO"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "KEYS"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LASTSAVE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "DOCTOR"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "GRAPH"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "HELP"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "HISTOGRAM"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "HISTORY"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "LATEST"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LATENCY",
+        "RESET"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "LCS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "LINDEX"
+      ]
+    },
+    {
+      "arity": 5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "LINSERT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "LLEN"
+      ]
+    },
+    {
+      "arity": 5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "LMOVE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "LMPOP"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "LOLWUT"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "LPOP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "LPOS"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "LPUSH"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "LPUSHX"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "LRANGE"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "LREM"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "LSET"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "LTRIM"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "MEMORY"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "MEMORY",
+        "DOCTOR"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MEMORY",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "MEMORY",
+        "MALLOC-STATS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "MEMORY",
+        "PURGE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "MEMORY",
+        "STATS"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "MEMORY",
+        "USAGE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "MGET"
+      ]
+    },
+    {
+      "arity": -6,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 3
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "keyword": "KEYS",
+            "kind": "keyword",
+            "startfrom": -2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE",
+            "INCOMPLETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "MIGRATE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "MODULE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MODULE",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MODULE",
+        "LIST"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "PROTECTED"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MODULE",
+        "LOAD"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "PROTECTED"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MODULE",
+        "LOADEX"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "PROTECTED"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MODULE",
+        "UNLOAD"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MONITOR"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "MOVE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 2
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "MSET"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 2
+          },
+          "flags": [
+            "OW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "MSETNX"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "MULTI"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "OBJECT"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "OBJECT",
+        "ENCODING"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "OBJECT",
+        "FREQ"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "OBJECT",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "OBJECT",
+        "IDLETIME"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "OBJECT",
+        "REFCOUNT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "PERSIST"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "PEXPIRE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "PEXPIREAT"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "PEXPIRETIME"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "PFADD"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "MAY_REPLICATE",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "PFCOUNT"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "PFDEBUG"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "INSERT"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "PFMERGE"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ADMIN"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PFSELFTEST"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "FAST",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PING"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "PSETEX"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "PUBSUB",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PSUBSCRIBE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "NO_MULTI"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PSYNC"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "PTTL"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "MAY_REPLICATE",
+        "PUBSUB",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBLISH"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB",
+        "CHANNELS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB",
+        "NUMPAT"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB",
+        "NUMSUB"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB",
+        "SHARDCHANNELS"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUBSUB",
+        "SHARDNUMSUB"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "PUBSUB",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "PUNSUBSCRIBE"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "NO_AUTH",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "QUIT"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "READONLY",
+        "TOUCHES_ARBITRARY_KEYS"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "RANDOMKEY"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "READONLY"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "READWRITE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "RENAME"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "RENAMENX"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "ADMIN",
+        "ALLOW_BUSY",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "REPLCONF"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "REPLICAOF"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "NO_AUTH",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "RESET"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "RESTORE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ASKING",
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "RESTORE-ASKING"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "ROLE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "RPOP"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "RPOPLPUSH"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "RPUSH"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "RPUSHX"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "SADD"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "NO_MULTI"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SAVE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY",
+        "TOUCHES_ARBITRARY_KEYS"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCAN"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "SCARD"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT",
+        "DEBUG"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT",
+        "EXISTS"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT",
+        "FLUSH"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT",
+        "KILL"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SCRIPT",
+        "LOAD"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SDIFF"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SDIFFSTORE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SELECT"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "CKQUORUM"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "CONFIG"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "DEBUG"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "FAILOVER"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "FLUSHCONFIG"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "GET-MASTER-ADDR-BY-NAME"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "ONLY_SENTINEL",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "HELP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "INFO-CACHE"
+      ]
+    },
+    {
+      "arity": 6,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "IS-MASTER-DOWN-BY-ADDR"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "MASTER"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "MASTERS"
+      ]
+    },
+    {
+      "arity": 6,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "MONITOR"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "MYID"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "PENDING-SCRIPTS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "REMOVE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "REPLICAS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "RESET"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "SENTINELS"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "SET"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "SIMULATE-FAILURE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "ONLY_SENTINEL",
+        "SENTINEL"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SENTINEL",
+        "SLAVES"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE",
+            "VARIABLE_FLAGS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SET"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "SETBIT"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "SETEX"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "SETNX"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "SETRANGE"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "ADMIN",
+        "ALLOW_BUSY",
+        "LOADING",
+        "NOSCRIPT",
+        "NO_MULTI",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SHUTDOWN"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SINTER"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SINTERCARD"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SINTERSTORE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "SISMEMBER"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SLAVEOF"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "SLOWLOG"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SLOWLOG",
+        "GET"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SLOWLOG",
+        "HELP"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SLOWLOG",
+        "LEN"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "ADMIN",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SLOWLOG",
+        "RESET"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SMEMBERS"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SMISMEMBER"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "SMOVE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "unknown"
+          },
+          "find_keys": {
+            "kind": "unknown"
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "unknown"
+          },
+          "find_keys": {
+            "kind": "unknown"
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "SORT"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "unknown"
+          },
+          "find_keys": {
+            "kind": "unknown"
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SORT_RO"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "SPOP"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "MAY_REPLICATE",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "NOT_KEY"
+          ]
+        }
+      ],
+      "tokens": [
+        "SPUBLISH"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SRANDMEMBER"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "SREM"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SSCAN"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "NOT_KEY"
+          ]
+        }
+      ],
+      "tokens": [
+        "SSUBSCRIBE"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "STRLEN"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "PUBSUB",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SUBSCRIBE"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SUBSTR"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SUNION"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "SUNIONSTORE"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "PUBSUB",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "NOT_KEY"
+          ]
+        }
+      ],
+      "tokens": [
+        "SUNSUBSCRIBE"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SWAPDB"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ADMIN",
+        "NOSCRIPT",
+        "NO_ASYNC_LOADING",
+        "NO_MULTI"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "SYNC"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "FAST",
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "TIME"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "TOUCH"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "TTL"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "TYPE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RM",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "UNLINK"
+      ]
+    },
+    {
+      "arity": -1,
+      "command_flags": [
+        "LOADING",
+        "NOSCRIPT",
+        "PUBSUB",
+        "SENTINEL",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "UNSUBSCRIBE"
+      ]
+    },
+    {
+      "arity": 1,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "UNWATCH"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "WAIT"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "NOSCRIPT"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "WAITAOF"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "ALLOW_BUSY",
+        "FAST",
+        "LOADING",
+        "NOSCRIPT",
+        "STALE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "WATCH"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XACK"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XADD"
+      ]
+    },
+    {
+      "arity": -6,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XAUTOCLAIM"
+      ]
+    },
+    {
+      "arity": -6,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XCLAIM"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XDEL"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "XGROUP"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "XGROUP",
+        "CREATE"
+      ]
+    },
+    {
+      "arity": 5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "INSERT"
+          ]
+        }
+      ],
+      "tokens": [
+        "XGROUP",
+        "CREATECONSUMER"
+      ]
+    },
+    {
+      "arity": 5,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XGROUP",
+        "DELCONSUMER"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XGROUP",
+        "DESTROY"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "XGROUP",
+        "HELP"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XGROUP",
+        "SETID"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [],
+      "key_specs": [],
+      "tokens": [
+        "XINFO"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XINFO",
+        "CONSUMERS"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XINFO",
+        "GROUPS"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "LOADING",
+        "STALE"
+      ],
+      "key_specs": [],
+      "tokens": [
+        "XINFO",
+        "HELP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XINFO",
+        "STREAM"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "XLEN"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XPENDING"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XRANGE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "BLOCKING",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "keyword": "STREAMS",
+            "kind": "keyword",
+            "startfrom": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 2,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XREAD"
+      ]
+    },
+    {
+      "arity": -7,
+      "command_flags": [
+        "BLOCKING",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "keyword": "STREAMS",
+            "kind": "keyword",
+            "startfrom": 4
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": -1,
+            "limit": 2,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XREADGROUP"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "XREVRANGE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XSETID"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "XTRIM"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZADD"
+      ]
+    },
+    {
+      "arity": 2,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZCARD"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZCOUNT"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZDIFF"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZDIFFSTORE"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "DENYOOM",
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "UPDATE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZINCRBY"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZINTER"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZINTERCARD"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZINTERSTORE"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZLEXCOUNT"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZMPOP"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZMSCORE"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZPOPMAX"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "ACCESS",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZPOPMIN"
+      ]
+    },
+    {
+      "arity": -2,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZRANDMEMBER"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZRANGE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZRANGEBYLEX"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZRANGEBYSCORE"
+      ]
+    },
+    {
+      "arity": -5,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZRANGESTORE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZRANK"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREM"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREMRANGEBYLEX"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREMRANGEBYRANK"
+      ]
+    },
+    {
+      "arity": 4,
+      "command_flags": [
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RW",
+            "DELETE"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREMRANGEBYSCORE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREVRANGE"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREVRANGEBYLEX"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREVRANGEBYSCORE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZREVRANK"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZSCAN"
+      ]
+    },
+    {
+      "arity": 3,
+      "command_flags": [
+        "FAST",
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZSCORE"
+      ]
+    },
+    {
+      "arity": -3,
+      "command_flags": [
+        "READONLY"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZUNION"
+      ]
+    },
+    {
+      "arity": -4,
+      "command_flags": [
+        "DENYOOM",
+        "WRITE"
+      ],
+      "key_specs": [
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 1
+          },
+          "find_keys": {
+            "kind": "range",
+            "lastkey": 0,
+            "limit": 0,
+            "step": 1
+          },
+          "flags": [
+            "OW",
+            "UPDATE"
+          ]
+        },
+        {
+          "begin_search": {
+            "kind": "index",
+            "pos": 2
+          },
+          "find_keys": {
+            "firstkey": 1,
+            "keynumidx": 0,
+            "kind": "keynum",
+            "step": 1
+          },
+          "flags": [
+            "RO",
+            "ACCESS"
+          ]
+        }
+      ],
+      "tokens": [
+        "ZUNIONSTORE"
+      ]
+    }
+  ],
+  "redis_grammar_digest": "a93235286273f22e11cce571709c6df87e6b854e4ea1b8454dc17ed59c3ad7da",
+  "redis_source_sha": "9913c926510755fa0d241658f550338a02258edb"
+}
