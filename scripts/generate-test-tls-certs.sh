@@ -67,7 +67,7 @@ cat >"$CERT_DIR/redis-server.ext" <<'EOF'
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
-subjectAltName=DNS:redis.local
+subjectAltName=DNS:redis.local,DNS:standalone.redis.test,DNS:cluster.redis.test
 EOF
 
 if ! "$OPENSSL_BIN" x509 \
@@ -85,7 +85,22 @@ if ! "$OPENSSL_BIN" x509 \
 fi
 
 rm -f "$CERT_DIR/redis-server.csr" "$CERT_DIR/redis-server.ext" "$CERT_DIR/redis-ca.srl"
+
+if ! "$OPENSSL_BIN" req \
+  -x509 \
+  -newkey rsa:2048 \
+  -sha256 \
+  -nodes \
+  -days 1 \
+  -keyout "$CERT_DIR/untrusted-ca.key" \
+  -out "$CERT_DIR/untrusted-ca.crt" \
+  -subj "/CN=redis-client untrusted ephemeral test CA" >/dev/null 2>&1; then
+  echo "Error: failed to generate the untrusted ephemeral test CA." >&2
+  exit 1
+fi
+
 chmod 600 "$CERT_DIR/redis-ca.key" "$CERT_DIR/redis-server.key"
-chmod 644 "$CERT_DIR/redis-ca.crt" "$CERT_DIR/redis-server.crt"
+chmod 600 "$CERT_DIR/untrusted-ca.key"
+chmod 644 "$CERT_DIR/redis-ca.crt" "$CERT_DIR/redis-server.crt" "$CERT_DIR/untrusted-ca.crt"
 
 printf '%s\n' "$CERT_DIR"

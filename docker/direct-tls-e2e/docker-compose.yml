@@ -1,0 +1,185 @@
+services:
+  standalone:
+    image: redis:7.2.12
+    hostname: standalone-target.local
+    user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    volumes:
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /certs/redis-server.crt
+      - --tls-key-file
+      - /certs/redis-server.key
+      - --tls-ca-cert-file
+      - /certs/redis-ca.crt
+      - --tls-auth-clients
+      - "no"
+    networks:
+      default:
+        aliases:
+          - standalone-target.local
+          - standalone.redis.test
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -h standalone-target.local -p 6379 ping | grep -qx PONG"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+      start_period: 2s
+
+  cluster1:
+    image: redis:7.2.12
+    hostname: cluster-node1.local
+    user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    volumes:
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
+    tmpfs:
+      - /data:uid=${REDIS_TLS_CERT_UID},gid=${REDIS_TLS_CERT_GID},mode=0700
+    command: &cluster-command
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /certs/redis-server.crt
+      - --tls-key-file
+      - /certs/redis-server.key
+      - --tls-ca-cert-file
+      - /certs/redis-ca.crt
+      - --tls-auth-clients
+      - "no"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-tls-port
+      - "6380"
+      - --cluster-announce-bus-port
+      - "16379"
+    networks:
+      default:
+        aliases:
+          - cluster-node1.local
+    healthcheck: &cluster-healthcheck
+      test: ["CMD-SHELL", "redis-cli --tls --insecure -h \"$${HOSTNAME}\" -p 6380 ping | grep -qx PONG"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+      start_period: 2s
+
+  cluster2:
+    image: redis:7.2.12
+    hostname: cluster-node2.local
+    user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    volumes:
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
+    tmpfs:
+      - /data:uid=${REDIS_TLS_CERT_UID},gid=${REDIS_TLS_CERT_GID},mode=0700
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /certs/redis-server.crt
+      - --tls-key-file
+      - /certs/redis-server.key
+      - --tls-ca-cert-file
+      - /certs/redis-ca.crt
+      - --tls-auth-clients
+      - "no"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-tls-port
+      - "6380"
+      - --cluster-announce-bus-port
+      - "16379"
+    networks:
+      default:
+        aliases:
+          - cluster-node2.local
+    healthcheck: *cluster-healthcheck
+
+  cluster3:
+    image: redis:7.2.12
+    hostname: cluster-node3.local
+    user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    volumes:
+      - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
+    tmpfs:
+      - /data:uid=${REDIS_TLS_CERT_UID},gid=${REDIS_TLS_CERT_GID},mode=0700
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /certs/redis-server.crt
+      - --tls-key-file
+      - /certs/redis-server.key
+      - --tls-ca-cert-file
+      - /certs/redis-ca.crt
+      - --tls-auth-clients
+      - "no"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-tls-port
+      - "6380"
+      - --cluster-announce-bus-port
+      - "16379"
+    networks:
+      default:
+        aliases:
+          - cluster-node3.local
+    healthcheck: *cluster-healthcheck
+
+networks:
+  default:
+    driver: bridge
