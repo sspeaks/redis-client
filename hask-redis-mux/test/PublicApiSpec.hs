@@ -4,14 +4,66 @@
 
 module Main (main) where
 
-import           Control.Exception (displayException, toException, try)
-import           Control.Monad     (filterM)
+import           Control.Exception               (displayException, toException,
+                                                  try)
+import           Control.Monad                   (filterM)
 import           Database.Redis
-import           System.Directory  (doesFileExist)
+import qualified Database.Redis.Cluster.Client   as ClusterClient
+import qualified Database.Redis.Cluster.Commands as ClusterCommands
+import           System.Directory                (doesFileExist)
 import           Test.Hspec
 
 main :: IO ()
 main = hspec $ describe "Database.Redis timeout-aware public API" $ do
+  it "keeps Database.Redis cluster call sites source compatible" $ do
+    let createClient
+          :: ClusterConfig
+          -> Connector PlainTextClient
+          -> IO (ClusterClient PlainTextClient)
+        createClient = createClusterClient
+        runCommand
+          :: ClusterClient PlainTextClient
+          -> ClusterCommandClient PlainTextClient value
+          -> IO value
+        runCommand = runClusterCommandClient
+    createClient `seq` runCommand `seq` (pure () :: IO ())
+
+  it "keeps Database.Redis.Cluster.Client call sites source compatible" $ do
+    let createClient
+          :: ClusterConfig
+          -> Connector PlainTextClient
+          -> IO (ClusterClient PlainTextClient)
+        createClient = ClusterClient.createClusterClient
+        runCommand
+          :: ClusterClient PlainTextClient
+          -> ClusterCommandClient PlainTextClient value
+          -> IO value
+        runCommand = ClusterClient.runClusterCommandClient
+        runKeyed
+          :: ClusterClient PlainTextClient
+          -> ByteString
+          -> [ByteString]
+          -> IO (Either ClusterError RespData)
+        runKeyed = ClusterClient.executeKeyedClusterCommand
+        runKeyless
+          :: ClusterClient PlainTextClient
+          -> RedisCommandClient PlainTextClient RespData
+          -> IO (Either ClusterError RespData)
+        runKeyless = ClusterClient.executeKeylessClusterCommand
+    createClient `seq` runCommand `seq` runKeyed `seq` runKeyless
+      `seq` (pure () :: IO ())
+
+  it "keeps Database.Redis.Cluster.Commands routing call sites source compatible" $ do
+    isKeylessRoute (ClusterCommands.classifyCommand "PING" [])
+      `shouldBe` True
+    isKeyedRoute
+      "{api}:key"
+      (ClusterCommands.classifyCommand "GET" ["{api}:key"])
+      `shouldBe` True
+    length
+      (ClusterCommands.keylessCommands <> ClusterCommands.requiresKeyCommands)
+      `shouldBe` 392
+
   it "exports the migration-compatible ordinary cluster error" $ do
     RedisCommandError "ERR full server cause"
       `shouldBe` RedisCommandError "ERR full server cause"
@@ -145,3 +197,11 @@ findSource candidates = do
   case matches of
     path : _ -> return path
     [] -> expectationFailure "Could not locate public API source" >> fail "unreachable"
+
+isKeylessRoute :: ClusterCommands.CommandRouting -> Bool
+isKeylessRoute ClusterCommands.KeylessRoute = True
+isKeylessRoute _                            = False
+
+isKeyedRoute :: ByteString -> ClusterCommands.CommandRouting -> Bool
+isKeyedRoute expected (ClusterCommands.KeyedRoute actual) = actual == expected
+isKeyedRoute _ _                                          = False
