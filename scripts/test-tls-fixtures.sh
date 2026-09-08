@@ -24,8 +24,27 @@ CERT_DIR="$("$SCRIPT_DIR/generate-test-tls-certs.sh" "$WORK_DIR/success")"
 [[ "$(stat -c '%a' "$CERT_DIR")" == "700" ]]
 [[ "$(stat -c '%a' "$CERT_DIR/redis-ca.key")" == "600" ]]
 [[ "$(stat -c '%a' "$CERT_DIR/redis-server.key")" == "600" ]]
+[[ "$(stat -c '%a' "$CERT_DIR/untrusted-ca.key")" == "600" ]]
 openssl verify -CAfile "$CERT_DIR/redis-ca.crt" "$CERT_DIR/redis-server.crt" >/dev/null
 openssl x509 -in "$CERT_DIR/redis-server.crt" -noout -checkhost redis.local >/dev/null
+openssl x509 -in "$CERT_DIR/redis-server.crt" -noout -checkhost standalone.redis.test >/dev/null
+openssl x509 -in "$CERT_DIR/redis-server.crt" -noout -checkhost cluster.redis.test >/dev/null
+for advertised_host in cluster-node1.local cluster-node2.local cluster-node3.local; do
+  if openssl x509 -in "$CERT_DIR/redis-server.crt" -noout \
+    -checkhost "$advertised_host" >/dev/null 2>&1; then
+    echo "Error: server certificate unexpectedly validates advertised host $advertised_host." >&2
+    exit 1
+  fi
+done
+if openssl x509 -in "$CERT_DIR/redis-server.crt" -noout \
+  -checkip 172.18.0.2 >/dev/null 2>&1; then
+  echo "Error: server certificate unexpectedly validates an advertised node IP." >&2
+  exit 1
+fi
+if openssl verify -CAfile "$CERT_DIR/untrusted-ca.crt" "$CERT_DIR/redis-server.crt" >/dev/null 2>&1; then
+  echo "Error: server certificate unexpectedly validates against the untrusted CA." >&2
+  exit 1
+fi
 
 rm -rf -- "$CERT_DIR"
 [[ ! -e "$CERT_DIR" ]]
