@@ -1,5 +1,5 @@
 #! /usr/bin/env nix-shell
-#! nix-shell -i bash -p redis
+#! nix-shell -i bash -p redis coreutils
 
 set -Eeuo pipefail
 
@@ -211,7 +211,7 @@ if ! wait_for_healthy_nodes; then
 fi
 
 echo "Creating three-primary, three-replica cluster..."
-"${COMPOSE[@]}" exec -T redis1 redis-cli --cluster create --cluster-replicas 1 --cluster-yes \
+timeout 120 "${COMPOSE[@]}" exec -T redis1 redis-cli --cluster create --cluster-replicas 1 --cluster-yes \
   redis1.local:6379 redis2.local:6380 redis3.local:6381 \
   redis4.local:6382 redis5.local:6383 redis6.local:6384
 if ! wait_for_cluster; then
