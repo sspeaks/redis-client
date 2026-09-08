@@ -31,6 +31,10 @@
     *   MOVED, ASK, TRYAGAIN, CLUSTERDOWN, CROSSSLOT, and ordinary Redis errors now share one strict reply classifier across keyed, keyless, and redirected paths.
     *   TRYAGAIN retries the current route with bounded saturating exponential backoff; CLUSTERDOWN performs a best-effort refresh before bounded backoff without replacing the Redis cause when refresh validation or I/O fails.
     *   CROSSSLOT and ordinary server errors return immediately as typed `ClusterError` values, preserving the complete server error payload.
+*   **Strict smart routing**
+    *   Smart cluster routing now validates commands, subcommands, and argument counts against the pinned Redis 7.2 metadata before dispatch.
+    *   Unknown or malformed commands and cross-slot multi-key requests are rejected instead of falling through to first-argument routing.
+    *   The exported `keylessCommands` and `requiresKeyCommands` routing lists are now generated from the pinned metadata snapshot.
 
 ## 0.6.0.0 -- 2026-02-13
 
