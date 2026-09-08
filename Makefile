@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-e2e-runner test-cluster-e2e-runner test-tls-fixtures test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-e2e-runner test-cluster-e2e-runner test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e-runner test-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e-runner test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -43,7 +43,7 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
+test: test-unit test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
 test-unit: test-metadata test-credentials test-workflow-status test-e2e-runner test-cluster-e2e-runner
@@ -89,6 +89,18 @@ test-e2e: test-tls-fixtures
 		exit 1; \
 	fi
 	./scripts/run-e2e-tests.sh
+
+# Run direct standalone and cluster TLS end-to-end tests with certificate validation.
+test-direct-tls-e2e: test-tls-fixtures
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@if ! command -v nix-build >/dev/null 2>&1; then \
+		echo "Error: nix-build is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	./scripts/run-direct-tls-e2e-tests.sh
 
 # Run cluster end-to-end tests with Docker
 test-cluster-e2e:

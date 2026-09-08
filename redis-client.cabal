@@ -138,7 +138,7 @@ test-suite StructuredConcurrencySpec
 -- ---------------------------------------------------------------------------
 
 flag e2e
-    description: Build end-to-end test executables (EndToEnd, ClusterEndToEnd, LibraryE2E)
+    description: Build end-to-end test executables
     default:     False
     manual:      True
 
@@ -200,6 +200,20 @@ executable AuthenticatedClusterEndToEnd
     main-is:          AuthenticatedClusterE2E.hs
     hs-source-dirs:   test
     build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , hspec
+                    , mtl
+                    , stm
+
+executable DirectTLSEndToEnd
+    import:           exe-defaults
+    if !flag(e2e)
+        buildable: False
+    main-is:          DirectTLSE2E.hs
+    hs-source-dirs:   test
+    build-depends:    async
+                    , bytestring
                     , containers
                     , hask-redis-mux
                     , hspec
