@@ -87,6 +87,9 @@ class GitHubClient:
                 return
             page += 1
 
+    def get_issue(self, issue_number):
+        return self.request("GET", f"/issues/{issue_number}")
+
     def add_labels(self, issue_number, labels):
         self.request("POST", f"/issues/{issue_number}/labels", {"labels": labels})
 
@@ -111,12 +114,16 @@ def print_plan(issue, action, plan, mode):
 
 
 def apply_plan(client, issue, action, plan, dry_run):
-    print_plan(issue, action, plan, "dry-run" if dry_run else "apply")
     if dry_run:
+        print_plan(issue, action, plan, "dry-run")
         return
-    if plan["add"]:
-        client.add_labels(issue["number"], plan["add"])
-    for label in plan["remove"]:
+
+    current_issue = client.get_issue(issue["number"])
+    current_plan = plan_transition(current_issue, action)
+    print_plan(current_issue, action, current_plan, "apply")
+    if current_plan["add"]:
+        client.add_labels(issue["number"], current_plan["add"])
+    for label in current_plan["remove"]:
         client.remove_label(issue["number"], label)
 
 

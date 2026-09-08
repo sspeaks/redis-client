@@ -22,16 +22,45 @@ def issue(number, labels, **extra):
 class FakeClient:
     def __init__(self, issues=()):
         self.issues = list(issues)
+        self.issue_by_number = {
+            current_issue["number"]: current_issue
+            for current_issue in self.issues
+        }
         self.added = []
         self.removed = []
 
     def closed_issues(self):
         yield from self.issues
 
+    def get_issue(self, issue_number):
+        return self.issue_by_number[issue_number]
+
     def add_labels(self, issue_number, labels):
         self.added.append((issue_number, labels))
+        current_labels = self.issue_by_number[issue_number]["labels"]
+        existing = {
+            label["name"] if isinstance(label, dict) else label
+            for label in current_labels
+        }
+        current_labels.extend(
+            {"name": label} for label in labels if label not in existing
+        )
 
     def remove_label(self, issue_number, label):
+        current_labels = self.issue_by_number[issue_number]["labels"]
+        remaining = [
+            current_label
+            for current_label in current_labels
+            if (
+                current_label["name"]
+                if isinstance(current_label, dict)
+                else current_label
+            )
+            != label
+        ]
+        if len(remaining) == len(current_labels):
+            raise AssertionError(f"label already absent: {label}")
+        self.issue_by_number[issue_number]["labels"] = remaining
         self.removed.append((issue_number, label))
 
 
@@ -113,7 +142,6 @@ class IssueStatusTransitionTests(unittest.TestCase):
         )
 
     def test_apply_preserves_non_status_labels(self):
-        client = FakeClient()
         source_issue = issue(
             16,
             [
@@ -126,6 +154,7 @@ class IssueStatusTransitionTests(unittest.TestCase):
                 "retro-action",
             ],
         )
+        client = FakeClient([source_issue])
         plan = MODULE.plan_transition(source_issue, "closed")
         with redirect_stdout(io.StringIO()):
             MODULE.apply_plan(
@@ -133,6 +162,29 @@ class IssueStatusTransitionTests(unittest.TestCase):
             )
         self.assertEqual(client.added, [])
         self.assertEqual(client.removed, [(16, "status:in-progress")])
+
+    def test_replaying_stale_event_plan_does_not_repeat_deletion(self):
+        source_issue = issue(
+            19,
+            ["status:in-progress", "squad:protocol", "priority:p2"],
+        )
+        client = FakeClient([source_issue])
+        stale_plan = MODULE.plan_transition(source_issue, "closed")
+
+        with redirect_stdout(io.StringIO()):
+            MODULE.apply_plan(
+                client, source_issue, "closed", stale_plan, dry_run=False
+            )
+            MODULE.apply_plan(
+                client, source_issue, "closed", stale_plan, dry_run=False
+            )
+
+        self.assertEqual(client.added, [])
+        self.assertEqual(client.removed, [(19, "status:in-progress")])
+        self.assertEqual(
+            MODULE.label_names(client.get_issue(19)),
+            {"squad:protocol", "priority:p2"},
+        )
 
     def test_reconciliation_dry_run_makes_no_mutations(self):
         client = FakeClient(
