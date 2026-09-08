@@ -1,0 +1,57 @@
+name: Issue status state
+
+on:
+  issues:
+    types: [closed, reopened]
+  workflow_dispatch:
+    inputs:
+      apply_reconciliation:
+        description: Remove active statuses from all closed issues
+        required: true
+        type: boolean
+        default: false
+      confirm_repository:
+        description: Exact owner/repository required when applying reconciliation
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-status-${{ github.event.issue.number || 'reconciliation' }}
+  cancel-in-progress: false
+
+jobs:
+  transition:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Apply issue status transition
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/github_issue_status.py
+          --event-file "$GITHUB_EVENT_PATH"
+          --apply
+
+  reconcile:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Preview closed issue reconciliation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/github_issue_status.py --reconcile
+      - name: Apply closed issue reconciliation
+        if: inputs.apply_reconciliation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/github_issue_status.py
+          --reconcile
+          --apply
+          --confirm-repository '${{ inputs.confirm_repository }}'
