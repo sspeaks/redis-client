@@ -13,6 +13,7 @@ import           ClusterTunnel                              (PinnedResponseResul
 import           Control.Monad                              (foldM)
 import qualified Data.ByteString                            as BS
 import qualified Data.ByteString.Builder                    as Builder
+import qualified Data.ByteString.Char8                      as BS8
 import qualified Data.ByteString.Lazy                       as LBS
 import           Data.IORef                                 (modifyIORef',
                                                              newIORef,
@@ -181,6 +182,24 @@ main = hspec $ do
           (push <> "-MOVED 3999 127.0.0.1:6381\r\n")
           BS.empty
 
+    it "preserves a streamed blob payload exactly before rewriting a later response" $ do
+      let payload = "x\n-MOVED 3999 redis.example:6381\r\n\NUL\255\n-ASK 10 redis.example:6382\r\n"
+          stream = streamedBlob [payload]
+          moved = "-MOVED 3999 redis.example:6381\r\n"
+          expected = stream <> "-MOVED 3999 127.0.0.1:6381\r\n"
+      parsePinnedResponses BS.empty (stream <> moved)
+        `shouldBe` PinnedResponses expected BS.empty
+      assertPinnedResponseAcrossSplits (stream <> moved) expected
+
+    it "frames nested streamed aggregates and multiple chunks before later rewrites" $ do
+      let blob = streamedBlob ["first\n", "-ASK 10 redis.example:6382\r\n"]
+          nested = "*?\r\n" <> blob <> ">?\r\n+message\r\n" <> streamedBlob ["payload"] <> ".\r\n.\r\n"
+          ask = "-ASK 10 redis.example:6382\r\n"
+          expected = nested <> "-ASK 10 127.0.0.1:6382\r\n"
+      parsePinnedResponses BS.empty (nested <> ask)
+        `shouldBe` PinnedResponses expected BS.empty
+      assertPinnedResponseAcrossSplits (nested <> ask) expected
+
     it "resumes framing after an opaque malformed record without swallowing later rewrites" $ do
       let malformed = "?bad\r\n"
           ask = "-ASK 10 redis.example:6382\r\n"
@@ -188,6 +207,11 @@ main = hspec $ do
         `shouldBe` PinnedResponses
           (malformed <> "-ASK 10 127.0.0.1:6382\r\n")
           BS.empty
+
+    it "fails closed for a malformed streamed value rather than resynchronizing in its payload" $ do
+      let malformed = "$?\r\n;not-a-length\r\n-MOVED 3999 redis.example:6381\r\n"
+      parsePinnedResponses BS.empty malformed
+        `shouldBe` PinnedResponseMalformed BS.empty
 
     it "allows framing overhead for an exact bulk payload limit and rejects the next payload byte" $ do
       let limit = 5
@@ -217,6 +241,26 @@ assertSplitFrame expected wire splitAt = do
       case parseSmartProxyFrames pending chunk of
         SmartProxyFrames newFrames nextPending -> pure (frames <> newFrames, nextPending)
         SmartProxyFrameError _ err             -> expectationFailure err >> error "unreachable"
+
+streamedBlob :: [BS.ByteString] -> BS.ByteString
+streamedBlob chunks =
+  "$?\r\n" <> foldMap chunk chunks <> ";0\r\n"
+  where
+    chunk bytes = ";" <> BS8.pack (show $ BS.length bytes) <> "\r\n" <> bytes <> "\r\n"
+
+assertPinnedResponseAcrossSplits :: BS.ByteString -> BS.ByteString -> Expectation
+assertPinnedResponseAcrossSplits wire expected =
+  mapM_ assertSplit [1 .. BS.length wire - 1]
+  where
+    assertSplit splitAt =
+      case parsePinnedResponses BS.empty (BS.take splitAt wire) of
+        PinnedResponses firstOutput pending ->
+          case parsePinnedResponses pending (BS.drop splitAt wire) of
+            PinnedResponses secondOutput remainder -> do
+              (firstOutput <> secondOutput) `shouldBe` expected
+              remainder `shouldBe` BS.empty
+            result -> expectationFailure $ "response framing failed after split " <> show splitAt <> ": " <> show result
+        result -> expectationFailure $ "response framing failed at split " <> show splitAt <> ": " <> show result
 
 assertDispatch :: RespData -> RawClusterRoute -> Expectation
 assertDispatch frame expectedRoute = do

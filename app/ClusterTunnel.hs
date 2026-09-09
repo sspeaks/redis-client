@@ -378,6 +378,9 @@ forwardPinnedConnection clientSock redisConn addr = do
           PinnedResponseLimitExceeded output -> do
             sendAll clientSock output
             throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
+          PinnedResponseMalformed output -> do
+            sendAll clientSock output
+            throwIO $ userError "pinned response contains malformed streamed RESP3 framing"
 
 halfCloseDrainMicros :: Int
 halfCloseDrainMicros = 100000
@@ -390,13 +393,13 @@ pinnedResponseFrameLimit = 512 * 1024 * 1024
 data PinnedResponseResult
   = PinnedResponses !BS.ByteString !BS.ByteString
   | PinnedResponseLimitExceeded !BS.ByteString
+  | PinnedResponseMalformed !BS.ByteString
   deriving (Eq, Show)
 
 -- | Drain complete response frames, rewriting only completed topology frames.
--- Complete non-streamed RESP3 frames are forwarded unchanged as opaque frames.
--- Unknown or malformed records are forwarded through their first LF and then
--- framing resumes; streamed RESP3 remains deliberately unsupported and follows
--- that same transparent-record policy rather than being decoded as RESP3.
+-- RESP3 values outside the RESP2-compatible subset are forwarded unchanged.
+-- A malformed streamed value terminates the connection rather than allowing
+-- line resynchronization to reinterpret bytes that might be chunk payload.
 parsePinnedResponses :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
 parsePinnedResponses = parsePinnedResponsesWithLimit pinnedResponseFrameLimit
 
@@ -434,16 +437,24 @@ parsePinnedResponsesWithLimit payloadLimit pending chunk = drain BS.empty (pendi
               PinnedResponseLimitExceeded output
           | otherwise -> PinnedResponses output input
         StrictParse.Fail {} ->
-          case BS.elemIndex 10 input of
-            Just newline ->
-              let consumed = newline + 1
-               in drain (output <> BS.take consumed input) (BS.drop consumed input)
-            Nothing
-              | responseExceedsLimit payloadLimit input ->
-                  PinnedResponseLimitExceeded output
-              | otherwise -> PinnedResponses output input
+          if isStreamedResp3Start input
+            then PinnedResponseMalformed output
+            else case BS.elemIndex 10 input of
+          Just newline ->
+            let consumed = newline + 1
+             in drain (output <> BS.take consumed input) (BS.drop consumed input)
+          Nothing
+            | responseExceedsLimit payloadLimit input ->
+                PinnedResponseLimitExceeded output
+            | otherwise -> PinnedResponses output input
 
     responseParserPrefixes = [43, 45, 58, 36, 42, 126, 37]
+
+isStreamedResp3Start :: BS.ByteString -> Bool
+isStreamedResp3Start input =
+  BS.length input >= 4
+    && BS.index input 0 `elem` [36, 33, 61, 42, 126, 62, 37, 124]
+    && BS.take 3 (BS.drop 1 input) == "?\r\n"
 
 -- | The extra wire budget is the largest legal top-level bulk header plus its
 -- terminator.  This keeps the retained bound finite while accepting a maximum
@@ -467,9 +478,9 @@ declaredTopLevelBulkLength input = do
     then Just payloadLength
     else Nothing
 
--- | Parse a complete, non-streamed RESP3 value without constructing a
--- 'RespData'.  Pinned mode only needs its boundary: it must preserve opaque
--- push/attribute values byte-for-byte while continuing to inspect later frames.
+-- | Parse a complete opaque RESP3 value without constructing a 'RespData'.
+-- Pinned mode needs only a trustworthy frame boundary, including streamed
+-- chunks and streamed aggregates, before it can inspect a later RESP2 frame.
 opaqueResp3Frame :: StrictParse.Parser ()
 opaqueResp3Frame = do
   prefix <- StrictParse.anyWord8
@@ -481,18 +492,21 @@ opaqueResp3Frame = do
     40  -> opaqueLine
     95  -> opaqueCRLF
     35  -> StrictParse.anyWord8 >> opaqueCRLF
-    36  -> opaqueBulk
-    33  -> opaqueBulk
-    61  -> opaqueBulk
-    42  -> opaqueAggregate 1
-    126 -> opaqueAggregate 1
-    62  -> opaqueAggregate 1
-    37  -> opaqueAggregate 2
-    124 -> opaqueAggregate 2
-    _   -> fail "unknown or streamed RESP3 data type"
+    36  -> opaqueBulkOrStream
+    33  -> opaqueBulkOrStream
+    61  -> opaqueBulkOrStream
+    42  -> opaqueAggregateOrStream 1
+    126 -> opaqueAggregateOrStream 1
+    62  -> opaqueAggregateOrStream 1
+    37  -> opaqueAggregateOrStream 2
+    124 -> opaqueAggregateOrStream 2
+    _   -> fail "unknown RESP3 data type"
   where
     opaqueLine = StrictParse.takeTill (\c -> c == 13 || c == 10) >> opaqueCRLF
     opaqueCRLF = void (StrictParse.word8 13) >> void (StrictParse.word8 10)
+    opaqueBulkOrStream = do
+      marker <- StrictParse.peekWord8'
+      if marker == 63 then opaqueStreamedBulk else opaqueBulk
     opaqueBulk = do
       size <- Char8.signed Char8.decimal
       opaqueCRLF
@@ -501,6 +515,19 @@ opaqueResp3Frame = do
         else if size < 0
           then fail "invalid RESP bulk length"
           else StrictParse.take size >> opaqueCRLF
+    opaqueStreamedBulk = StrictParse.word8 63 >> opaqueCRLF >> opaqueChunks
+    opaqueChunks = do
+      _ <- StrictParse.word8 59
+      size <- Char8.decimal
+      opaqueCRLF
+      if size == 0
+        then pure ()
+        else if size < 0
+          then fail "invalid RESP streamed chunk length"
+          else StrictParse.take size >> opaqueCRLF >> opaqueChunks
+    opaqueAggregateOrStream multiplier = do
+      marker <- StrictParse.peekWord8'
+      if marker == 63 then opaqueStreamedAggregate else opaqueAggregate multiplier
     opaqueAggregate multiplier = do
       count <- Char8.signed Char8.decimal
       opaqueCRLF
@@ -511,6 +538,12 @@ opaqueResp3Frame = do
           else if count > maxBound `div` multiplier
             then fail "RESP aggregate length overflow"
             else replicateM_ (count * multiplier) opaqueResp3Frame
+    opaqueStreamedAggregate = StrictParse.word8 63 >> opaqueCRLF >> opaqueStreamedValues
+    opaqueStreamedValues = do
+      marker <- StrictParse.peekWord8'
+      if marker == 46
+        then StrictParse.word8 46 >> opaqueCRLF
+        else opaqueResp3Frame >> opaqueStreamedValues
 
 -- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
 -- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses
