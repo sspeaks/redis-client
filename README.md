@@ -289,33 +289,112 @@ in
 
 ## Development
 
-### Building
+### Contributor prerequisites
+
+The supported development environment is Nix-first. Before the first build,
+install:
+
+- Git, Make, and [Nix](https://nixos.org/download/) with flakes enabled.
+- Docker with the Compose plugin if you will run the full end-to-end suite.
+- [direnv](https://direnv.net/) is optional; the tracked `.envrc` enters the
+  same flake development shell as `nix develop`.
+
+The Nix development shell supplies GHC, Cabal, Haskell Language Server,
+`stylish-haskell`, and native dependencies such as zlib. The executable also
+links against readline. If you cannot use Nix, install a C toolchain, GHC,
+Cabal, readline development headers, and zlib development headers before
+building (for example, `build-essential libreadline-dev zlib1g-dev` on
+Debian/Ubuntu).
+
+### First-time setup
+
+Clone the repository, enter the development environment, and run the repository
+setup target once:
 
 ```sh
-# Using Makefile (handles Nix if available)
-make build
+git clone https://github.com/sspeaks/redis-client.git
+cd redis-client
 
-# Or directly with Cabal
-cabal build
+# Choose one environment entry point:
+nix develop
+# Or, with direnv installed:
+direnv allow
 
-# Or with Nix
-nix-build
+make setup
 ```
+
+`nix develop` provides the reproducible compiler, tools, and native libraries;
+`direnv allow` automatically enters that same shell when you change into the
+repository. `make setup` is a separate one-time repository bootstrap: it points
+Git at the tracked `.githooks/` directory and updates Cabal's package index.
+Entering the Nix shell also configures the hook path, but `make setup` remains
+the explicit bootstrap command and prepares Cabal for workspace builds.
+
+For a system-Cabal setup without Nix, install the native dependencies above and
+then run `make setup`. On Debian/Ubuntu the target can install
+`libreadline-dev`; install the remaining compiler and zlib prerequisites
+yourself first. In this fallback, `make` targets use the GHC and Cabal available
+on `PATH`.
+
+### Build
+
+For the reproducible Nix package build:
+
+```sh
+nix-build --no-out-link
+```
+
+For a faster workspace build while developing:
+
+```sh
+make build
+```
+
+`make build` builds both the root `redis-client` executable package and the
+`hask-redis-mux` library package. With Nix available it also enables the E2E
+executables by running:
+
+```sh
+cabal build all -fe2e
+```
+
+Without Nix, `make build` falls back to the system GHC and Cabal on `PATH` and
+runs `cabal build all`; this builds both packages without enabling the E2E
+executables.
 
 ### Running Tests
 
-**Unit tests** (no Redis required):
+**Unit and repository checks** (no running Redis required):
 ```sh
 make test-unit
-# or
-cabal test RespSpec ClusterSpec ClusterCommandSpec MultiplexerSpec MultiplexPoolSpec
 ```
 
-**End-to-end tests** (requires Docker and Nix):
+The system-Cabal fallback for the Haskell unit suites is:
+
 ```sh
-make test-e2e               # Standalone Redis E2E
-make test-cluster-e2e       # Cluster E2E
-make test                   # Run all tests
+cabal build all
+cabal test all
+```
+
+`make test-unit` is broader: in addition to all Cabal test suites, it checks
+generated Redis command metadata, credential handling, GitHub issue workflow
+status, and the E2E runner scripts.
+
+**Full test suite** (requires Docker, the Docker Compose plugin, and Nix):
+```sh
+make test
+```
+
+The full target runs the unit/repository checks plus the standalone, direct TLS,
+cluster, authenticated-cluster, and library end-to-end suites. Individual
+Docker suites remain available when narrowing a failure:
+
+```sh
+make test-e2e
+make test-direct-tls-e2e
+make test-cluster-e2e
+make test-authenticated-cluster-e2e
+make test-library-e2e
 ```
 
 **Manual testing with local Redis:**
@@ -366,13 +445,24 @@ rm -f *.hp *.prof *.ps *.aux *.stat
 
 ## Project Structure
 
-- `app/` - Main executable (cli, fill, tunnel modes)
-- `lib/resp/` - RESP protocol implementation
-- `lib/client/` - Connection management (plaintext and TLS)
-- `lib/redis-command-client/` - Redis command execution
-- `lib/cluster/` - Cluster support, connection pooling, multiplexer, and standalone client
-- `lib/crc16/` - CRC16 for hash slot calculation
-- `test/` - Unit and E2E tests
+- `redis-client.cabal` - Root executable package definition.
+- `app/` - `redis-client` executable sources for CLI, fill, and tunnel modes.
+- `test/` - Root executable unit tests and Docker E2E test programs.
+- `hask-redis-mux/hask-redis-mux.cabal` - Public Redis client library package.
+- `hask-redis-mux/lib/resp/` - RESP protocol implementation.
+- `hask-redis-mux/lib/client/` - Plaintext and TLS connection management.
+- `hask-redis-mux/lib/redis-command-client/` - Redis command execution.
+- `hask-redis-mux/lib/cluster/` - Cluster routing, pools, multiplexers, and
+  standalone client support.
+- `hask-redis-mux/lib/crc16/` - CRC16 hash-slot implementation.
+- `hask-redis-mux/lib/redis/` - Public `Database.Redis` facade.
+- `hask-redis-mux/test/` and `hask-redis-mux/bench/` - Library tests and
+  benchmarks.
+- `Makefile`, `flake.nix`, `shell.nix`, and `default.nix` - Supported
+  development and Nix packaging entry points.
+- `scripts/` and `docker/` - Repository checks and owned Docker E2E fixtures.
+- `.githooks/` - Tracked contributor hooks enabled by `make setup` and the Nix
+  development shell.
 
 ## License
 
