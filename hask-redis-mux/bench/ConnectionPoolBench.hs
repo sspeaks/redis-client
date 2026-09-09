@@ -113,7 +113,7 @@ runCase capabilities nodeCount capacity waiterCount = do
         ]
       created = sum $ Map.elems createdByNode
   printf
-    "nodes=%d capacity=%d waiters=%d created=%d handoff_ops_s=%.2f waiter_p50_us=%.2f waiter_p95_us=%.2f waiter_p99_us=%.2f mixed_idle_p50_us=%.2f mixed_idle_p95_us=%.2f mixed_idle_p99_us=%.2f fifo_violations=%d\n"
+    "nodes=%d capacity=%d waiters=%d created=%d handoff_ops_s=%.2f waiter_p50_us=%.2f waiter_p95_us=%.2f waiter_p99_us=%.2f mixed_idle_p50_us=%.2f mixed_idle_p95_us=%.2f mixed_idle_p99_us=%.2f completion_order_violations=%d\n"
     nodeCount
     capacity
     waiterCount
