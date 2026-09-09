@@ -59,6 +59,14 @@ supports every request size accepted by Redis itself. Clients that need larger
 requests should connect directly to the cluster nodes (or use pinned mode) and
 remain within the applicable Redis deployment limits.
 
+Pinned cluster tunnels forward traffic in both directions. They rewrite complete
+RESP2 topology replies while preserving complete non-streamed RESP3 values
+(including pushes) byte-for-byte. Unknown, malformed, and streamed RESP3
+records are transparently forwarded only through their next line terminator, so
+the proxy can resume inspecting subsequent replies; this is intentionally not a
+general RESP3 implementation. Incomplete pinned replies retain at most a
+512 MiB Redis bulk payload plus its RESP framing overhead.
+
 ### Command Options
 
 - `-h`, `--host HOST` - Host to connect to (required)

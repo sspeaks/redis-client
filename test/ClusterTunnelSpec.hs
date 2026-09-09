@@ -5,6 +5,7 @@ module Main (main) where
 import           ClusterTunnel                              (PinnedResponseResult (..),
                                                              SmartProxyFrameResult (..),
                                                              parsePinnedResponses,
+                                                             parsePinnedResponsesWithLimit,
                                                              parseSmartProxyFrames,
                                                              rewriteClusterResponse,
                                                              routeSmartProxyCommandWith,
@@ -168,6 +169,37 @@ main = hspec $ do
       let push = ">2\r\n+message\r\n+payload\r\n"
       parsePinnedResponses BS.empty push
         `shouldBe` PinnedResponses push BS.empty
+
+    it "preserves fragmented RESP3 pushes while rewriting later coalesced topology frames" $ do
+      let push = ">2\r\n+message\r\n+payload\r\n"
+          moved = "-MOVED 3999 redis.example:6381\r\n"
+          (firstChunk, secondChunk) = BS.splitAt 11 (push <> moved)
+      parsePinnedResponses BS.empty firstChunk
+        `shouldBe` PinnedResponses BS.empty firstChunk
+      parsePinnedResponses firstChunk secondChunk
+        `shouldBe` PinnedResponses
+          (push <> "-MOVED 3999 127.0.0.1:6381\r\n")
+          BS.empty
+
+    it "resumes framing after an opaque malformed record without swallowing later rewrites" $ do
+      let malformed = "?bad\r\n"
+          ask = "-ASK 10 redis.example:6382\r\n"
+      parsePinnedResponses BS.empty (malformed <> ask)
+        `shouldBe` PinnedResponses
+          (malformed <> "-ASK 10 127.0.0.1:6382\r\n")
+          BS.empty
+
+    it "allows framing overhead for an exact bulk payload limit and rejects the next payload byte" $ do
+      let limit = 5
+          acceptedPrefix = "$5\r\nabcde\r"
+          acceptedSuffix = "\n"
+          rejected = "$6\r\nabcdef\r"
+      parsePinnedResponsesWithLimit limit BS.empty acceptedPrefix
+        `shouldBe` PinnedResponses BS.empty acceptedPrefix
+      parsePinnedResponsesWithLimit limit acceptedPrefix acceptedSuffix
+        `shouldBe` PinnedResponses "$5\r\nabcde\r\n" BS.empty
+      parsePinnedResponsesWithLimit limit BS.empty rejected
+        `shouldBe` PinnedResponseLimitExceeded BS.empty
 
 commandFrame :: [BS.ByteString] -> RespData
 commandFrame = RespArray . fmap RespBulkString

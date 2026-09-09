@@ -13,21 +13,24 @@ module ClusterTunnel
   , PinnedResponseResult (..)
   , pinnedResponseFrameLimit
   , parsePinnedResponses
+  , parsePinnedResponsesWithLimit
   ) where
 
 import           Control.Concurrent                         (MVar, forkIO,
                                                              newEmptyMVar,
                                                              putMVar, takeMVar)
-import           Control.Concurrent.Async                   (cancel,
+import           Control.Concurrent.Async                   (cancel, waitCatch,
                                                              waitEitherCatch,
                                                              withAsync)
 import           Control.Concurrent.STM                     (readTVarIO)
 import           Control.Exception                          (SomeException,
                                                              bracket, finally,
                                                              throwIO, try)
-import           Control.Monad                              (forever, void,
+import           Control.Monad                              (forever,
+                                                             replicateM_, void,
                                                              when)
 import qualified Data.Attoparsec.ByteString                 as StrictParse
+import qualified Data.Attoparsec.ByteString.Char8           as Char8
 import qualified Data.ByteString                            as BS
 import qualified Data.ByteString.Builder                    as Builder
 import qualified Data.ByteString.Char8                      as BS8
@@ -70,6 +73,7 @@ import           System.IO                                  (BufferMode (LineBuf
                                                              hFlush,
                                                              hSetBuffering,
                                                              stdout)
+import           System.Timeout                             (timeout)
 import           Text.Printf                                (printf)
 
 -- | Smart proxy mode: Makes cluster appear as single Redis instance
@@ -344,13 +348,18 @@ forwardPinnedConnection clientSock redisConn addr = do
   withAsync copyClientToRedis $ \toRedis ->
     withAsync (copyRedisToClient BS.empty) $ \toClient -> do
       result <- waitEitherCatch toRedis toClient
-      cancel toRedis
-      cancel toClient
       case result of
-        Left (Left err)  -> throwIO err
-        Right (Left err) -> throwIO err
-        Left (Right ())  -> pure ()
-        Right (Right ()) -> pure ()
+        Left (Left err)  -> cancel toClient >> throwIO err
+        Right (Left err) -> cancel toRedis >> throwIO err
+        Left (Right ())  -> do
+          -- Redis connections are persistent, so an upstream EOF cannot mark
+          -- the last reply.  Drain briefly after client write-side EOF, then
+          -- cancel the blocked reader to bound connection/task lifetime.
+          drained <- timeout halfCloseDrainMicros (waitCatch toClient)
+          case drained of
+            Just (Left err) -> throwIO err
+            _               -> cancel toClient
+        Right (Right ()) -> cancel toRedis
   where
     copyClientToRedis = do
       dat <- recv clientSock 4096
@@ -370,9 +379,11 @@ forwardPinnedConnection clientSock redisConn addr = do
             sendAll clientSock output
             throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
 
--- | Maximum retained bytes while awaiting an incomplete pinned response.
--- The Redis protocol limits bulk strings to 512 MiB; this preserves supported
--- RESP2 replies while rejecting an unbounded incomplete peer stream.
+halfCloseDrainMicros :: Int
+halfCloseDrainMicros = 100000
+
+-- | Maximum bulk payload accepted while awaiting an incomplete pinned response.
+-- RESP framing bytes are allowed in addition to this Redis payload limit.
 pinnedResponseFrameLimit :: Int
 pinnedResponseFrameLimit = 512 * 1024 * 1024
 
@@ -382,27 +393,124 @@ data PinnedResponseResult
   deriving (Eq, Show)
 
 -- | Drain complete response frames, rewriting only completed topology frames.
--- Unknown RESP3 and malformed inputs remain transparent raw traffic.
+-- Complete non-streamed RESP3 frames are forwarded unchanged as opaque frames.
+-- Unknown or malformed records are forwarded through their first LF and then
+-- framing resumes; streamed RESP3 remains deliberately unsupported and follows
+-- that same transparent-record policy rather than being decoded as RESP3.
 parsePinnedResponses :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
-parsePinnedResponses pending chunk = drain BS.empty (pending <> chunk)
+parsePinnedResponses = parsePinnedResponsesWithLimit pinnedResponseFrameLimit
+
+-- | Variant with an injected payload limit for boundary tests.
+parsePinnedResponsesWithLimit ::
+  Int ->
+  BS.ByteString ->
+  BS.ByteString ->
+  PinnedResponseResult
+parsePinnedResponsesWithLimit payloadLimit pending chunk = drain BS.empty (pending <> chunk)
   where
     drain output input =
       case BS.uncons input of
         Just (prefix, _)
           | prefix `notElem` responseParserPrefixes ->
-              PinnedResponses (output <> input) BS.empty
+              drainOpaque output input
         _ -> case StrictParse.parse Resp.parseRespData input of
           StrictParse.Done remaining _ ->
             let consumed = BS.length input - BS.length remaining
                 original = BS.take consumed input
              in drain (output <> rewriteClusterResponse original) remaining
           StrictParse.Partial _
-            | BS.length input > pinnedResponseFrameLimit ->
+            | responseExceedsLimit payloadLimit input ->
                 PinnedResponseLimitExceeded output
             | otherwise -> PinnedResponses output input
-          StrictParse.Fail {} -> PinnedResponses (output <> input) BS.empty
+          StrictParse.Fail {} -> drainOpaque output input
+
+    drainOpaque output input =
+      case StrictParse.parse opaqueResp3Frame input of
+        StrictParse.Done remaining _ ->
+          let consumed = BS.length input - BS.length remaining
+           in drain (output <> BS.take consumed input) remaining
+        StrictParse.Partial _
+          | responseExceedsLimit payloadLimit input ->
+              PinnedResponseLimitExceeded output
+          | otherwise -> PinnedResponses output input
+        StrictParse.Fail {} ->
+          case BS.elemIndex 10 input of
+            Just newline ->
+              let consumed = newline + 1
+               in drain (output <> BS.take consumed input) (BS.drop consumed input)
+            Nothing
+              | responseExceedsLimit payloadLimit input ->
+                  PinnedResponseLimitExceeded output
+              | otherwise -> PinnedResponses output input
 
     responseParserPrefixes = [43, 45, 58, 36, 42, 126, 37]
+
+-- | The extra wire budget is the largest legal top-level bulk header plus its
+-- terminator.  This keeps the retained bound finite while accepting a maximum
+-- Redis payload whose final CRLF arrives in a later read.
+responseExceedsLimit :: Int -> BS.ByteString -> Bool
+responseExceedsLimit payloadLimit input =
+  payloadLimit < 0
+    || maybe False (> toInteger payloadLimit) (declaredTopLevelBulkLength input)
+    || BS.length input > payloadLimit + length (show payloadLimit) + 5
+
+-- | A complete top-level bulk header lets us reject an oversized declared
+-- payload before buffering it.  'readInteger' avoids an overflowing wire value
+-- being mistaken for a small 'Int'.
+declaredTopLevelBulkLength :: BS.ByteString -> Maybe Integer
+declaredTopLevelBulkLength input = do
+  header <- BS.stripPrefix "$" input
+  let (digits, terminator) = BS.breakSubstring "\r\n" header
+  _ <- BS.stripPrefix "\r\n" terminator
+  (payloadLength, trailing) <- BS8.readInteger digits
+  if BS.null trailing && payloadLength >= 0
+    then Just payloadLength
+    else Nothing
+
+-- | Parse a complete, non-streamed RESP3 value without constructing a
+-- 'RespData'.  Pinned mode only needs its boundary: it must preserve opaque
+-- push/attribute values byte-for-byte while continuing to inspect later frames.
+opaqueResp3Frame :: StrictParse.Parser ()
+opaqueResp3Frame = do
+  prefix <- StrictParse.anyWord8
+  case prefix of
+    43  -> opaqueLine
+    45  -> opaqueLine
+    58  -> opaqueLine
+    44  -> opaqueLine
+    40  -> opaqueLine
+    95  -> opaqueCRLF
+    35  -> StrictParse.anyWord8 >> opaqueCRLF
+    36  -> opaqueBulk
+    33  -> opaqueBulk
+    61  -> opaqueBulk
+    42  -> opaqueAggregate 1
+    126 -> opaqueAggregate 1
+    62  -> opaqueAggregate 1
+    37  -> opaqueAggregate 2
+    124 -> opaqueAggregate 2
+    _   -> fail "unknown or streamed RESP3 data type"
+  where
+    opaqueLine = StrictParse.takeTill (\c -> c == 13 || c == 10) >> opaqueCRLF
+    opaqueCRLF = void (StrictParse.word8 13) >> void (StrictParse.word8 10)
+    opaqueBulk = do
+      size <- Char8.signed Char8.decimal
+      opaqueCRLF
+      if size == (-1)
+        then pure ()
+        else if size < 0
+          then fail "invalid RESP bulk length"
+          else StrictParse.take size >> opaqueCRLF
+    opaqueAggregate multiplier = do
+      count <- Char8.signed Char8.decimal
+      opaqueCRLF
+      if count == (-1)
+        then pure ()
+        else if count < 0
+          then fail "invalid RESP aggregate length"
+          else if count > maxBound `div` multiplier
+            then fail "RESP aggregate length overflow"
+            else replicateM_ (count * multiplier) opaqueResp3Frame
 
 -- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
 -- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses
