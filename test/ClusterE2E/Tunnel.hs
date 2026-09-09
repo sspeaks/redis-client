@@ -15,8 +15,14 @@ import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as Builder
 import qualified Data.ByteString.Char8         as BS8
 import qualified Data.ByteString.Lazy          as LBS
+import           Data.IORef                    (IORef, atomicModifyIORef',
+                                                modifyIORef', newIORef,
+                                                readIORef)
 import           Data.List                     (find, isInfixOf)
 import qualified Data.Map.Strict               as Map
+import           Data.Time.Calendar            (fromGregorian)
+import           Data.Time.Clock               (UTCTime (..))
+import qualified Data.Vector                   as Vector
 import           Database.Redis.Client         (Client (..),
                                                 ConnectionStatus (Connected),
                                                 PlainTextClient (NotConnectedPlainTextClient),
@@ -49,6 +55,23 @@ import           Test.Hspec
 
 spec :: Spec
 spec = describe "Cluster Tunnel Mode" $ do
+  describe "Failover fixture readiness" $ do
+    it "waits for a fresh snapshot to expose a usable master/replica pair" $ do
+      snapshots <- newIORef [topologyWithoutReplica, topologyWithReplica]
+      result <- waitForUsableMasterReplicaWith 2
+        (nextTopology snapshots topologyWithoutReplica)
+        (pure ())
+      result `shouldBe` Right (fixtureMaster, fixtureReplica)
+
+    it "reports bounded readiness exhaustion with the last topology" $ do
+      reads <- newIORef (0 :: Int)
+      result <- waitForUsableMasterReplicaWith 3
+        (modifyIORef' reads (+ 1) >> pure topologyWithoutReplica)
+        (pure ())
+      result `shouldBe` Left
+        "No usable master/replica relationship after 3 refreshed topology snapshots. Last snapshot: masters=1, replicas=0, relationships=0"
+      readIORef reads `shouldReturn` 3
+
   describe "Smart Proxy Mode" $ do
     it "smart mode makes cluster appear as single Redis instance" $
       withSmartProxy $ do
@@ -343,9 +366,7 @@ spec = describe "Cluster Tunnel Mode" $ do
 
     it "smart mode retries the same raw LPUSH frame after a live MOVED without duplicate mutation" $
       bracket createTestClusterClient closeClusterClient $ \beforeClient -> do
-        topology <- readTVarIO (clusterTopology beforeClient)
-        previousOwner <- firstMaster beforeClient
-        replica <- replicaForMaster topology previousOwner
+        (previousOwner, replica) <- waitForUsableMasterReplica beforeClient
         let key = getKeyForNode previousOwner "failover-single-write"
             rawMutation = rawFrame ["LPUSH", key, "only-once"]
             cleanup = deleteFromTopologyOwner key
@@ -601,18 +622,106 @@ topologyOwnerForKey client key = do
             ("Topology address " ++ show address ++ " has no matching master")
             >> error "unreachable"
 
-replicaForMaster :: ClusterTopology -> ClusterNode -> IO ClusterNode
-replicaForMaster topology master =
-  case nodeReplicas master of
-    replicaId:_ ->
-      case Map.lookup replicaId (topologyNodes topology) of
-        Just replica -> pure replica
-        Nothing ->
-          expectationFailure "Master replica is absent from the topology"
-            >> error "unreachable"
-    [] ->
-      expectationFailure "Fixture must provide a replica for every master"
-        >> error "unreachable"
+fixtureReadinessAttempts :: Int
+fixtureReadinessAttempts = 50
+
+fixtureReadinessDelayMicros :: Int
+fixtureReadinessDelayMicros = 200000
+
+waitForUsableMasterReplica ::
+  ClusterClient PlainTextClient ->
+  IO (ClusterNode, ClusterNode)
+waitForUsableMasterReplica client = do
+  result <- waitForUsableMasterReplicaWith fixtureReadinessAttempts
+    (refreshTopology client >> readTVarIO (clusterTopology client))
+    (threadDelay fixtureReadinessDelayMicros)
+  case result of
+    Right pair      -> pure pair
+    Left diagnostic -> expectationFailure diagnostic >> error "unreachable"
+
+waitForUsableMasterReplicaWith ::
+  Int ->
+  IO ClusterTopology ->
+  IO () ->
+  IO (Either String (ClusterNode, ClusterNode))
+waitForUsableMasterReplicaWith attempts readFreshTopology pause =
+  go attempts Nothing
+  where
+    go 0 lastTopology =
+      pure $ Left $
+        "No usable master/replica relationship after "
+          ++ show attempts
+          ++ " refreshed topology snapshots. Last snapshot: "
+          ++ maybe "no snapshot was read" topologyDiagnostic lastTopology
+    go remaining _ = do
+      topology <- readFreshTopology
+      case usableMasterReplica topology of
+        Just pair -> pure $ Right pair
+        Nothing -> do
+          pause
+          go (remaining - 1) (Just topology)
+
+usableMasterReplica :: ClusterTopology -> Maybe (ClusterNode, ClusterNode)
+usableMasterReplica topology =
+  case
+    [ (master, replica)
+    | master <- Map.elems (topologyNodes topology)
+    , nodeRole master == Master
+    , replicaId <- nodeReplicas master
+    , Just replica <- [Map.lookup replicaId (topologyNodes topology)]
+    , nodeRole replica == Replica
+    ] of
+    pair:_ -> Just pair
+    []     -> Nothing
+
+topologyDiagnostic :: ClusterTopology -> String
+topologyDiagnostic topology =
+  "masters="
+    ++ show (length masters)
+    ++ ", replicas="
+    ++ show (length replicas)
+    ++ ", relationships="
+    ++ show (length relationships)
+  where
+    nodes = Map.elems (topologyNodes topology)
+    masters = filter ((== Master) . nodeRole) nodes
+    replicas = filter ((== Replica) . nodeRole) nodes
+    relationships =
+      [ ()
+      | master <- masters
+      , replicaId <- nodeReplicas master
+      , Just replica <- [Map.lookup replicaId (topologyNodes topology)]
+      , nodeRole replica == Replica
+      ]
+
+fixtureMaster :: ClusterNode
+fixtureMaster =
+  ClusterNode "fixture-master" (NodeAddress "master.example" 6379) Master [] ["fixture-replica"]
+
+fixtureReplica :: ClusterNode
+fixtureReplica =
+  ClusterNode "fixture-replica" (NodeAddress "replica.example" 6380) Replica [] []
+
+topologyWithoutReplica :: ClusterTopology
+topologyWithoutReplica = fixtureTopology [fixtureMaster]
+
+topologyWithReplica :: ClusterTopology
+topologyWithReplica = fixtureTopology [fixtureMaster, fixtureReplica]
+
+fixtureTopology :: [ClusterNode] -> ClusterTopology
+fixtureTopology nodes =
+  ClusterTopology
+    Vector.empty
+    Vector.empty
+    (Map.fromList [(nodeId node, node) | node <- nodes])
+    (UTCTime (fromGregorian 2026 1 1) 0)
+
+nextTopology :: IORef [ClusterTopology] -> ClusterTopology -> IO ClusterTopology
+nextTopology snapshots fallback =
+  atomicModifyIORef' snapshots $ \remaining ->
+    case remaining of
+      next:rest -> (rest, next)
+      []        -> ([], fallback)
 
 waitForMoved :: ClusterNode -> BS.ByteString -> IO ()
 waitForMoved previousOwner key = go (50 :: Int)
