@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+*   **Connection-pool synchronization API change**
+    *   `ConnectionPool(..)` now exposes per-node synchronization state rather than
+        the former single pool-wide `MVar`; code that constructed or inspected this
+        record must use `createPool`, `withConnection`, `getConnectionPoolStats`, and
+        `closePool` instead. This intentional source-incompatible change is released
+        as `hask-redis-mux-0.1.1.0`, independently of the planned `0.2.0.0`
+        `RedisClientError` API release.
+    *   Pool closure is terminal at checkout linearization: existing and newly
+        connecting checkouts reject once `closePool` has marked the pool closed.
 *   **Breaking credential handling**
     *   Removed `-a/--password`; use `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
     *   Credential files take precedence over direct environment values.

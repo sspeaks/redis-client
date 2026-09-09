@@ -167,7 +167,8 @@ checkoutConnection connectorIsBounded pool addr connector restore = checkout
   checkout = do
     nodeState <- getOrCreateNodePool pool addr
     result <- modifyNodePool nodeState $ \nodePool -> do
-      if nodeClosed nodePool
+      poolIsClosed <- readIORef (poolClosed pool)
+      if poolIsClosed || nodeClosed nodePool
         then return (nodePool, PoolIsClosed)
         else do
           case availableConns nodePool of
@@ -200,7 +201,7 @@ checkoutConnection connectorIsBounded pool addr connector restore = checkout
           WaiterFailure e       -> throwIO e
 
   connectReserved nodeState = do
-    open <- nodePoolIsOpen nodeState
+    open <- nodePoolIsOpen pool nodeState
     if not open
       then throwIO ConnectionPoolClosed
       else do
@@ -216,7 +217,7 @@ checkoutConnection connectorIsBounded pool addr connector restore = checkout
         connResult <- try (restore $ boundedConnector addr)
         case connResult of
           Right conn -> do
-            accepted <- nodePoolIsOpen nodeState
+            accepted <- nodePoolIsOpen pool nodeState
             if accepted
               then return conn
               else do
@@ -332,9 +333,11 @@ modifyNodePool nodeState action =
   modifyMVarMasked nodeState action
 {-# INLINE modifyNodePool #-}
 
-nodePoolIsOpen :: MVar (NodePool client) -> IO Bool
-nodePoolIsOpen nodeState =
-  uninterruptibleMask_ $ withMVar nodeState (return . not . nodeClosed)
+nodePoolIsOpen :: ConnectionPool client -> MVar (NodePool client) -> IO Bool
+nodePoolIsOpen pool nodeState =
+  uninterruptibleMask_ $ withMVar nodeState $ \nodePool -> do
+    poolIsClosed <- readIORef (poolClosed pool)
+    return $ not poolIsClosed && not (nodeClosed nodePool)
 
 releaseReservation :: ConnectionPool client -> NodeAddress -> IO ()
 releaseReservation pool addr = do

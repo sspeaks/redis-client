@@ -389,3 +389,20 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       `shouldReturn` ConnectionPoolStats 1 1 0
     closePool pool
     readIORef closeCount `shouldReturn` 1
+
+  it "rejects checkout after close has linearized, including known nodes" $ do
+    pool <- createPool testPoolConfig
+    (connector, connectionCount, closeCount) <- createCountingConnector
+    expectWithin (withConnection pool node connector $ \_ -> return ())
+
+    -- The node is already registered, so this specifically covers the former
+    -- registry-clear versus cached-node checkout path.
+    closePool pool
+    outcome <- Exception.try
+      (withConnection pool node connector $ \_ -> return ())
+      :: IO (Either SomeException ())
+    outcome `shouldSatisfy` \case
+      Left err -> Exception.fromException err == Just ConnectionPoolClosed
+      Right () -> False
+    readIORef connectionCount `shouldReturn` 1
+    readIORef closeCount `shouldReturn` 1

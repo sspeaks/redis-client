@@ -14,6 +14,7 @@ import           Control.Monad                         (forM, forM_,
 import           Data.IORef                            (atomicModifyIORef',
                                                         newIORef, readIORef)
 import           Data.List                             (sort)
+import qualified Data.Map.Strict                       as Map
 import           Database.Redis.Client                 (Client (..),
                                                         ConnectionStatus (..))
 import           Database.Redis.Cluster                (NodeAddress (..))
@@ -49,55 +50,68 @@ main = do
 runCase :: Int -> Int -> Int -> Int -> IO ()
 runCase capabilities nodeCount capacity waiterCount = do
   let config = PoolConfig capacity 5 0 False
-      saturatedAddress = NodeAddress "benchmark-0" 6379
-      idleAddress = NodeAddress "benchmark-1" 6379
-      idleOperations = max 64 (capabilities * 64)
+      addresses =
+        [NodeAddress ("benchmark-" <> show index) 6379 | index <- [0 .. nodeCount - 1]]
+      holderCount = nodeCount * capacity
+      idleOperations = max nodeCount (capabilities * nodeCount * 64)
   pool <- createPool config
-  connectionCount <- newIORef (0 :: Int)
-  let connector _ = do
-        atomicModifyIORef' connectionCount $ \count -> (count + 1, ())
+  connectionCounts <- newIORef (Map.empty :: Map.Map NodeAddress Int)
+  let connector address = do
+        atomicModifyIORef' connectionCounts $ \counts ->
+          (Map.insertWith (+) address 1 counts, ())
         return BenchConnected
-      oneOperation address = do
-        started <- getMonotonicTimeNSec
-        withConnection pool address connector $ \_ -> return ()
-        finished <- getMonotonicTimeNSec
-        return (finished - started)
 
   releaseHolders <- newEmptyMVar
   holderStarted <- newEmptyMVar
-  holders <- forM [1 .. capacity] $ \_ ->
-    async $ withConnection pool saturatedAddress connector $ \_ -> do
+  holders <- forM [(address, slot) | address <- addresses, slot <- [1 .. capacity]] $
+    \(address, _) -> async $ withConnection pool address connector $ \_ -> do
       putMVar holderStarted ()
       takeMVar releaseHolders
-  replicateM_ capacity (takeMVar holderStarted)
+  replicateM_ holderCount (takeMVar holderStarted)
 
-  completionOrder <- newIORef ([] :: [Int])
-  waiters <- forM [1 .. waiterCount] $ \waiterIndex ->
-    async $ do
-      started <- getMonotonicTimeNSec
-      withConnection pool saturatedAddress connector $ \_ ->
-        atomicModifyIORef' completionOrder $ \completed ->
-          (completed <> [waiterIndex], ())
-      finished <- getMonotonicTimeNSec
-      return (finished - started)
-  awaitWaiters pool saturatedAddress waiterCount
+  completionOrder <- newIORef Map.empty
+  let waiterAssignments = zip [1 .. waiterCount] (cycle addresses)
+      expectedOrders = Map.fromListWith (++)
+        [(address, [waiterIndex]) | (waiterIndex, address) <- waiterAssignments]
+  waiters <- forM waiterAssignments $ \(waiterIndex, address) ->
+    do
+      waiter <- async $ do
+        started <- getMonotonicTimeNSec
+        withConnection pool address connector $ \_ ->
+          atomicModifyIORef' completionOrder $ \completed ->
+            (Map.insertWith (flip (++)) address [waiterIndex] completed, ())
+        finished <- getMonotonicTimeNSec
+        return (finished - started)
+      awaitWaiters pool address ((waiterIndex - 1) `div` nodeCount + 1)
+      return waiter
 
-  mixedSamples <-
-    if nodeCount == 1
-      then return []
-      else mapConcurrently (const $ oneOperation idleAddress) [1 .. idleOperations]
+  idlePool <- createPool config
+  let idleOperation address = do
+        started <- getMonotonicTimeNSec
+        withConnection idlePool address connector $ \_ -> return ()
+        finished <- getMonotonicTimeNSec
+        return (finished - started)
+  mixedSamples <- mapConcurrently idleOperation (take idleOperations $ cycle addresses)
   handoffStarted <- getMonotonicTimeNSec
-  replicateM_ capacity (putMVar releaseHolders ())
+  replicateM_ holderCount (putMVar releaseHolders ())
   waiterSamples <- mapM wait waiters
   mapM_ wait holders
   handoffFinished <- getMonotonicTimeNSec
   completed <- readIORef completionOrder
-  created <- readIORef connectionCount
+  createdByNode <- readIORef connectionCounts
+  when (Map.size createdByNode /= nodeCount) $
+    fail "benchmark did not create connections for every requested node"
+  closePool idlePool
   let handoffSeconds =
         fromIntegral (handoffFinished - handoffStarted) / 1.0e9 :: Double
       handoffThroughput = fromIntegral waiterCount / handoffSeconds :: Double
-      fifoViolations = length $ filter id $
-        zipWith (/=) completed [1 .. waiterCount]
+      fifoViolations = sum
+        [ length $ filter id $ zipWith (/=)
+            (Map.findWithDefault [] address completed)
+            expected
+        | (address, expected) <- Map.toList expectedOrders
+        ]
+      created = sum $ Map.elems createdByNode
   printf
     "nodes=%d capacity=%d waiters=%d created=%d handoff_ops_s=%.2f waiter_p50_us=%.2f waiter_p95_us=%.2f waiter_p99_us=%.2f mixed_idle_p50_us=%.2f mixed_idle_p95_us=%.2f mixed_idle_p99_us=%.2f fifo_violations=%d\n"
     nodeCount
