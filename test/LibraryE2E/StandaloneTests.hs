@@ -497,7 +497,7 @@ spec = describe "Standalone Multiplexed Client" $ do
       _ <- run client $ del ["srand-set"]
       closeStandaloneClient client
 
-  -- | Tests for new sorted set commands: ZREM, ZCARD, ZSCORE, ZRANK, ZREVRANK, ZCOUNT, ZINCRBY
+  -- | Tests for new sorted set commands.
   describe "New sorted set commands" $ do
     it "ZREM removes members and returns count" $ do
       client <- createTestStandaloneClient
@@ -549,6 +549,17 @@ spec = describe "Standalone Multiplexed Client" $ do
       result <- run client $ zincrby "zincrby-zset" 5.0 "member"
       result `shouldBe` RespBulkString "15"
       _ <- run client $ del ["zincrby-zset"]
+      closeStandaloneClient client
+
+    it "ZRANGESTORE stores the selected ordered score range" $ do
+      client <- createTestStandaloneClient
+      _ <- run client $ zadd "zrangestore-source" [(1, "a"), (2, "b"), (3, "c")]
+      result <- run client $
+        zrangestore "zrangestore-destination" "zrangestore-source" "(1" "+inf" ["BYSCORE"]
+      result `shouldBe` RespInteger 2
+      stored <- run client $ zrange "zrangestore-destination" 0 (-1) False
+      stored `shouldBe` RespArray [RespBulkString "b", RespBulkString "c"]
+      _ <- run client $ del ["zrangestore-source", "zrangestore-destination"]
       closeStandaloneClient client
 
   -- | Tests for new key commands: PERSIST, TYPE, RENAME, RENAMENX, UNLINK

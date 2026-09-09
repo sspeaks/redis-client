@@ -68,6 +68,20 @@ spec =
                 [same <> "destination", same <> "source", "-inf", "+inf", "LIMIT", "0"]
                 "ZRANGESTORE has malformed arguments"
 
+        it "uses Redis sorted-set numeric semantics for typed commands" $ do
+            shouldRouteBy "ZINCRBY" ["{typed}:key", "1.5", "member"] "{typed}:key"
+            shouldRouteBy "ZINCRBY" ["{typed}:key", "5.0", "member"] "{typed}:key"
+            shouldReject
+                "ZINCRBY"
+                ["{typed}:key", "(1", "member"]
+                "ZINCRBY has malformed arguments"
+            shouldRouteBy "ZCOUNT" ["{typed}:key", "(1", "+inf"] "{typed}:key"
+            shouldRouteBy "ZCOUNT" ["{typed}:key", "-inf", "(3.5"] "{typed}:key"
+            shouldReject
+                "ZCOUNT"
+                ["{typed}:key", "(+inf", "3"]
+                "ZCOUNT has malformed arguments"
+
         it "handles negative last-key and stepped range specifications" $ do
             shouldRouteBy "BLPOP" ["{same}:one", "{same}:two", "1"] "{same}:one"
             shouldRouteBy

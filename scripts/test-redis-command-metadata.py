@@ -314,6 +314,14 @@ class CommandMetadataAuditSpec(unittest.TestCase):
         self.assertIn('CommandMetadata "CLUSTER SET-CONFIG-EPOCH"', generated)
         self.assertNotIn('CommandMetadata "CLIENT NO_EVICT"', generated)
 
+    def test_normalizes_known_redis_sorted_set_semantics(self):
+        snapshot = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+        commands = GENERATOR.audit_snapshot(snapshot)
+        generated = GENERATOR.render_module(commands, SNAPSHOT)
+        self.assertIn('CommandArgument "increment" (ArgumentDouble)', generated)
+        self.assertIn('CommandArgument "min" (ArgumentScoreRange)', generated)
+        self.assertIn('CommandArgument "max" (ArgumentScoreRange)', generated)
+
     def test_generation_is_offline_deterministic_and_byte_identical(self):
         first = WORK / "first.hs"
         second = WORK / "second.hs"

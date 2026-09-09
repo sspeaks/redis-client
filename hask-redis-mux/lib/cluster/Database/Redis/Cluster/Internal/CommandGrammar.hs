@@ -362,6 +362,7 @@ parsePayload frame argument state =
         ArgumentString -> consumeScalar (const True)
         ArgumentInteger -> consumeScalar isSignedInteger
         ArgumentDouble -> consumeScalar isDouble
+        ArgumentScoreRange -> consumeScalar isScoreRange
         ArgumentUnixTime -> consumeScalar isSignedInteger
         ArgumentKey -> consumeScalar (const True)
         ArgumentPattern -> consumeScalar (const True)
@@ -732,6 +733,27 @@ isDouble value
                         && not (isNaN parsed)
                         && not (errno == eRANGE && (isInfinite parsed || parsed == 0))
 {-# NOINLINE isDouble #-}
+
+-- Redis sorted-set score ranges additionally accept canonical infinities and
+-- exclusive finite bounds, while ordinary floating-point arguments do not.
+isScoreRange :: ByteString -> Bool
+isScoreRange value
+    | value == "-inf" || value == "+inf" = True
+    | Just (40, remainder) <- BS.uncons value = isFiniteDouble remainder
+    | otherwise = isFiniteDouble value
+
+isFiniteDouble :: ByteString -> Bool
+isFiniteDouble value = isDouble value && not (isInfinity value)
+
+isInfinity :: ByteString -> Bool
+isInfinity value =
+    BS.map asciiLower value `elem`
+        ["inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"]
+
+asciiLower :: Word8 -> Word8
+asciiLower byte
+    | byte >= 65 && byte <= 90 = byte + 32
+    | otherwise = byte
 
 isAsciiSpace :: Word8 -> Bool
 isAsciiSpace byte = byte == 32 || (byte >= 9 && byte <= 13)
