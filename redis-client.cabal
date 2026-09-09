@@ -43,12 +43,104 @@ test-suite FillHelpersSpec
                     , hask-redis-mux
                     , mtl
 
+test-suite CredentialSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          CredentialSpec.hs
+    other-modules:    AppConfig
+                    , CredentialConfig
+                    , FillProcess
+    hs-source-dirs:   app
+    build-depends:    bytestring
+                    , hask-redis-mux
+                    , mtl
+
+test-suite FlushConfirmationSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          FlushConfirmationSpec.hs
+    other-modules:    FlushConfirmation
+    hs-source-dirs:   test
+                    , app
+
+test-suite ClusterSetupSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterSetupSpec.hs
+    other-modules:    AppConfig
+                    , ClusterSetup
+                    , CredentialConfig
+    hs-source-dirs:   app
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , stm
+
+test-suite ClusterTunnelSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ClusterTunnelSpec.hs
+    other-modules:    ClusterTunnel
+    hs-source-dirs:   test
+                    , app
+    build-depends:    attoparsec
+                    , bytestring
+                    , containers
+                    , hask-redis-mux
+                    , hask-redis-mux:cluster
+                    , mtl
+                    , network
+                    , stm
+
+test-suite NodeLifecycleSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          NodeLifecycleSpec.hs
+    other-modules:    LibraryE2E.NodeLifecycle
+    hs-source-dirs:   test
+
+test-suite NodeTargetingSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          NodeTargetingSpec.hs
+    other-modules:    LibraryE2E.NodeLifecycle
+                    , LibraryE2E.NodeTargeting
+    hs-source-dirs:   test
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , time
+                    , vector
+
+test-suite StructuredConcurrencySpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          StructuredConcurrencySpec.hs
+    other-modules:    ClusterFiller
+                    , FillHelpers
+                    , Filler
+                    , ProcessLifecycle
+                    , StructuredConcurrency
+    hs-source-dirs:   test
+                    , app
+    build-depends:    async
+                    , bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , network
+                    , process
+                    , stm
+                    , time
+                    , vector
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------
 
 flag e2e
-    description: Build end-to-end test executables (EndToEnd, ClusterEndToEnd, LibraryE2E)
+    description: Build end-to-end test executables
     default:     False
     manual:      True
 
@@ -65,6 +157,7 @@ executable EndToEnd
                     , app
     other-modules:    E2EHelpers
                     , AppConfig
+                    , CredentialConfig
     build-depends:    attoparsec
                     , bytestring
                     , directory
@@ -90,6 +183,7 @@ executable ClusterEndToEnd
                     , E2EHelpers
                     , SlotMappingHelpers
     build-depends:    async
+                    , attoparsec
                     , bytestring
                     , containers
                     , directory
@@ -97,10 +191,38 @@ executable ClusterEndToEnd
                     , hask-redis-mux
                     , hspec
                     , mtl
+                    , network
                     , process
                     , stm
                     , time
                     , vector
+
+executable AuthenticatedClusterEndToEnd
+    import:           exe-defaults
+    if !flag(e2e)
+        buildable: False
+    main-is:          AuthenticatedClusterE2E.hs
+    hs-source-dirs:   test
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+                    , hspec
+                    , mtl
+                    , stm
+
+executable DirectTLSEndToEnd
+    import:           exe-defaults
+    if !flag(e2e)
+        buildable: False
+    main-is:          DirectTLSE2E.hs
+    hs-source-dirs:   test
+    build-depends:    async
+                    , bytestring
+                    , containers
+                    , hask-redis-mux
+                    , hspec
+                    , mtl
+                    , stm
 
 executable LibraryE2E
     import:           exe-defaults
@@ -109,6 +231,8 @@ executable LibraryE2E
     main-is:          LibraryE2E.hs
     hs-source-dirs:   test
     other-modules:    LibraryE2E.Utils
+                    , LibraryE2E.NodeLifecycle
+                    , LibraryE2E.NodeTargeting
                     , LibraryE2E.ConnectionPoolTests
                     , LibraryE2E.TopologyTests
                     , LibraryE2E.ResilienceTests
@@ -136,13 +260,20 @@ executable redis-client
                     , ClusterFiller
                     , ClusterSetup
                     , ClusterTunnel
+                    , CredentialConfig
                     , FillHelpers
+                    , FillProcess
+                    , FlushConfirmation
                     , Filler
+                    , ProcessLifecycle
                     , SlotMappingHelpers
+                    , StructuredConcurrency
     build-depends:    attoparsec
+                    , async
                     , bytestring
                     , containers
                     , hask-redis-mux
+                    , hask-redis-mux:cluster
                     , mtl
                     , network
                     , process

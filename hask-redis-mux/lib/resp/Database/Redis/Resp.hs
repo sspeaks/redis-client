@@ -63,7 +63,7 @@ instance Encodable RespData where
   encode RespNullBulkString = Builder.byteString "$-1\r\n"
   encode (RespArray !xs) = Builder.char8 '*' <> Builder.intDec (length xs) <> Builder.byteString "\r\n" <> foldMap encode xs
   encode (RespSet !s) = Builder.char8 '~' <> Builder.intDec (S.size s) <> Builder.byteString "\r\n" <> foldMap encode (S.toList s)
-  encode (RespMap !m) = Builder.char8 '*' <> Builder.intDec (M.size m) <> Builder.byteString "\r\n" <> foldMap encodePair (M.toList m)
+  encode (RespMap !m) = Builder.char8 '%' <> Builder.intDec (M.size m) <> Builder.byteString "\r\n" <> foldMap encodePair (M.toList m)
     where
       encodePair (k, v) = encode k <> encode v
 
@@ -87,31 +87,29 @@ parseRespData =
 
 parseSimpleString :: Char8.Parser RespData
 parseSimpleString = do
-  !s <- Char8.takeTill (== '\r')
-  _ <- Char8.take 2
+  !s <- parseLine
   return $ RespSimpleString s
 {-# INLINE parseSimpleString #-}
 
 parseError :: Char8.Parser RespData
 parseError = do
-  !s <- Char8.takeTill (== '\r')
-  _ <- Char8.take 2
+  !s <- parseLine
   return $ RespError s
 {-# INLINE parseError #-}
 
 parseInteger :: Char8.Parser RespData
 parseInteger = do
   !i <- Char8.signed Char8.decimal
-  _ <- Char8.endOfLine
+  parseCRLF
   return $ RespInteger i
 {-# INLINE parseInteger #-}
 
 parseBulkString :: Char8.Parser RespData
 parseBulkString = do
   !len <- Char8.decimal
-  _ <- Char8.endOfLine
+  parseCRLF
   !s <- Char8.take len
-  _ <- Char8.endOfLine
+  parseCRLF
   return $ RespBulkString s
 {-# INLINE parseBulkString #-}
 
@@ -119,27 +117,27 @@ parseNullBulkString :: Char8.Parser RespData
 parseNullBulkString = do
   _ <- Char8.char '-'
   _ <- Char8.char '1'
-  _ <- Char8.endOfLine
+  parseCRLF
   return RespNullBulkString
 
 parseArray :: Char8.Parser RespData
 parseArray = do
   !len <- Char8.decimal
-  _ <- Char8.endOfLine
+  parseCRLF
   !xs <- Char8.count len parseRespData
   return $ RespArray xs
 
 parseSet :: Char8.Parser RespData
 parseSet = do
   !len <- Char8.decimal
-  _ <- Char8.endOfLine
+  parseCRLF
   !xs <- Char8.count len parseRespData
   return $ RespSet (S.fromList xs)
 
 parseMap :: Char8.Parser RespData
 parseMap = do
   !len <- Char8.decimal
-  _ <- Char8.endOfLine
+  parseCRLF
   !pairs <- Char8.count len parsePair
   return $ RespMap (M.fromList pairs)
   where
@@ -148,6 +146,20 @@ parseMap = do
       v <- parseRespData
       return (k, v)
 
--- | Parse strict ByteString into RespData
+parseLine :: Char8.Parser ByteString
+parseLine = do
+  !line <- Char8.takeTill (\c -> c == '\r' || c == '\n')
+  parseCRLF
+  return line
+{-# INLINE parseLine #-}
+
+parseCRLF :: Char8.Parser ()
+parseCRLF = do
+  _ <- Char8.char '\r'
+  _ <- Char8.char '\n'
+  return ()
+{-# INLINE parseCRLF #-}
+
+-- | Parse exactly one complete RESP value with no trailing bytes.
 parseStrict :: BS8.ByteString -> Either String RespData
-parseStrict = StrictParse.parseOnly parseRespData
+parseStrict = StrictParse.parseOnly (parseRespData <* StrictParse.endOfInput)

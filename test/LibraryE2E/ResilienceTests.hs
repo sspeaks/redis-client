@@ -3,15 +3,17 @@
 
 module LibraryE2E.ResilienceTests (spec) where
 
-import           Control.Concurrent            (threadDelay)
-import           Control.Exception             (SomeException, try)
-import           Database.Redis.Cluster.Client (ClusterConfig (..),
+import           Control.Exception             (SomeException, displayException,
+                                                throwIO, try)
+import           Data.ByteString               (ByteString)
+import           Database.Redis.Client         (PlainTextClient)
+import           Database.Redis.Cluster.Client (ClusterClient,
                                                 ClusterError (..),
                                                 closeClusterClient,
                                                 executeKeyedClusterCommand,
                                                 refreshTopology)
-import           Database.Redis.Command        (showBS)
 import           Database.Redis.Resp           (RespData (..))
+import           System.Timeout                (timeout)
 
 import           LibraryE2E.Utils
 
@@ -19,6 +21,27 @@ import           Test.Hspec
 
 spec :: Spec
 spec = describe "Error Handling & Resilience" $ do
+  describe "Exception-safe node restoration" $ do
+    it "restores a stopped node after an intentional body failure" $ do
+      result <- try $ withStoppedNode 3 $
+        throwIO $ userError "intentional node fixture failure"
+        :: IO (Either SomeException ())
+      case result of
+        Left err ->
+          displayException err `shouldContain`
+            "intentional node fixture failure"
+        Right () ->
+          expectationFailure "intentional failure unexpectedly succeeded"
+
+    it "starts the following example with a healthy cluster" $ do
+      waitForClusterReady 5
+      client <- createOutageTestClient
+      scenario <- nodeOutageScenario client 3
+      refreshTopology client
+      assertRoundTrip client (stoppedNodeKey scenario) "restored-target"
+      assertRoundTrip client (healthyNodeKey scenario) "restored-healthy"
+      flushAllNodes client
+      closeClusterClient client
 
   describe "MOVED error retry" $ do
     it "transparently handles slot routing across nodes" $ do
@@ -50,110 +73,89 @@ spec = describe "Error Handling & Resilience" $ do
       closeClusterClient client
 
   describe "Max retries exceeded" $ do
-    it "returns MaxRetriesExceeded when all nodes for a slot are down" $ do
-      -- Create client with very few retries
-      client <- createTestClientWith (\c -> c {
-        clusterMaxRetries = 1,
-        clusterRetryDelay = 10000  -- 10ms to speed up test
-      })
+    it "exhausts retries only for the stopped node's slot" $ do
+      client <- createOutageTestClient
+      scenario <- nodeOutageScenario client 4
+      assertRoundTrip client (stoppedNodeKey scenario) "target-before"
+      assertRoundTrip client (healthyNodeKey scenario) "healthy-before"
 
-      -- Stop multiple nodes to guarantee some slots are unavailable
-      stopNode 4
-      stopNode 5
-      threadDelay 3000000  -- 3s for detection
+      withStoppedNode 4 $ do
+        assertBoundedOutage client $ stoppedNodeKey scenario
+        assertRoundTrip client (healthyNodeKey scenario) "healthy-during"
 
-      -- Try operations — some should fail with MaxRetriesExceeded or ConnectionError
-      -- We try several keys to increase odds of hitting a down node's slots
-      let tryKeys = ["maxretry-" <> showBS i | i <- [1..20 :: Int]]
-      results <- mapM (\k ->
-        executeKeyedClusterCommand client k ["SET", k, "v"]
-        ) tryKeys
-
-      -- At least some should fail (nodes 4 & 5 own some slots)
-      let failures = [e | Left e <- results]
-      length failures `shouldSatisfy` (> 0)
-
-      -- Verify failures are the right error types
-      let isExpectedError (MaxRetriesExceeded _) = True
-          isExpectedError (ConnectionError _)    = True
-          isExpectedError _                      = False
-      mapM_ (\e -> e `shouldSatisfy` isExpectedError) failures
-
-      -- Restart nodes
-      startNode 4
-      startNode 5
-      waitForClusterReady 30
-      threadDelay 5000000  -- 5s stabilization
-
+      refreshTopology client
+      assertRoundTrip client (stoppedNodeKey scenario) "target-after"
       flushAllNodes client
       closeClusterClient client
 
   describe "ConnectionClosed handling" $ do
-    it "node kill produces ConnectionError, not hang or parse error" $ do
-      client <- createTestClient
+    it "turns a closed stopped-node connection into bounded retry exhaustion" $ do
+      client <- createOutageTestClient
+      scenario <- nodeOutageScenario client 3
+      assertRoundTrip client (stoppedNodeKey scenario) "target-before"
+      assertRoundTrip client (healthyNodeKey scenario) "healthy-before"
 
-      -- Warm up a connection to node 3
-      -- Use hash tag to target specific node's slots
-      _ <- executeKeyedClusterCommand client "conn-close-test" ["SET", "conn-close-test", "v"]
+      withStoppedNode 3 $ do
+        assertBoundedOutage client $ stoppedNodeKey scenario
+        assertRoundTrip client (healthyNodeKey scenario) "healthy-during"
 
-      -- Kill node 3 abruptly
-      stopNode 3
-      threadDelay 2000000  -- 2s
-
-      -- Try operations — some may fail with ConnectionError
-      results <- mapM (\i -> do
-        let k = "connclose-" <> showBS i
-        try (executeKeyedClusterCommand client k ["SET", k, "v"])
-          :: IO (Either SomeException (Either ClusterError RespData))
-        ) [1..10 :: Int]
-
-      -- Should not hang (test completing is the assertion)
-      -- Any failures should be connection-related, not parse errors
-      let checkResult r = case r of
-            Left _                              -> True  -- Exception is fine
-            Right (Left (ConnectionError _))    -> True
-            Right (Left (MaxRetriesExceeded _)) -> True
-            Right (Right _)                     -> True  -- Success is fine (different node)
-            Right (Left _)                      -> True  -- Other cluster errors ok
-      mapM_ (\r -> r `shouldSatisfy` checkResult) results
-
-      -- Restart
-      startNode 3
-      waitForClusterReady 30
-      threadDelay 5000000
-
+      refreshTopology client
+      assertRoundTrip client (stoppedNodeKey scenario) "target-after"
       flushAllNodes client
       closeClusterClient client
 
   describe "Recovery after node restart" $ do
-    it "operations resume after stopped node is restarted" $ do
-      client <- createTestClient
+    it "restores the same stopped-node slot after refresh" $ do
+      client <- createOutageTestClient
+      scenario <- nodeOutageScenario client 3
+      let targetKey = stoppedNodeKey scenario
+          healthyKey = healthyNodeKey scenario
 
-      -- Establish baseline
-      r1 <- executeKeyedClusterCommand client "recovery-key" ["SET", "recovery-key", "before"]
-      r1 `shouldSatisfy` isRight'
+      assertRoundTrip client targetKey "target-before"
+      assertRoundTrip client healthyKey "healthy-before"
 
-      -- Stop node
-      stopNode 3
-      threadDelay 3000000
+      withStoppedNode 3 $ do
+        assertBoundedOutage client targetKey
+        assertRoundTrip client healthyKey "healthy-during"
 
-      -- Restart node
-      startNode 3
-      waitForClusterReady 30
-      threadDelay 5000000  -- stabilization
-
-      -- Force topology refresh
-      _ <- try (refreshTopology client) :: IO (Either SomeException ())
-
-      -- Operations should work again
-      r2 <- executeKeyedClusterCommand client "recovery-key2" ["SET", "recovery-key2", "after"]
-      r2 `shouldSatisfy` isRight'
-
-      r3 <- executeKeyedClusterCommand client "recovery-key2" ["GET", "recovery-key2"]
-      r3 `shouldBe` Right (RespBulkString "after")
+      refreshTopology client
+      assertRoundTrip client targetKey "target-after"
 
       flushAllNodes client
       closeClusterClient client
+
+assertRoundTrip
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> ByteString
+  -> Expectation
+assertRoundTrip client key value = do
+  result <- timeout 10000000 $ do
+    setResult <- executeKeyedClusterCommand client key ["SET", key, value]
+    getResult <- executeKeyedClusterCommand client key ["GET", key]
+    return (setResult, getResult)
+  case result of
+    Nothing ->
+      expectationFailure "Key round trip exceeded the 10-second bound"
+    Just (setResult, getResult) -> do
+      setResult `shouldBe` Right (RespSimpleString "OK")
+      getResult `shouldBe` Right (RespBulkString value)
+
+assertBoundedOutage
+  :: ClusterClient PlainTextClient
+  -> ByteString
+  -> Expectation
+assertBoundedOutage client key = do
+  result <- timeout 10000000 $
+    executeKeyedClusterCommand client key ["SET", key, "during-outage"]
+  case result of
+    Nothing ->
+      expectationFailure "Stopped-node command exceeded the 10-second bound"
+    Just (Left (MaxRetriesExceeded _)) ->
+      return ()
+    Just other ->
+      expectationFailure $ "Expected MaxRetriesExceeded for stopped-node slot, got "
+        ++ show other
 
 -- | Helper
 isRight' :: Either a b -> Bool

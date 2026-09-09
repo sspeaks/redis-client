@@ -5,51 +5,66 @@
 module ClusterTunnel
   ( serveSmartProxy
   , servePinnedProxy
+  , routeSmartProxyCommandWith
+  , rewriteClusterResponse
+  , SmartProxyFrameResult (..)
+  , smartProxyFrameLimit
+  , parseSmartProxyFrames
   ) where
 
-import           Control.Concurrent              (MVar, forkIO, newEmptyMVar,
-                                                  putMVar, takeMVar)
-import           Control.Concurrent.STM          (readTVarIO)
-import           Control.Exception               (SomeException, bracket,
-                                                  finally, throwIO, try)
-import           Control.Monad                   (forever, void, when)
-import qualified Control.Monad.State.Strict      as State
-import qualified Data.ByteString                 as BS
-import qualified Data.ByteString.Builder         as Builder
-import qualified Data.ByteString.Char8           as BS8
-import qualified Data.ByteString.Lazy            as LBS
-import           Data.Char                       (isAlphaNum)
-import           Data.List                       (isPrefixOf)
-import qualified Data.Map.Strict                 as Map
-import           Data.Word                       (Word8)
-import           Database.Redis.Client           (Client (..),
-                                                  ConnectionStatus (..))
-import           Database.Redis.Cluster          (ClusterNode (..),
-                                                  ClusterTopology (..),
-                                                  NodeAddress (..),
-                                                  NodeRole (..))
-import           Database.Redis.Cluster.Client   (ClusterClient (..),
-                                                  ClusterError (..))
-import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
-import           Database.Redis.Cluster.Commands (CommandRouting (..),
-                                                  classifyCommand)
-import           Database.Redis.Command          (ClientState (..),
-                                                  RedisCommandClient, parseWith)
-import           Database.Redis.Connector        (Connector)
-import           Database.Redis.Resp             (Encodable (encode),
-                                                  RespData (..))
-import qualified Database.Redis.Resp             as Resp
-import           Network.Socket                  (Family (..), SockAddr (..),
-                                                  Socket, SocketOption (..),
-                                                  SocketType (..), bind,
-                                                  defaultProtocol, listen,
-                                                  setSocketOption, socket,
-                                                  tupleToHostAddress)
-import qualified Network.Socket                  as S
-import           Network.Socket.ByteString       (recv, sendAll)
-import           System.IO                       (BufferMode (LineBuffering),
-                                                  hFlush, hSetBuffering, stdout)
-import           Text.Printf                     (printf)
+import           Control.Concurrent                         (MVar, forkIO,
+                                                             newEmptyMVar,
+                                                             putMVar, takeMVar)
+import           Control.Concurrent.STM                     (readTVarIO)
+import           Control.Exception                          (SomeException,
+                                                             bracket, finally,
+                                                             throwIO, try)
+import           Control.Monad                              (forever, void,
+                                                             when)
+import qualified Data.Attoparsec.ByteString                 as StrictParse
+import qualified Data.ByteString                            as BS
+import qualified Data.ByteString.Builder                    as Builder
+import qualified Data.ByteString.Char8                      as BS8
+import qualified Data.ByteString.Lazy                       as LBS
+import           Data.Char                                  (isAlphaNum)
+import           Data.List                                  (intercalate,
+                                                             isPrefixOf)
+import qualified Data.Map.Strict                            as Map
+import           Data.Word                                  (Word8)
+import           Database.Redis.Client                      (Client (..),
+                                                             ConnectionStatus (..))
+import           Database.Redis.Cluster                     (ClusterNode (..),
+                                                             ClusterTopology (..),
+                                                             NodeAddress (..),
+                                                             NodeRole (..))
+import           Database.Redis.Cluster.Client              (ClusterClient (..),
+                                                             ClusterError (..))
+import           Database.Redis.Cluster.Commands            (CommandRouting (..),
+                                                             classifyCommand)
+import           Database.Redis.Cluster.Internal.RawCommand (RawClusterRoute (..),
+                                                             executeRawClusterCommand)
+import           Database.Redis.Connector                   (Connector)
+import           Database.Redis.Resp                        (Encodable (encode),
+                                                             RespData (..))
+import qualified Database.Redis.Resp                        as Resp
+import           Network.Socket                             (Family (..),
+                                                             SockAddr (..),
+                                                             Socket,
+                                                             SocketOption (..),
+                                                             SocketType (..),
+                                                             bind,
+                                                             defaultProtocol,
+                                                             listen,
+                                                             setSocketOption,
+                                                             socket,
+                                                             tupleToHostAddress)
+import qualified Network.Socket                             as S
+import           Network.Socket.ByteString                  (recv, sendAll)
+import           System.IO                                  (BufferMode (LineBuffering),
+                                                             hFlush,
+                                                             hSetBuffering,
+                                                             stdout)
+import           Text.Printf                                (printf)
 
 -- | Smart proxy mode: Makes cluster appear as single Redis instance
 -- Creates single listening socket and routes commands to appropriate nodes
@@ -84,86 +99,147 @@ handleSmartProxyClient :: (Client client) =>
   Socket ->
   IO ()
 handleSmartProxyClient clusterClient clientSock = do
-  loop
+  loop BS.empty
   where
-    loop = do
+    loop remainder = do
       -- Receive data from client
       dat <- recv clientSock 4096
       if BS.null dat
-        then putStrLn "Client disconnected"
-        else do
-          -- Parse RESP command
-          case Resp.parseStrict dat of
-            Left err -> do
+        then do
+          when (not $ BS.null remainder) $
+            putStrLn "Client disconnected with incomplete RESP command"
+          putStrLn "Client disconnected"
+        else
+          case parseSmartProxyFrames remainder dat of
+            SmartProxyFrames commands nextRemainder -> do
+              mapM_ executeCommand commands
+              loop nextRemainder
+            SmartProxyFrameError commands err -> do
+              mapM_ executeCommand commands
               printf "Failed to parse RESP: %s\n" err
-              -- Send error back to client
-              let errorResp = RespError (BS8.pack $ "ERR Failed to parse command: " ++ err)
-              sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
-              loop
-            Right respData -> do
-              -- Route and execute the command
-              result <- routeSmartProxyCommand clusterClient respData
-              case result of
-                Left err -> do
-                  printf "Command execution error: %s\n" err
-                  let errorResp = RespError (BS8.pack $ "ERR " ++ err)
-                  sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
-                Right response -> do
-                  -- Send response back to client
-                  sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode response)
-              loop
+              sendError $ "ERR Failed to parse command: " ++ err
+
+    executeCommand respData = do
+      result <- routeSmartProxyCommand clusterClient respData
+      case result of
+        Left err       -> sendError $ "ERR " ++ err
+        Right response -> sendResponse response
+
+    sendError message =
+      sendResponse $ RespError (BS8.pack message)
+
+    sendResponse response =
+      sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode response)
+
+-- | Maximum number of bytes in one client request frame.  This bounds retained
+-- TCP stream state independently of the fixed-size socket reads.
+smartProxyFrameLimit :: Int
+smartProxyFrameLimit = 1024 * 1024
+
+-- | Results from draining all complete RESP request frames in a TCP chunk.
+-- On failure, the preceding complete frames remain available to preserve stream
+-- ordering, while the caller must terminate the connection without using bytes
+-- after the invalid frame.
+data SmartProxyFrameResult
+  = SmartProxyFrames ![RespData] !BS.ByteString
+  | SmartProxyFrameError ![RespData] !String
+  deriving (Eq, Show)
+
+-- | Append a TCP chunk to the pending request bytes and extract every complete
+-- RESP frame.  The incomplete suffix is retained for the next socket read.
+parseSmartProxyFrames ::
+  BS.ByteString ->
+  BS.ByteString ->
+  SmartProxyFrameResult
+parseSmartProxyFrames pending chunk = drain [] (pending <> chunk)
+  where
+    drain frames input =
+      case BS.uncons input of
+        Just (prefix, _)
+          | prefix `notElem` validRespPrefixes ->
+              SmartProxyFrameError
+                (reverse frames)
+                "invalid RESP frame: unknown data type prefix"
+        _ -> case StrictParse.parse Resp.parseRespData input of
+          StrictParse.Done remaining frame
+            | BS.length input - BS.length remaining > smartProxyFrameLimit ->
+                SmartProxyFrameError
+                  (reverse frames)
+                  "request frame exceeds 1048576 byte limit"
+            | otherwise -> drain (frame : frames) remaining
+          StrictParse.Partial _
+            | BS.length input > smartProxyFrameLimit ->
+                SmartProxyFrameError
+                  (reverse frames)
+                  "request frame exceeds 1048576 byte limit"
+            | otherwise -> SmartProxyFrames (reverse frames) input
+          StrictParse.Fail _ contexts message ->
+              SmartProxyFrameError
+                (reverse frames)
+                ("invalid RESP frame: " ++ intercalate ", " contexts ++ ": " ++ message)
+
+    validRespPrefixes = [43, 45, 58, 36, 42, 126, 37]
 
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>
   ClusterClient client ->
   RespData ->
   IO (Either String RespData)
-routeSmartProxyCommand clusterClient respData = do
-  case respData of
-    RespArray (RespBulkString cmd : args) -> do
-      let argKeys = [k | RespBulkString k <- args]
-      case classifyCommand cmd argKeys of
-        KeylessRoute   -> executeKeylessCommand clusterClient respData
-        KeyedRoute key -> executeKeyedCommand clusterClient key (cmd : argKeys)
-        CommandError e -> return $ Left e
-    _ -> return $ Left "Expected array command"
+routeSmartProxyCommand clusterClient =
+  routeSmartProxyCommandWith (executeRawClusterCommand clusterClient)
 
--- | Execute a keyless command (route to any master)
-executeKeylessCommand :: (Client client) =>
-  ClusterClient client ->
+-- | Route a parsed client frame after validating it with the generated command
+-- grammar.  The dispatch seam keeps grammar failures before any cluster I/O.
+routeSmartProxyCommandWith ::
+  SmartProxyDispatch ->
   RespData ->
   IO (Either String RespData)
-executeKeylessCommand clusterClient respData = do
-  result <- ClusterCommandClient.executeKeylessClusterCommand
-              clusterClient
-              (sendRespCommand respData)
+routeSmartProxyCommandWith dispatch respData =
+  case classifySmartProxyFrame respData of
+    Left errorMessage         -> pure $ Left errorMessage
+    Right RawRouteKeyless     -> executeKeylessCommand dispatch respData
+    Right (RawRouteByKey key) -> executeKeyedCommand dispatch key respData
+
+type SmartProxyDispatch =
+  RawClusterRoute ->
+  RespData ->
+  IO (Either ClusterError RespData)
+
+classifySmartProxyFrame :: RespData -> Either String RawClusterRoute
+classifySmartProxyFrame (RespArray (RespBulkString command : arguments)) = do
+  commandArguments <- traverse bulkString arguments
+  case classifyCommand command commandArguments of
+    KeylessRoute              -> Right RawRouteKeyless
+    KeyedRoute key            -> Right $ RawRouteByKey key
+    CommandError errorMessage -> Left errorMessage
+  where
+    bulkString (RespBulkString argument) = Right argument
+    bulkString _ = Left "Expected array command with bulk string arguments"
+classifySmartProxyFrame _ = Left "Expected array command with bulk string arguments"
+
+-- | Execute a keyless command (route to any master)
+executeKeylessCommand ::
+  SmartProxyDispatch ->
+  RespData ->
+  IO (Either String RespData)
+executeKeylessCommand dispatch respData = do
+  result <- dispatch RawRouteKeyless respData
   return $ case result of
     Left err   -> Left (show err)
     Right resp -> Right resp
 
 -- | Execute a keyed command (route by slot via multiplexer)
-executeKeyedCommand :: (Client client) =>
-  ClusterClient client ->
+executeKeyedCommand ::
+  SmartProxyDispatch ->
   BS.ByteString ->
-  [BS.ByteString] ->
+  RespData ->
   IO (Either String RespData)
-executeKeyedCommand clusterClient key cmdArgs = do
-  result <- ClusterCommandClient.executeKeyedClusterCommand
-              clusterClient
-              key
-              cmdArgs
+executeKeyedCommand dispatch key respData = do
+  result <- dispatch (RawRouteByKey key) respData
   return $ case result of
     Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
     Left err                  -> Left (show err)
     Right resp                -> Right resp
-
--- | Send RESP command via RedisCommandClient
-sendRespCommand :: (Client client) => RespData -> RedisCommandClient client RespData
-sendRespCommand respData = do
-  ClientState client _ <- State.get
-  let encoded = Builder.toLazyByteString $ encode respData
-  send client encoded
-  parseWith (receive client)
 
 -- | Pinned proxy mode: One listener per cluster node
 -- Each listener forwards to its corresponding cluster node

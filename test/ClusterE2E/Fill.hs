@@ -32,7 +32,7 @@ spec = describe "Cluster Fill Mode" $ do
 
     -- Run fill with -f to flush before filling
     (code, stdoutOut, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
 
     code `shouldBe` ExitSuccess
@@ -51,7 +51,7 @@ spec = describe "Cluster Fill Mode" $ do
     redisClient <- getRedisClientPath
     -- Run fill with -f to flush before filling, custom pipeline size of 4096
     (code, stdoutOut, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "4096", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "4096", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
 
     code `shouldBe` ExitSuccess
@@ -66,7 +66,7 @@ spec = describe "Cluster Fill Mode" $ do
   it "fill with tiny --pipeline batch size (10) works in cluster" $ do
     redisClient <- getRedisClientPath
     (code, stdoutOut, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "10", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "10", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
     code `shouldBe` ExitSuccess
     stdoutOut `shouldSatisfy` ("Filling 1GB across cluster" `isInfixOf`)
@@ -77,7 +77,7 @@ spec = describe "Cluster Fill Mode" $ do
   it "fill with huge --pipeline batch size (20000) works in cluster" $ do
     redisClient <- getRedisClientPath
     (code, stdoutOut, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "20000", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "20000", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
     code `shouldBe` ExitSuccess
     stdoutOut `shouldSatisfy` ("Filling 1GB across cluster" `isInfixOf`)
@@ -88,7 +88,7 @@ spec = describe "Cluster Fill Mode" $ do
   it "fill rejects invalid --pipeline batch size (0) in cluster" $ do
     redisClient <- getRedisClientPath
     (code, _, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "0", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "--pipeline", "0", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
     code `shouldNotBe` ExitSuccess
 
@@ -97,7 +97,7 @@ spec = describe "Cluster Fill Mode" $ do
     let runRedisClient args = readCreateProcessWithExitCode (proc redisClient args)
 
     -- First flush the cluster to start with a clean state (previous tests may have left data)
-    _ <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
+    _ <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"] ""
     threadDelay 100000
 
     -- Get cluster topology to identify master nodes
@@ -139,8 +139,14 @@ spec = describe "Cluster Fill Mode" $ do
       -- We created one key per master node, so should have exactly that many
       totalKeys `shouldBe` fromIntegral masterCount
 
-    -- Flush the cluster using only the -f flag (no --data)
-    (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
+    -- A rejected non-interactive flush must leave every primary untouched.
+    (missingCode, _, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f"] ""
+    missingCode `shouldNotBe` ExitSuccess
+    bracket createTestClusterClient closeClusterClient $ \client -> do
+      totalKeys <- countClusterKeys client
+      totalKeys `shouldNotBe` 0
+
+    (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis1.local", "--cluster", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"] ""
     code `shouldBe` ExitSuccess  -- Now exits with success for flush-only
     stdoutOut `shouldSatisfy` ("Flush complete" `isInfixOf`)
 
@@ -156,7 +162,7 @@ spec = describe "Cluster Fill Mode" $ do
 
     -- Run fill with 4 threads per node
     (code, stdoutOut, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-n", "4", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-n", "4", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
 
     code `shouldBe` ExitSuccess
@@ -173,7 +179,7 @@ spec = describe "Cluster Fill Mode" $ do
 
     -- Fill the cluster
     (code, _, _) <- readCreateProcessWithExitCode
-      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f"])
+      (proc redisClient ["fill", "--host", "redis1.local", "--cluster", "--data", "1", "-f", "--confirm-flush", "redis+cluster://redis1.local:6379?tls=false&scope=all-primaries"])
       ""
 
     code `shouldBe` ExitSuccess

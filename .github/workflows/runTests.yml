@@ -17,5 +17,8 @@ jobs:
       with:
         nix_path: nixpkgs=channel:nixos-25.05
 
+    - name: Validate pull request template
+      run: python3 .github/tests/test_pull_request_template.py
+
     - name: Test
       run: make test

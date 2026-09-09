@@ -45,14 +45,16 @@ module Database.Redis.Standalone
   ) where
 
 import           Control.Exception                   (SomeException, bracket,
-                                                      catch)
+                                                      catch, onException,
+                                                      throwIO)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
-import           Database.Redis.Client               (Client (..),
-                                                      PlainTextClient)
+import qualified Data.ByteString                     as BS
+import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
-import           Database.Redis.Command              (ClientReplyValues (..),
+import           Database.Redis.Command              (ClientReplyModeUnsupported (..),
+                                                      ClientReplyValues (..),
                                                       RedisCommands (..),
                                                       convertResp,
                                                       encodeCommandBuilder,
@@ -65,7 +67,7 @@ import           Database.Redis.Connector            (Connector,
                                                       clusterPlaintextConnector)
 import           Database.Redis.FromResp             (FromResp (..))
 import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
-                                                      createMultiplexer,
+                                                      createMultiplexerFromConnector,
                                                       createSlotPool,
                                                       destroyMultiplexer,
                                                       submitCommandPooled)
@@ -109,9 +111,9 @@ createStandaloneClient
   -> NodeAddress
   -> IO StandaloneClient
 createStandaloneClient connector addr = do
-  conn <- connector addr
-  mux <- createMultiplexer conn (receive conn)
+  mux <- createMultiplexerFromConnector connector addr
   pool <- createSlotPool 256
+    `onException` closeStandaloneMux mux
   return $ StandaloneClient mux pool
 
 -- | Create a standalone client from a 'StandaloneConfig'.
@@ -120,24 +122,31 @@ createStandaloneClientFromConfig
   => StandaloneConfig client
   -> IO StandaloneClient
 createStandaloneClientFromConfig config = do
-  conn <- standaloneConnector config (standaloneNodeAddress config)
-  mux <- createMultiplexer conn (receive conn)
+  mux <- createMultiplexerFromConnector
+    (standaloneConnector config) (standaloneNodeAddress config)
   pool <- createSlotPool 256
+    `onException` closeStandaloneMux mux
   return $ StandaloneClient mux pool
 
 -- | Close the standalone client, destroying the underlying multiplexer.
+-- The owned plaintext or TLS transport is closed exactly once. Closure is
+-- terminal and idempotent; later commands fail instead of reconnecting.
 --
 -- Consider using 'withStandaloneClient' instead for automatic cleanup.
 closeStandaloneClient :: StandaloneClient -> IO ()
 closeStandaloneClient client =
-  destroyMultiplexer (standaloneMux client)
-    `catch` \(_ :: SomeException) -> return ()
+  closeStandaloneMux (standaloneMux client)
+
+closeStandaloneMux :: Multiplexer -> IO ()
+closeStandaloneMux mux =
+  destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()
 
 -- | Bracket-style resource management for standalone clients.
 --
 -- Creates a client, runs the given action, and ensures the client is closed
 -- even if an exception occurs. Prefer this over manual 'createStandaloneClientFromConfig'
--- and 'closeStandaloneClient'.
+-- and 'closeStandaloneClient'. After the callback returns, the client and its
+-- transport are permanently closed.
 --
 -- @
 -- withStandaloneClient config $ \\client ->
@@ -206,7 +215,11 @@ submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a
 submitMuxAs args = submitMux args >>= convertResp
 
 instance RedisCommands StandaloneCommandClient where
-  auth username password = submitMuxAs ["HELLO", "3", "AUTH", username, password]
+  auth username password
+    | BS.null username || username == "default" =
+        submitMuxAs ["AUTH", password]
+    | otherwise =
+        submitMuxAs ["HELLO", "2", "AUTH", username, password]
   ping = submitMuxAs ["PING"]
   set k v = submitMuxAs ["SET", k, v]
   get k = submitMuxAs ["GET", k]
@@ -274,15 +287,10 @@ instance RedisCommands StandaloneCommandClient where
   clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
   clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
 
-  clientReply val = do
-    case val of
-      ON -> do
-        resp <- submitMux ["CLIENT", "REPLY", showBS val]
-        return (Just resp)
-      -- OFF/SKIP: Redis does not send a response, which would desync the
-      -- multiplexer. These are inherently incompatible with pipelined
-      -- multiplexing, so we silently ignore them.
-      _ -> return Nothing
+  clientReply ON =
+    Just <$> submitMux ["CLIENT", "REPLY", "ON"]
+  clientReply val =
+    liftIO $ throwIO (ClientReplyModeUnsupported val)
 
   zadd k members =
     let payload = concatMap (\(score, member) -> [showBS score, member]) members

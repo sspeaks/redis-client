@@ -2,63 +2,53 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module ClusterSetup
-  ( authenticateClient
-  , createPlaintextConnector
+  ( createPlaintextConnector
   , createTLSConnector
   , createClusterClientFromState
   , flushAllClusterNodes
   ) where
 
 import           AppConfig                             (RunState (..),
-                                                        authenticate)
+                                                        enforcePlaintextAuthenticationPolicy)
 import           Control.Concurrent.STM                (readTVarIO)
 import qualified Control.Monad.State                   as State
 import qualified Data.ByteString                       as BS
+import qualified Data.ByteString.Char8                 as BS8
 import qualified Data.Map.Strict                       as Map
 import           Data.Maybe                            (fromMaybe)
-import           Database.Redis.Client                 (Client (connect),
-                                                        ConnectionStatus (..),
-                                                        PlainTextClient (..),
-                                                        TLSClient (..))
+import           Database.Redis.Client                 (Client, PlainTextClient,
+                                                        TLSClient)
 import           Database.Redis.Cluster                (ClusterNode (..),
                                                         ClusterTopology (..),
                                                         NodeAddress (..),
                                                         NodeRole (..))
-import           Database.Redis.Cluster.Client         (ClusterClient (..),
+import           Database.Redis.Cluster.Client         (ClusterAuthentication (..),
+                                                        ClusterClient (..),
                                                         ClusterConfig (..),
-                                                        createClusterClient)
+                                                        createClusterClient,
+                                                        createClusterClientWithAuthentication)
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (PoolConfig))
 import qualified Database.Redis.Cluster.ConnectionPool as CP
 import           Database.Redis.Command                (ClientState (ClientState),
                                                         RedisCommands (flushAll))
 import qualified Database.Redis.Command                as RedisCommand
-import           Database.Redis.Connector              (Connector)
+import           Database.Redis.Connector              (Connector,
+                                                        clusterPlaintextConnector,
+                                                        clusterTLSConnector)
 import           Database.Redis.Resp                   (RespData)
 import           Text.Printf                           (printf)
-
--- | Authenticate a client connection if a password is configured
-authenticateClient :: (Client client) => RunState -> client 'Connected -> IO (client 'Connected)
-authenticateClient state client
-  | null (password state) = return client
-  | otherwise = do
-      _ <- State.evalStateT
-             (RedisCommand.runRedisCommandClient (authenticate (username state) (password state)))
-             (ClientState client BS.empty)
-      return client
 
 -- | Create cluster connector for plaintext connections
 createPlaintextConnector :: RunState -> Connector PlainTextClient
 createPlaintextConnector state addr = do
-  client <- connect $ NotConnectedPlainTextClient (nodeHost addr) (Just $ nodePort addr)
-  authenticateClient state client
+  enforcePlaintextAuthenticationPolicy state
+  clusterPlaintextConnector addr
 
 -- | Create cluster connector for TLS connections
 -- Uses the original seed hostname for TLS certificate validation to avoid
 -- hostname mismatch errors when CLUSTER SLOTS returns IP addresses
 createTLSConnector :: RunState -> Connector TLSClient
-createTLSConnector state addr = do
-  client <- connect $ NotConnectedTLSClientWithHostname (host state) (nodeHost addr) (Just $ nodePort addr)
-  authenticateClient state client
+createTLSConnector state = clusterTLSConnector (host state)
 
 -- | Create a cluster client from RunState
 createClusterClientFromState :: (Client client) =>
@@ -81,14 +71,28 @@ createClusterClientFromState state connector = do
         , clusterRetryDelay = 100000  -- 100ms
         , clusterTopologyRefreshInterval = 600  -- 10 minutes
         }
-  createClusterClient clusterCfg connector
+  case clusterAuthentication state of
+    Nothing ->
+      createClusterClient clusterCfg connector
+    Just authentication ->
+      createClusterClientWithAuthentication clusterCfg authentication connector
+
+clusterAuthentication :: RunState -> Maybe ClusterAuthentication
+clusterAuthentication state
+  | null (password state) = Nothing
+  | username state == "default" =
+      Just $ ClusterPassword $ BS8.pack (password state)
+  | otherwise =
+      Just $ ClusterACL
+        (BS8.pack $ username state)
+        (BS8.pack $ password state)
 
 -- | Flush all master nodes in a cluster
 flushAllClusterNodes :: (Client client) =>
   ClusterClient client ->
   Connector client ->
   IO ()
-flushAllClusterNodes clusterClient connector = do
+flushAllClusterNodes clusterClient _connector = do
   topology <- readTVarIO (clusterTopology clusterClient)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
 
@@ -97,7 +101,10 @@ flushAllClusterNodes clusterClient connector = do
   mapM_ (\node -> do
       let addr = nodeAddress node
       printf "  Flushing node %s:%d\n" (nodeHost addr) (nodePort addr)
-      CP.withConnection (clusterConnectionPool clusterClient) addr connector $ \conn -> do
+      CP.withConnectionBounded
+        (clusterConnectionPool clusterClient)
+        addr
+        (clusterConnector clusterClient) $ \conn -> do
         let clientState = ClientState conn BS.empty
         (_ :: RespData) <- State.evalStateT (RedisCommand.runRedisCommandClient flushAll) clientState
         return ()

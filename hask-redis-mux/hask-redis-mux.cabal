@@ -16,6 +16,8 @@ extra-doc-files:    CHANGELOG.md
                   , README.md
 extra-source-files: lib/crc16/crc16.c
                   , data/cluster_slot_mapping.txt
+                  , data/redis-7.2.0-commands.json
+                  , data/redis-command-metadata.json
 homepage:           https://github.com/sspeaks/redis-client
 bug-reports:        https://github.com/sspeaks/redis-client/issues
 tested-with:        GHC == 9.10.3
@@ -81,6 +83,8 @@ library client
     import:           defaults
     hs-source-dirs:   lib/client
     exposed-modules:  Database.Redis.Client
+                    , Database.Redis.Client.ConnectionSetup
+    other-modules:    Database.Redis.Client.TLSConfig
     build-depends:    bytestring >=0.12 && <0.13
                     , crypton-x509-system >=1.6 && <1.7
                     , data-default-class >=0.1 && <0.3
@@ -111,16 +115,22 @@ library redis-command-client
 
 library cluster
     import:           defaults
+    visibility:       public
     hs-source-dirs:   lib/cluster
     exposed-modules:  Database.Redis.Cluster
                     , Database.Redis.Cluster.Client
+                    , Database.Redis.Cluster.Internal.RawCommand
                     , Database.Redis.Cluster.Commands
                     , Database.Redis.Cluster.SlotMapping
                     , Database.Redis.Cluster.ConnectionPool
                     , Database.Redis.Connector
                     , Database.Redis.Internal.MultiplexPool
                     , Database.Redis.Internal.Multiplexer
+                    , Database.Redis.Cluster.Internal.Topology
                     , Database.Redis.Standalone
+    other-modules:    Database.Redis.Cluster.Internal.ClientImplementation
+                    , Database.Redis.Cluster.Internal.CommandGrammar
+                    , Database.Redis.Cluster.Internal.CommandMetadata
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
                     , client
@@ -145,6 +155,34 @@ library redis
                     , redis-command-client
                     , resp
 
+benchmark ConnectionPoolBench
+    import:           defaults
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   bench
+    main-is:          ConnectionPoolBench.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:    async >=2.2 && <2.3
+                    , client
+                    , cluster
+
+benchmark GrammarProfile
+    import:           defaults
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   bench
+    main-is:          GrammarProfile.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:    bytestring >=0.12 && <0.13
+                    , cluster
+
+benchmark SmartProxyRoutingBench
+    import:           defaults
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   bench
+    main-is:          SmartProxyRoutingBench.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:    bytestring >=0.12 && <0.13
+                    , cluster
+
 -- ---------------------------------------------------------------------------
 -- Test suites
 -- ---------------------------------------------------------------------------
@@ -159,14 +197,42 @@ test-suite RespSpec
                     , redis-command-client
                     , resp
 
+test-suite TLSConfigSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          TLSConfigSpec.hs
+    other-modules:    Database.Redis.Client.TLSConfig
+    hs-source-dirs:   test
+                    , lib/client
+
+test-suite ConnectionSetupSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ConnectionSetupSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , stm
+                    , time
+
+test-suite PublicApiSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          PublicApiSpec.hs
+    build-depends:    cluster
+                    , directory >=1.3 && <1.4
+                    , redis
+
 test-suite ClusterSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
     main-is:          ClusterSpec.hs
     build-depends:    bytestring >=0.12 && <0.13
                     , cluster
+                    , containers >=0.6 && <0.8
                     , resp
                     , time >=1.12 && <1.13
+                    , vector >=0.13 && <0.14
 
 test-suite ClusterCommandSpec
     import:           test-defaults
@@ -176,18 +242,46 @@ test-suite ClusterCommandSpec
                     , client
                     , cluster
                     , containers >=0.6 && <0.8
+                    , redis-command-client
                     , resp
                     , stm >=2.5 && <2.6
                     , time >=1.12 && <1.13
                     , vector >=0.13 && <0.14
 
+test-suite CommandGrammarSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          CommandGrammarSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , cluster
+
 test-suite MultiplexerSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
     main-is:          MultiplexerSpec.hs
+    build-depends:    async >=2.2 && <2.3
+                    , bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , resp
+
+test-suite ConnectionPoolSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ConnectionPoolSpec.hs
     build-depends:    bytestring >=0.12 && <0.13
                     , client
                     , cluster
+
+test-suite StandaloneSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          StandaloneSpec.hs
+    build-depends:    bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , mtl >=2.3 && <2.4
+                    , redis-command-client
                     , resp
 
 test-suite FromRespSpec

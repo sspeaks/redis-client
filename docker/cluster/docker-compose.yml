@@ -4,8 +4,7 @@ services:
     hostname: redis1.local
     container_name: redis-cluster-node1
     ports:
-      - "6379:6379"
-      - "16379:16379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./redis1.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -17,8 +16,7 @@ services:
     hostname: redis2.local
     container_name: redis-cluster-node2
     ports:
-      - "6380:6380"
-      - "16380:16380"
+      - "127.0.0.1:6380:6380"
     volumes:
       - ./redis2.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -30,8 +28,7 @@ services:
     hostname: redis3.local
     container_name: redis-cluster-node3
     ports:
-      - "6381:6381"
-      - "16381:16381"
+      - "127.0.0.1:6381:6381"
     volumes:
       - ./redis3.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -43,8 +40,7 @@ services:
     hostname: redis4.local
     container_name: redis-cluster-node4
     ports:
-      - "6382:6382"
-      - "16382:16382"
+      - "127.0.0.1:6382:6382"
     volumes:
       - ./redis4.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -56,8 +52,7 @@ services:
     hostname: redis5.local
     container_name: redis-cluster-node5
     ports:
-      - "6383:6383"
-      - "16383:16383"
+      - "127.0.0.1:6383:6383"
     volumes:
       - ./redis5.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -69,7 +64,7 @@ services:
     hostname: redis-standalone.local
     container_name: redis-standalone
     ports:
-      - "6390:6390"
+      - "127.0.0.1:6390:6390"
     volumes:
       - ./redis-standalone.conf:/usr/local/etc/redis/redis.conf
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]

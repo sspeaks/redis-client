@@ -1,0 +1,179 @@
+services:
+  redis1:
+    image: redis:7.2.12
+    hostname: redis1.local
+    command: &redis-command
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+      - --cluster-announce-ip
+      - redis1.local
+    environment:
+      REDIS_PORT: "6379"
+    healthcheck: &redis-healthcheck
+      test: ["CMD-SHELL", "redis-cli -p \"$${REDIS_PORT}\" ping | grep -qx PONG"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+      start_period: 2s
+
+  redis2:
+    image: redis:7.2.12
+    hostname: redis2.local
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6380"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6380"
+      - --cluster-announce-bus-port
+      - "16380"
+      - --cluster-announce-ip
+      - redis2.local
+    environment:
+      REDIS_PORT: "6380"
+    healthcheck: *redis-healthcheck
+
+  redis3:
+    image: redis:7.2.12
+    hostname: redis3.local
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6381"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6381"
+      - --cluster-announce-bus-port
+      - "16381"
+      - --cluster-announce-ip
+      - redis3.local
+    environment:
+      REDIS_PORT: "6381"
+    healthcheck: *redis-healthcheck
+
+  redis4:
+    image: redis:7.2.12
+    hostname: redis4.local
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6382"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6382"
+      - --cluster-announce-bus-port
+      - "16382"
+      - --cluster-announce-ip
+      - redis4.local
+    environment:
+      REDIS_PORT: "6382"
+    healthcheck: *redis-healthcheck
+
+  redis5:
+    image: redis:7.2.12
+    hostname: redis5.local
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6383"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6383"
+      - --cluster-announce-bus-port
+      - "16383"
+      - --cluster-announce-ip
+      - redis5.local
+    environment:
+      REDIS_PORT: "6383"
+    healthcheck: *redis-healthcheck
+
+  redis6:
+    image: redis:7.2.12
+    hostname: redis6.local
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6384"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-port
+      - "6384"
+      - --cluster-announce-bus-port
+      - "16384"
+      - --cluster-announce-ip
+      - redis6.local
+    environment:
+      REDIS_PORT: "6384"
+    healthcheck: *redis-healthcheck

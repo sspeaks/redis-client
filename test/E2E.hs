@@ -15,13 +15,16 @@ import qualified Data.ByteString.Builder    as Builder
 import qualified Data.ByteString.Char8      as BS8
 import           Data.List                  (isInfixOf)
 import           Database.Redis.Client      (Client (..), PlainTextClient)
-import           Database.Redis.Command     (ClientState (..),
+import           Database.Redis.Command     (ClientReplyValues (..),
+                                             ClientState (..),
                                              GeoRadiusFlag (..),
                                              GeoSearchBy (..),
                                              GeoSearchFrom (..),
                                              GeoSearchOption (..), GeoUnit (..),
                                              RedisCommandClient,
-                                             RedisCommands (..), parseManyWith)
+                                             RedisCommands (..), parseManyWith,
+                                             sendClientReplySkipAndCommand,
+                                             sendCommandWithoutReply)
 import           Database.Redis.Resp        (Encodable (encode), RespData (..),
                                              parseRespData)
 import           E2EHelpers                 (cleanupProcess, drainHandle,
@@ -49,8 +52,10 @@ runRedisAction = runCommandsAgainstPlaintextHost (RunState
   , username = "default"
   , password = ""
   , useTLS = False
+  , allowInsecurePlaintextAuth = False
   , dataGBs = 0
   , flush = False
+  , flushConfirmation = Nothing
   , serial = False
   , numConnections = Nothing
   , useCluster = False
@@ -87,19 +92,36 @@ main = do
   hspec $ do
     before_ (void $ runFlushAll) $ do
       describe "Can run basic operations: " $ do
+        it "keeps direct sequential CLIENT REPLY OFF and ON response-safe" $ do
+          (disabled, restored, response) <- runRedisAction $ do
+            disabledResult <- clientReply OFF
+            sendCommandWithoutReply ["SET", "client-reply-off", "value"]
+            restoredResult <- clientReply ON
+            nextResponse <- ping
+            return (disabledResult, restoredResult, nextResponse)
+          disabled `shouldBe` Nothing
+          restored `shouldBe` Just (RespSimpleString "OK")
+          response `shouldBe` (RespSimpleString "PONG" :: RespData)
+
+        it "keeps the next response aligned after a skipped successful target" $ do
+          runRedisAction
+            (do
+              sendClientReplySkipAndCommand ["PING"]
+              ping)
+            `shouldReturn` (RespSimpleString "PONG" :: RespData)
+
+        it "keeps the next response aligned after a skipped error target" $ do
+          runRedisAction
+            (do
+              sendClientReplySkipAndCommand ["NOT-A-REDIS-COMMAND"]
+              ping)
+            `shouldReturn` (RespSimpleString "PONG" :: RespData)
+
         it "get and set are encoded and respond properly" $ do
           runRedisAction (set "hello" "world") `shouldReturn` RespSimpleString "OK"
           runRedisAction (get "hello") `shouldReturn` RespBulkString "world"
         it "ping is encoded properly and returns pong" $ do
           runRedisAction ping `shouldReturn` RespSimpleString "PONG"
-        it "auth negotiates the RESP3 handshake" $ do
-          authResp <- runRedisAction (auth "default" "")
-          case authResp of
-            RespError err -> expectationFailure $ "Unexpected AUTH error: " <> BS8.unpack err
-            RespMap _ -> pure ()
-            RespArray _ -> pure ()
-            RespSimpleString "OK" -> pure ()
-            _ -> expectationFailure $ "Unexpected AUTH response shape: " <> show authResp
         it "bulkSet is encoded properly and subsequent gets work properly" $ do
           runRedisAction (bulkSet [("a", "b"), ("c", "d"), ("e", "f")]) `shouldReturn` RespSimpleString "OK"
           runRedisAction (get "a") `shouldReturn` RespBulkString "b"
@@ -222,7 +244,7 @@ main = do
           -- Just test that the flag doesn't crash the program and data is written.
           redisClientPath <- getRedisClientPath
           (code, _, _) <- readCreateProcessWithExitCode
-            (proc redisClientPath ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f"])
+            (proc redisClientPath ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "1024", "-f", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"])
             ""
           code `shouldBe` ExitSuccess
           -- Simple check that some data was written.
@@ -339,10 +361,25 @@ main = do
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
 
-      it "fill --flush clears the database" $ do
+      it "fill propagates a worker connection failure as a non-zero CLI exit" $ do
+        (code, _, _) <-
+          runRedisClient
+            ["fill", "--host", "127.0.0.1", "--port", "1", "--data", "1", "--connections", "2"]
+            ""
+        code `shouldNotBe` ExitSuccess
+
+      it "fill rejects absent or mismatched non-interactive confirmation without flushing" $ do
         threadDelay 200000
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
+        (missingCode, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush"] ""
+        missingCode `shouldNotBe` ExitSuccess
+        runRedisAction dbsize `shouldReturn` RespInteger 1048576
+        (mismatchCode, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush", "--confirm-flush", "redis://redis.local:6380?tls=false&scope=single-node"] ""
+        mismatchCode `shouldNotBe` ExitSuccess
+        runRedisAction dbsize `shouldReturn` RespInteger 1048576
+
+      it "fill --flush clears the database after exact non-interactive confirmation" $ do
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--flush", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Flush complete" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 0
@@ -594,7 +631,7 @@ main = do
           _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --pipeline 10 works correctly" $ do
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "10", "-f"] ""
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "10", "-f", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         dbSizeResp <- runRedisAction dbsize
@@ -603,7 +640,7 @@ main = do
              _ -> expectationFailure "Expected integer response from DBSIZE"
 
       it "fill with --pipeline 20000 works correctly" $ do
-        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "20000", "-f"] ""
+        (code, stdoutOut, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--pipeline", "20000", "-f", "--confirm-flush", "redis://redis.local:6379?tls=false&scope=single-node"] ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         dbSizeResp <- runRedisAction dbsize
@@ -649,8 +686,10 @@ main = do
                 , username = "default"
                 , password = ""
                 , useTLS = False
+                , allowInsecurePlaintextAuth = False
                 , dataGBs = 0
                 , flush = False
+                , flushConfirmation = Nothing
                 , serial = False
                 , numConnections = Nothing
                 , useCluster = False

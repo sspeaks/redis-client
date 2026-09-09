@@ -1,12 +1,17 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
-import           Control.Concurrent                    (forkIO, threadDelay)
-import           Control.Concurrent.MVar               (newEmptyMVar, putMVar,
-                                                        takeMVar)
+import           Control.Concurrent                    (forkFinally, forkIO,
+                                                        killThread, threadDelay)
+import           Control.Concurrent.MVar               (MVar, newEmptyMVar,
+                                                        putMVar, takeMVar)
+import           Control.Exception                     (SomeException, bracket_,
+                                                        fromException, throwIO,
+                                                        try)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
@@ -21,6 +26,7 @@ import           Database.Redis.Cluster                (NodeAddress (..))
 import           Database.Redis.Internal.MultiplexPool
 import           Database.Redis.Resp                   (Encodable (..),
                                                         RespData (..))
+import           System.Timeout                        (timeout)
 import           Test.Hspec
 
 -- ---------------------------------------------------------------------------
@@ -31,15 +37,21 @@ import           Test.Hspec
 data MockClient (a :: ConnectionStatus) where
   MockConnected :: !(IORef ByteString)   -- sendBuf
                 -> !(IORef [ByteString]) -- recvQueue
+                -> !(IORef Int)          -- closeCount
+                -> !Bool                 -- failSend
                 -> MockClient 'Connected
 
 instance Client MockClient where
   connect = error "MockClient: connect not supported"
-  close _ = return ()
-  send (MockConnected sendBuf _) lbs = liftIO $ do
-    let !bs = LBS.toStrict lbs
-    atomicModifyIORef' sendBuf $ \old -> (old <> bs, ())
-  receive (MockConnected sRef recvQueue) = liftIO $ recvLoop sRef recvQueue
+  close (MockConnected _ _ closeCount _) =
+    liftIO $ atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+  send (MockConnected sendBuf _ _ failSend) lbs = liftIO $
+    if failSend
+      then throwIO $ userError "injected send failure"
+      else do
+        let !bs = LBS.toStrict lbs
+        atomicModifyIORef' sendBuf $ \old -> (old <> bs, ())
+  receive (MockConnected sRef recvQueue _ _) = liftIO $ recvLoop sRef recvQueue
 
 recvLoop :: IORef ByteString -> IORef [ByteString] -> IO ByteString
 recvLoop sRef recvQueue = do
@@ -57,7 +69,19 @@ createMockClient :: IO (MockClient 'Connected, ByteString -> IO ())
 createMockClient = do
   sendBuf <- newIORef BS.empty
   recvQueue <- newIORef []
-  let client = MockConnected sendBuf recvQueue
+  closeCount <- newIORef 0
+  let client = MockConnected sendBuf recvQueue closeCount False
+      addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
+  return (client, addRecv)
+
+createTrackedClient
+  :: IORef Int
+  -> Bool
+  -> IO (MockClient 'Connected, ByteString -> IO ())
+createTrackedClient closeCount failSend = do
+  sendBuf <- newIORef BS.empty
+  recvQueue <- newIORef []
+  let client = MockConnected sendBuf recvQueue closeCount failSend
       addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
   return (client, addRecv)
 
@@ -89,6 +113,94 @@ createMockConnector = do
         return client
   return (connector, mapRef)
 
+createCountingConnector
+  :: Maybe Int
+  -> Bool
+  -> IO
+       ( NodeAddress -> IO (MockClient 'Connected)
+       , AddRecvMap
+       , IORef Int
+       , IORef Int
+       )
+createCountingConnector failAt firstSendFails = do
+  mapRef <- newIORef []
+  attempts <- newIORef 0
+  closeCount <- newIORef 0
+  let connector addr = do
+        attempt <- atomicModifyIORef' attempts $ \count ->
+          let next = count + 1
+          in (next, next)
+        case failAt of
+          Just failureIndex | attempt == failureIndex ->
+            throwIO $ userError "injected connector failure"
+          _ -> do
+            (client, addRecv) <-
+              createTrackedClient closeCount (firstSendFails && attempt == 1)
+            atomicModifyIORef' mapRef $ \xs -> (xs ++ [(addr, addRecv)], ())
+            return client
+  return (connector, mapRef, attempts, closeCount)
+
+data HandoffClient (a :: ConnectionStatus) where
+  HandoffConnected
+    :: !Int
+    -> !(IORef Int)
+    -> !(IORef Int)
+    -> !Bool
+    -> !(MVar ByteString)
+    -> HandoffClient 'Connected
+
+instance Client HandoffClient where
+  connect = error "HandoffClient: connect not supported"
+  close (HandoffConnected _ closeCount _ _ _) =
+    liftIO $ atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+  send (HandoffConnected _ _ _ failSend _) _ =
+    if failSend
+      then liftIO $ throwIO $ userError "injected send failure"
+      else return ()
+  receive (HandoffConnected _ _ activeReaders _ replies) =
+    liftIO $ bracket_
+      (atomicModifyIORef' activeReaders $ \count -> (count + 1, ()))
+      (atomicModifyIORef' activeReaders $ \count -> (count - 1, ()))
+      (takeMVar replies)
+
+createHandoffConnector
+  :: Bool
+  -> IO
+       ( NodeAddress -> IO (HandoffClient 'Connected)
+       , IORef Int
+       , IORef Int
+       , IORef Int
+       )
+createHandoffConnector firstSendFails = do
+  attempts <- newIORef 0
+  closeCount <- newIORef 0
+  activeReaders <- newIORef 0
+  let connector _ = do
+        attempt <- atomicModifyIORef' attempts $ \count ->
+          let next = count + 1
+          in (next, next)
+        replies <- newEmptyMVar
+        return $ HandoffConnected
+          attempt closeCount activeReaders (firstSendFails && attempt == 1) replies
+  return (connector, attempts, closeCount, activeReaders)
+
+handoffGate
+  :: Int
+  -> MVar ()
+  -> MVar ()
+  -> HandoffClient 'Connected
+  -> IO ()
+handoffGate target started release (HandoffConnected attempt _ _ _ _)
+  | attempt == target = putMVar started () >> takeMVar release
+  | otherwise = return ()
+
+waitForZero :: IORef Int -> IO ()
+waitForZero ref = do
+  count <- readIORef ref
+  if count == 0
+    then return ()
+    else threadDelay 1000 >> waitForZero ref
+
 -- | Get addRecv functions for a given node address.
 getAddRecvs :: AddRecvMap -> NodeAddress -> IO [ByteString -> IO ()]
 getAddRecvs mapRef addr = do
@@ -118,6 +230,8 @@ spec = do
   lazyCreationSpec
   multiNodeRoutingSpec
   poolClosureSpec
+  constructionFailureSpec
+  replacementFailureSpec
   askingSpec
 
 roundRobinSpec :: Spec
@@ -339,8 +453,9 @@ multiNodeRoutingSpec = describe "Multi-node routing" $ do
 
 poolClosureSpec :: Spec
 poolClosureSpec = describe "Pool closure" $ do
-  it "closeMultiplexPool destroys all multiplexers" $ do
-    (connector, addRecvMap) <- createMockConnector
+  it "closes transports once and rejects later submissions without reconnecting" $ do
+    (connector, addRecvMap, attempts, closeCount) <-
+      createCountingConnector Nothing False
     pool <- createMultiplexPool connector 1
 
     -- Create muxes for two nodes
@@ -362,26 +477,18 @@ poolClosureSpec = describe "Pool closure" $ do
     (firstOf fns2) (encodeResp (RespSimpleString "OK"))
     _ <- takeMVar r2MVar
 
-    -- Close the pool
     closeMultiplexPool pool
-    threadDelay 20000
-
-    -- After close, submitting should create new multiplexers (pool is empty)
-    -- The old ones should be destroyed — verify by submitting again and seeing new connections
-    r3MVar <- newEmptyMVar
-    _ <- forkIO $ do
-      r <- submitToNode pool node1 (encodeCmd ["PING"])
-      putMVar r3MVar r
-    threadDelay 50000
-    fns3 <- getAddRecvs addRecvMap node1
-    -- Should now have 2 connections for node1 (1 old + 1 new)
-    length fns3 `shouldBe` 2
-    -- Feed to the newest one (last in list)
-    (last fns3) (encodeResp (RespSimpleString "REOPENED"))
-    r3 <- takeMVar r3MVar
-    r3 `shouldBe` RespSimpleString "REOPENED"
-
     closeMultiplexPool pool
+    readIORef attempts `shouldReturn` 2
+    readIORef closeCount `shouldReturn` 2
+
+    result <- try (submitToNode pool node1 $ encodeCmd ["PING"])
+      :: IO (Either SomeException RespData)
+    result `shouldSatisfy` \case
+      Left err -> fromException err == Just MultiplexPoolClosed
+      Right _  -> False
+    readIORef attempts `shouldReturn` 2
+    readIORef closeCount `shouldReturn` 2
 
   it "closeMultiplexPool on empty pool does not crash" $ do
     (connector, _) <- createMockConnector
@@ -390,6 +497,89 @@ poolClosureSpec = describe "Pool closure" $ do
     closeMultiplexPool pool
     -- Close again — should be idempotent
     closeMultiplexPool pool
+
+constructionFailureSpec :: Spec
+constructionFailureSpec = describe "Partial multiplexer construction" $ do
+  mapM_ (\failureIndex ->
+    it ("closes all transports created before connector failure " <> show failureIndex) $ do
+      (connector, _, attempts, closeCount) <-
+        createCountingConnector (Just failureIndex) False
+      pool <- createMultiplexPool connector 3
+
+      result <- try (submitToNode pool node1 $ encodeCmd ["PING"])
+        :: IO (Either SomeException RespData)
+      result `shouldSatisfy` either (const True) (const False)
+      readIORef attempts `shouldReturn` failureIndex
+      readIORef closeCount `shouldReturn` (failureIndex - 1)
+      closeMultiplexPool pool
+      readIORef closeCount `shouldReturn` (failureIndex - 1)
+    ) [1..3]
+
+  it "closes the returned transport and earlier muxes when initial handoff is cancelled" $ do
+    (connector, attempts, closeCount, activeReaders) <-
+      createHandoffConnector False
+    handoffStarted <- newEmptyMVar
+    releaseHandoff <- newEmptyMVar
+    pool <- createMultiplexPoolWithHandoffHook
+      connector (handoffGate 2 handoffStarted releaseHandoff) 3
+
+    finished <- newEmptyMVar
+    owner <- forkFinally
+      (submitToNode pool node1 $ encodeCmd ["PING"])
+      (putMVar finished)
+    timeout 1000000 (takeMVar handoffStarted) `shouldReturn` Just ()
+    killThread owner
+    outcome <- timeout 1000000 (takeMVar finished)
+    outcome `shouldSatisfy` \case
+      Just (Left _) -> True
+      _             -> False
+
+    timeout 1000000 (waitForZero activeReaders) `shouldReturn` Just ()
+    readIORef attempts `shouldReturn` 2
+    readIORef closeCount `shouldReturn` 2
+    closeMultiplexPool pool
+    readIORef closeCount `shouldReturn` 2
+
+replacementFailureSpec :: Spec
+replacementFailureSpec = describe "Multiplexer replacement failure" $ do
+  it "closes the dead transport and leaves no replacement behind" $ do
+    (connector, _, attempts, closeCount) <-
+      createCountingConnector (Just 2) True
+    pool <- createMultiplexPool connector 1
+
+    result <- try (submitToNode pool node1 $ encodeCmd ["PING"])
+      :: IO (Either SomeException RespData)
+    result `shouldSatisfy` either (const True) (const False)
+    readIORef attempts `shouldReturn` 2
+    readIORef closeCount `shouldReturn` 1
+
+    closeMultiplexPool pool
+    readIORef closeCount `shouldReturn` 1
+
+  it "closes the returned replacement transport when handoff is cancelled" $ do
+    (connector, attempts, closeCount, activeReaders) <-
+      createHandoffConnector True
+    handoffStarted <- newEmptyMVar
+    releaseHandoff <- newEmptyMVar
+    pool <- createMultiplexPoolWithHandoffHook
+      connector (handoffGate 2 handoffStarted releaseHandoff) 1
+
+    finished <- newEmptyMVar
+    owner <- forkFinally
+      (submitToNode pool node1 $ encodeCmd ["PING"])
+      (putMVar finished)
+    timeout 1000000 (takeMVar handoffStarted) `shouldReturn` Just ()
+    killThread owner
+    outcome <- timeout 1000000 (takeMVar finished)
+    outcome `shouldSatisfy` \case
+      Just (Left _) -> True
+      _             -> False
+
+    timeout 1000000 (waitForZero activeReaders) `shouldReturn` Just ()
+    readIORef attempts `shouldReturn` 2
+    readIORef closeCount `shouldReturn` 2
+    closeMultiplexPool pool
+    readIORef closeCount `shouldReturn` 2
 
 askingSpec :: Spec
 askingSpec = describe "ASKING support (submitToNodeWithAsking)" $ do

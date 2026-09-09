@@ -1,5 +1,41 @@
 # Revision history for redis-client
 
+## Unreleased
+
+*   **Breaking credential handling**
+    *   Removed `-a/--password`; use `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
+    *   Credential files take precedence over direct environment values.
+    *   Parallel fill children and the Azure helper no longer carry live credentials in argv.
+    *   Saved Azure command files contain no live credential and are created with owner-only permissions.
+    *   Subprocess failures no longer format credential-bearing command arguments.
+*   **Secure transport defaults**
+    *   Credentialed plaintext connections are rejected unless `--allow-insecure-plaintext-auth` is supplied.
+    *   The plaintext-auth override emits a warning naming the target and stating that credentials are unencrypted.
+    *   `REDIS_CLIENT_TLS_INSECURE` disables certificate verification only when set to exactly `1`; false values preserve verification and invalid values fail.
+*   **Bounded connection setup**
+    *   `PoolConfig.connectionTimeout` now uses a supervised wall-clock deadline for DNS, TCP connect, and TLS context/handshake setup.
+    *   The executable applies the same deadline through AUTH and across cluster, standalone, benchmark, fill, flush, and pinned-tunnel paths.
+    *   Timeout cleanup aborts failed TLS setup instead of waiting for graceful `bye`, with exactly-once registered transport cleanup.
+    *   Setup timeouts preserve the transport phase and endpoint in `ConnectionSetupTimeout` and participate in bounded cluster retries.
+    *   Added timeout-aware direct helpers; legacy raw connector helpers remain intentionally unbounded for API compatibility.
+    *   Plaintext and TLS setup failures close partially allocated sockets; the separate 300-second post-connect receive timeout is unchanged.
+*   **Per-connection cluster authentication**
+    *   Added `ClusterPassword` and `ClusterACL` construction policies that authenticate seed, pooled, multiplexed, redirected, and replacement connections before use.
+    *   Password authentication uses `AUTH password`; named ACL authentication uses `HELLO 2 AUTH username password` and never negotiates RESP3.
+    *   Cluster runtime `auth` now rejects its misleading one-socket behavior; standalone `auth` remains connection-scoped.
+*   **Authoritative MOVED recovery**
+    *   MOVED commands retry directly at the advertised target without sending `ASKING`, and patch the affected slot before the retry.
+    *   Full topology refresh uses a bounded candidate list of the redirect target, known masters, and the original seed.
+    *   Concurrent MOVED patches survive stale in-flight refreshes, while connector and refresh failures remain in the typed retry result.
+*   **Central cluster error classification**
+    *   MOVED, ASK, TRYAGAIN, CLUSTERDOWN, CROSSSLOT, and ordinary Redis errors now share one strict reply classifier across keyed, keyless, and redirected paths.
+    *   TRYAGAIN retries the current route with bounded saturating exponential backoff; CLUSTERDOWN performs a best-effort refresh before bounded backoff without replacing the Redis cause when refresh validation or I/O fails.
+    *   CROSSSLOT and ordinary server errors return immediately as typed `ClusterError` values, preserving the complete server error payload.
+*   **Strict smart routing**
+    *   Smart cluster routing now validates commands, subcommands, and argument counts against the pinned Redis 7.2 metadata before dispatch.
+    *   Unknown or malformed commands and cross-slot multi-key requests are rejected instead of falling through to first-argument routing.
+    *   The exported `keylessCommands` and `requiresKeyCommands` routing lists are now generated from the pinned metadata snapshot.
+
 ## 0.6.0.0 -- 2026-02-13
 
 *   **Multiplexing Now Default**

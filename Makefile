@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-e2e test-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-e2e-runner test-cluster-e2e-runner test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e test-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e-runner test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -43,18 +43,42 @@ else
 endif
 
 # Run all tests
-test: test-unit test-e2e test-cluster-e2e test-library-e2e
+test: test-unit test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
-test-unit:
+test-unit: test-metadata test-credentials test-workflow-status test-e2e-runner test-cluster-e2e-runner
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all"
 else
 	cabal build all && cabal test all
 endif
 
+test-metadata:
+	python3 scripts/test-redis-command-metadata.py
+
+test-credentials:
+	python3 -m unittest scripts/test_azure_redis_connect.py
+ifeq ($(HAS_NIX),yes)
+	nix-shell --run "cabal build redis-client && cabal test CredentialSpec && ./scripts/test-credential-handling.sh"
+else
+	cabal build redis-client && cabal test CredentialSpec && ./scripts/test-credential-handling.sh
+endif
+
+test-workflow-status:
+	python3 -m unittest scripts/test_github_issue_status.py
+
+test-e2e-runner:
+	./scripts/test-run-e2e-tests.sh
+
+test-cluster-e2e-runner:
+	./scripts/test-run-cluster-e2e-tests.sh
+
+# Validate ephemeral TLS credential generation without starting Docker.
+test-tls-fixtures:
+	./scripts/test-tls-fixtures.sh
+
 # Run end-to-end tests with Docker
-test-e2e:
+test-e2e: test-tls-fixtures
 	@if ! command -v docker >/dev/null 2>&1; then \
 		echo "Error: docker is not installed or not in PATH"; \
 		exit 1; \
@@ -66,6 +90,18 @@ test-e2e:
 	fi
 	./scripts/run-e2e-tests.sh
 
+# Run direct standalone and cluster TLS end-to-end tests with certificate validation.
+test-direct-tls-e2e: test-tls-fixtures
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@if ! command -v nix-build >/dev/null 2>&1; then \
+		echo "Error: nix-build is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	./scripts/run-direct-tls-e2e-tests.sh
+
 # Run cluster end-to-end tests with Docker
 test-cluster-e2e:
 	@if ! command -v docker >/dev/null 2>&1; then \
@@ -74,6 +110,15 @@ test-cluster-e2e:
 	fi
 	@echo "Running cluster E2E tests..."
 	./scripts/run-cluster-e2e-tests.sh
+
+# Run authenticated cluster interoperability tests with Docker
+test-authenticated-cluster-e2e:
+	@if ! command -v docker >/dev/null 2>&1; then \
+		echo "Error: docker is not installed or not in PATH"; \
+		exit 1; \
+	fi
+	@echo "Running authenticated cluster E2E tests..."
+	./scripts/run-authenticated-cluster-e2e-tests.sh
 
 # Run library end-to-end tests with Docker
 test-library-e2e:
@@ -86,8 +131,7 @@ test-library-e2e:
 
 # Start Redis with Docker Compose
 redis-start:
-	@docker compose -f docker/standalone/docker-compose.yml up -d redis
-	@sleep 2
+	@./scripts/start-standalone-redis.sh
 
 # Start Redis Cluster with Docker Compose
 redis-cluster-start:
@@ -97,7 +141,7 @@ redis-cluster-start:
 
 # Stop Redis
 redis-stop:
-	@docker compose -f docker/standalone/docker-compose.yml stop redis
+	@./scripts/stop-standalone-redis.sh
 
 # Stop Redis Cluster
 redis-cluster-stop:

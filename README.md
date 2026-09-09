@@ -36,7 +36,7 @@ redis-client cli -h localhost -t          # With TLS
 ```sh
 redis-client fill -h localhost -d 5       # Fill 5GB
 redis-client fill -h localhost -d 5 -c    # Fill 5GB in cluster
-redis-client fill -h localhost -f         # Flush database
+redis-client fill -h localhost -f         # Displays an interactive confirmation target
 ```
 
 **TLS Tunnel:**
@@ -45,23 +45,144 @@ redis-client tunn -h localhost -t
 redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 ```
 
+### Smart cluster tunnel framing
+
+Smart cluster tunnel mode incrementally accepts RESP request frames across TCP
+reads and pipelines complete requests in wire order. To bound per-client
+retained input, each complete encoded request frame is limited to **1,048,576
+bytes**. A malformed or oversized frame receives one RESP error and the proxy
+then closes that client connection; an incomplete frame at peer EOF is closed
+without execution. Bytes after a framing failure are never executed.
+
+This is a deliberate bounded proxy policy, not a claim that smart tunnel mode
+supports every request size accepted by Redis itself. Clients that need larger
+requests should connect directly to the cluster nodes (or use pinned mode) and
+remain within the applicable Redis deployment limits.
+
 ### Command Options
 
 - `-h`, `--host HOST` - Host to connect to (required)
 - `-p`, `--port PORT` - Port (default: 6379 for plaintext, 6380 for TLS)
 - `-u`, `--username USERNAME` - Username (default: 'default')
-- `-a`, `--password PASSWORD` - Password
 - `-t`, `--tls` - Use TLS connection
+- `--allow-insecure-plaintext-auth` - Explicitly allow credentials over plaintext. Emits a warning naming the target host.
 - `-c`, `--cluster` - Redis Cluster mode
 - `-d`, `--data GBs` - Amount of random data to fill (in GB)
-- `-f`, `--flush` - Flush database before filling (deletes all data; use only in testing)
+- `-f`, `--flush` - Request FLUSHALL before filling. This is intent only; it never flushes by itself.
+- `--confirm-flush TARGET` - Exact non-interactive acknowledgement of the displayed canonical target.
 - `-s`, `--serial` - Serial mode (no concurrency)
 - `-n`, `--connections NUM` - Parallel connections (default: 2)
 - `--tunnel-mode MODE` - Tunnel mode: 'smart' or 'pinned' (default: 'smart')
 
+### Safe flush confirmation
+
+`--flush` is deliberately insufficient, including for localhost. In a terminal,
+the client displays the canonical target and requires it to be typed exactly.
+For non-interactive automation, pass that same target to `--confirm-flush`.
+Standalone targets use
+`redis://HOST:PORT?tls=true|false&scope=single-node`; cluster targets use
+`redis+cluster://HOST:PORT?tls=true|false&scope=all-primaries`. `PORT` is the
+effective port (6379 plaintext or 6380 TLS when omitted), and an IPv6 host is
+written in brackets (for example, `[2001:db8::1]`). The `--tls` flag controls
+the connection; `tls=true` records that choice in the target. Cluster
+confirmation explicitly covers FLUSHALL on every primary.
+
+In an interactive terminal, the exact displayed target must be typed. EOF
+(including Ctrl-D) or any mismatch cancels the operation before connecting.
+When stdin is not a terminal, no prompt is available: `--confirm-flush` is
+required and must exactly equal the canonical target. With `--processes N`
+for `N > 1`, only the parent process confirms and performs one flush before
+spawning children; child processes receive no flush request and never repeat
+the confirmation.
+
+```sh
+# Non-interactive standalone flush
+redis-client fill -h localhost --flush \
+  --confirm-flush 'redis://localhost:6379?tls=false&scope=single-node'
+
+# Non-interactive cluster flush
+redis-client fill -h redis1.local -c --flush \
+  --confirm-flush 'redis+cluster://redis1.local:6379?tls=false&scope=all-primaries'
+```
+
+For CI, use an explicitly disposable Redis fixture and keep the exact target
+in the command. This example has no credentials, publishes only to loopback on
+port 16379, waits at most 30 seconds for Redis to answer `PING`, prints its
+logs on a readiness failure, and always removes its uniquely named fixture:
+
+```sh
+fixture_name="redis-client-flush-fixture-$$"
+cleanup() {
+  docker rm -f "$fixture_name" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+docker run --rm -d --name "$fixture_name" -p 127.0.0.1:16379:6379 redis:7
+ready=false
+for attempt in $(seq 1 30); do
+  if docker exec "$fixture_name" redis-cli ping 2>/dev/null | grep -qx PONG; then
+    ready=true
+    break
+  fi
+  sleep 1
+done
+if [ "$ready" != true ]; then
+  echo "Redis fixture did not become ready within 30 seconds." >&2
+  docker logs "$fixture_name" >&2 || true
+  exit 1
+fi
+
+redis-client fill -h 127.0.0.1 -p 16379 -f \
+  --confirm-flush 'redis://127.0.0.1:16379?tls=false&scope=single-node'
+```
+
 ### Environment Variables
 
+- `REDIS_CLIENT_PASSWORD_FILE` - Path to a file containing the Redis password, access key, or Entra token. This has highest precedence. A single trailing newline is removed.
+- `REDIS_CLIENT_PASSWORD` - Redis password, access key, or Entra token used only when `REDIS_CLIENT_PASSWORD_FILE` is not set.
+- `REDIS_CLIENT_TLS_INSECURE` - Set to exactly `1` to disable TLS certificate verification. Unset, empty, `0`, and `false` keep verification enabled; every other value is rejected.
 - `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory. Use smaller values (1024-2048 KB) in memory-constrained environments or larger values (4096-8192 KB) for maximum throughput.
+
+Credential command-line options are no longer accepted. This is a breaking security change that keeps live credentials out of process arguments and parallel fill child arguments. Prefer an owner-only credential file:
+
+```sh
+install -d -m 700 "$HOME/.config/redis-client"
+umask 077
+read -rsp "Redis credential: " REDIS_CREDENTIAL && printf '\n'
+printf '%s' "$REDIS_CREDENTIAL" > "$HOME/.config/redis-client/password"
+unset REDIS_CREDENTIAL
+chmod 600 "$HOME/.config/redis-client/password"
+
+REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
+  redis-client cli -h localhost -t
+```
+
+Environment values are convenient for automation but may be visible to other same-user or privileged processes, depending on operating-system and platform policy. Avoid exporting credentials into shell startup files.
+
+Credentialed connections require TLS by default. For a trusted local test server
+that does not support TLS, the risk must be acknowledged explicitly:
+
+```sh
+REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
+  redis-client cli -h 127.0.0.1 --allow-insecure-plaintext-auth
+```
+
+This override prints a prominent warning naming the target and stating that the
+credential is being sent unencrypted. Do not use it across shared or untrusted
+networks.
+
+TLS certificate verification remains enabled unless
+`REDIS_CLIENT_TLS_INSECURE=1` is set. This bypass is intended only for controlled
+testing with a server whose certificate cannot be verified:
+
+```sh
+REDIS_CLIENT_TLS_INSECURE=1 redis-client cli -h test-cache.local -t
+```
+
+The client warns whenever verification is disabled. Values such as `true`,
+`yes`, or misspellings fail rather than silently weakening TLS.
 
 ## Azure Redis Integration
 
@@ -110,6 +231,9 @@ main = do
 Set `standaloneUseMultiplexing = False` to fall back to sequential (non-pipelined) command execution.
 
 For TLS connections, use `clusterTLSConnector` instead of `clusterPlaintextConnector`.
+Library callers that issue `AUTH` directly are responsible for choosing a TLS
+connector; the CLI enforces the credentialed-plaintext policy because it owns
+both the credential and transport configuration.
 
 ### Cluster Client
 
@@ -179,33 +303,112 @@ in
 
 ## Development
 
-### Building
+### Contributor prerequisites
+
+The supported development environment is Nix-first. Before the first build,
+install:
+
+- Git, Make, and [Nix](https://nixos.org/download/) with flakes enabled.
+- Docker with the Compose plugin if you will run the full end-to-end suite.
+- [direnv](https://direnv.net/) is optional; the tracked `.envrc` enters the
+  same flake development shell as `nix develop`.
+
+The Nix development shell supplies GHC, Cabal, Haskell Language Server,
+`stylish-haskell`, and native dependencies such as zlib. The executable also
+links against readline. If you cannot use Nix, install a C toolchain, GHC,
+Cabal, readline development headers, and zlib development headers before
+building (for example, `build-essential libreadline-dev zlib1g-dev` on
+Debian/Ubuntu).
+
+### First-time setup
+
+Clone the repository, enter the development environment, and run the repository
+setup target once:
 
 ```sh
-# Using Makefile (handles Nix if available)
-make build
+git clone https://github.com/sspeaks/redis-client.git
+cd redis-client
 
-# Or directly with Cabal
-cabal build
+# Choose one environment entry point:
+nix develop
+# Or, with direnv installed:
+direnv allow
 
-# Or with Nix
-nix-build
+make setup
 ```
+
+`nix develop` provides the reproducible compiler, tools, and native libraries;
+`direnv allow` automatically enters that same shell when you change into the
+repository. `make setup` is a separate one-time repository bootstrap: it points
+Git at the tracked `.githooks/` directory and updates Cabal's package index.
+Entering the Nix shell also configures the hook path, but `make setup` remains
+the explicit bootstrap command and prepares Cabal for workspace builds.
+
+For a system-Cabal setup without Nix, install the native dependencies above and
+then run `make setup`. On Debian/Ubuntu the target can install
+`libreadline-dev`; install the remaining compiler and zlib prerequisites
+yourself first. In this fallback, `make` targets use the GHC and Cabal available
+on `PATH`.
+
+### Build
+
+For the reproducible Nix package build:
+
+```sh
+nix-build --no-out-link
+```
+
+For a faster workspace build while developing:
+
+```sh
+make build
+```
+
+`make build` builds both the root `redis-client` executable package and the
+`hask-redis-mux` library package. With Nix available it also enables the E2E
+executables by running:
+
+```sh
+cabal build all -fe2e
+```
+
+Without Nix, `make build` falls back to the system GHC and Cabal on `PATH` and
+runs `cabal build all`; this builds both packages without enabling the E2E
+executables.
 
 ### Running Tests
 
-**Unit tests** (no Redis required):
+**Unit and repository checks** (no running Redis required):
 ```sh
 make test-unit
-# or
-cabal test RespSpec ClusterSpec ClusterCommandSpec MultiplexerSpec MultiplexPoolSpec
 ```
 
-**End-to-end tests** (requires Docker and Nix):
+The system-Cabal fallback for the Haskell unit suites is:
+
 ```sh
-make test-e2e               # Standalone Redis E2E
-make test-cluster-e2e       # Cluster E2E
-make test                   # Run all tests
+cabal build all
+cabal test all
+```
+
+`make test-unit` is broader: in addition to all Cabal test suites, it checks
+generated Redis command metadata, credential handling, GitHub issue workflow
+status, and the E2E runner scripts.
+
+**Full test suite** (requires Docker, the Docker Compose plugin, and Nix):
+```sh
+make test
+```
+
+The full target runs the unit/repository checks plus the standalone, direct TLS,
+cluster, authenticated-cluster, and library end-to-end suites. Individual
+Docker suites remain available when narrowing a failure:
+
+```sh
+make test-e2e
+make test-direct-tls-e2e
+make test-cluster-e2e
+make test-authenticated-cluster-e2e
+make test-library-e2e
 ```
 
 **Manual testing with local Redis:**
@@ -234,13 +437,13 @@ Profile before and after changes to detect regressions:
 # Start local Redis (if needed)
 make redis-start
 
-# Profile with -p flag (easiest to compare)
-cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
+# Profile with -p flag (easiest to compare); this does not request FLUSHALL.
+cabal run --enable-profiling -- fill -h localhost -d 1 +RTS -p -RTS
 
 # Make changes...
 
-# Profile again
-cabal run --enable-profiling -- fill -h localhost -f -d 1 +RTS -p -RTS
+# Profile again, still without a destructive flush
+cabal run --enable-profiling -- fill -h localhost -d 1 +RTS -p -RTS
 
 # Compare .prof files for regressions
 # Stop Redis
@@ -256,13 +459,24 @@ rm -f *.hp *.prof *.ps *.aux *.stat
 
 ## Project Structure
 
-- `app/` - Main executable (cli, fill, tunnel modes)
-- `lib/resp/` - RESP protocol implementation
-- `lib/client/` - Connection management (plaintext and TLS)
-- `lib/redis-command-client/` - Redis command execution
-- `lib/cluster/` - Cluster support, connection pooling, multiplexer, and standalone client
-- `lib/crc16/` - CRC16 for hash slot calculation
-- `test/` - Unit and E2E tests
+- `redis-client.cabal` - Root executable package definition.
+- `app/` - `redis-client` executable sources for CLI, fill, and tunnel modes.
+- `test/` - Root executable unit tests and Docker E2E test programs.
+- `hask-redis-mux/hask-redis-mux.cabal` - Public Redis client library package.
+- `hask-redis-mux/lib/resp/` - RESP protocol implementation.
+- `hask-redis-mux/lib/client/` - Plaintext and TLS connection management.
+- `hask-redis-mux/lib/redis-command-client/` - Redis command execution.
+- `hask-redis-mux/lib/cluster/` - Cluster routing, pools, multiplexers, and
+  standalone client support.
+- `hask-redis-mux/lib/crc16/` - CRC16 hash-slot implementation.
+- `hask-redis-mux/lib/redis/` - Public `Database.Redis` facade.
+- `hask-redis-mux/test/` and `hask-redis-mux/bench/` - Library tests and
+  benchmarks.
+- `Makefile`, `flake.nix`, `shell.nix`, and `default.nix` - Supported
+  development and Nix packaging entry points.
+- `scripts/` and `docker/` - Repository checks and owned Docker E2E fixtures.
+- `.githooks/` - Tracked contributor hooks enabled by `make setup` and the Nix
+  development shell.
 
 ## License
 

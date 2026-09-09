@@ -3,7 +3,8 @@
 
 module Main where
 
-import           ClusterFiller                         (fillClusterWithData)
+import           ClusterFiller                         (fillClusterWithData,
+                                                        withClusterFillClient)
 import           Database.Redis.Client                 (Client (receive, send),
                                                         TLSClient (..), serve)
 import           Database.Redis.Cluster.Client         (ClusterClient (..),
@@ -17,18 +18,22 @@ import           ClusterSetup                          (createClusterClientFromS
                                                         flushAllClusterNodes)
 import           ClusterTunnel                         (servePinnedProxy,
                                                         serveSmartProxy)
-import           Control.Concurrent                    (forkIO, newEmptyMVar,
-                                                        putMVar, takeMVar)
+import           Control.Exception                     (bracket, mask)
 
 import           AppConfig                             (RunState (..),
                                                         defaultRunState,
+                                                        resolveRunStateCredentials,
                                                         runCommandsAgainstPlaintextHost,
-                                                        runCommandsAgainstTLSHost)
+                                                        runCommandsAgainstTLSHost,
+                                                        warnIfInsecurePlaintextAuthentication)
 import           ClusterCli                            (routeAndExecuteCommand)
 import           Control.Concurrent.STM                (readTVarIO)
 import           Control.Monad                         (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State                   as State
+import           CredentialConfig                      (passwordEnvironmentVariable,
+                                                        passwordFileEnvironmentVariable,
+                                                        rejectCredentialArguments)
 import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Builder               as Builder
 import qualified Data.ByteString.Char8                 as BS8
@@ -63,7 +68,13 @@ import           Database.Redis.Resp                   (Encodable (encode),
 import           Filler                                (fillCacheWithData,
                                                         fillCacheWithDataMB,
                                                         initRandomNoise)
+import           FillProcess                           (buildChildArgs)
+import           FlushConfirmation                     (canonicalFlushTarget,
+                                                        confirmFlush)
 import           Numeric                               (showHex)
+import           ProcessLifecycle                      (waitForChildProcesses)
+import           StructuredConcurrency                 (runConcurrentlyFailFast,
+                                                        withSubmittedSlots)
 import           System.Console.GetOpt                 (ArgDescr (..),
                                                         ArgOrder (..),
                                                         OptDescr (Option),
@@ -77,8 +88,7 @@ import           System.IO                             (hIsTerminalDevice,
                                                         hPutStrLn, isEOF,
                                                         stderr, stdin)
 import           System.Process                        (ProcessHandle,
-                                                        createProcess, proc,
-                                                        waitForProcess)
+                                                        createProcess, proc)
 import           System.Random                         (randomIO)
 import           Text.Printf                           (printf)
 
@@ -87,10 +97,11 @@ options =
   [ Option ['h'] ["host"] (ReqArg (\arg opt -> return $ opt {host = arg}) "HOST") "Host to connect to",
     Option ['p'] ["port"] (ReqArg (\arg opt -> return $ opt {port = Just . read $ arg}) "PORT") "Port to connect to. Will default to 6379 for plaintext and 6380 for TLS",
     Option ['u'] ["username"] (ReqArg (\arg opt -> return $ opt {username = arg}) "USERNAME") "Username to authenticate with (default: 'default')",
-    Option ['a'] ["password"] (ReqArg (\arg opt -> return $ opt {password = arg}) "PASSWORD") "Password to authenticate with",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
+    Option [] ["allow-insecure-plaintext-auth"] (NoArg (\opt -> return $ opt {allowInsecurePlaintextAuth = True})) "Allow credentials over plaintext and emit a warning",
     Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
-    Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Flush the database",
+    Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Request a destructive FLUSHALL; requires confirmation",
+    Option [] ["confirm-flush"] (ReqArg (\arg opt -> return $ opt {flushConfirmation = Just arg}) "TARGET") "Non-interactive acknowledgement of the exact displayed flush target",
     Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)",
     Option ['n'] ["connections"] (ReqArg (\arg opt -> return $ opt {numConnections = Just . read $ arg}) "NUM") "Number of parallel connections (default: 2)",
     Option ['c'] ["cluster"] (NoArg (\opt -> return $ opt {useCluster = True})) "Use Redis Cluster mode",
@@ -141,28 +152,15 @@ handleArgs args = do
 main :: IO ()
 main = do
   args' <- getArgs
+  case rejectCredentialArguments args' of
+    Left message -> hPutStrLn stderr message >> exitFailure
+    Right ()     -> pure ()
   case args' of
-    [] -> do
-      putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
-      putStrLn ""
-      putStrLn "Modes:"
-      putStrLn "  cli     Interactive Redis command-line interface"
-      putStrLn "  fill    Fill Redis cache with random data for testing"
-      putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
-      putStrLn "  bench   Benchmark cluster throughput (requires -c flag)"
-      putStrLn ""
-      putStrLn "Cluster Mode:"
-      putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
-      putStrLn ""
-      putStrLn "Examples:"
-      putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
-      putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
-      putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
-      putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
-      putStrLn "  redis-client fill ... --pipeline 4096                   # Use 4096 commands per pipeline"
-      exitFailure
+    [] -> printUsage >> exitFailure
+    ["--help"] -> printUsage >> exitSuccess
     (mode : args) -> do
-      (state, _) <- handleArgs args
+      (parsedState, _) <- handleArgs args
+      state <- resolveRunStateCredentials parsedState
       unless (mode `elem` ["cli", "fill", "tunn", "bench"]) $ do
         printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', 'tunn', and 'bench'\n" mode
         putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
@@ -171,10 +169,57 @@ main = do
         putStrLn "No host specified\n"
         putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
         exitFailure
+      warnIfInsecurePlaintextAuthentication state
       when (mode == "tunn") $ tunn state
       when (mode == "cli") $ cli state
       when (mode == "fill") $ fill state
       when (mode == "bench") $ bench state
+
+printUsage :: IO ()
+printUsage = do
+  putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
+  putStrLn ""
+  putStrLn "Credentials:"
+  putStrLn $ "  " ++ passwordFileEnvironmentVariable ++ "  Path to a credential file (highest precedence)"
+  putStrLn $ "  " ++ passwordEnvironmentVariable ++ "       Credential value used when no file is configured"
+  putStrLn "  Command-line password options are rejected to keep credentials out of process listings."
+  putStrLn "  Credentialed connections require TLS unless --allow-insecure-plaintext-auth is explicitly supplied."
+  putStrLn "  REDIS_CLIENT_TLS_INSECURE=1 disables TLS certificate verification; all other non-false values are rejected."
+  putStrLn ""
+  putStrLn "Modes:"
+  putStrLn "  cli     Interactive Redis command-line interface"
+  putStrLn "  fill    Fill Redis cache with random data for testing"
+  putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
+  putStrLn "  bench   Benchmark cluster throughput (requires -c flag)"
+  putStrLn ""
+  putStrLn "Cluster Mode:"
+  putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
+  putStrLn ""
+  putStrLn "Flush confirmation:"
+  putStrLn "  --flush is only intent; it never flushes without confirmation."
+  putStrLn "  Canonical target: redis://HOST:PORT?tls=true|false&scope=single-node"
+  putStrLn "  Cluster target:   redis+cluster://HOST:PORT?tls=true|false&scope=all-primaries"
+  putStrLn "  HOST is the --host value; IPv6 literals are written as [address]."
+  putStrLn "  PORT is --port, or 6379 without --tls / 6380 with --tls."
+  putStrLn "  --tls controls the connection: tls=true with it, tls=false without it."
+  putStrLn "  In a terminal, type the exact displayed target; EOF or any mismatch cancels."
+  putStrLn "  Without a terminal, pass the exact target with --confirm-flush."
+  putStrLn "  With --processes > 1, the parent confirms and flushes once before spawning children."
+  putStrLn "  Children never repeat the flush or prompt for confirmation."
+  putStrLn ""
+  putStrLn "Smart cluster tunnel framing:"
+  putStrLn "  Smart mode accepts RESP request frames up to 1,048,576 encoded bytes."
+  putStrLn "  Malformed, incomplete-at-EOF, or oversized frames receive one error when applicable, then close."
+  putStrLn "  This bounded proxy scope is not a claim of compatibility with Redis's maximum request size."
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h localhost"
+  putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
+  putStrLn "  redis-client fill -h localhost -f                       # prompts for exact flush target"
+  putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
+  putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
+  putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
+  putStrLn "  redis-client fill ... --pipeline 4096                   # Use 4096 commands per pipeline"
 
 
 tunn :: RunState -> IO ()
@@ -233,6 +278,13 @@ tunnCluster state = do
 
 fill :: RunState -> IO ()
 fill state = do
+  when (flush state) $ do
+    let target = canonicalFlushTarget (host state) (port state) (useTLS state) (useCluster state)
+    confirmation <- confirmFlush (flushConfirmation state) target
+    case confirmation of
+      Left message -> hPutStrLn stderr message >> exitFailure
+      Right ()     -> pure ()
+
   -- If no data specified and no flush flag, show error
   when (dataGBs state <= 0 && not (flush state)) $ do
     putStrLn "No data specified or data is 0GB or fewer\n"
@@ -241,23 +293,7 @@ fill state = do
 
   -- If only flush requested (no data), just flush and exit
   when (dataGBs state <= 0 && flush state) $ do
-    if useCluster state
-      then do
-        printf "Flushing cluster cache (seed node: '%s')\n" (host state)
-        if useTLS state
-          then do
-            clusterClient <- createClusterClientFromState state (createTLSConnector state)
-            flushAllClusterNodes clusterClient (createTLSConnector state)
-            closeClusterClient clusterClient
-          else do
-            clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-            flushAllClusterNodes clusterClient (createPlaintextConnector state)
-            closeClusterClient clusterClient
-      else do
-        printf "Flushing cache '%s'\n" (host state)
-        if useTLS state
-          then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
-          else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+    flushCache state
     putStrLn "Flush complete"
     exitSuccess
 
@@ -282,23 +318,9 @@ spawnFillProcesses state nprocs = do
   exePath <- getExecutablePath
 
   -- Flush once before spawning processes (if requested)
-  when (flush state && useCluster state) $ do
-    printf "Flushing cluster cache before spawning %d processes\n" nprocs
-    if useTLS state
-      then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        flushAllClusterNodes clusterClient (createTLSConnector state)
-        closeClusterClient clusterClient
-      else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        flushAllClusterNodes clusterClient (createPlaintextConnector state)
-        closeClusterClient clusterClient
-
-  when (flush state && not (useCluster state)) $ do
-    printf "Flushing cache '%s' before spawning %d processes\n" (host state) nprocs
-    if useTLS state
-      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
-      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+  when (flush state) $ do
+    printf "Flushing cache before spawning %d processes\n" nprocs
+    flushCache state
 
   -- Calculate data per process
   let totalGB = dataGBs state
@@ -311,8 +333,8 @@ spawnFillProcesses state nprocs = do
   -- Spawn child processes
   handles <- mapM (spawnChildProcess exePath state baseGB remainder) [0..nprocs-1]
 
-  -- Wait for all processes to complete
-  mapM_ waitForProcess handles
+  -- Wait for all children and propagate the first non-zero child status.
+  waitForChildProcesses handles
   printf "All %d processes completed\n" nprocs
 
 -- | Spawn a single child process with its portion of data
@@ -326,37 +348,30 @@ spawnChildProcess exePath state baseGB remainder idx = do
   (_, _, _, ph) <- createProcess (proc exePath args)
   return ph
 
--- | Build command-line arguments for a child process
-buildChildArgs :: RunState -> Int -> Int -> [String]
-buildChildArgs state idx dataGB =
-  [ "fill"
-  , "-h", host state
-  , "-d", show dataGB
-  , "--process-index", show idx
-  , "--key-size", show (keySize state)
-  , "--value-size", show (valueSize state)
-  , "--pipeline", show (pipelineBatchSize state)
-  ]
-  ++ (["-t" | useTLS state])
-  ++ (["-c" | useCluster state])
-  ++ (["-s" | serial state])
-  ++ (case port state of
-        Just p  -> ["-p", show p]
-        Nothing -> [])
-  ++ (if null (password state) then [] else ["-a", password state])
-  ++ (if username state /= "default" then ["-u", username state] else [])
-  ++ (case numConnections state of
-        Just n  -> ["-n", show n]
-        Nothing -> [])
+flushCache :: RunState -> IO ()
+flushCache state
+  | useCluster state = do
+      printf "Flushing all primary cluster nodes (seed node: '%s')\n" (host state)
+      if useTLS state
+        then do
+          let connector = createTLSConnector state
+          bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+            flushAllClusterNodes clusterClient connector
+        else do
+          let connector = createPlaintextConnector state
+          bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+            flushAllClusterNodes clusterClient connector
+  | otherwise = do
+      printf "Flushing cache '%s'\n" (host state)
+      if useTLS state
+        then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
+        else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
 
 fillStandalone :: RunState -> IO ()
 fillStandalone state = do
-  -- Only flush if we're not in multi-process mode (parent handles flush)
-  when (flush state && isNothing (numProcesses state)) $ do
-    printf "Flushing cache '%s'\n" (host state)
-    if useTLS state
-      then runCommandsAgainstTLSHost state (do { (_ :: RespData) <- flushAll; pure () })
-      else runCommandsAgainstPlaintextHost state (do { (_ :: RespData) <- flushAll; pure () })
+  -- Only the parent process performs a requested flush.
+  when (flush state && isNothing (processIndex state)) $ do
+    flushCache state
   when (dataGBs state > 0) $ do
     initRandomNoise -- Ensure noise buffer is initialized once and shared
     baseSeed <- randomIO :: IO Word64
@@ -377,30 +392,18 @@ fillStandalone state = do
             -- Jobs: (connectionIdx, mbForThisConnection)
             jobs = [(i, if i < remainder then baseMB + 1 else baseMB) | i <- [0..nConns - 1], baseMB > 0 || i < remainder]
         printf "Filling %dGB with %d parallel connections\n" (dataGBs state) (length jobs)
-        mvars <- mapM (\(idx, mb) -> do
-            mv <- newEmptyMVar
-            _ <- forkIO $ do
-                 if useTLS state
-                    then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
-                    else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
-                 putMVar mv ()
-            return mv) jobs
-        mapM_ takeMVar mvars
+        runConcurrentlyFailFast
+          [ if useTLS state
+              then runCommandsAgainstTLSHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+              else runCommandsAgainstPlaintextHost state $ fillCacheWithDataMB baseSeed idx mb (pipelineBatchSize state) (keySize state) (valueSize state)
+          | (idx, mb) <- jobs
+          ]
 
 
 fillCluster :: RunState -> IO ()
 fillCluster state = do
   when (flush state) $ do
-    printf "Flushing cluster cache (seed node: '%s')\n" (host state)
-    if useTLS state
-      then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        flushAllClusterNodes clusterClient (createTLSConnector state)
-        closeClusterClient clusterClient
-      else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        flushAllClusterNodes clusterClient (createPlaintextConnector state)
-        closeClusterClient clusterClient
+    flushCache state
 
   when (dataGBs state > 0) $ do
     -- Get base seed for randomness
@@ -415,15 +418,15 @@ fillCluster state = do
     -- Create cluster client and fill data
     if useTLS state
       then do
-        clusterClient <- createClusterClientFromState state (createTLSConnector state)
-        fillClusterWithData clusterClient (createTLSConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
-        closeClusterClient clusterClient
+        let connector = createTLSConnector state
+        withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
+          fillClusterWithData clusterClient connector
+            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
       else do
-        clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
-        fillClusterWithData clusterClient (createPlaintextConnector state)
-                           (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
-        closeClusterClient clusterClient
+        let connector = createPlaintextConnector state
+        withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
+          fillClusterWithData clusterClient connector
+            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
 
 cli :: RunState -> IO ()
 cli state = do
@@ -555,46 +558,40 @@ bench state = do
 
 -- | Run the benchmark with a specific connector type
 benchWithConnector :: (Client client) => RunState -> Connector client -> String -> Int -> Int -> Int -> Int -> IO ()
-benchWithConnector state connector op duration nConns kSize vSize = do
-  clusterClient <- createClusterClientFromState state connector
-  muxPool <- createMultiplexPool connector (muxCount state)
+benchWithConnector state connector op duration nConns kSize vSize =
+  bracket (createClusterClientFromState state connector) closeClusterClient $ \clusterClient ->
+    bracket (createMultiplexPool (clusterConnector clusterClient) (muxCount state)) closeMultiplexPool $ \muxPool -> do
 
-  -- Pre-populate keys for GET and mixed workloads
-  when (op `elem` ["get", "mixed"]) $ do
-    hPutStrLn stderr "Pre-populating keys for GET workload..."
-    let numKeys = 100000
-    benchPrePopulate muxPool clusterClient numKeys kSize vSize
-    hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
+      -- Pre-populate keys for GET and mixed workloads
+      when (op `elem` ["get", "mixed"]) $ do
+        hPutStrLn stderr "Pre-populating keys for GET workload..."
+        let numKeys = 100000
+        benchPrePopulate muxPool clusterClient numKeys kSize vSize
+        hPutStrLn stderr $ "Pre-populated " ++ show numKeys ++ " keys"
 
-  -- Run the benchmark
-  opsCounter <- newIORef (0 :: Int)
-  startTime <- getCurrentTime
+      -- Run the benchmark
+      opsCounter <- newIORef (0 :: Int)
+      startTime <- getCurrentTime
 
-  mvars <- mapM (\tid -> do
-    mvar <- newEmptyMVar
-    _ <- forkIO $ do
-      benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
-      putMVar mvar ()
-    return mvar
-    ) [0 .. nConns - 1]
+      runConcurrentlyFailFast
+        [ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter
+        | tid <- [0 .. nConns - 1]
+        ]
 
-  mapM_ takeMVar mvars
-  endTime <- getCurrentTime
+      endTime <- getCurrentTime
 
-  totalOps <- readIORef opsCounter
-  let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
-      opsPerSec = fromIntegral totalOps / elapsed
+      totalOps <- readIORef opsCounter
+      let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
+          opsPerSec = fromIntegral totalOps / elapsed
 
-  -- Output JSON to stdout
-  putStrLn $ "{\"operation\":\"" ++ op
-    ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
-    ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
-    ++ ",\"total_ops\":" ++ show totalOps
-    ++ "}"
+      -- Output JSON to stdout
+      putStrLn $ "{\"operation\":\"" ++ op
+        ++ "\",\"ops_per_sec\":" ++ show (round opsPerSec :: Int)
+        ++ ",\"duration_sec\":" ++ show (round elapsed :: Int)
+        ++ ",\"total_ops\":" ++ show totalOps
+        ++ "}"
 
-  closeMultiplexPool muxPool
-  closeClusterClient clusterClient
-  exitSuccess
+      exitSuccess
 
 -- | Pre-populate keys for GET workload
 benchPrePopulate :: (Client client) => MultiplexPool client -> ClusterClient client -> Int -> Int -> Int -> IO ()
@@ -616,7 +613,7 @@ benchPrePopulate muxPool clusterClient numKeys kSize vSize = do
 -- | Worker thread that submits commands for the specified duration
 -- Uses async pipelining: fires a batch of commands, then waits for all results.
 benchWorker :: (Client client) => MultiplexPool client -> ClusterClient client -> String -> Int -> Int -> Int -> Int -> IORef Int -> IO ()
-benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
+benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = mask $ \_ -> do
   topology <- readTVarIO (clusterTopology clusterClient)
   let masters = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
       batchSize = 64 -- fire 64 commands per batch before waiting
@@ -627,17 +624,15 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
       now <- getCurrentTime
       let elapsed = realToFrac (diffUTCTime now startTime) :: Double
       when (elapsed < fromIntegral duration) $ do
-        -- Fire a batch of commands asynchronously
-        slots <- fireBatch topology counter batchSz []
-        let completedCount = length slots
-        -- Wait for all results
-        mapM_ (\slot -> waitSlotResult muxPool slot) slots
-        -- Count completed ops
-        atomicModifyIORef' opsCounter (\n -> (n + completedCount, ()))
+        withSubmittedSlots (waitSlotResult muxPool) $ \submitted waitSubmitted -> do
+          slots <- fireBatch topology counter batchSz [] submitted
+          let completedCount = length slots
+          mapM_ waitSubmitted slots
+          atomicModifyIORef' opsCounter (\n -> (n + completedCount, ()))
         go topology masters startTime (counter + batchSz) batchSz
 
-    fireBatch _ _ 0 acc = return (reverse acc)
-    fireBatch topology !counter !remaining acc = do
+    fireBatch _ _ 0 acc _ = return (reverse acc)
+    fireBatch topology !counter !remaining acc submitted = do
       let key = benchKey kSize counter
           val = benchValue vSize counter
           !slot = calculateSlot key
@@ -651,7 +646,6 @@ benchWorker muxPool clusterClient op tid kSize vSize duration opsCounter = do
                     then encodeSetBuilder key val
                     else encodeGetBuilder key
                 _ -> encodeSetBuilder key val
-          s <- submitToNodeAsync muxPool addr cmd
-          fireBatch topology (counter + 1) (remaining - 1) (s : acc)
-        Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc
-
+          s <- submitted (submitToNodeAsync muxPool addr cmd)
+          fireBatch topology (counter + 1) (remaining - 1) (s : acc) submitted
+        Nothing -> fireBatch topology (counter + 1) (remaining - 1) acc submitted
