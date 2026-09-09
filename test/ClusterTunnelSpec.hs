@@ -2,7 +2,9 @@
 
 module Main (main) where
 
-import           ClusterTunnel                              (SmartProxyFrameResult (..),
+import           ClusterTunnel                              (PinnedResponseResult (..),
+                                                             SmartProxyFrameResult (..),
+                                                             parsePinnedResponses,
                                                              parseSmartProxyFrames,
                                                              rewriteClusterResponse,
                                                              routeSmartProxyCommandWith,
@@ -144,6 +146,28 @@ main = hspec $ do
     it "leaves malformed framing unchanged" $ do
       let malformed = "-MOVED 3999 redis.example:6381\rX"
       rewriteClusterResponse malformed `shouldBe` malformed
+
+  describe "pinned response TCP framing" $ do
+    it "retains fragmented topology frames and rewrites only after completion" $ do
+      let response = "-MOVED 3999 redis.example:6381\r\n"
+          (firstChunk, secondChunk) = BS.splitAt 12 response
+      parsePinnedResponses BS.empty firstChunk
+        `shouldBe` PinnedResponses BS.empty firstChunk
+      parsePinnedResponses firstChunk secondChunk
+        `shouldBe` PinnedResponses "-MOVED 3999 127.0.0.1:6381\r\n" BS.empty
+
+    it "drains coalesced replies in order and preserves untouched binary bytes" $ do
+      let binary = "$5\r\n\NUL\255\r\n*\r\n"
+          responses = "-ASK 10 redis.example:6382\r\n" <> binary <> "+OK\r\n"
+      parsePinnedResponses BS.empty responses
+        `shouldBe` PinnedResponses
+          ("-ASK 10 127.0.0.1:6382\r\n" <> binary <> "+OK\r\n")
+          BS.empty
+
+    it "passes unsupported RESP3 push bytes through without blocking" $ do
+      let push = ">2\r\n+message\r\n+payload\r\n"
+      parsePinnedResponses BS.empty push
+        `shouldBe` PinnedResponses push BS.empty
 
 commandFrame :: [BS.ByteString] -> RespData
 commandFrame = RespArray . fmap RespBulkString

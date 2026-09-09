@@ -10,11 +10,17 @@ module ClusterTunnel
   , SmartProxyFrameResult (..)
   , smartProxyFrameLimit
   , parseSmartProxyFrames
+  , PinnedResponseResult (..)
+  , pinnedResponseFrameLimit
+  , parsePinnedResponses
   ) where
 
 import           Control.Concurrent                         (MVar, forkIO,
                                                              newEmptyMVar,
                                                              putMVar, takeMVar)
+import           Control.Concurrent.Async                   (cancel,
+                                                             waitEitherCatch,
+                                                             withAsync)
 import           Control.Concurrent.STM                     (readTVarIO)
 import           Control.Exception                          (SomeException,
                                                              bracket, finally,
@@ -325,9 +331,8 @@ createPinnedListener connector node = do
 
   return mvar
 
--- | Forward traffic bidirectionally between client and cluster node
--- Also intercepts and rewrites cluster topology responses
--- Uses sequential request-response pattern to maintain proper ordering
+-- | Forward traffic bidirectionally between client and cluster node.
+-- Completed Redis responses are rewritten independently of TCP or TLS chunking.
 forwardPinnedConnection :: (Client client) =>
   Socket ->
   client 'Connected ->
@@ -336,69 +341,68 @@ forwardPinnedConnection :: (Client client) =>
 forwardPinnedConnection clientSock redisConn addr = do
   printf "[Pinned %s:%d] Starting forwarding loop\n" (nodeHost addr) (nodePort addr)
   hFlush stdout
-  loop 1
-  where
-    loop :: Int -> IO ()
-    loop reqNum = do
-      -- Read command from client
-      printf "[Pinned %s:%d] [Req %d] Waiting for client data...\n" (nodeHost addr) (nodePort addr) reqNum
-      hFlush stdout
-
-      -- Use try to catch any exceptions during recv
-      result <- try $ recv clientSock 4096
+  withAsync copyClientToRedis $ \toRedis ->
+    withAsync (copyRedisToClient BS.empty) $ \toClient -> do
+      result <- waitEitherCatch toRedis toClient
+      cancel toRedis
+      cancel toClient
       case result of
-        Left (e :: SomeException) -> do
-          printf "[Pinned %s:%d] [Req %d] Error receiving from client: %s\n"
-            (nodeHost addr) (nodePort addr) reqNum (show e)
-          hFlush stdout
-          return ()  -- Exit loop on error
-        Right dat ->
-          if BS.null dat
-            then do
-              printf "[Pinned %s:%d] [Req %d] Client disconnected (received empty data)\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              return ()  -- Client disconnected
-            else do
-              printf "[Pinned %s:%d] [Req %d] Received %d bytes from client: %s\n"
-                (nodeHost addr) (nodePort addr) reqNum (BS.length dat) (show $ BS.take 100 dat)
-              hFlush stdout
+        Left (Left err)  -> throwIO err
+        Right (Left err) -> throwIO err
+        Left (Right ())  -> pure ()
+        Right (Right ()) -> pure ()
+  where
+    copyClientToRedis = do
+      dat <- recv clientSock 4096
+      if BS.null dat
+        then pure ()
+        else send redisConn (LBS.fromStrict dat) >> copyClientToRedis
 
-              -- Forward to Redis
-              printf "[Pinned %s:%d] [Req %d] Forwarding to Redis...\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              send redisConn (LBS.fromStrict dat)
+    copyRedisToClient pending = do
+      response <- receive redisConn
+      if BS.null response
+        then pure ()
+        else case parsePinnedResponses pending response of
+          PinnedResponses output nextPending -> do
+            sendAll clientSock output
+            copyRedisToClient nextPending
+          PinnedResponseLimitExceeded output -> do
+            sendAll clientSock output
+            throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
 
-              -- Receive response from Redis
-              printf "[Pinned %s:%d] [Req %d] Waiting for Redis response...\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              response <- receive redisConn
-              printf "[Pinned %s:%d] [Req %d] Received %d bytes from Redis: %s\n"
-                (nodeHost addr) (nodePort addr) reqNum (BS.length response) (show $ BS.take 100 response)
-              hFlush stdout
+-- | Maximum retained bytes while awaiting an incomplete pinned response.
+-- The Redis protocol limits bulk strings to 512 MiB; this preserves supported
+-- RESP2 replies while rejecting an unbounded incomplete peer stream.
+pinnedResponseFrameLimit :: Int
+pinnedResponseFrameLimit = 512 * 1024 * 1024
 
-              -- Rewrite cluster responses
-              -- In pinned mode, we rewrite topology responses to show 127.0.0.1
-              -- This makes the cluster appear local while still allowing
-              -- commands to be sent to any node (client handles MOVED errors)
-              let rewritten = rewriteClusterResponse response
-              if rewritten /= response
-                then do
-                  printf "[Pinned %s:%d] [Req %d] Response rewritten (original: %d bytes, rewritten: %d bytes)\n"
-                    (nodeHost addr) (nodePort addr) reqNum (BS.length response) (BS.length rewritten)
-                  hFlush stdout
-                else do
-                  printf "[Pinned %s:%d] [Req %d] Response not rewritten\n" (nodeHost addr) (nodePort addr) reqNum
-                  hFlush stdout
+data PinnedResponseResult
+  = PinnedResponses !BS.ByteString !BS.ByteString
+  | PinnedResponseLimitExceeded !BS.ByteString
+  deriving (Eq, Show)
 
-              -- Send back to client
-              printf "[Pinned %s:%d] [Req %d] Sending response back to client...\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              sendAll clientSock rewritten
-              printf "[Pinned %s:%d] [Req %d] Response sent to client\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
+-- | Drain complete response frames, rewriting only completed topology frames.
+-- Unknown RESP3 and malformed inputs remain transparent raw traffic.
+parsePinnedResponses :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
+parsePinnedResponses pending chunk = drain BS.empty (pending <> chunk)
+  where
+    drain output input =
+      case BS.uncons input of
+        Just (prefix, _)
+          | prefix `notElem` responseParserPrefixes ->
+              PinnedResponses (output <> input) BS.empty
+        _ -> case StrictParse.parse Resp.parseRespData input of
+          StrictParse.Done remaining _ ->
+            let consumed = BS.length input - BS.length remaining
+                original = BS.take consumed input
+             in drain (output <> rewriteClusterResponse original) remaining
+          StrictParse.Partial _
+            | BS.length input > pinnedResponseFrameLimit ->
+                PinnedResponseLimitExceeded output
+            | otherwise -> PinnedResponses output input
+          StrictParse.Fail {} -> PinnedResponses (output <> input) BS.empty
 
-              -- Continue loop
-              loop (reqNum + 1)
+    responseParserPrefixes = [43, 45, 58, 36, 42, 126, 37]
 
 -- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
 -- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses

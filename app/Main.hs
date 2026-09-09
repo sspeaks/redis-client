@@ -211,6 +211,8 @@ printUsage = do
   putStrLn "  Smart mode accepts RESP request frames up to 1,048,576 encoded bytes."
   putStrLn "  Malformed, incomplete-at-EOF, or oversized frames receive one error when applicable, then close."
   putStrLn "  This bounded proxy scope is not a claim of compatibility with Redis's maximum request size."
+  putStrLn "  Pinned topology rewriting buffers incomplete responses up to Redis's 512 MiB bulk-string limit."
+  putStrLn "  RESP3 frames outside the supported response parser remain raw pass-through traffic."
   putStrLn ""
   putStrLn "Examples:"
   putStrLn "  REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h localhost"

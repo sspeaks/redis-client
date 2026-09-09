@@ -392,6 +392,25 @@ spec = describe "Cluster Tunnel Mode" $ do
             _ <- runCmd_ client (del [testKey])
             pure ()
 
+    it "pinned mode drains a large reply and pipelined replies while the client is idle" $
+      withPinnedProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          master <- firstMaster client
+          let addr = nodeAddress master
+              key = getKeyForNode master "pinned-large-pipeline"
+              value = BS.replicate 8192 42
+              getFrame = rawFrame ["GET", key]
+              pingFrame = rawFrame ["PING"]
+          (`finally` deleteFromNode master [key]) $
+            bracket (connect (NotConnectedPlainTextClient "localhost" (Just (nodePort addr)))) close $ \conn -> do
+              runRedisCommand conn (set key value) `shouldReturn` RespSimpleString "OK"
+              send conn (Builder.toLazyByteString (encode getFrame <> encode pingFrame))
+              responses <- runRedisCommand conn $ RedisCommandClient $ do
+                firstResponse <- parseWith $ receive conn
+                secondResponse <- parseWith $ receive conn
+                pure (firstResponse, secondResponse)
+              responses `shouldBe` (RespBulkString value, RespSimpleString "PONG")
+
     it "pinned mode listeners forward to their respective nodes" $
       withPinnedProxy $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
