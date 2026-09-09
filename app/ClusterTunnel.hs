@@ -154,23 +154,31 @@ parseSmartProxyFrames ::
 parseSmartProxyFrames pending chunk = drain [] (pending <> chunk)
   where
     drain frames input =
-      case StrictParse.parse Resp.parseRespData input of
-        StrictParse.Done remaining frame
-          | BS.length input - BS.length remaining > smartProxyFrameLimit ->
+      case BS.uncons input of
+        Just (prefix, _)
+          | prefix `notElem` validRespPrefixes ->
               SmartProxyFrameError
                 (reverse frames)
-                "request frame exceeds 1048576 byte limit"
-          | otherwise -> drain (frame : frames) remaining
-        StrictParse.Partial _
-          | BS.length input > smartProxyFrameLimit ->
+                "invalid RESP frame: unknown data type prefix"
+        _ -> case StrictParse.parse Resp.parseRespData input of
+          StrictParse.Done remaining frame
+            | BS.length input - BS.length remaining > smartProxyFrameLimit ->
+                SmartProxyFrameError
+                  (reverse frames)
+                  "request frame exceeds 1048576 byte limit"
+            | otherwise -> drain (frame : frames) remaining
+          StrictParse.Partial _
+            | BS.length input > smartProxyFrameLimit ->
+                SmartProxyFrameError
+                  (reverse frames)
+                  "request frame exceeds 1048576 byte limit"
+            | otherwise -> SmartProxyFrames (reverse frames) input
+          StrictParse.Fail _ contexts message ->
               SmartProxyFrameError
                 (reverse frames)
-                "request frame exceeds 1048576 byte limit"
-          | otherwise -> SmartProxyFrames (reverse frames) input
-        StrictParse.Fail _ contexts message ->
-          SmartProxyFrameError
-            (reverse frames)
-            ("invalid RESP frame: " ++ intercalate ", " contexts ++ ": " ++ message)
+                ("invalid RESP frame: " ++ intercalate ", " contexts ++ ": " ++ message)
+
+    validRespPrefixes = [43, 45, 58, 36, 42, 126, 37]
 
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>

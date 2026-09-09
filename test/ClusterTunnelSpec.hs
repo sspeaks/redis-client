@@ -35,7 +35,7 @@ main = hspec $ do
 
     it "does not reinterpret bytes after malformed framing as another command" $ do
       let first = commandFrame ["PING"]
-          malformedThenValid = "+bad\n" <> encodeFrame (commandFrame ["PING"])
+          malformedThenValid = "?bad\r\n" <> encodeFrame (commandFrame ["PING"])
       case parseSmartProxyFrames BS.empty (encodeFrame first <> malformedThenValid) of
         SmartProxyFrameError commands _ ->
           commands `shouldBe` [first]

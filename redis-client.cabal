@@ -129,6 +129,7 @@ test-suite StructuredConcurrencySpec
                     , containers
                     , hask-redis-mux
                     , mtl
+                    , network
                     , process
                     , stm
                     , time
@@ -182,6 +183,7 @@ executable ClusterEndToEnd
                     , E2EHelpers
                     , SlotMappingHelpers
     build-depends:    async
+                    , attoparsec
                     , bytestring
                     , containers
                     , directory
@@ -189,6 +191,7 @@ executable ClusterEndToEnd
                     , hask-redis-mux
                     , hspec
                     , mtl
+                    , network
                     , process
                     , stm
                     , time
