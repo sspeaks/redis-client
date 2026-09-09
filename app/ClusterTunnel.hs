@@ -10,18 +10,27 @@ module ClusterTunnel
   , SmartProxyFrameResult (..)
   , smartProxyFrameLimit
   , parseSmartProxyFrames
+  , PinnedResponseResult (..)
+  , pinnedResponseFrameLimit
+  , parsePinnedResponses
+  , parsePinnedResponsesWithLimit
   ) where
 
 import           Control.Concurrent                         (MVar, forkIO,
                                                              newEmptyMVar,
                                                              putMVar, takeMVar)
+import           Control.Concurrent.Async                   (cancel, waitCatch,
+                                                             waitEitherCatch,
+                                                             withAsync)
 import           Control.Concurrent.STM                     (readTVarIO)
 import           Control.Exception                          (SomeException,
                                                              bracket, finally,
                                                              throwIO, try)
-import           Control.Monad                              (forever, void,
+import           Control.Monad                              (forever,
+                                                             replicateM_, void,
                                                              when)
 import qualified Data.Attoparsec.ByteString                 as StrictParse
+import qualified Data.Attoparsec.ByteString.Char8           as Char8
 import qualified Data.ByteString                            as BS
 import qualified Data.ByteString.Builder                    as Builder
 import qualified Data.ByteString.Char8                      as BS8
@@ -64,6 +73,7 @@ import           System.IO                                  (BufferMode (LineBuf
                                                              hFlush,
                                                              hSetBuffering,
                                                              stdout)
+import           System.Timeout                             (timeout)
 import           Text.Printf                                (printf)
 
 -- | Smart proxy mode: Makes cluster appear as single Redis instance
@@ -325,9 +335,8 @@ createPinnedListener connector node = do
 
   return mvar
 
--- | Forward traffic bidirectionally between client and cluster node
--- Also intercepts and rewrites cluster topology responses
--- Uses sequential request-response pattern to maintain proper ordering
+-- | Forward traffic bidirectionally between client and cluster node.
+-- Completed Redis responses are rewritten independently of TCP or TLS chunking.
 forwardPinnedConnection :: (Client client) =>
   Socket ->
   client 'Connected ->
@@ -336,69 +345,205 @@ forwardPinnedConnection :: (Client client) =>
 forwardPinnedConnection clientSock redisConn addr = do
   printf "[Pinned %s:%d] Starting forwarding loop\n" (nodeHost addr) (nodePort addr)
   hFlush stdout
-  loop 1
-  where
-    loop :: Int -> IO ()
-    loop reqNum = do
-      -- Read command from client
-      printf "[Pinned %s:%d] [Req %d] Waiting for client data...\n" (nodeHost addr) (nodePort addr) reqNum
-      hFlush stdout
-
-      -- Use try to catch any exceptions during recv
-      result <- try $ recv clientSock 4096
+  withAsync copyClientToRedis $ \toRedis ->
+    withAsync (copyRedisToClient BS.empty) $ \toClient -> do
+      result <- waitEitherCatch toRedis toClient
       case result of
-        Left (e :: SomeException) -> do
-          printf "[Pinned %s:%d] [Req %d] Error receiving from client: %s\n"
-            (nodeHost addr) (nodePort addr) reqNum (show e)
-          hFlush stdout
-          return ()  -- Exit loop on error
-        Right dat ->
-          if BS.null dat
-            then do
-              printf "[Pinned %s:%d] [Req %d] Client disconnected (received empty data)\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              return ()  -- Client disconnected
-            else do
-              printf "[Pinned %s:%d] [Req %d] Received %d bytes from client: %s\n"
-                (nodeHost addr) (nodePort addr) reqNum (BS.length dat) (show $ BS.take 100 dat)
-              hFlush stdout
+        Left (Left err)  -> cancel toClient >> throwIO err
+        Right (Left err) -> cancel toRedis >> throwIO err
+        Left (Right ())  -> do
+          -- Redis connections are persistent, so an upstream EOF cannot mark
+          -- the last reply.  Drain briefly after client write-side EOF, then
+          -- cancel the blocked reader to bound connection/task lifetime.
+          drained <- timeout halfCloseDrainMicros (waitCatch toClient)
+          case drained of
+            Just (Left err) -> throwIO err
+            _               -> cancel toClient
+        Right (Right ()) -> cancel toRedis
+  where
+    copyClientToRedis = do
+      dat <- recv clientSock 4096
+      if BS.null dat
+        then pure ()
+        else send redisConn (LBS.fromStrict dat) >> copyClientToRedis
 
-              -- Forward to Redis
-              printf "[Pinned %s:%d] [Req %d] Forwarding to Redis...\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              send redisConn (LBS.fromStrict dat)
+    copyRedisToClient pending = do
+      response <- receive redisConn
+      if BS.null response
+        then pure ()
+        else case parsePinnedResponses pending response of
+          PinnedResponses output nextPending -> do
+            sendAll clientSock output
+            copyRedisToClient nextPending
+          PinnedResponseLimitExceeded output -> do
+            sendAll clientSock output
+            throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
+          PinnedResponseMalformed output -> do
+            sendAll clientSock output
+            throwIO $ userError "pinned response contains malformed streamed RESP3 framing"
 
-              -- Receive response from Redis
-              printf "[Pinned %s:%d] [Req %d] Waiting for Redis response...\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              response <- receive redisConn
-              printf "[Pinned %s:%d] [Req %d] Received %d bytes from Redis: %s\n"
-                (nodeHost addr) (nodePort addr) reqNum (BS.length response) (show $ BS.take 100 response)
-              hFlush stdout
+halfCloseDrainMicros :: Int
+halfCloseDrainMicros = 100000
 
-              -- Rewrite cluster responses
-              -- In pinned mode, we rewrite topology responses to show 127.0.0.1
-              -- This makes the cluster appear local while still allowing
-              -- commands to be sent to any node (client handles MOVED errors)
-              let rewritten = rewriteClusterResponse response
-              if rewritten /= response
-                then do
-                  printf "[Pinned %s:%d] [Req %d] Response rewritten (original: %d bytes, rewritten: %d bytes)\n"
-                    (nodeHost addr) (nodePort addr) reqNum (BS.length response) (BS.length rewritten)
-                  hFlush stdout
-                else do
-                  printf "[Pinned %s:%d] [Req %d] Response not rewritten\n" (nodeHost addr) (nodePort addr) reqNum
-                  hFlush stdout
+-- | Maximum bulk payload accepted while awaiting an incomplete pinned response.
+-- RESP framing bytes are allowed in addition to this Redis payload limit.
+pinnedResponseFrameLimit :: Int
+pinnedResponseFrameLimit = 512 * 1024 * 1024
 
-              -- Send back to client
-              printf "[Pinned %s:%d] [Req %d] Sending response back to client...\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
-              sendAll clientSock rewritten
-              printf "[Pinned %s:%d] [Req %d] Response sent to client\n" (nodeHost addr) (nodePort addr) reqNum
-              hFlush stdout
+data PinnedResponseResult
+  = PinnedResponses !BS.ByteString !BS.ByteString
+  | PinnedResponseLimitExceeded !BS.ByteString
+  | PinnedResponseMalformed !BS.ByteString
+  deriving (Eq, Show)
 
-              -- Continue loop
-              loop (reqNum + 1)
+-- | Drain complete response frames, rewriting only completed topology frames.
+-- RESP3 values outside the RESP2-compatible subset are forwarded unchanged.
+-- A malformed streamed value terminates the connection rather than allowing
+-- line resynchronization to reinterpret bytes that might be chunk payload.
+parsePinnedResponses :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
+parsePinnedResponses = parsePinnedResponsesWithLimit pinnedResponseFrameLimit
+
+-- | Variant with an injected payload limit for boundary tests.
+parsePinnedResponsesWithLimit ::
+  Int ->
+  BS.ByteString ->
+  BS.ByteString ->
+  PinnedResponseResult
+parsePinnedResponsesWithLimit payloadLimit pending chunk = drain BS.empty (pending <> chunk)
+  where
+    drain output input =
+      case BS.uncons input of
+        Just (prefix, _)
+          | prefix `notElem` responseParserPrefixes ->
+              drainOpaque output input
+        _ -> case StrictParse.parse Resp.parseRespData input of
+          StrictParse.Done remaining _ ->
+            let consumed = BS.length input - BS.length remaining
+                original = BS.take consumed input
+             in drain (output <> rewriteClusterResponse original) remaining
+          StrictParse.Partial _
+            | responseExceedsLimit payloadLimit input ->
+                PinnedResponseLimitExceeded output
+            | otherwise -> PinnedResponses output input
+          StrictParse.Fail {} -> drainOpaque output input
+
+    drainOpaque output input =
+      case StrictParse.parse opaqueResp3Frame input of
+        StrictParse.Done remaining _ ->
+          let consumed = BS.length input - BS.length remaining
+           in drain (output <> BS.take consumed input) remaining
+        StrictParse.Partial _
+          | responseExceedsLimit payloadLimit input ->
+              PinnedResponseLimitExceeded output
+          | otherwise -> PinnedResponses output input
+        StrictParse.Fail {} ->
+          if isStreamedResp3Start input
+            then PinnedResponseMalformed output
+            else case BS.elemIndex 10 input of
+          Just newline ->
+            let consumed = newline + 1
+             in drain (output <> BS.take consumed input) (BS.drop consumed input)
+          Nothing
+            | responseExceedsLimit payloadLimit input ->
+                PinnedResponseLimitExceeded output
+            | otherwise -> PinnedResponses output input
+
+    responseParserPrefixes = [43, 45, 58, 36, 42, 126, 37]
+
+isStreamedResp3Start :: BS.ByteString -> Bool
+isStreamedResp3Start input =
+  BS.length input >= 4
+    && BS.index input 0 `elem` [36, 33, 61, 42, 126, 62, 37, 124]
+    && BS.take 3 (BS.drop 1 input) == "?\r\n"
+
+-- | The extra wire budget is the largest legal top-level bulk header plus its
+-- terminator.  This keeps the retained bound finite while accepting a maximum
+-- Redis payload whose final CRLF arrives in a later read.
+responseExceedsLimit :: Int -> BS.ByteString -> Bool
+responseExceedsLimit payloadLimit input =
+  payloadLimit < 0
+    || maybe False (> toInteger payloadLimit) (declaredTopLevelBulkLength input)
+    || BS.length input > payloadLimit + length (show payloadLimit) + 5
+
+-- | A complete top-level bulk header lets us reject an oversized declared
+-- payload before buffering it.  'readInteger' avoids an overflowing wire value
+-- being mistaken for a small 'Int'.
+declaredTopLevelBulkLength :: BS.ByteString -> Maybe Integer
+declaredTopLevelBulkLength input = do
+  header <- BS.stripPrefix "$" input
+  let (digits, terminator) = BS.breakSubstring "\r\n" header
+  _ <- BS.stripPrefix "\r\n" terminator
+  (payloadLength, trailing) <- BS8.readInteger digits
+  if BS.null trailing && payloadLength >= 0
+    then Just payloadLength
+    else Nothing
+
+-- | Parse a complete opaque RESP3 value without constructing a 'RespData'.
+-- Pinned mode needs only a trustworthy frame boundary, including streamed
+-- chunks and streamed aggregates, before it can inspect a later RESP2 frame.
+opaqueResp3Frame :: StrictParse.Parser ()
+opaqueResp3Frame = do
+  prefix <- StrictParse.anyWord8
+  case prefix of
+    43  -> opaqueLine
+    45  -> opaqueLine
+    58  -> opaqueLine
+    44  -> opaqueLine
+    40  -> opaqueLine
+    95  -> opaqueCRLF
+    35  -> StrictParse.anyWord8 >> opaqueCRLF
+    36  -> opaqueBulkOrStream
+    33  -> opaqueBulkOrStream
+    61  -> opaqueBulkOrStream
+    42  -> opaqueAggregateOrStream 1
+    126 -> opaqueAggregateOrStream 1
+    62  -> opaqueAggregateOrStream 1
+    37  -> opaqueAggregateOrStream 2
+    124 -> opaqueAggregateOrStream 2
+    _   -> fail "unknown RESP3 data type"
+  where
+    opaqueLine = StrictParse.takeTill (\c -> c == 13 || c == 10) >> opaqueCRLF
+    opaqueCRLF = void (StrictParse.word8 13) >> void (StrictParse.word8 10)
+    opaqueBulkOrStream = do
+      marker <- StrictParse.peekWord8'
+      if marker == 63 then opaqueStreamedBulk else opaqueBulk
+    opaqueBulk = do
+      size <- Char8.signed Char8.decimal
+      opaqueCRLF
+      if size == (-1)
+        then pure ()
+        else if size < 0
+          then fail "invalid RESP bulk length"
+          else StrictParse.take size >> opaqueCRLF
+    opaqueStreamedBulk = StrictParse.word8 63 >> opaqueCRLF >> opaqueChunks
+    opaqueChunks = do
+      _ <- StrictParse.word8 59
+      size <- Char8.decimal
+      opaqueCRLF
+      if size == 0
+        then pure ()
+        else if size < 0
+          then fail "invalid RESP streamed chunk length"
+          else StrictParse.take size >> opaqueCRLF >> opaqueChunks
+    opaqueAggregateOrStream multiplier = do
+      marker <- StrictParse.peekWord8'
+      if marker == 63 then opaqueStreamedAggregate else opaqueAggregate multiplier
+    opaqueAggregate multiplier = do
+      count <- Char8.signed Char8.decimal
+      opaqueCRLF
+      if count == (-1)
+        then pure ()
+        else if count < 0
+          then fail "invalid RESP aggregate length"
+          else if count > maxBound `div` multiplier
+            then fail "RESP aggregate length overflow"
+            else replicateM_ (count * multiplier) opaqueResp3Frame
+    opaqueStreamedAggregate = StrictParse.word8 63 >> opaqueCRLF >> opaqueStreamedValues
+    opaqueStreamedValues = do
+      marker <- StrictParse.peekWord8'
+      if marker == 46
+        then StrictParse.word8 46 >> opaqueCRLF
+        else opaqueResp3Frame >> opaqueStreamedValues
 
 -- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
 -- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses

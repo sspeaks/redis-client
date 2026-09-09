@@ -392,6 +392,55 @@ spec = describe "Cluster Tunnel Mode" $ do
             _ <- runCmd_ client (del [testKey])
             pure ()
 
+    it "pinned mode drains a large reply and pipelined replies while the client is idle" $
+      withPinnedProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          master <- firstMaster client
+          let addr = nodeAddress master
+              key = getKeyForNode master "pinned-large-pipeline"
+              value = BS.replicate 8192 42
+              getFrame = rawFrame ["GET", key]
+              pingFrame = rawFrame ["PING"]
+          (`finally` deleteFromNode master [key]) $
+            bracket (connect (NotConnectedPlainTextClient "localhost" (Just (nodePort addr)))) close $ \conn -> do
+              runRedisCommand conn (set key value) `shouldReturn` RespSimpleString "OK"
+              send conn (Builder.toLazyByteString (encode getFrame <> encode pingFrame))
+              responses <- runRedisCommand conn $ RedisCommandClient $ do
+                firstResponse <- parseWith $ receive conn
+                secondResponse <- parseWith $ receive conn
+                pure (firstResponse, secondResponse)
+              responses `shouldBe` (RespBulkString value, RespSimpleString "PONG")
+
+    it "pinned mode delivers a reply after the client half-closes its write side" $
+      withPinnedProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          master <- firstMaster client
+          let port = nodePort (nodeAddress master)
+          bracket (connectPinnedProxySocket port) S.close $ \sock -> do
+            sendAll sock (encodeFrame $ rawFrame ["PING"])
+            S.shutdown sock ShutdownSend
+            (response, buffered) <- receiveProxyResponse sock BS.empty
+            response `shouldBe` RespSimpleString "PONG"
+            buffered `shouldBe` BS.empty
+
+    it "pinned mode forwards an idle RESP3 Pub/Sub push" $
+      withPinnedProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          master <- firstMaster client
+          let port = nodePort (nodeAddress master)
+              channel = "pinned-idle-push"
+          bracket (connectPinnedProxySocket port) S.close $ \subscriber -> do
+            sendAll subscriber
+              (encodeFrame (rawFrame ["HELLO", "3"])
+                <> encodeFrame (rawFrame ["SUBSCRIBE", channel]))
+            threadDelay 20000
+            initial <- timeout (2 * 1000000) (recv subscriber 4096)
+            initial `shouldSatisfy` maybeContainsPush
+            runRawOnNode master ["PUBLISH", channel, "payload"]
+              `shouldReturn` RespInteger 1
+            pushed <- timeout (2 * 1000000) (recv subscriber 4096)
+            pushed `shouldSatisfy` maybeContainsMessagePush
+
     it "pinned mode listeners forward to their respective nodes" $
       withPinnedProxy $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
@@ -493,6 +542,26 @@ connectProxySocket = do
       S.connect sock (addrAddress address)
       pure sock
     [] -> expectationFailure "Could not resolve the smart proxy socket" >> error "unreachable"
+
+connectPinnedProxySocket :: Int -> IO Socket
+connectPinnedProxySocket port = do
+  addresses <- getAddrInfo Nothing (Just "127.0.0.1") (Just (show port))
+  case addresses of
+    address : _ -> do
+      sock <- socket (addrFamily address) Stream defaultProtocol
+      S.connect sock (addrAddress address)
+      pure sock
+    [] -> expectationFailure "Could not resolve the pinned proxy socket" >> error "unreachable"
+
+maybeContainsPush :: Maybe BS.ByteString -> Bool
+maybeContainsPush (Just bytes) = ">3\r\n" `BS.isInfixOf` bytes
+maybeContainsPush Nothing      = False
+
+maybeContainsMessagePush :: Maybe BS.ByteString -> Bool
+maybeContainsMessagePush (Just bytes) =
+  ">3\r\n$7\r\nmessage\r\n" `BS.isInfixOf` bytes
+    && "$7\r\npayload\r\n" `BS.isInfixOf` bytes
+maybeContainsMessagePush Nothing = False
 
 receiveProxyResponse :: Socket -> BS.ByteString -> IO (RespData, BS.ByteString)
 receiveProxyResponse sock buffered =

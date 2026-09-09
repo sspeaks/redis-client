@@ -25,6 +25,8 @@ module Database.Redis.Client
   , ConnectionStatus (..)
   ) where
 
+import           Control.Concurrent.Async              (cancel, waitEitherCatch,
+                                                        withAsync)
 import           Control.Exception                     (IOException, bracket,
                                                         catch, finally, throwIO)
 import           Control.Monad                         (void)
@@ -301,15 +303,34 @@ serve (TLSTunnel redisClient) = liftIO $ do
     hFlush stdout
     void $
       finally
-        (loop clientSock redisClient)
+        (forwardTunnelConnection clientSock redisClient)
         (S.close clientSock)
   where
-    loop client redis = do
+    -- A client EOF ends its session rather than attempting a TLS half-close:
+    -- tls exposes no safe send-side shutdown for an established Context.
+    forwardTunnelConnection client redis =
+      withAsync (copyClientToRedis client redis) $ \toRedis ->
+        withAsync (copyRedisToClient redis client) $ \toClient -> do
+          result <- waitEitherCatch toRedis toClient
+          cancel toRedis
+          cancel toClient
+          case result of
+            Left (Left err)  -> throwIO err
+            Right (Left err) -> throwIO err
+            Left (Right ())  -> pure ()
+            Right (Right ()) -> pure ()
+
+    copyClientToRedis client redis = do
       dat <- recv client 4096
-      send redisClient (LBS.fromStrict dat)
+      if BS.null dat
+        then pure ()
+        else send redis (LBS.fromStrict dat) >> copyClientToRedis client redis
+
+    copyRedisToClient redis client = do
       receivedData <- receive redis
-      sendAll client (LBS.fromStrict receivedData)
-      loop client redis
+      if BS.null receivedData
+        then pure ()
+        else sendAll client (LBS.fromStrict receivedData) >> copyRedisToClient redis client
 
 -- | Create a TCP socket with standard options (NoDelay, KeepAlive) and resolve the hostname.
 configureSocket :: Socket -> IO ()

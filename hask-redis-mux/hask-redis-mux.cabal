@@ -85,7 +85,8 @@ library client
     exposed-modules:  Database.Redis.Client
                     , Database.Redis.Client.ConnectionSetup
     other-modules:    Database.Redis.Client.TLSConfig
-    build-depends:    bytestring >=0.12 && <0.13
+    build-depends:    async >=2.2 && <2.3
+                    , bytestring >=0.12 && <0.13
                     , crypton-x509-system >=1.6 && <1.7
                     , data-default-class >=0.1 && <0.3
                     , dns >=4.2 && <4.3
