@@ -196,7 +196,13 @@ checkoutConnection connectorIsBounded pool addr connector restore = checkout
         wakeup <- takeMVar waiter
           `onException` cancelWaiter pool addr waiter
         case wakeup of
-          WaiterConnection conn -> return conn
+          WaiterConnection conn -> do
+            accepted <- nodePoolIsOpen pool nodeState
+            if accepted
+              then return conn
+              else do
+                safeClose conn
+                throwIO ConnectionPoolClosed
           WaiterCreate          -> connectReserved nodeState
           WaiterFailure e       -> throwIO e
 
@@ -252,7 +258,9 @@ returnTransition
   -> NodePool client
   -> IO (NodePool client, Bool)
 returnTransition pool conn nodePool =
-  if nodeClosed nodePool
+  do
+    poolIsClosed <- readIORef (poolClosed pool)
+    if poolIsClosed || nodeClosed nodePool
     then return (nodePool, True)
     else do
       case dequeueWaiter (waitQueue nodePool) of
@@ -344,7 +352,8 @@ releaseReservation pool addr = do
   nodeState <- lookupNodePool pool addr
   forM_ nodeState $ \state ->
     uninterruptibleMask_ $ modifyNodePool state $ \nodePool -> do
-    if nodeClosed nodePool
+    poolIsClosed <- readIORef (poolClosed pool)
+    if poolIsClosed || nodeClosed nodePool
       then return (nodePool, ())
       else case dequeueWaiter (waitQueue nodePool) of
         Just (waiter, rest) -> do

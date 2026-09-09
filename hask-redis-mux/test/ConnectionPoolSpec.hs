@@ -321,6 +321,38 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       _ <- expectWithin (takeMVar holderResult)
       readIORef closeCount `shouldReturn` 1
 
+  it "does not hand a returned connection to a waiter after terminal close" $
+    replicateM_ 25 $ do
+      pool <- createPool testPoolConfig
+      (connector, _, closeCount) <- createCountingConnector
+      holderStarted <- newEmptyMVar
+      releaseHolder <- newEmptyMVar
+      (holderResult, _) <- forkResult $
+        withConnection pool node connector $ \_ ->
+          putMVar holderStarted () >> takeMVar releaseHolder
+      expectWithin (takeMVar holderStarted)
+
+      (waiterResult, _) <- forkResult $
+        withConnection pool node connector $ \_ -> return ()
+      expectWithin (awaitWaiters pool 1)
+
+      nodes <- readIORef (poolConnections pool)
+      nodeState <- maybe (fail "expected a node pool") return (Map.lookup node nodes)
+      state <- takeMVar nodeState
+      (closeResult, _) <- forkResult $ closePool pool
+      awaitPoolClosed pool
+      putMVar releaseHolder ()
+      putMVar nodeState state
+
+      _ <- expectWithin (takeMVar closeResult)
+      holderOutcome <- expectWithin (takeMVar holderResult)
+      holderOutcome `shouldSatisfy` isRight
+      waiterOutcome <- expectWithin (takeMVar waiterResult)
+      waiterOutcome `shouldSatisfy` \case
+        Left err -> Exception.fromException err == Just ConnectionPoolClosed
+        Right () -> False
+      readIORef closeCount `shouldReturn` 1
+
   it "checks out an independent node while another node state is locked" $ do
       pool <- createPool testPoolConfig
       (connector, connectionCount, closeCount) <- createCountingConnector
@@ -406,3 +438,10 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       Right () -> False
     readIORef connectionCount `shouldReturn` 1
     readIORef closeCount `shouldReturn` 1
+
+awaitPoolClosed :: ConnectionPool client -> IO ()
+awaitPoolClosed pool = do
+  closed <- readIORef (poolClosed pool)
+  if closed
+    then return ()
+    else threadDelay 1000 >> awaitPoolClosed pool
