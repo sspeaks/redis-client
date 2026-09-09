@@ -351,12 +351,16 @@ make build
 ```
 
 `make build` builds both the root `redis-client` executable package and the
-`hask-redis-mux` library package, including the E2E executables when Nix is
-available. The direct system-Cabal equivalent is:
+`hask-redis-mux` library package. With Nix available it also enables the E2E
+executables by running:
 
 ```sh
 cabal build all -fe2e
 ```
+
+Without Nix, `make build` falls back to the system GHC and Cabal on `PATH` and
+runs `cabal build all`; this builds both packages without enabling the E2E
+executables.
 
 ### Running Tests
 
@@ -373,20 +377,21 @@ cabal test all
 ```
 
 `make test-unit` is broader: in addition to all Cabal test suites, it checks
-generated Redis command metadata, credential handling, and the E2E runner
-scripts.
+generated Redis command metadata, credential handling, GitHub issue workflow
+status, and the E2E runner scripts.
 
 **Full test suite** (requires Docker, the Docker Compose plugin, and Nix):
 ```sh
 make test
 ```
 
-The full target runs the unit/repository checks plus the standalone, cluster,
-authenticated-cluster, and library end-to-end suites. Individual Docker suites
-remain available when narrowing a failure:
+The full target runs the unit/repository checks plus the standalone, direct TLS,
+cluster, authenticated-cluster, and library end-to-end suites. Individual
+Docker suites remain available when narrowing a failure:
 
 ```sh
 make test-e2e
+make test-direct-tls-e2e
 make test-cluster-e2e
 make test-authenticated-cluster-e2e
 make test-library-e2e
