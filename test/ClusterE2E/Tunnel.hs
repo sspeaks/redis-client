@@ -10,9 +10,11 @@ import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Exception             (bracket, finally)
 import           Control.Monad                 (forM_, when)
 import qualified Control.Monad.State           as State
+import qualified Data.Attoparsec.ByteString    as StrictParse
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as Builder
 import qualified Data.ByteString.Char8         as BS8
+import qualified Data.ByteString.Lazy          as LBS
 import           Data.List                     (find, isInfixOf)
 import qualified Data.Map.Strict               as Map
 import           Database.Redis.Client         (Client (..),
@@ -33,7 +35,16 @@ import           Database.Redis.Command        (ClientState (..),
                                                 RedisCommands (..), parseWith)
 import           Database.Redis.Resp           (Encodable (encode),
                                                 RespData (..))
+import qualified Database.Redis.Resp           as Resp
+import           Network.Socket                (AddrInfo (..),
+                                                ShutdownCmd (ShutdownSend),
+                                                Socket, SocketType (Stream),
+                                                defaultProtocol, getAddrInfo,
+                                                socket)
+import qualified Network.Socket                as S
+import           Network.Socket.ByteString     (recv, sendAll)
 import           SlotMappingHelpers            (getKeyForNode)
+import           System.Timeout                (timeout)
 import           Test.Hspec
 
 spec :: Spec
@@ -106,6 +117,81 @@ spec = describe "Cluster Tunnel Mode" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           _ <- runCmd_ client (del ["various:test"])
           pure ()
+
+    it "smart mode accepts fragmented, pipelined binary requests in order" $
+      withSmartProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          owner <- firstMaster client
+          let key = getKeyForNode owner "fragmented-pipeline"
+              value = BS.cons 0 $ BS.cons 255 $ BS.replicate 5000 42
+              setFrame = rawFrame ["SET", key, value]
+              getFrame = rawFrame ["GET", key]
+              wire = Builder.toLazyByteString (encode setFrame <> encode getFrame)
+              (firstChunk, secondChunk) = LBS.splitAt 13 wire
+          (`finally` deleteFromNode owner [key]) $
+            bracket (connectProxy) close $ \conn -> do
+              send conn firstChunk
+              threadDelay 20000
+              send conn secondChunk
+              responses <- runRedisCommand conn $ RedisCommandClient $ do
+                firstResponse <- parseWith $ receive conn
+                secondResponse <- parseWith $ receive conn
+                pure (firstResponse, secondResponse)
+              responses `shouldBe` (RespSimpleString "OK", RespBulkString value)
+
+    it "smart mode closes malformed streams before their trailing SET executes" $
+      withSmartProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          owner <- firstMaster client
+          let key = getKeyForNode owner "malformed-trailing-set"
+              malformedThenSet =
+                "?malformed\r\n"
+                  <> encodeFrame (rawFrame ["SET", key, "must-not-apply"])
+          (`finally` deleteFromNode owner [key]) $
+            bracket connectProxySocket S.close $ \sock -> do
+              sendAll sock (encodeFrame $ rawFrame ["PING"])
+              (firstResponse, buffered) <- receiveProxyResponse sock BS.empty
+              firstResponse `shouldBe` RespSimpleString "PONG"
+              sendAll sock malformedThenSet
+              (secondResponse, trailing) <- receiveProxyResponse sock buffered
+              secondResponse `shouldSatisfy` isFramingError
+              trailing `shouldBe` BS.empty
+              expectProxyEof sock
+              value <- runCmd_ client (get key)
+              value `shouldBe` RespNullBulkString
+
+    it "smart mode closes after a partial request write shutdown without executing it" $
+      withSmartProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          owner <- firstMaster client
+          let key = getKeyForNode owner "partial-eof-set"
+              partial = BS.take 12 $ encodeFrame (rawFrame ["SET", key, "must-not-apply"])
+          (`finally` deleteFromNode owner [key]) $
+            bracket connectProxySocket S.close $ \sock -> do
+              sendAll sock partial
+              S.shutdown sock ShutdownSend
+              expectProxyEof sock
+              value <- runCmd_ client (get key)
+              value `shouldBe` RespNullBulkString
+
+    it "smart mode accepts a 1048576-byte encoded request and rejects limit plus one" $
+      withSmartProxy $
+        bracket createTestClusterClient closeClusterClient $ \_client -> do
+          let accepted = echoFrameOfEncodedLength 1048576
+              rejected = echoFrameOfEncodedLength 1048577
+          BS.length accepted `shouldBe` 1048576
+          BS.length rejected `shouldBe` 1048577
+          bracket connectProxySocket S.close $ \acceptedSocket -> do
+            sendAll acceptedSocket accepted
+            (response, buffered) <- receiveProxyResponse acceptedSocket BS.empty
+            response `shouldBe` RespBulkString (echoPayload accepted)
+            buffered `shouldBe` BS.empty
+          bracket connectProxySocket S.close $ \rejectedSocket -> do
+            sendAll rejectedSocket rejected
+            (response, buffered) <- receiveProxyResponse rejectedSocket BS.empty
+            response `shouldSatisfy` isFramingError
+            buffered `shouldBe` BS.empty
+            expectProxyEof rejectedSocket
 
     it "smart mode handles multiple separate connections" $
       withSmartProxy $ do
@@ -398,6 +484,47 @@ spec = describe "Cluster Tunnel Mode" $ do
 connectProxy :: IO (PlainTextClient 'Connected)
 connectProxy = connect (NotConnectedPlainTextClient "localhost" (Just 6379))
 
+connectProxySocket :: IO Socket
+connectProxySocket = do
+  addresses <- getAddrInfo Nothing (Just "127.0.0.1") (Just "6379")
+  case addresses of
+    address : _ -> do
+      sock <- socket (addrFamily address) Stream defaultProtocol
+      S.connect sock (addrAddress address)
+      pure sock
+    [] -> expectationFailure "Could not resolve the smart proxy socket" >> error "unreachable"
+
+receiveProxyResponse :: Socket -> BS.ByteString -> IO (RespData, BS.ByteString)
+receiveProxyResponse sock buffered =
+  case StrictParse.parse Resp.parseRespData buffered of
+    StrictParse.Done remainder response -> pure (response, remainder)
+    StrictParse.Fail _ _ err -> expectationFailure ("Invalid proxy response: " <> err) >> error "unreachable"
+    StrictParse.Partial _ -> do
+      received <- timeout (2 * 1000000) (recv sock 4096)
+      case received of
+        Nothing -> expectationFailure "Timed out waiting for smart proxy response" >> error "unreachable"
+        Just bytes
+          | BS.null bytes -> expectationFailure "Smart proxy closed before a complete response" >> error "unreachable"
+          | otherwise -> receiveProxyResponse sock (buffered <> bytes)
+
+expectProxyEof :: Socket -> Expectation
+expectProxyEof sock = do
+  result <- timeout (2 * 1000000) (recv sock 4096)
+  result `shouldBe` Just BS.empty
+
+isFramingError :: RespData -> Bool
+isFramingError (RespError message) =
+  "ERR Failed to parse command:" `BS.isPrefixOf` message
+isFramingError _ = False
+
+echoFrameOfEncodedLength :: Int -> BS.ByteString
+echoFrameOfEncodedLength encodedLength =
+  encodeFrame $ rawFrame ["ECHO", BS.replicate (encodedLength - 26) 42]
+
+echoPayload :: BS.ByteString -> BS.ByteString
+echoPayload encodedFrame =
+  BS.replicate (BS.length encodedFrame - 26) 42
+
 runRawProxyCommand :: PlainTextClient 'Connected -> [BS.ByteString] -> IO RespData
 runRawProxyCommand conn = runRawProxyFrame conn . rawFrame
 
@@ -422,6 +549,9 @@ loadScript node script = do
 
 rawFrame :: [BS.ByteString] -> RespData
 rawFrame = RespArray . map RespBulkString
+
+encodeFrame :: RespData -> BS.ByteString
+encodeFrame = LBS.toStrict . Builder.toLazyByteString . encode
 
 rawCommand :: RespData -> RedisCommandClient PlainTextClient RespData
 rawCommand frame = RedisCommandClient $ do

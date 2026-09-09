@@ -45,6 +45,20 @@ redis-client tunn -h localhost -t
 redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
 ```
 
+### Smart cluster tunnel framing
+
+Smart cluster tunnel mode incrementally accepts RESP request frames across TCP
+reads and pipelines complete requests in wire order. To bound per-client
+retained input, each complete encoded request frame is limited to **1,048,576
+bytes**. A malformed or oversized frame receives one RESP error and the proxy
+then closes that client connection; an incomplete frame at peer EOF is closed
+without execution. Bytes after a framing failure are never executed.
+
+This is a deliberate bounded proxy policy, not a claim that smart tunnel mode
+supports every request size accepted by Redis itself. Clients that need larger
+requests should connect directly to the cluster nodes (or use pinned mode) and
+remain within the applicable Redis deployment limits.
+
 ### Command Options
 
 - `-h`, `--host HOST` - Host to connect to (required)

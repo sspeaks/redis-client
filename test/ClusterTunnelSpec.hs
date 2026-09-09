@@ -2,9 +2,15 @@
 
 module Main (main) where
 
-import           ClusterTunnel                              (rewriteClusterResponse,
-                                                             routeSmartProxyCommandWith)
+import           ClusterTunnel                              (SmartProxyFrameResult (..),
+                                                             parseSmartProxyFrames,
+                                                             rewriteClusterResponse,
+                                                             routeSmartProxyCommandWith,
+                                                             smartProxyFrameLimit)
+import           Control.Monad                              (foldM)
 import qualified Data.ByteString                            as BS
+import qualified Data.ByteString.Builder                    as Builder
+import qualified Data.ByteString.Lazy                       as LBS
 import           Data.IORef                                 (modifyIORef',
                                                              newIORef,
                                                              readIORef)
@@ -14,6 +20,36 @@ import           Test.Hspec
 
 main :: IO ()
 main = hspec $ do
+  describe "smart proxy TCP framing" $ do
+    it "accepts a binary request split at every byte boundary exactly once" $ do
+      let frame = commandFrame ["SET", "fragment:key", BS.cons 0 $ BS.cons 255 $ BS.replicate 5000 42]
+          wire = encodeFrame frame
+      mapM_ (assertSplitFrame frame wire) [1 .. BS.length wire - 1]
+
+    it "drains pipelined commands in wire order and retains a partial suffix" $ do
+      let first = commandFrame ["PING"]
+          second = commandFrame ["ECHO", "second"]
+          partialThird = BS.take 6 $ encodeFrame (commandFrame ["GET", "later"])
+      parseSmartProxyFrames BS.empty (encodeFrame first <> encodeFrame second <> partialThird)
+        `shouldBe` SmartProxyFrames [first, second] partialThird
+
+    it "does not reinterpret bytes after malformed framing as another command" $ do
+      let first = commandFrame ["PING"]
+          malformedThenValid = "?bad\r\n" <> encodeFrame (commandFrame ["PING"])
+      case parseSmartProxyFrames BS.empty (encodeFrame first <> malformedThenValid) of
+        SmartProxyFrameError commands _ ->
+          commands `shouldBe` [first]
+        SmartProxyFrames {} ->
+          expectationFailure "malformed input was accepted"
+
+    it "retains incomplete input and enforces the explicit frame limit" $ do
+      let incomplete = "$1048576\r\n" <> BS.replicate smartProxyFrameLimit 42
+      parseSmartProxyFrames BS.empty "$5\r\nabc"
+        `shouldBe` SmartProxyFrames [] "$5\r\nabc"
+      case parseSmartProxyFrames BS.empty incomplete of
+        SmartProxyFrameError [] _ -> pure ()
+        _                        -> expectationFailure "oversized partial frame was accepted"
+
   describe "smart proxy command routing" $ do
     it "hands the original keyed GET frame to raw dispatch" $ do
       let frame = commandFrame ["GET", "profile:key"]
@@ -111,6 +147,20 @@ main = hspec $ do
 
 commandFrame :: [BS.ByteString] -> RespData
 commandFrame = RespArray . fmap RespBulkString
+
+encodeFrame :: RespData -> BS.ByteString
+encodeFrame = LBS.toStrict . Builder.toLazyByteString . encode
+
+assertSplitFrame :: RespData -> BS.ByteString -> Int -> Expectation
+assertSplitFrame expected wire splitAt = do
+  (frames, remainder) <- foldM consume ([], BS.empty) [BS.take splitAt wire, BS.drop splitAt wire]
+  frames `shouldBe` [expected]
+  remainder `shouldBe` BS.empty
+  where
+    consume (frames, pending) chunk =
+      case parseSmartProxyFrames pending chunk of
+        SmartProxyFrames newFrames nextPending -> pure (frames <> newFrames, nextPending)
+        SmartProxyFrameError _ err             -> expectationFailure err >> error "unreachable"
 
 assertDispatch :: RespData -> RawClusterRoute -> Expectation
 assertDispatch frame expectedRoute = do
