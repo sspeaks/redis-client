@@ -5,7 +5,9 @@
 module ClusterE2E.Tunnel (spec) where
 
 import           ClusterE2E.Utils
-import           Control.Concurrent            (threadDelay)
+import           Control.Concurrent            (forkIO, threadDelay)
+import           Control.Concurrent.MVar       (newEmptyMVar, putMVar, readMVar,
+                                                takeMVar)
 import           Control.Concurrent.STM        (readTVarIO)
 import           Control.Exception             (bracket, finally)
 import           Control.Monad                 (forM_, when)
@@ -17,11 +19,11 @@ import qualified Data.ByteString.Char8         as BS8
 import qualified Data.ByteString.Lazy          as LBS
 import           Data.IORef                    (IORef, atomicModifyIORef',
                                                 modifyIORef', newIORef,
-                                                readIORef)
+                                                readIORef, writeIORef)
 import           Data.List                     (find, isInfixOf)
 import qualified Data.Map.Strict               as Map
 import           Data.Time.Calendar            (fromGregorian)
-import           Data.Time.Clock               (UTCTime (..))
+import           Data.Time.Clock               (UTCTime (..), getCurrentTime)
 import qualified Data.Vector                   as Vector
 import           Database.Redis.Client         (Client (..),
                                                 ConnectionStatus (Connected),
@@ -31,7 +33,8 @@ import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeAddress (..), NodeRole (..),
                                                 calculateSlot,
-                                                findNodeAddressForSlot)
+                                                findNodeAddressForSlot,
+                                                parseClusterSlots)
 import           Database.Redis.Cluster.Client (ClusterClient,
                                                 closeClusterClient,
                                                 clusterTopology,
@@ -58,19 +61,47 @@ spec = describe "Cluster Tunnel Mode" $ do
   describe "Failover fixture readiness" $ do
     it "waits for a fresh snapshot to expose a usable master/replica pair" $ do
       snapshots <- newIORef [topologyWithoutReplica, topologyWithReplica]
-      result <- waitForUsableMasterReplicaWith 2
+      result <- waitForUsableMasterReplicaWith 2 1000000
         (nextTopology snapshots topologyWithoutReplica)
         (pure ())
       result `shouldBe` Right (fixtureMaster, fixtureReplica)
 
     it "reports bounded readiness exhaustion with the last topology" $ do
       reads <- newIORef (0 :: Int)
-      result <- waitForUsableMasterReplicaWith 3
+      result <- waitForUsableMasterReplicaWith 3 1000000
         (modifyIORef' reads (+ 1) >> pure topologyWithoutReplica)
         (pure ())
       result `shouldBe` Left
-        "No usable master/replica relationship after 3 refreshed topology snapshots. Last snapshot: masters=1, replicas=0, relationships=0"
+        "No usable master/replica relationship after 3 fresh topology snapshots. Last fresh snapshot: masters=1, replicas=0, relationships=0"
       readIORef reads `shouldReturn` 3
+
+    it "times out a stalled topology query and releases its owned connection" $ do
+      cleanupCount <- newIORef (0 :: Int)
+      result <- waitForUsableMasterReplicaWith 3 100000
+        (bracket
+          (pure ())
+          (\() -> modifyIORef' cleanupCount (+ 1))
+          (\() -> threadDelay 1000000 >> pure topologyWithoutReplica))
+        (pure ())
+      result `shouldBe` Left
+        "Timed out after 100000 microseconds waiting for a usable master/replica relationship. Last fresh snapshot: no snapshot was read"
+      readIORef cleanupCount `shouldReturn` 1
+
+    it "does not accept a stale usable snapshot committed by a concurrent refresh" $ do
+      staleSnapshot <- newIORef topologyWithoutReplica
+      queryStarted <- newEmptyMVar
+      refreshComplete <- newEmptyMVar
+      _ <- forkIO $ do
+        takeMVar queryStarted
+        modifyIORef' staleSnapshot (const topologyWithReplica)
+        putMVar refreshComplete ()
+      result <- waitForUsableMasterReplicaWith 1 1000000
+        (putMVar queryStarted () >> readMVar refreshComplete >> pure topologyWithoutReplica)
+        (pure ())
+      stalePair <- usableMasterReplica <$> readIORef staleSnapshot
+      stalePair `shouldBe` Just (fixtureMaster, fixtureReplica)
+      result `shouldBe` Left
+        "No usable master/replica relationship after 1 fresh topology snapshots. Last fresh snapshot: masters=1, replicas=0, relationships=0"
 
   describe "Smart Proxy Mode" $ do
     it "smart mode makes cluster appear as single Redis instance" $
@@ -366,7 +397,7 @@ spec = describe "Cluster Tunnel Mode" $ do
 
     it "smart mode retries the same raw LPUSH frame after a live MOVED without duplicate mutation" $
       bracket createTestClusterClient closeClusterClient $ \beforeClient -> do
-        (previousOwner, replica) <- waitForUsableMasterReplica beforeClient
+        (previousOwner, replica) <- waitForUsableMasterReplica
         let key = getKeyForNode previousOwner "failover-single-write"
             rawMutation = rawFrame ["LPUSH", key, "only-once"]
             cleanup = deleteFromTopologyOwner key
@@ -628,12 +659,20 @@ fixtureReadinessAttempts = 50
 fixtureReadinessDelayMicros :: Int
 fixtureReadinessDelayMicros = 200000
 
+fixtureReadinessDeadlineMicros :: Int
+fixtureReadinessDeadlineMicros =
+  fixtureReadinessAttempts * fixtureReadinessDelayMicros
+
+fixtureSeedAddress :: NodeAddress
+fixtureSeedAddress = NodeAddress "redis1.local" 6379
+
 waitForUsableMasterReplica ::
-  ClusterClient PlainTextClient ->
   IO (ClusterNode, ClusterNode)
-waitForUsableMasterReplica client = do
-  result <- waitForUsableMasterReplicaWith fixtureReadinessAttempts
-    (refreshTopology client >> readTVarIO (clusterTopology client))
+waitForUsableMasterReplica = do
+  result <- waitForUsableMasterReplicaWith
+    fixtureReadinessAttempts
+    fixtureReadinessDeadlineMicros
+    readFreshFixtureTopology
     (threadDelay fixtureReadinessDelayMicros)
   case result of
     Right pair      -> pure pair
@@ -641,25 +680,57 @@ waitForUsableMasterReplica client = do
 
 waitForUsableMasterReplicaWith ::
   Int ->
+  Int ->
   IO ClusterTopology ->
   IO () ->
   IO (Either String (ClusterNode, ClusterNode))
-waitForUsableMasterReplicaWith attempts readFreshTopology pause =
-  go attempts Nothing
+waitForUsableMasterReplicaWith attempts deadlineMicros readFreshTopology pause = do
+  lastTopology <- newIORef Nothing
+  result <- timeout deadlineMicros $ go attempts lastTopology
+  case result of
+    Just readiness -> pure readiness
+    Nothing ->
+      Left <$> timeoutDiagnostic deadlineMicros lastTopology
   where
-    go 0 lastTopology =
+    go 0 lastTopology = do
+      snapshot <- readIORef lastTopology
       pure $ Left $
         "No usable master/replica relationship after "
           ++ show attempts
-          ++ " refreshed topology snapshots. Last snapshot: "
-          ++ maybe "no snapshot was read" topologyDiagnostic lastTopology
-    go remaining _ = do
+          ++ " fresh topology snapshots. Last fresh snapshot: "
+          ++ maybe "no snapshot was read" topologyDiagnostic snapshot
+    go remaining lastTopology = do
       topology <- readFreshTopology
+      writeIORef lastTopology (Just topology)
       case usableMasterReplica topology of
         Just pair -> pure $ Right pair
-        Nothing -> do
-          pause
-          go (remaining - 1) (Just topology)
+        Nothing
+          | remaining == 1 -> go 0 lastTopology
+          | otherwise -> do
+              pause
+              go (remaining - 1) lastTopology
+
+timeoutDiagnostic :: Int -> IORef (Maybe ClusterTopology) -> IO String
+timeoutDiagnostic deadlineMicros lastTopology = do
+  snapshot <- readIORef lastTopology
+  pure $
+    "Timed out after "
+      ++ show deadlineMicros
+      ++ " microseconds waiting for a usable master/replica relationship. Last fresh snapshot: "
+      ++ maybe "no snapshot was read" topologyDiagnostic snapshot
+
+readFreshFixtureTopology :: IO ClusterTopology
+readFreshFixtureTopology = do
+  response <-
+    bracket
+      (connect $ NotConnectedPlainTextClient (nodeHost fixtureSeedAddress)
+        (Just $ nodePort fixtureSeedAddress))
+      close
+      (\conn -> runRawProxyCommand conn ["CLUSTER", "SLOTS"])
+  currentTime <- getCurrentTime
+  case parseClusterSlots response currentTime of
+    Right topology -> pure topology
+    Left err -> fail $ "Fixture CLUSTER SLOTS response was invalid: " ++ err
 
 usableMasterReplica :: ClusterTopology -> Maybe (ClusterNode, ClusterNode)
 usableMasterReplica topology =
