@@ -13,6 +13,7 @@ import qualified Control.Monad.State           as State
 import qualified Data.ByteString               as BS
 import qualified Data.ByteString.Builder       as Builder
 import qualified Data.ByteString.Char8         as BS8
+import qualified Data.ByteString.Lazy          as LBS
 import           Data.List                     (find, isInfixOf)
 import qualified Data.Map.Strict               as Map
 import           Database.Redis.Client         (Client (..),
@@ -106,6 +107,27 @@ spec = describe "Cluster Tunnel Mode" $ do
         bracket createTestClusterClient closeClusterClient $ \client -> do
           _ <- runCmd_ client (del ["various:test"])
           pure ()
+
+    it "smart mode accepts fragmented, pipelined binary requests in order" $
+      withSmartProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          owner <- firstMaster client
+          let key = getKeyForNode owner "fragmented-pipeline"
+              value = BS.cons 0 $ BS.cons 255 $ BS.replicate 5000 42
+              setFrame = rawFrame ["SET", key, value]
+              getFrame = rawFrame ["GET", key]
+              wire = Builder.toLazyByteString (encode setFrame <> encode getFrame)
+              (firstChunk, secondChunk) = LBS.splitAt 13 wire
+          (`finally` deleteFromNode owner [key]) $
+            bracket (connectProxy) close $ \conn -> do
+              send conn firstChunk
+              threadDelay 20000
+              send conn secondChunk
+              responses <- runRedisCommand conn $ RedisCommandClient $ do
+                firstResponse <- parseWith $ receive conn
+                secondResponse <- parseWith $ receive conn
+                pure (firstResponse, secondResponse)
+              responses `shouldBe` (RespSimpleString "OK", RespBulkString value)
 
     it "smart mode handles multiple separate connections" $
       withSmartProxy $ do

@@ -7,6 +7,9 @@ module ClusterTunnel
   , servePinnedProxy
   , routeSmartProxyCommandWith
   , rewriteClusterResponse
+  , SmartProxyFrameResult (..)
+  , smartProxyFrameLimit
+  , parseSmartProxyFrames
   ) where
 
 import           Control.Concurrent                         (MVar, forkIO,
@@ -18,12 +21,14 @@ import           Control.Exception                          (SomeException,
                                                              throwIO, try)
 import           Control.Monad                              (forever, void,
                                                              when)
+import qualified Data.Attoparsec.ByteString                 as StrictParse
 import qualified Data.ByteString                            as BS
 import qualified Data.ByteString.Builder                    as Builder
 import qualified Data.ByteString.Char8                      as BS8
 import qualified Data.ByteString.Lazy                       as LBS
 import           Data.Char                                  (isAlphaNum)
-import           Data.List                                  (isPrefixOf)
+import           Data.List                                  (intercalate,
+                                                             isPrefixOf)
 import qualified Data.Map.Strict                            as Map
 import           Data.Word                                  (Word8)
 import           Database.Redis.Client                      (Client (..),
@@ -94,34 +99,78 @@ handleSmartProxyClient :: (Client client) =>
   Socket ->
   IO ()
 handleSmartProxyClient clusterClient clientSock = do
-  loop
+  loop BS.empty
   where
-    loop = do
+    loop remainder = do
       -- Receive data from client
       dat <- recv clientSock 4096
       if BS.null dat
-        then putStrLn "Client disconnected"
-        else do
-          -- Parse RESP command
-          case Resp.parseStrict dat of
-            Left err -> do
+        then do
+          when (not $ BS.null remainder) $
+            putStrLn "Client disconnected with incomplete RESP command"
+          putStrLn "Client disconnected"
+        else
+          case parseSmartProxyFrames remainder dat of
+            SmartProxyFrames commands nextRemainder -> do
+              mapM_ executeCommand commands
+              loop nextRemainder
+            SmartProxyFrameError commands err -> do
+              mapM_ executeCommand commands
               printf "Failed to parse RESP: %s\n" err
-              -- Send error back to client
-              let errorResp = RespError (BS8.pack $ "ERR Failed to parse command: " ++ err)
-              sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
-              loop
-            Right respData -> do
-              -- Route and execute the command
-              result <- routeSmartProxyCommand clusterClient respData
-              case result of
-                Left err -> do
-                  printf "Command execution error: %s\n" err
-                  let errorResp = RespError (BS8.pack $ "ERR " ++ err)
-                  sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode errorResp)
-                Right response -> do
-                  -- Send response back to client
-                  sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode response)
-              loop
+              sendError $ "ERR Failed to parse command: " ++ err
+
+    executeCommand respData = do
+      result <- routeSmartProxyCommand clusterClient respData
+      case result of
+        Left err       -> sendError $ "ERR " ++ err
+        Right response -> sendResponse response
+
+    sendError message =
+      sendResponse $ RespError (BS8.pack message)
+
+    sendResponse response =
+      sendAll clientSock (LBS.toStrict $ Builder.toLazyByteString $ encode response)
+
+-- | Maximum number of bytes in one client request frame.  This bounds retained
+-- TCP stream state independently of the fixed-size socket reads.
+smartProxyFrameLimit :: Int
+smartProxyFrameLimit = 1024 * 1024
+
+-- | Results from draining all complete RESP request frames in a TCP chunk.
+-- On failure, the preceding complete frames remain available to preserve stream
+-- ordering, while the caller must terminate the connection without using bytes
+-- after the invalid frame.
+data SmartProxyFrameResult
+  = SmartProxyFrames ![RespData] !BS.ByteString
+  | SmartProxyFrameError ![RespData] !String
+  deriving (Eq, Show)
+
+-- | Append a TCP chunk to the pending request bytes and extract every complete
+-- RESP frame.  The incomplete suffix is retained for the next socket read.
+parseSmartProxyFrames ::
+  BS.ByteString ->
+  BS.ByteString ->
+  SmartProxyFrameResult
+parseSmartProxyFrames pending chunk = drain [] (pending <> chunk)
+  where
+    drain frames input =
+      case StrictParse.parse Resp.parseRespData input of
+        StrictParse.Done remaining frame
+          | BS.length input - BS.length remaining > smartProxyFrameLimit ->
+              SmartProxyFrameError
+                (reverse frames)
+                "request frame exceeds 1048576 byte limit"
+          | otherwise -> drain (frame : frames) remaining
+        StrictParse.Partial _
+          | BS.length input > smartProxyFrameLimit ->
+              SmartProxyFrameError
+                (reverse frames)
+                "request frame exceeds 1048576 byte limit"
+          | otherwise -> SmartProxyFrames (reverse frames) input
+        StrictParse.Fail _ contexts message ->
+          SmartProxyFrameError
+            (reverse frames)
+            ("invalid RESP frame: " ++ intercalate ", " contexts ++ ": " ++ message)
 
 -- | Route and execute a command in smart proxy mode
 routeSmartProxyCommand :: (Client client) =>
