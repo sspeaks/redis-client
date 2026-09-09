@@ -3,6 +3,7 @@
 module Main (main) where
 
 import           Control.Exception               (evaluate)
+import           Control.Monad                   (forM_)
 import qualified Data.ByteString                 as BS
 import           Database.Redis.Cluster          (calculateSlot)
 import           Database.Redis.Cluster.Commands (CommandRouting (..),
@@ -75,12 +76,37 @@ spec =
                 "ZINCRBY"
                 ["{typed}:key", "(1", "member"]
                 "ZINCRBY has malformed arguments"
-            shouldRouteBy "ZCOUNT" ["{typed}:key", "(1", "+inf"] "{typed}:key"
-            shouldRouteBy "ZCOUNT" ["{typed}:key", "-inf", "(3.5"] "{typed}:key"
-            shouldReject
-                "ZCOUNT"
-                ["{typed}:key", "(+inf", "3"]
-                "ZCOUNT has malformed arguments"
+            forM_
+                [ "0"
+                , ".5"
+                , "1."
+                , "1e2"
+                , " 1"
+                , ""
+                , "("
+                , "+inf"
+                , "-inf"
+                , "Infinity"
+                , "(+inf"
+                , "(-inf"
+                , "(Infinity"
+                , "1e9999"
+                , "1e-9999"
+                , "1\0ignored"
+                , "(1\0ignored"
+                ]
+                $ \bound ->
+                    shouldRouteBy
+                        "ZCOUNT"
+                        ["{typed}:key", bound, "3"]
+                        "{typed}:key"
+            forM_
+                [" ", "( ", "not-a-score", "(not-a-score", "nan", "(nan", "1 ", "1tail", "(1tail"]
+                $ \bound ->
+                    shouldReject
+                        "ZCOUNT"
+                        ["{typed}:key", bound, "3"]
+                        "ZCOUNT has malformed arguments"
 
         it "handles negative last-key and stepped range specifications" $ do
             shouldRouteBy "BLPOP" ["{same}:one", "{same}:two", "1"] "{same}:one"

@@ -42,7 +42,8 @@ import           Foreign.C.Error                                 (eRANGE,
 import           Foreign.C.String                                (CString)
 import           Foreign.C.Types                                 (CDouble (..))
 import           Foreign.Marshal.Alloc                           (alloca)
-import           Foreign.Ptr                                     (Ptr, minusPtr)
+import           Foreign.Ptr                                     (Ptr, minusPtr,
+                                                                  plusPtr)
 import           Foreign.Storable                                (peek)
 import           System.IO.Unsafe                                (unsafePerformIO)
 
@@ -734,26 +735,20 @@ isDouble value
                         && not (errno == eRANGE && (isInfinite parsed || parsed == 0))
 {-# NOINLINE isDouble #-}
 
--- Redis sorted-set score ranges additionally accept canonical infinities and
--- exclusive finite bounds, while ordinary floating-point arguments do not.
+-- Redis 7.2's zslParseRange strips an optional '(' and then accepts strtod
+-- results when the next C byte is NUL and the parsed value is not NaN.
 isScoreRange :: ByteString -> Bool
-isScoreRange value
-    | value == "-inf" || value == "+inf" = True
-    | Just (40, remainder) <- BS.uncons value = isFiniteDouble remainder
-    | otherwise = isFiniteDouble value
-
-isFiniteDouble :: ByteString -> Bool
-isFiniteDouble value = isDouble value && not (isInfinity value)
-
-isInfinity :: ByteString -> Bool
-isInfinity value =
-    BS.map asciiLower value `elem`
-        ["inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"]
-
-asciiLower :: Word8 -> Word8
-asciiLower byte
-    | byte >= 65 && byte <= 90 = byte + 32
-    | otherwise = byte
+isScoreRange value = unsafePerformIO $
+    BS.useAsCString value $ \start ->
+        alloca $ \endPointer -> do
+            let scoreStart
+                    | Just (40, _) <- BS.uncons value = start `plusPtr` 1
+                    | otherwise = start
+            CDouble parsed <- c_strtod scoreStart endPointer
+            end <- peek endPointer
+            trailing <- peek end
+            pure $ trailing == 0 && not (isNaN parsed)
+{-# NOINLINE isScoreRange #-}
 
 isAsciiSpace :: Word8 -> Bool
 isAsciiSpace byte = byte == 32 || (byte >= 9 && byte <= 13)

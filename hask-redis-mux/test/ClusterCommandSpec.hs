@@ -540,8 +540,8 @@ publicValidatedDispatchSpec =
         ["ZINCRBY", "{public}:scores", "1.5", "member"]
         (zincrby "{public}:scores" 1.5 "member")
       assertPublicValidatedCommand
-        ["ZCOUNT", "{public}:scores", "(1", "+inf"]
-        (zcount "{public}:scores" "(1" "+inf")
+        ["ZCOUNT", "{public}:scores", "(+inf", "(Infinity"]
+        (zcount "{public}:scores" "(+inf" "(Infinity")
       assertPublicValidatedCommand
         [ "ZRANGESTORE", "{public}:destination", "{public}:source", "-inf"
         , "+inf", "LIMIT", "0", "1", "REV", "BYSCORE"
@@ -552,6 +552,10 @@ publicValidatedDispatchSpec =
     it "rejects malformed options and cross-slot typed multi-key commands before sending" $ do
       assertPublicRejectedCommand "GETEX has malformed arguments"
         (getex "{public}:key" ["EX"])
+      assertPublicRejectedCommand "ZCOUNT has malformed arguments"
+        (zcount "{public}:scores" "(nan" "3")
+      assertPublicRejectedCommand "ZCOUNT has malformed arguments"
+        (zcount "{public}:scores" "1tail" "3")
       assertPublicRejectedCommand
         "ZRANGESTORE has malformed arguments"
         (zrangestore "{public}:destination" "{public}:source" "-inf" "+inf" ["LIMIT", "0"])
