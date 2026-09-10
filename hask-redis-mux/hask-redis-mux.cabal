@@ -161,6 +161,7 @@ benchmark ConnectionPoolBench
     type:             exitcode-stdio-1.0
     hs-source-dirs:   bench
     main-is:          ConnectionPoolBench.hs
+    other-modules:    ConnectionPoolBench.Ordering
     ghc-options:      -threaded -rtsopts
     build-depends:    async >=2.2 && <2.3
                     , client
@@ -275,6 +276,15 @@ test-suite ConnectionPoolSpec
                     , client
                     , cluster
                     , containers >=0.6 && <0.8
+
+test-suite ConnectionPoolBenchSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ConnectionPoolBenchSpec.hs
+    other-modules:    ConnectionPoolBench.Ordering
+    hs-source-dirs:   test
+                    , bench
+    build-depends:    containers >=0.6 && <0.8
 
 test-suite StandaloneSpec
     import:           test-defaults

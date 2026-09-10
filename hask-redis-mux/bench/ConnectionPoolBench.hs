@@ -3,6 +3,9 @@
 
 module Main (main) where
 
+import           ConnectionPoolBench.Ordering          (finishOrder,
+                                                        prependOrder,
+                                                        registrationsByNode)
 import           Control.Concurrent                    (getNumCapabilities,
                                                         newEmptyMVar, putMVar,
                                                         setNumCapabilities,
@@ -71,15 +74,14 @@ runCase capabilities nodeCount capacity waiterCount = do
 
   completionOrder <- newIORef Map.empty
   let waiterAssignments = zip [1 .. waiterCount] (cycle addresses)
-      expectedOrders = Map.fromListWith (++)
-        [(address, [waiterIndex]) | (waiterIndex, address) <- waiterAssignments]
+      expectedOrders = registrationsByNode waiterAssignments
   waiters <- forM waiterAssignments $ \(waiterIndex, address) ->
     do
       waiter <- async $ do
         started <- getMonotonicTimeNSec
         withConnection pool address connector $ \_ ->
           atomicModifyIORef' completionOrder $ \completed ->
-            (Map.insertWith (flip (++)) address [waiterIndex] completed, ())
+            (prependOrder address waiterIndex completed, ())
         finished <- getMonotonicTimeNSec
         return (finished - started)
       awaitWaiters pool address ((waiterIndex - 1) `div` nodeCount + 1)
@@ -97,7 +99,7 @@ runCase capabilities nodeCount capacity waiterCount = do
   waiterSamples <- mapM wait waiters
   mapM_ wait holders
   handoffFinished <- getMonotonicTimeNSec
-  completed <- readIORef completionOrder
+  completed <- finishOrder <$> readIORef completionOrder
   createdByNode <- readIORef connectionCounts
   when (Map.size createdByNode /= nodeCount) $
     fail "benchmark did not create connections for every requested node"
