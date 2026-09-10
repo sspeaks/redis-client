@@ -35,8 +35,8 @@ import           Control.Exception        (Exception, SomeException, mask,
                                            toException, try,
                                            uninterruptibleMask_)
 import           Control.Monad            (forM_)
-import           Data.IORef               (IORef, newIORef, readIORef,
-                                           writeIORef)
+import           Data.IORef               (IORef, atomicModifyIORef', newIORef,
+                                           readIORef, writeIORef)
 import           Data.Map.Strict          (Map)
 import qualified Data.Map.Strict          as Map
 import           Data.Typeable            (Typeable)
@@ -71,8 +71,10 @@ data PoolConfig = PoolConfig
 -- | Per-node connection state: available connections, total count, and waiters
 data NodePool client = NodePool
   { availableConns :: [client 'Connected]    -- ^ Idle connections ready for checkout
+  , availableCount :: !Int                   -- ^ Cached idle count; avoids a return-path traversal
   , totalConns     :: !Int                   -- ^ Total connections created (available + in-use)
   , waitQueue      :: !(WaitQueue (Waiter client))
+  , nodeClosed     :: !Bool
   }
 
 -- | Amortized O(1) FIFO with a cached size. Cancellation is the uncommon path
@@ -92,18 +94,20 @@ data WaiterResult client
 -- available and the pool is at capacity, callers block until one
 -- is returned.
 data ConnectionPool client = ConnectionPool
-  { poolConnections :: MVar (Map NodeAddress (NodePool client))
-  , poolClosed      :: IORef Bool
-  , poolConfig      :: PoolConfig
+  { poolConnections  :: IORef (Map NodeAddress (MVar (NodePool client)))
+  , poolRegistryLock :: MVar ()
+  , poolClosed       :: IORef Bool
+  , poolConfig       :: PoolConfig
   }
 
 -- | Create a new empty connection pool.
 -- Connections are created lazily when first requested.
 createPool :: PoolConfig -> IO (ConnectionPool client)
 createPool config = do
-  connections <- newMVar Map.empty
+  connections <- newIORef Map.empty
+  registryLock <- newMVar ()
   closed <- newIORef False
-  return $ ConnectionPool connections closed config
+  return $ ConnectionPool connections registryLock closed config
 
 -- | What to do after acquiring the MVar lock
 data CheckoutResult client
@@ -161,40 +165,49 @@ checkoutConnection ::
 checkoutConnection connectorIsBounded pool addr connector restore = checkout
   where
   checkout = do
-    result <- modifyPoolState pool $ \m -> do
-      closed <- readIORef (poolClosed pool)
-      if closed
-        then return (m, PoolIsClosed)
+    nodeState <- getOrCreateNodePool pool addr
+    result <- modifyNodePool nodeState $ \nodePool -> do
+      poolIsClosed <- readIORef (poolClosed pool)
+      if poolIsClosed || nodeClosed nodePool
+        then return (nodePool, PoolIsClosed)
         else do
-          let nodePool = Map.findWithDefault emptyNodePool addr m
           case availableConns nodePool of
             (conn : rest) -> do
-              let updated = nodePool { availableConns = rest }
-              return (Map.insert addr updated m, UseExisting conn)
+              let updated = nodePool
+                    { availableConns = rest
+                    , availableCount = availableCount nodePool - 1
+                    }
+              return (updated, UseExisting conn)
             [] ->
               if totalConns nodePool < maxConnectionsPerNode (poolConfig pool)
                 then do
                   let updated = nodePool { totalConns = totalConns nodePool + 1 }
-                  return (Map.insert addr updated m, CreateNew)
+                  return (updated, CreateNew)
                 else do
                   waiter <- newEmptyMVar
                   let updated = nodePool
                         { waitQueue = enqueueWaiter waiter (waitQueue nodePool) }
-                  return (Map.insert addr updated m, Wait waiter)
+                  return (updated, Wait waiter)
     case result of
       PoolIsClosed -> throwIO ConnectionPoolClosed
       UseExisting conn -> return conn
-      CreateNew -> connectReserved
+      CreateNew -> connectReserved nodeState
       Wait waiter -> do
         wakeup <- takeMVar waiter
           `onException` cancelWaiter pool addr waiter
         case wakeup of
-          WaiterConnection conn -> return conn
-          WaiterCreate          -> connectReserved
+          WaiterConnection conn -> do
+            accepted <- nodePoolIsOpen pool nodeState
+            if accepted
+              then return conn
+              else do
+                safeClose conn
+                throwIO ConnectionPoolClosed
+          WaiterCreate          -> connectReserved nodeState
           WaiterFailure e       -> throwIO e
 
-  connectReserved = do
-    open <- poolIsOpen pool
+  connectReserved nodeState = do
+    open <- nodePoolIsOpen pool nodeState
     if not open
       then throwIO ConnectionPoolClosed
       else do
@@ -210,7 +223,7 @@ checkoutConnection connectorIsBounded pool addr connector restore = checkout
         connResult <- try (restore $ boundedConnector addr)
         case connResult of
           Right conn -> do
-            accepted <- poolIsOpen pool
+            accepted <- nodePoolIsOpen pool nodeState
             if accepted
               then return conn
               else do
@@ -231,39 +244,41 @@ returnConnection ::
   IO ()
 returnConnection pool addr conn =
   do
-    let transition = modifyPoolState pool $ returnTransition pool addr conn
+    let transition = returnToNode pool addr conn
     closeReturned <- transition `onException` do
       closeAfterCancellation <-
-        modifyPoolStateUninterruptible pool $ returnTransition pool addr conn
+        uninterruptibleMask_ $ returnToNode pool addr conn
       if closeAfterCancellation then safeClose conn else return ()
     if closeReturned then safeClose conn else return ()
 {-# INLINE returnConnection #-}
 
 returnTransition
   :: ConnectionPool client
-  -> NodeAddress
   -> client 'Connected
-  -> Map NodeAddress (NodePool client)
-  -> IO (Map NodeAddress (NodePool client), Bool)
-returnTransition pool addr conn m = do
-  closed <- readIORef (poolClosed pool)
-  if closed
-    then return (m, True)
+  -> NodePool client
+  -> IO (NodePool client, Bool)
+returnTransition pool conn nodePool =
+  do
+    poolIsClosed <- readIORef (poolClosed pool)
+    if poolIsClosed || nodeClosed nodePool
+    then return (nodePool, True)
     else do
-      let nodePool = Map.findWithDefault emptyNodePool addr m
       case dequeueWaiter (waitQueue nodePool) of
         Just (waiter, rest) -> do
           putMVar waiter (WaiterConnection conn)
           let updated = nodePool { waitQueue = rest }
-          return (Map.insert addr updated m, False)
+          return (updated, False)
         Nothing ->
-          if length (availableConns nodePool) < maxConnectionsPerNode (poolConfig pool)
+          if availableCount nodePool < maxConnectionsPerNode (poolConfig pool)
             then do
-              let updated = nodePool { availableConns = conn : availableConns nodePool }
-              return (Map.insert addr updated m, False)
+              let updated = nodePool
+                    { availableConns = conn : availableConns nodePool
+                    , availableCount = availableCount nodePool + 1
+                    }
+              return (updated, False)
             else do
               let updated = nodePool { totalConns = totalConns nodePool - 1 }
-              return (Map.insert addr updated m, True)
+              return (updated, True)
 {-# INLINE returnTransition #-}
 
 -- | Discard a connection (on error) and wake a waiter or release the slot.
@@ -283,14 +298,16 @@ discardConnection pool addr conn = do
 -- @statsTotalConnections == statsAvailableConnections@ and
 -- @statsWaitingCallers == 0@.
 getConnectionPoolStats :: ConnectionPool client -> NodeAddress -> IO ConnectionPoolStats
-getConnectionPoolStats pool addr =
-  withMVar (poolConnections pool) $ \m ->
-    case Map.lookup addr m of
-      Nothing -> return $ ConnectionPoolStats 0 0 0
-      Just nodePool -> return $ ConnectionPoolStats
-        (totalConns nodePool)
-        (length $ availableConns nodePool)
-        (waitQueueLength $ waitQueue nodePool)
+getConnectionPoolStats pool addr = do
+  nodes <- readIORef (poolConnections pool)
+  case Map.lookup addr nodes of
+    Nothing -> return $ ConnectionPoolStats 0 0 0
+    Just nodeState ->
+      withMVar nodeState $ \nodePool ->
+        return $ ConnectionPoolStats
+          (totalConns nodePool)
+          (availableCount nodePool)
+          (waitQueueLength $ waitQueue nodePool)
 
 -- | Close all connections in the pool and wake any blocked waiters.
 -- Closure is terminal and idempotent. Later checkouts throw
@@ -298,64 +315,55 @@ getConnectionPoolStats pool addr =
 -- during transport close are caught and ignored.
 closePool :: (Client client) => ConnectionPool client -> IO ()
 closePool pool = mask_ $ do
-    nodePools <- modifyPoolStateUninterruptible pool $ \m -> do
+    nodeStates <- uninterruptibleMask_ $
+      modifyMVarMasked (poolRegistryLock pool) $ \lock -> do
       alreadyClosed <- readIORef (poolClosed pool)
       if alreadyClosed
-        then return (m, [])
+        then return (lock, [])
         else do
           writeIORef (poolClosed pool) True
-          let closedError = toException ConnectionPoolClosed
-          forM_ (Map.elems m) $ \nodePool ->
-            forM_ (waitQueueToList $ waitQueue nodePool) $ \waiter ->
-              putMVar waiter (WaiterFailure closedError)
-          return (Map.empty, Map.elems m)
+          nodes <- readIORef (poolConnections pool)
+          writeIORef (poolConnections pool) Map.empty
+          return (lock, Map.elems nodes)
+    nodePools <- mapM closeNodePool nodeStates
     closeDone <- mapM startClose
       [conn | nodePool <- nodePools, conn <- availableConns nodePool]
     mapM_ readMVar closeDone
 
 emptyNodePool :: NodePool client
-emptyNodePool = NodePool [] 0 emptyWaitQueue
+emptyNodePool = NodePool [] 0 0 emptyWaitQueue False
 
-modifyPoolState
-  :: ConnectionPool client
-  -> (Map NodeAddress (NodePool client) -> IO (Map NodeAddress (NodePool client), a))
+modifyNodePool
+  :: MVar (NodePool client)
+  -> (NodePool client -> IO (NodePool client, a))
   -> IO a
-modifyPoolState pool action =
-  modifyMVarMasked (poolConnections pool) action
-{-# INLINE modifyPoolState #-}
+modifyNodePool nodeState action =
+  modifyMVarMasked nodeState action
+{-# INLINE modifyNodePool #-}
 
-modifyPoolStateUninterruptible
-  :: ConnectionPool client
-  -> (Map NodeAddress (NodePool client) -> IO (Map NodeAddress (NodePool client), a))
-  -> IO a
-modifyPoolStateUninterruptible pool action =
-  uninterruptibleMask_ $ modifyMVarMasked (poolConnections pool) action
-{-# INLINE modifyPoolStateUninterruptible #-}
-
-poolIsOpen :: ConnectionPool client -> IO Bool
-poolIsOpen pool =
-  modifyPoolStateUninterruptible pool $ \m -> do
-    open <- not <$> readIORef (poolClosed pool)
-    return (m, open)
+nodePoolIsOpen :: ConnectionPool client -> MVar (NodePool client) -> IO Bool
+nodePoolIsOpen pool nodeState =
+  uninterruptibleMask_ $ withMVar nodeState $ \nodePool -> do
+    poolIsClosed <- readIORef (poolClosed pool)
+    return $ not poolIsClosed && not (nodeClosed nodePool)
 
 releaseReservation :: ConnectionPool client -> NodeAddress -> IO ()
-releaseReservation pool addr =
-  modifyPoolStateUninterruptible pool $ \m -> do
-    closed <- readIORef (poolClosed pool)
-    if closed
-      then return (m, ())
-      else case Map.lookup addr m of
-        Nothing -> return (m, ())
-        Just nodePool ->
-          case dequeueWaiter (waitQueue nodePool) of
-            Just (waiter, rest) -> do
-              putMVar waiter WaiterCreate
-              let updated = nodePool { waitQueue = rest }
-              return (Map.insert addr updated m, ())
-            Nothing -> do
-              let updated = nodePool
-                    { totalConns = max 0 (totalConns nodePool - 1) }
-              return (Map.insert addr updated m, ())
+releaseReservation pool addr = do
+  nodeState <- lookupNodePool pool addr
+  forM_ nodeState $ \state ->
+    uninterruptibleMask_ $ modifyNodePool state $ \nodePool -> do
+    poolIsClosed <- readIORef (poolClosed pool)
+    if poolIsClosed || nodeClosed nodePool
+      then return (nodePool, ())
+      else case dequeueWaiter (waitQueue nodePool) of
+        Just (waiter, rest) -> do
+          putMVar waiter WaiterCreate
+          let updated = nodePool { waitQueue = rest }
+          return (updated, ())
+        Nothing -> do
+          let updated = nodePool
+                { totalConns = max 0 (totalConns nodePool - 1) }
+          return (updated, ())
 
 cancelWaiter
   :: (Client client)
@@ -364,13 +372,13 @@ cancelWaiter
   -> Waiter client
   -> IO ()
 cancelWaiter pool addr waiter = do
-  removed <- modifyPoolStateUninterruptible pool $ \m ->
-    case Map.lookup addr m of
-      Nothing -> return (m, False)
-      Just nodePool -> do
+  nodeState <- lookupNodePool pool addr
+  removed <- case nodeState of
+    Nothing -> return False
+    Just state -> uninterruptibleMask_ $ modifyNodePool state $ \nodePool -> do
         let (wasRemoved, remaining) = removeWaiter waiter (waitQueue nodePool)
             updated = nodePool { waitQueue = remaining }
-        return (Map.insert addr updated m, wasRemoved)
+        return (updated, wasRemoved)
   if removed
     then return ()
     else do
@@ -392,6 +400,52 @@ startClose conn = do
     try (unmask $ close conn) >>= \(_ :: Either SomeException ()) ->
       putMVar done ()
   return done
+
+getOrCreateNodePool
+  :: ConnectionPool client -> NodeAddress -> IO (MVar (NodePool client))
+getOrCreateNodePool pool addr = do
+  nodes <- readIORef (poolConnections pool)
+  case Map.lookup addr nodes of
+    Just nodeState -> return nodeState
+    Nothing -> modifyMVarMasked (poolRegistryLock pool) $ \lock -> do
+      closed <- readIORef (poolClosed pool)
+      if closed
+        then throwIO ConnectionPoolClosed
+        else do
+          currentNodes <- readIORef (poolConnections pool)
+          case Map.lookup addr currentNodes of
+            Just nodeState -> return (lock, nodeState)
+            Nothing -> do
+              nodeState <- newMVar emptyNodePool
+              atomicModifyIORef' (poolConnections pool) $ \existing ->
+                (Map.insert addr nodeState existing, ())
+              return (lock, nodeState)
+
+lookupNodePool
+  :: ConnectionPool client -> NodeAddress -> IO (Maybe (MVar (NodePool client)))
+lookupNodePool pool addr = Map.lookup addr <$> readIORef (poolConnections pool)
+
+returnToNode
+  :: ConnectionPool client -> NodeAddress -> client 'Connected -> IO Bool
+returnToNode pool addr conn = do
+  nodeState <- lookupNodePool pool addr
+  case nodeState of
+    Nothing    -> return True
+    Just state -> modifyNodePool state $ returnTransition pool conn
+
+closeNodePool :: MVar (NodePool client) -> IO (NodePool client)
+closeNodePool nodeState =
+  uninterruptibleMask_ $ modifyNodePool nodeState $ \nodePool -> do
+    let closedError = toException ConnectionPoolClosed
+    forM_ (waitQueueToList $ waitQueue nodePool) $ \waiter ->
+      putMVar waiter (WaiterFailure closedError)
+    let closedNodePool = nodePool
+          { availableConns = []
+          , availableCount = 0
+          , waitQueue = emptyWaitQueue
+          , nodeClosed = True
+          }
+    return (closedNodePool, nodePool)
 
 emptyWaitQueue :: WaitQueue a
 emptyWaitQueue = WaitQueue [] [] 0

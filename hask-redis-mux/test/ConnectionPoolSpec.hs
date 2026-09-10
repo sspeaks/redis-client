@@ -15,6 +15,7 @@ import           Control.Monad.IO.Class                (liftIO)
 import           Data.IORef                            (IORef,
                                                         atomicModifyIORef',
                                                         newIORef, readIORef)
+import qualified Data.Map.Strict                       as Map
 import           Database.Redis.Client                 (Client (..),
                                                         ConnectionStatus (..))
 import           Database.Redis.Cluster                (NodeAddress (..))
@@ -222,12 +223,14 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
         putMVar actionStarted () >> takeMVar releaseAction
     expectWithin (takeMVar actionStarted)
 
-    state <- takeMVar (poolConnections pool)
+    nodes <- readIORef (poolConnections pool)
+    nodeState <- maybe (fail "expected a node pool") return (Map.lookup node nodes)
+    state <- takeMVar nodeState
     putMVar releaseAction ()
     threadDelay 10000
     cancellationFinished <- newEmptyMVar
     _ <- forkIO $ cancelOwner >> putMVar cancellationFinished ()
-    putMVar (poolConnections pool) state
+    putMVar nodeState state
     expectWithin (takeMVar cancellationFinished)
     _ <- expectWithin (takeMVar ownerResult)
 
@@ -253,11 +256,13 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
         withConnection pool node connector $ \_ -> return ()
       expectWithin (awaitWaiters pool 1)
 
-      state <- takeMVar (poolConnections pool)
+      nodes <- readIORef (poolConnections pool)
+      nodeState <- maybe (fail "expected a node pool") return (Map.lookup node nodes)
+      state <- takeMVar nodeState
       putMVar releaseHolder ()
       threadDelay 1000
       cancelSelectedWaiter
-      putMVar (poolConnections pool) state
+      putMVar nodeState state
 
       holderOutcome <- expectWithin (takeMVar holderResult)
       holderOutcome `shouldSatisfy` isRight
@@ -270,6 +275,97 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
         `shouldReturn` ConnectionPoolStats 1 1 0
       closePool pool
       readIORef closeCount `shouldReturn` 1
+
+  it "hands saturated waiters off in FIFO order" $ do
+      pool <- createPool testPoolConfig
+      (connector, _, closeCount) <- createCountingConnector
+      holderStarted <- newEmptyMVar
+      releaseHolder <- newEmptyMVar
+      completionOrder <- newIORef ([] :: [Int])
+      (holderResult, _) <- forkResult $
+        withConnection pool node connector $ \_ ->
+          putMVar holderStarted () >> takeMVar releaseHolder
+      expectWithin (takeMVar holderStarted)
+      waiters <- forM [1 .. 8 :: Int] $ \waiterIndex -> do
+        waiter <- forkResult $ withConnection pool node connector $ \_ ->
+          atomicModifyIORef' completionOrder $ \completed ->
+            (completed <> [waiterIndex], ())
+        expectWithin (awaitWaiters pool waiterIndex)
+        return waiter
+      putMVar releaseHolder ()
+      _ <- expectWithin (takeMVar holderResult)
+      mapM_ (expectWithin . takeMVar . fst) waiters
+      readIORef completionOrder `shouldReturn` [1 .. 8]
+      closePool pool
+      readIORef closeCount `shouldReturn` 1
+
+  it "wakes every saturated waiter when the pool closes" $ do
+      pool <- createPool testPoolConfig
+      (connector, _, closeCount) <- createCountingConnector
+      holderStarted <- newEmptyMVar
+      releaseHolder <- newEmptyMVar
+      (holderResult, _) <- forkResult $
+        withConnection pool node connector $ \_ ->
+          putMVar holderStarted () >> takeMVar releaseHolder
+      expectWithin (takeMVar holderStarted)
+      waiters <- forM [1 .. 8 :: Int] $ \_ ->
+        forkResult $ withConnection pool node connector $ \_ -> return ()
+      expectWithin (awaitWaiters pool 8)
+      closePool pool
+      mapM_ (\(result, _) -> do
+        outcome <- expectWithin (takeMVar result)
+        outcome `shouldSatisfy` \case
+          Left err -> Exception.fromException err == Just ConnectionPoolClosed
+          Right () -> False) waiters
+      putMVar releaseHolder ()
+      _ <- expectWithin (takeMVar holderResult)
+      readIORef closeCount `shouldReturn` 1
+
+  it "does not hand a returned connection to a waiter after terminal close" $
+    replicateM_ 25 $ do
+      pool <- createPool testPoolConfig
+      (connector, _, closeCount) <- createCountingConnector
+      holderStarted <- newEmptyMVar
+      releaseHolder <- newEmptyMVar
+      (holderResult, _) <- forkResult $
+        withConnection pool node connector $ \_ ->
+          putMVar holderStarted () >> takeMVar releaseHolder
+      expectWithin (takeMVar holderStarted)
+
+      (waiterResult, _) <- forkResult $
+        withConnection pool node connector $ \_ -> return ()
+      expectWithin (awaitWaiters pool 1)
+
+      nodes <- readIORef (poolConnections pool)
+      nodeState <- maybe (fail "expected a node pool") return (Map.lookup node nodes)
+      state <- takeMVar nodeState
+      (closeResult, _) <- forkResult $ closePool pool
+      awaitPoolClosed pool
+      putMVar releaseHolder ()
+      putMVar nodeState state
+
+      _ <- expectWithin (takeMVar closeResult)
+      holderOutcome <- expectWithin (takeMVar holderResult)
+      holderOutcome `shouldSatisfy` isRight
+      waiterOutcome <- expectWithin (takeMVar waiterResult)
+      waiterOutcome `shouldSatisfy` \case
+        Left err -> Exception.fromException err == Just ConnectionPoolClosed
+        Right () -> False
+      readIORef closeCount `shouldReturn` 1
+
+  it "checks out an independent node while another node state is locked" $ do
+      pool <- createPool testPoolConfig
+      (connector, connectionCount, closeCount) <- createCountingConnector
+      expectWithin (withConnection pool node connector $ \_ -> return ())
+      nodes <- readIORef (poolConnections pool)
+      nodeState <- maybe (fail "expected a node pool") return (Map.lookup node nodes)
+      state <- takeMVar nodeState
+      let otherNode = NodeAddress "127.0.0.2" 6379
+      expectWithin (withConnection pool otherNode connector $ \_ -> return ())
+      putMVar nodeState state
+      readIORef connectionCount `shouldReturn` 2
+      closePool pool
+      readIORef closeCount `shouldReturn` 2
 
   it "preserves cancellation while an independent transport close finishes" $ do
     pool <- createPool testPoolConfig
@@ -325,3 +421,27 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       `shouldReturn` ConnectionPoolStats 1 1 0
     closePool pool
     readIORef closeCount `shouldReturn` 1
+
+  it "rejects checkout after close has linearized, including known nodes" $ do
+    pool <- createPool testPoolConfig
+    (connector, connectionCount, closeCount) <- createCountingConnector
+    expectWithin (withConnection pool node connector $ \_ -> return ())
+
+    -- The node is already registered, so this specifically covers the former
+    -- registry-clear versus cached-node checkout path.
+    closePool pool
+    outcome <- Exception.try
+      (withConnection pool node connector $ \_ -> return ())
+      :: IO (Either SomeException ())
+    outcome `shouldSatisfy` \case
+      Left err -> Exception.fromException err == Just ConnectionPoolClosed
+      Right () -> False
+    readIORef connectionCount `shouldReturn` 1
+    readIORef closeCount `shouldReturn` 1
+
+awaitPoolClosed :: ConnectionPool client -> IO ()
+awaitPoolClosed pool = do
+  closed <- readIORef (poolClosed pool)
+  if closed
+    then return ()
+    else threadDelay 1000 >> awaitPoolClosed pool
