@@ -733,14 +733,18 @@ main = do
                         stderrRest <- drainHandle herr
                         expectationFailure (unlines ["Tunnel stdout closed unexpectedly: " <> show err, "stdout:", stdoutRest, "stderr:", stderrRest])
                       Just (Right ()) -> do
-                        (pongResp, echoResp) <-
+                        (pongResp, echoResp, largeResp) <-
                           viaTunnel $ do
                             pong <- ping
                             _ <- set "tunnel:key" "via-tls" :: RedisCommandClient PlainTextClient RespData
                             val <- get "tunnel:key"
-                            pure (pong, val)
+                            let largeValue = BS.replicate 8192 42
+                            _ <- set "tunnel:large" largeValue :: RedisCommandClient PlainTextClient RespData
+                            large <- get "tunnel:large"
+                            pure (pong, val, large)
                         pongResp `shouldBe` RespSimpleString "PONG"
                         echoResp `shouldBe` RespBulkString "via-tls"
+                        largeResp `shouldBe` RespBulkString (BS.replicate 8192 42)
                         runRedisAction (get "tunnel:key") `shouldReturn` RespBulkString "via-tls"
                         _ <- runFlushAll
                         postAccept <- timeout (2 * 1000000) (try (waitForSubstring hout "Accepted connection") :: IO (Either IOException ()))
