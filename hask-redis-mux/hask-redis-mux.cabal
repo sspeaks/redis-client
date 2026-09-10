@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               hask-redis-mux
-version:            0.1.0.1
+version:            0.2.0.0
 synopsis:           A RESP protocol implementation and multiplexed Redis client library
 description:
     hask-redis-mux provides a full RESP protocol parser, Redis client with TLS support,
@@ -161,10 +161,12 @@ benchmark ConnectionPoolBench
     type:             exitcode-stdio-1.0
     hs-source-dirs:   bench
     main-is:          ConnectionPoolBench.hs
+    other-modules:    ConnectionPoolBench.Ordering
     ghc-options:      -threaded -rtsopts
     build-depends:    async >=2.2 && <2.3
                     , client
                     , cluster
+                    , containers >=0.6 && <0.8
 
 benchmark GrammarProfile
     import:           defaults
@@ -273,6 +275,16 @@ test-suite ConnectionPoolSpec
     build-depends:    bytestring >=0.12 && <0.13
                     , client
                     , cluster
+                    , containers >=0.6 && <0.8
+
+test-suite ConnectionPoolBenchSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          ConnectionPoolBenchSpec.hs
+    other-modules:    ConnectionPoolBench.Ordering
+    hs-source-dirs:   test
+                    , bench
+    build-depends:    containers >=0.6 && <0.8
 
 test-suite StandaloneSpec
     import:           test-defaults

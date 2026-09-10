@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+*   **Connection-pool synchronization API change**
+    *   `ConnectionPool(..)` now exposes per-node synchronization state rather than
+        the former single pool-wide `MVar`; code that constructed or inspected this
+        record must use `createPool`, `withConnection`, `getConnectionPoolStats`, and
+        `closePool` instead. This intentional source-incompatible change is released
+        as `hask-redis-mux-0.2.0.0` under the Haskell PVP. The planned
+        `RedisClientError` API release is not included in this change.
+    *   Pool closure is terminal at checkout linearization: idle checkouts,
+        queued direct handoffs, reservations, and newly connecting checkouts
+        reject once `closePool` has marked the pool closed. Leases acquired
+        before that point remain valid and are closed when returned.
 *   **Breaking credential handling**
     *   Removed `-a/--password`; use `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
     *   Credential files take precedence over direct environment values.
