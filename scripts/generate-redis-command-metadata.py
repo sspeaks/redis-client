@@ -47,6 +47,14 @@ ARGUMENT_TYPES = {
     "block", "double", "integer", "key", "oneof", "pattern", "pure-token",
     "string", "unix-time",
 }
+# Redis 7.2 command JSON models these two sorted-set concepts too broadly:
+# ZINCRBY's increment is a floating-point number, and ZCOUNT accepts Redis
+# score ranges (including exclusive bounds and infinities), not plain doubles.
+SEMANTIC_ARGUMENT_TYPES = {
+    ("ZINCRBY", "increment"): "double",
+    ("ZCOUNT", "min"): "score-range",
+    ("ZCOUNT", "max"): "score-range",
+}
 SUPPORTED_REDIS_SOURCES = {
     "7.2.0": {
         "commit": "29622276ecd7b74312798e6772744858a8a6f9bf",
@@ -387,14 +395,18 @@ def hs_maybe_int(value):
     return "Nothing" if value is None else "Just {}".format(hs_int(value))
 
 
-def render_argument(argument):
-    argument_type = argument["type"]
+def render_argument(argument, identity):
+    argument_type = SEMANTIC_ARGUMENT_TYPES.get(
+        (identity, argument["name"]), argument["type"]
+    )
     if argument_type == "string":
         kind = "ArgumentString"
     elif argument_type == "integer":
         kind = "ArgumentInteger"
     elif argument_type == "double":
         kind = "ArgumentDouble"
+    elif argument_type == "score-range":
+        kind = "ArgumentScoreRange"
     elif argument_type == "unix-time":
         kind = "ArgumentUnixTime"
     elif argument_type == "key":
@@ -404,7 +416,7 @@ def render_argument(argument):
     elif argument_type == "pure-token":
         kind = "ArgumentPureToken"
     else:
-        children = ", ".join(render_argument(child) for child in argument["arguments"])
+        children = ", ".join(render_argument(child, identity) for child in argument["arguments"])
         constructor = "ArgumentBlock" if argument_type == "block" else "ArgumentOneOf"
         kind = "{} [{}]".format(constructor, children)
     token = argument.get("token")
@@ -461,6 +473,7 @@ def render_module(commands, snapshot_path):
         "  = ArgumentString",
         "  | ArgumentInteger",
         "  | ArgumentDouble",
+        "  | ArgumentScoreRange",
         "  | ArgumentUnixTime",
         "  | ArgumentKey",
         "  | ArgumentPattern",
@@ -510,8 +523,8 @@ def render_module(commands, snapshot_path):
             )
             for spec in specs
         )
-        rendered_arguments = ", ".join(render_argument(argument) for argument in arguments)
         identity = command_identity(command)
+        rendered_arguments = ", ".join(render_argument(argument, identity) for argument in arguments)
         entries.append(
             '    CommandMetadata {} {} [{}] [{}] [{}] {}'.format(
                 hs_string(identity),

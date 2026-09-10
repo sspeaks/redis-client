@@ -334,6 +334,7 @@ spec = do
   clusterErrorClassificationSpec
   rawFrameIdentitySpec
   rawDispatchReliabilitySpec
+  publicValidatedDispatchSpec
 
 -- ---------------------------------------------------------------------------
 -- Mock client (same pattern as MultiplexPoolSpec)
@@ -489,6 +490,121 @@ mkClusterClient connector topo = do
   muxPool   <- createMultiplexPool connector 1
   refreshLk <- newMVar ()
   return $ ClusterClient topoVar pool testClusterConfig connector refreshLk muxPool
+
+type PublicCommandRecord =
+  (NodeAddress, IORef ByteString, ByteString -> IO ())
+
+createPublicCommandConnector
+  :: IO
+       ( NodeAddress -> IO (MockClient 'Connected)
+       , IORef [PublicCommandRecord]
+       )
+createPublicCommandConnector = do
+  records <- newIORef []
+  let connector address = do
+        sendBuf <- newIORef BS.empty
+        recvQueue <- newIORef []
+        closeCount <- newIORef 0
+        let addRecv response =
+              atomicModifyIORef' recvQueue $ \xs -> (xs ++ [response], ())
+        atomicModifyIORef' records $ \xs -> (xs ++ [(address, sendBuf, addRecv)], ())
+        return $ MockConnected sendBuf recvQueue closeCount
+  return (connector, records)
+
+awaitPublicCommand :: IORef [PublicCommandRecord] -> IO (Maybe PublicCommandRecord)
+awaitPublicCommand records = timeout 1000000 wait
+  where
+    wait = do
+      observed <- readIORef records
+      case observed of
+        record : _ -> return record
+        []         -> threadDelay 1000 >> wait
+
+awaitPublicWire :: IORef ByteString -> ByteString -> IO (Maybe ByteString)
+awaitPublicWire sent expected = timeout 1000000 wait
+  where
+    wait = do
+      observed <- readIORef sent
+      if observed == expected
+        then return observed
+        else threadDelay 1000 >> wait
+
+publicValidatedDispatchSpec :: Spec
+publicValidatedDispatchSpec =
+  describe "public validated cluster command dispatch" $ do
+    it "routes accepted typed commands to the selected node with exact wire frames" $ do
+      assertPublicValidatedCommand
+        ["GETEX", "{public}:key", "PXAT", "123"]
+        (getex "{public}:key" ["PXAT", "123"])
+      assertPublicValidatedCommand
+        ["ZINCRBY", "{public}:scores", "1.5", "member"]
+        (zincrby "{public}:scores" 1.5 "member")
+      assertPublicValidatedCommand
+        ["ZCOUNT", "{public}:scores", "(+inf", "(Infinity"]
+        (zcount "{public}:scores" "(+inf" "(Infinity")
+      assertPublicValidatedCommand
+        [ "ZRANGESTORE", "{public}:destination", "{public}:source", "-inf"
+        , "+inf", "LIMIT", "0", "1", "REV", "BYSCORE"
+        ]
+        (zrangestore "{public}:destination" "{public}:source" "-inf" "+inf"
+          ["LIMIT", "0", "1", "REV", "BYSCORE"])
+
+    it "rejects malformed options and cross-slot typed multi-key commands before sending" $ do
+      assertPublicRejectedCommand "GETEX has malformed arguments"
+        (getex "{public}:key" ["EX"])
+      assertPublicRejectedCommand "ZCOUNT has malformed arguments"
+        (zcount "{public}:scores" "(nan" "3")
+      assertPublicRejectedCommand "ZCOUNT has malformed arguments"
+        (zcount "{public}:scores" "1tail" "3")
+      assertPublicRejectedCommand
+        "ZRANGESTORE has malformed arguments"
+        (zrangestore "{public}:destination" "{public}:source" "-inf" "+inf" ["LIMIT", "0"])
+      assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
+        (rename "{one}:source" "{two}:destination")
+
+assertPublicValidatedCommand
+  :: [ByteString]
+  -> ClusterCommandClient MockClient RespData
+  -> IO ()
+assertPublicValidatedCommand frame command = do
+  (connector, records) <- createPublicCommandConnector
+  topology <- mkTopology node2
+  client <- mkClusterClient connector topology
+  completed <- newEmptyMVar
+  _ <- forkIO $
+    (try (runClusterCommandClient client command) :: IO (Either SomeException RespData))
+      >>= putMVar completed
+  record <- awaitPublicCommand records
+  case record of
+    Nothing -> expectationFailure "typed command did not reach the mock transport"
+    Just (address, sent, addRecv) -> do
+      address `shouldBe` node2
+      awaitPublicWire sent (commandBytes frame) `shouldReturn` Just (commandBytes frame)
+      addRecv (encodeResp $ RespSimpleString "OK")
+  result <- timeout 1000000 (takeMVar completed)
+  case result of
+    Just (Right response) -> response `shouldBe` RespSimpleString "OK"
+    Just (Left failure) ->
+      expectationFailure $ "typed command failed: " ++ Exception.displayException failure
+    Nothing -> expectationFailure "typed command did not receive its response"
+  closeMultiplexPool $ clusterMultiplexPool client
+
+assertPublicRejectedCommand
+  :: String
+  -> ClusterCommandClient MockClient RespData
+  -> IO ()
+assertPublicRejectedCommand expectedFailure command = do
+  (connector, records) <- createPublicCommandConnector
+  topology <- mkTopology node2
+  client <- mkClusterClient connector topology
+  result <- try (runClusterCommandClient client command)
+    :: IO (Either SomeException RespData)
+  result `shouldSatisfy`
+    either (isInfixOf expectedFailure . Exception.displayException) (const False)
+  recordCount <- length <$> readIORef records
+  recordCount `shouldBe` 0
+  closeMultiplexPool $ clusterMultiplexPool client
+
 
 clusterLifecycleSpec :: Spec
 clusterLifecycleSpec = describe "Cluster client lifecycle" $ do

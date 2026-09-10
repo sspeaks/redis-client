@@ -42,7 +42,8 @@ import           Foreign.C.Error                                 (eRANGE,
 import           Foreign.C.String                                (CString)
 import           Foreign.C.Types                                 (CDouble (..))
 import           Foreign.Marshal.Alloc                           (alloca)
-import           Foreign.Ptr                                     (Ptr, minusPtr)
+import           Foreign.Ptr                                     (Ptr, minusPtr,
+                                                                  plusPtr)
 import           Foreign.Storable                                (peek)
 import           System.IO.Unsafe                                (unsafePerformIO)
 
@@ -362,6 +363,7 @@ parsePayload frame argument state =
         ArgumentString -> consumeScalar (const True)
         ArgumentInteger -> consumeScalar isSignedInteger
         ArgumentDouble -> consumeScalar isDouble
+        ArgumentScoreRange -> consumeScalar isScoreRange
         ArgumentUnixTime -> consumeScalar isSignedInteger
         ArgumentKey -> consumeScalar (const True)
         ArgumentPattern -> consumeScalar (const True)
@@ -732,6 +734,21 @@ isDouble value
                         && not (isNaN parsed)
                         && not (errno == eRANGE && (isInfinite parsed || parsed == 0))
 {-# NOINLINE isDouble #-}
+
+-- Redis 7.2's zslParseRange strips an optional '(' and then accepts strtod
+-- results when the next C byte is NUL and the parsed value is not NaN.
+isScoreRange :: ByteString -> Bool
+isScoreRange value = unsafePerformIO $
+    BS.useAsCString value $ \start ->
+        alloca $ \endPointer -> do
+            let scoreStart
+                    | Just (40, _) <- BS.uncons value = start `plusPtr` 1
+                    | otherwise = start
+            CDouble parsed <- c_strtod scoreStart endPointer
+            end <- peek endPointer
+            trailing <- peek end
+            pure $ trailing == 0 && not (isNaN parsed)
+{-# NOINLINE isScoreRange #-}
 
 isAsciiSpace :: Word8 -> Bool
 isAsciiSpace byte = byte == 32 || (byte >= 9 && byte <= 13)

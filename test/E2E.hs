@@ -229,6 +229,15 @@ main = do
                 RespBulkString "3"
               ]
 
+        it "zrangestore stores the selected score range" $ do
+          runRedisAction (zadd "zrangestore:source" [(1, "one"), (2, "two"), (3, "three")])
+            `shouldReturn` RespInteger 3
+          runRedisAction
+            (zrangestore "zrangestore:destination" "zrangestore:source" "(1" "+inf" ["BYSCORE"])
+            `shouldReturn` RespInteger 2
+          runRedisAction (zrange "zrangestore:destination" 0 (-1) False)
+            `shouldReturn` RespArray [RespBulkString "two", RespBulkString "three"]
+
         it "geoadd and geodist work correctly" $ do
           runRedisAction (geoadd "geo:italy" [(13.361389, 38.115556, "Palermo"), (15.087269, 37.502669, "Catania")]) `shouldReturn` RespInteger 2
           runRedisAction (geodist "geo:italy" "Palermo" "Catania" (Just Kilometers)) `shouldReturn` RespBulkString "166.2742"

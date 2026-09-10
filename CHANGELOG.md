@@ -13,6 +13,23 @@
         queued direct handoffs, reservations, and newly connecting checkouts
         reject once `closePool` has marked the pool closed. Leases acquired
         before that point remain valid and are closed when returned.
+*   **Expanded public Redis command API**
+    *   Added 39 previously missing `RedisCommands` methods: `append`, `strlen`,
+        `setex`, `incrby`, `decrby`, `incrbyfloat`, `getdel`, `getex`, `persist`,
+        `keyType`, `rename`, `renamenx`, `unlink`, `pfadd`, `pfcount`, `pfmerge`,
+        `srem`, `sdiff`, `sinter`, `sunion`, `spop`, `srandmember`, `hgetall`,
+        `hlen`, `hsetnx`, `hincrby`, `hincrbyfloat`, `linsert`, `lset`, `ltrim`,
+        `lrem`, `zrem`, `zcard`, `zscore`, `zrank`, `zrevrank`, `zcount`,
+        `zincrby`, and `zrangestore`.
+    *   Direct, standalone multiplexed, and cluster clients implement the new
+        methods. Downstream `RedisCommands` instances must also implement them;
+        this source-incompatible typeclass expansion is included in the same
+        unpublished `hask-redis-mux-0.2.0.0` release as the pool representation
+        change rather than introducing another breaking version.
+    *   Cluster dispatch validates the new command grammar and all participating
+        keys before sending. `ZCOUNT` score ranges match the pinned Redis 7.2
+        `zslParseRange` boundary, including exclusive finite and infinite bounds.
+    *   The planned `RedisClientError` API remains excluded from this release.
 *   **Breaking credential handling**
     *   Removed `-a/--password`; use `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
     *   Credential files take precedence over direct environment values.

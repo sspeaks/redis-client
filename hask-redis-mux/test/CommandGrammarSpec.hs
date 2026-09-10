@@ -3,6 +3,7 @@
 module Main (main) where
 
 import           Control.Exception               (evaluate)
+import           Control.Monad                   (forM_)
 import qualified Data.ByteString                 as BS
 import           Database.Redis.Cluster          (calculateSlot)
 import           Database.Redis.Cluster.Commands (CommandRouting (..),
@@ -36,6 +37,76 @@ spec =
                 ["one", "two"]
                 "CROSSSLOT Keys in request don't hash to the same slot"
             calculateSlot "{tag}:one" `shouldBe` calculateSlot "{tag}:two"
+
+        it "validates reconciled typed multi-key commands and raw options" $ do
+            let same = "{typed}:"
+            shouldRouteBy "RENAME" [same <> "source", same <> "destination"] (same <> "source")
+            shouldRouteBy "RENAMENX" [same <> "source", same <> "destination"] (same <> "source")
+            shouldRouteBy "UNLINK" [same <> "one", same <> "two"] (same <> "one")
+            shouldRouteBy "PFCOUNT" [same <> "one", same <> "two"] (same <> "one")
+            shouldRouteBy "PFMERGE" [same <> "destination", same <> "one", same <> "two"] (same <> "destination")
+            shouldRouteBy "SDIFF" [same <> "one", same <> "two"] (same <> "one")
+            shouldRouteBy "SINTER" [same <> "one", same <> "two"] (same <> "one")
+            shouldRouteBy "SUNION" [same <> "one", same <> "two"] (same <> "one")
+            shouldRouteBy
+                "ZRANGESTORE"
+                [same <> "destination", same <> "source", "-inf", "+inf", "BYSCORE", "REV", "LIMIT", "0", "1"]
+                (same <> "destination")
+            shouldReject
+                "RENAME"
+                ["source", "destination"]
+                "CROSSSLOT Keys in request don't hash to the same slot"
+            shouldReject
+                "PFMERGE"
+                [same <> "destination", "other"]
+                "CROSSSLOT Keys in request don't hash to the same slot"
+            shouldReject
+                "GETEX"
+                [same <> "key", "EX"]
+                "GETEX has malformed arguments"
+            shouldReject
+                "ZRANGESTORE"
+                [same <> "destination", same <> "source", "-inf", "+inf", "LIMIT", "0"]
+                "ZRANGESTORE has malformed arguments"
+
+        it "uses Redis sorted-set numeric semantics for typed commands" $ do
+            shouldRouteBy "ZINCRBY" ["{typed}:key", "1.5", "member"] "{typed}:key"
+            shouldRouteBy "ZINCRBY" ["{typed}:key", "5.0", "member"] "{typed}:key"
+            shouldReject
+                "ZINCRBY"
+                ["{typed}:key", "(1", "member"]
+                "ZINCRBY has malformed arguments"
+            forM_
+                [ "0"
+                , ".5"
+                , "1."
+                , "1e2"
+                , " 1"
+                , ""
+                , "("
+                , "+inf"
+                , "-inf"
+                , "Infinity"
+                , "(+inf"
+                , "(-inf"
+                , "(Infinity"
+                , "1e9999"
+                , "1e-9999"
+                , "1\0ignored"
+                , "(1\0ignored"
+                ]
+                $ \bound ->
+                    shouldRouteBy
+                        "ZCOUNT"
+                        ["{typed}:key", bound, "3"]
+                        "{typed}:key"
+            forM_
+                [" ", "( ", "not-a-score", "(not-a-score", "nan", "(nan", "1 ", "1tail", "(1tail"]
+                $ \bound ->
+                    shouldReject
+                        "ZCOUNT"
+                        ["{typed}:key", bound, "3"]
+                        "ZCOUNT has malformed arguments"
 
         it "handles negative last-key and stepped range specifications" $ do
             shouldRouteBy "BLPOP" ["{same}:one", "{same}:two", "1"] "{same}:one"

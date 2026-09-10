@@ -15,6 +15,93 @@ import           Test.Hspec
 
 main :: IO ()
 main = hspec $ describe "Database.Redis timeout-aware public API" $ do
+  it "exports all reconciled commands for direct and cluster clients" $ do
+    let directCommands :: [RedisCommandClient PlainTextClient RespData]
+        directCommands =
+          [ append "key" "value"
+          , strlen "key"
+          , setex "key" 1 "value"
+          , incrby "key" 1
+          , decrby "key" 1
+          , incrbyfloat "key" 1.5
+          , getdel "key"
+          , getex "key" ["EX", "1"]
+          , persist "key"
+          , keyType "key"
+          , rename "source" "destination"
+          , renamenx "source" "destination"
+          , unlink ["key"]
+          , pfadd "key" ["element"]
+          , pfcount ["key"]
+          , pfmerge "destination" ["source"]
+          , srem "key" ["member"]
+          , sdiff ["key"]
+          , sinter ["key"]
+          , sunion ["key"]
+          , spop "key"
+          , srandmember "key"
+          , hgetall "key"
+          , hlen "key"
+          , hsetnx "key" "field" "value"
+          , hincrby "key" "field" 1
+          , hincrbyfloat "key" "field" 1.5
+          , linsert "key" "BEFORE" "pivot" "element"
+          , lset "key" 0 "element"
+          , ltrim "key" 0 1
+          , lrem "key" 1 "element"
+          , zrem "key" ["member"]
+          , zcard "key"
+          , zscore "key" "member"
+          , zrank "key" "member"
+          , zrevrank "key" "member"
+          , zcount "key" "-inf" "+inf"
+          , zincrby "key" 1.5 "member"
+          , zrangestore "destination" "source" "-inf" "+inf" ["BYSCORE"]
+          ]
+        clusterCommands :: [ClusterCommandClient PlainTextClient RespData]
+        clusterCommands =
+          [ append "key" "value"
+          , strlen "key"
+          , setex "key" 1 "value"
+          , incrby "key" 1
+          , decrby "key" 1
+          , incrbyfloat "key" 1.5
+          , getdel "key"
+          , getex "key" ["EX", "1"]
+          , persist "key"
+          , keyType "key"
+          , rename "source" "destination"
+          , renamenx "source" "destination"
+          , unlink ["key"]
+          , pfadd "key" ["element"]
+          , pfcount ["key"]
+          , pfmerge "destination" ["source"]
+          , srem "key" ["member"]
+          , sdiff ["key"]
+          , sinter ["key"]
+          , sunion ["key"]
+          , spop "key"
+          , srandmember "key"
+          , hgetall "key"
+          , hlen "key"
+          , hsetnx "key" "field" "value"
+          , hincrby "key" "field" 1
+          , hincrbyfloat "key" "field" 1.5
+          , linsert "key" "BEFORE" "pivot" "element"
+          , lset "key" 0 "element"
+          , ltrim "key" 0 1
+          , lrem "key" 1 "element"
+          , zrem "key" ["member"]
+          , zcard "key"
+          , zscore "key" "member"
+          , zrank "key" "member"
+          , zrevrank "key" "member"
+          , zcount "key" "-inf" "+inf"
+          , zincrby "key" 1.5 "member"
+          , zrangestore "destination" "source" "-inf" "+inf" ["BYSCORE"]
+          ]
+    directCommands `seq` clusterCommands `seq` (pure () :: IO ())
+
   it "keeps Database.Redis cluster call sites source compatible" $ do
     let createClient
           :: ClusterConfig

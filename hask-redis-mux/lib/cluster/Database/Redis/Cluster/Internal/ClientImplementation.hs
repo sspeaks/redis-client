@@ -80,81 +80,87 @@ module Database.Redis.Cluster.Internal.ClientImplementation
   )
 where
 
-import           Control.Concurrent                       (threadDelay)
-import           Control.Concurrent.MVar                  (MVar, newMVar,
-                                                           putMVar, tryTakeMVar)
-import           Control.Concurrent.STM                   (TVar, atomically,
-                                                           newTVarIO,
-                                                           readTVarIO)
-import           Control.Exception                        (Exception,
-                                                           SomeAsyncException,
-                                                           SomeException,
-                                                           bracket, finally,
-                                                           fromException,
-                                                           onException, throwIO,
-                                                           try)
-import           Control.Monad                            (void, when)
-import           Control.Monad.IO.Class                   (MonadIO (..))
-import qualified Control.Monad.State                      as State
-import           Data.ByteString                          (ByteString)
-import qualified Data.ByteString                          as BS
-import qualified Data.ByteString.Builder                  as Builder
-import qualified Data.ByteString.Char8                    as BS8
-import           Data.List                                (foldl')
-import qualified Data.Map.Strict                          as Map
-import           Data.Time.Clock                          (NominalDiffTime,
-                                                           diffUTCTime,
-                                                           getCurrentTime)
-import           Data.Word                                (Word16)
-import           Database.Redis.Client                    (Client (..),
-                                                           ConnectionStatus (..))
-import           Database.Redis.Cluster                   (ClusterNode (..),
-                                                           ClusterTopology (..),
-                                                           NodeAddress (..),
-                                                           NodeRole (..),
-                                                           calculateSlot,
-                                                           findNodeAddressForSlot,
-                                                           parseClusterSlots)
-import           Database.Redis.Cluster.ConnectionPool    (ConnectionPool,
-                                                           ConnectionPoolException (..),
-                                                           PoolConfig (..),
-                                                           closePool,
-                                                           createPool,
-                                                           withConnection,
-                                                           withConnectionBounded)
-import           Database.Redis.Cluster.Internal.Topology (commitRefreshedTopology,
-                                                           patchMovedSlot)
-import           Database.Redis.Command                   (ClientReplyModeUnsupported (..),
-                                                           ClientReplyValues (ON),
-                                                           ClientState (..),
-                                                           RedisCommandClient (..),
-                                                           RedisCommands (..),
-                                                           convertResp,
-                                                           encodeCommandBuilder,
-                                                           geoRadiusFlagToList,
-                                                           geoSearchByToList,
-                                                           geoSearchFromToList,
-                                                           geoSearchOptionToList,
-                                                           geoUnitKeyword,
-                                                           parseWith,
-                                                           runRedisCommandClient,
-                                                           showBS)
-import qualified Database.Redis.Command                   as RedisCommandClient
-import           Database.Redis.Connector                 (ConnectionPhase (..),
-                                                           ConnectionSetupException,
-                                                           ConnectionSupervisor (..),
-                                                           Connector,
-                                                           withConnectionTimeout,
-                                                           withConnectionTimeoutSupervised)
-import           Database.Redis.FromResp                  (FromResp (..))
-import           Database.Redis.Internal.MultiplexPool    (MultiplexPool,
-                                                           MultiplexPoolException (..),
-                                                           closeMultiplexPool,
-                                                           createMultiplexPool,
-                                                           submitToNode,
-                                                           submitToNodeWithAsking)
-import           Database.Redis.Resp                      (Encodable (..),
-                                                           RespData (..))
+import           Control.Concurrent                             (threadDelay)
+import           Control.Concurrent.MVar                        (MVar, newMVar,
+                                                                 putMVar,
+                                                                 tryTakeMVar)
+import           Control.Concurrent.STM                         (TVar,
+                                                                 atomically,
+                                                                 newTVarIO,
+                                                                 readTVarIO)
+import           Control.Exception                              (Exception,
+                                                                 SomeAsyncException,
+                                                                 SomeException,
+                                                                 bracket,
+                                                                 finally,
+                                                                 fromException,
+                                                                 onException,
+                                                                 throwIO, try)
+import           Control.Monad                                  (void, when)
+import           Control.Monad.IO.Class                         (MonadIO (..))
+import qualified Control.Monad.State                            as State
+import           Data.ByteString                                (ByteString)
+import qualified Data.ByteString                                as BS
+import qualified Data.ByteString.Builder                        as Builder
+import qualified Data.ByteString.Char8                          as BS8
+import           Data.List                                      (foldl')
+import qualified Data.Map.Strict                                as Map
+import           Data.Time.Clock                                (NominalDiffTime,
+                                                                 diffUTCTime,
+                                                                 getCurrentTime)
+import           Data.Word                                      (Word16)
+import           Database.Redis.Client                          (Client (..),
+                                                                 ConnectionStatus (..))
+import           Database.Redis.Cluster                         (ClusterNode (..),
+                                                                 ClusterTopology (..),
+                                                                 NodeAddress (..),
+                                                                 NodeRole (..),
+                                                                 calculateSlot,
+                                                                 findNodeAddressForSlot,
+                                                                 parseClusterSlots)
+import           Database.Redis.Cluster.ConnectionPool          (ConnectionPool,
+                                                                 ConnectionPoolException (..),
+                                                                 PoolConfig (..),
+                                                                 closePool,
+                                                                 createPool,
+                                                                 withConnection,
+                                                                 withConnectionBounded)
+import           Database.Redis.Cluster.Internal.CommandGrammar (CommandFrameRouting (..),
+                                                                 classifyCommandFrame,
+                                                                 renderCommandGrammarError)
+import           Database.Redis.Cluster.Internal.Topology       (commitRefreshedTopology,
+                                                                 patchMovedSlot)
+import           Database.Redis.Command                         (ClientReplyModeUnsupported (..),
+                                                                 ClientReplyValues (ON),
+                                                                 ClientState (..),
+                                                                 RedisCommandClient (..),
+                                                                 RedisCommands (..),
+                                                                 convertResp,
+                                                                 encodeCommandBuilder,
+                                                                 geoRadiusFlagToList,
+                                                                 geoSearchByToList,
+                                                                 geoSearchFromToList,
+                                                                 geoSearchOptionToList,
+                                                                 geoUnitKeyword,
+                                                                 parseWith,
+                                                                 runRedisCommandClient,
+                                                                 showBS)
+import qualified Database.Redis.Command                         as RedisCommandClient
+import           Database.Redis.Connector                       (ConnectionPhase (..),
+                                                                 ConnectionSetupException,
+                                                                 ConnectionSupervisor (..),
+                                                                 Connector,
+                                                                 withConnectionTimeout,
+                                                                 withConnectionTimeoutSupervised)
+import           Database.Redis.FromResp                        (FromResp (..))
+import           Database.Redis.Internal.MultiplexPool          (MultiplexPool,
+                                                                 MultiplexPoolException (..),
+                                                                 closeMultiplexPool,
+                                                                 createMultiplexPool,
+                                                                 submitToNode,
+                                                                 submitToNodeWithAsking)
+import           Database.Redis.Resp                            (Encodable (..),
+                                                                 RespData (..))
 
 -- | Error types specific to cluster operations.
 data ClusterError
@@ -913,6 +919,22 @@ executeKeyed key cmdArgs = do
 executeKeyedAs :: (Client client, FromResp a) => ByteString -> [ByteString] -> ClusterCommandClient client a
 executeKeyedAs key cmdArgs = executeKeyed key cmdArgs >>= convertResp
 
+-- | Validate every key-bearing command against generated metadata before
+-- selecting its slot, including all keys in typed multi-key commands.
+executeValidatedKeyedAs
+  :: (Client client, FromResp a)
+  => [ByteString]
+  -> ClusterCommandClient client a
+executeValidatedKeyedAs command =
+  case classifyCommandFrame command of
+    Right (FrameSingleSlot key _) -> executeKeyedAs key command
+    Right (FrameCrossSlot _) ->
+      Prelude.fail "CROSSSLOT Keys in request don't hash to the same slot"
+    Right FrameKeyless ->
+      Prelude.fail "expected a key-bearing Redis command"
+    Left errorValue ->
+      Prelude.fail $ renderCommandGrammarError errorValue
+
 -- | Execute a keyless command and unwrap the result
 executeKeyless
   :: (Client client, FromResp a)
@@ -1153,6 +1175,14 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
     (k:_) -> executeKeyedAs k ("MGET" : keys)
   setnx k v = executeKeyedAs k ["SETNX", k, v]
   decr k = executeKeyedAs k ["DECR", k]
+  append k v = executeValidatedKeyedAs ["APPEND", k, v]
+  strlen k = executeValidatedKeyedAs ["STRLEN", k]
+  setex k secs v = executeValidatedKeyedAs ["SETEX", k, showBS secs, v]
+  incrby k amt = executeValidatedKeyedAs ["INCRBY", k, showBS amt]
+  decrby k amt = executeValidatedKeyedAs ["DECRBY", k, showBS amt]
+  incrbyfloat k amt = executeValidatedKeyedAs ["INCRBYFLOAT", k, showBS amt]
+  getdel k = executeValidatedKeyedAs ["GETDEL", k]
+  getex k opts = executeValidatedKeyedAs (["GETEX", k] ++ opts)
   psetex k ms v = executeKeyedAs k ["PSETEX", k, showBS ms, v]
   bulkSet kvs = case kvs of
     []         -> executeKeyless (RedisCommandClient.bulkSet [])
@@ -1174,6 +1204,14 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   lrange k start stop = executeKeyedAs k ["LRANGE", k, showBS start, showBS stop]
   expire k secs = executeKeyedAs k ["EXPIRE", k, showBS secs]
   ttl k = executeKeyedAs k ["TTL", k]
+  persist k = executeValidatedKeyedAs ["PERSIST", k]
+  keyType k = executeValidatedKeyedAs ["TYPE", k]
+  rename k newk = executeValidatedKeyedAs ["RENAME", k, newk]
+  renamenx k newk = executeValidatedKeyedAs ["RENAMENX", k, newk]
+  unlink keys = executeValidatedKeyedAs ("UNLINK" : keys)
+  pfadd k elements = executeValidatedKeyedAs ("PFADD" : k : elements)
+  pfcount keys = executeValidatedKeyedAs ("PFCOUNT" : keys)
+  pfmerge destk srckeys = executeValidatedKeyedAs ("PFMERGE" : destk : srckeys)
   rpush k vs = executeKeyedAs k ("RPUSH" : k : vs)
   lpop k = executeKeyedAs k ["LPOP", k]
   rpop k = executeKeyedAs k ["RPOP", k]
@@ -1181,11 +1219,26 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   smembers k = executeKeyedAs k ["SMEMBERS", k]
   scard k = executeKeyedAs k ["SCARD", k]
   sismember k v = executeKeyedAs k ["SISMEMBER", k, v]
+  srem k members = executeValidatedKeyedAs ("SREM" : k : members)
+  sdiff keys = executeValidatedKeyedAs ("SDIFF" : keys)
+  sinter keys = executeValidatedKeyedAs ("SINTER" : keys)
+  sunion keys = executeValidatedKeyedAs ("SUNION" : keys)
+  spop k = executeValidatedKeyedAs ["SPOP", k]
+  srandmember k = executeValidatedKeyedAs ["SRANDMEMBER", k]
   hdel k fs = executeKeyedAs k ("HDEL" : k : fs)
   hkeys k = executeKeyedAs k ["HKEYS", k]
   hvals k = executeKeyedAs k ["HVALS", k]
+  hgetall k = executeValidatedKeyedAs ["HGETALL", k]
+  hlen k = executeValidatedKeyedAs ["HLEN", k]
+  hsetnx k f v = executeValidatedKeyedAs ["HSETNX", k, f, v]
+  hincrby k f amt = executeValidatedKeyedAs ["HINCRBY", k, f, showBS amt]
+  hincrbyfloat k f amt = executeValidatedKeyedAs ["HINCRBYFLOAT", k, f, showBS amt]
   llen k = executeKeyedAs k ["LLEN", k]
   lindex k idx = executeKeyedAs k ["LINDEX", k, showBS idx]
+  linsert k pos pivot element = executeValidatedKeyedAs ["LINSERT", k, pos, pivot, element]
+  lset k idx element = executeValidatedKeyedAs ["LSET", k, showBS idx, element]
+  ltrim k start stop = executeValidatedKeyedAs ["LTRIM", k, showBS start, showBS stop]
+  lrem k count element = executeValidatedKeyedAs ["LREM", k, showBS count, element]
   clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
   clientReply ON  = executeKeylessMaybe (RedisCommandClient.clientReply ON)
   clientReply val = liftIO $ throwIO (ClientReplyModeUnsupported val)
@@ -1196,6 +1249,17 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
     let base = ["ZRANGE", k, showBS start, showBS stop]
         command = if withScores then base ++ ["WITHSCORES"] else base
     in executeKeyedAs k command
+  zrem k members = executeValidatedKeyedAs ("ZREM" : k : members)
+  zcard k = executeValidatedKeyedAs ["ZCARD", k]
+  zscore k member = executeValidatedKeyedAs ["ZSCORE", k, member]
+  zrank k member = executeValidatedKeyedAs ["ZRANK", k, member]
+  zrevrank k member = executeValidatedKeyedAs ["ZREVRANK", k, member]
+  zcount k minScore maxScore = executeValidatedKeyedAs ["ZCOUNT", k, minScore, maxScore]
+  zincrby k increment member =
+    executeValidatedKeyedAs ["ZINCRBY", k, showBS increment, member]
+  zrangestore dst src minValue maxValue options =
+    executeValidatedKeyedAs
+      (["ZRANGESTORE", dst, src, minValue, maxValue] ++ options)
   geoadd k entries =
     let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
     in executeKeyedAs k ("GEOADD" : k : payload)

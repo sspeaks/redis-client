@@ -54,6 +54,30 @@ runRedis defaultStandaloneConfig $ do
   (ok :: Bool)        <- set "k" "v"     -- True (from +OK)
 ```
 
+## Additional Core Commands (Unreleased 0.2.0.0)
+
+The unreleased 0.2.0.0 API adds typed wrappers for:
+
+- Strings: `append`, `strlen`, `setex`, `incrby`, `decrby`, `incrbyfloat`,
+  `getdel`, and `getex`.
+- Hashes and lists: `hgetall`, `hlen`, `hsetnx`, `hincrby`, `hincrbyfloat`,
+  `linsert`, `lset`, `ltrim`, and `lrem`.
+- Sets and HyperLogLog: `srem`, `sdiff`, `sinter`, `sunion`, `spop`,
+  `srandmember`, `pfadd`, `pfcount`, and `pfmerge`.
+- Sorted sets and keys: `zrem`, `zcard`, `zscore`, `zrank`, `zrevrank`,
+  `zcount`, `zincrby`, `zrangestore`, `persist`, `keyType`, `rename`,
+  `renamenx`, and `unlink`.
+
+These wrappers use the same polymorphic `FromResp` conversion as existing
+commands. In a cluster, every key of a multi-key wrapper must share a hash
+slot; mismatched keys fail locally with `CROSSSLOT` before a command is sent.
+`getex` and `zrangestore` accept their Redis option tokens as `ByteString`
+lists and validate them against the bundled Redis 7.2 command metadata.
+
+Because `RedisCommands` is a public typeclass, adding methods requires
+downstream custom instances to implement them. This is a PVP breaking change
+and is therefore part of the planned 0.2.0.0 release.
+
 ## Bracket Pattern (Recommended)
 
 Use bracket-style functions for exception-safe resource management:
