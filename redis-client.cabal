@@ -84,7 +84,8 @@ test-suite ClusterTunnelSpec
     other-modules:    ClusterTunnel
     hs-source-dirs:   test
                     , app
-    build-depends:    attoparsec
+    build-depends:    async
+                    , attoparsec
                     , bytestring
                     , containers
                     , hask-redis-mux
