@@ -1,6 +1,23 @@
 # Redis Client
 
-A Haskell Redis client with support for standalone and cluster modes, plaintext and TLS connections, and RESP protocol implementation.
+A Haskell Redis client with standalone and cluster modes, plaintext and TLS
+connections, and a RESP2-first command protocol implementation.
+
+### RESP support
+
+The public command parser and encoder support this exact value set:
+
+- RESP2 simple strings, errors, integers, bulk strings (including null bulk
+  strings), and non-null arrays.
+- RESP3-shaped map and set aggregates.
+
+They do not provide general RESP3 support: pushes, attributes, streamed
+encodings, booleans, doubles, big numbers, bulk errors, verbatim strings, and
+arbitrary module replies are unsupported, and the client does not negotiate
+RESP3 session semantics. The pinned cluster tunnel is different: it can
+forward complete opaque RESP3 frames, including streamed values, byte-for-byte
+for transport compatibility, but those values are not parsed into `RespData`
+or supported by command APIs.
 
 ## Quick Start
 

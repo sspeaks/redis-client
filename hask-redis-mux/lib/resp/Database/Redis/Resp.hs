@@ -2,8 +2,18 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Serialization and parsing for the Redis Serialization Protocol (RESP).
--- Supports RESP2 and RESP3 wire types including bulk strings, arrays, maps, and sets.
+-- | Serialization and parsing for the supported RESP value subset.
+--
+-- The command client implements RESP2 simple strings, errors, integers, bulk
+-- strings (including null bulk strings), and non-null arrays. It also exposes
+-- RESP3-shaped maps and sets because Redis commands can return those aggregate
+-- forms. This module does not parse or encode RESP3 session/scalar types such
+-- as pushes, attributes, streamed encodings, booleans, doubles, big numbers,
+-- bulk errors, verbatim strings, or module-specific replies.
+--
+-- The pinned cluster tunnel has a separate opaque framing path that can
+-- forward complete RESP3 values without turning them into 'RespData'; that
+-- transport behavior is not general RESP3 command support.
 --
 -- @since 0.1.0.0
 module Database.Redis.Resp
