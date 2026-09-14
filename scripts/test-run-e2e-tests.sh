@@ -154,6 +154,9 @@ if [[ "$1" == "volume" && "$2" == "ls" ]]; then
 fi
 
 if [[ "$1" == "compose" && " $* " == *" up "* ]]; then
+  if [[ " $* " == *" up --detach redis "* ]]; then
+    exit 0
+  fi
   case "$STUB_PHASE" in
     compose-start-failure) exit 25 ;;
     compose-failure|primary-and-cleanup-failure) exit 42 ;;
@@ -162,6 +165,27 @@ if [[ "$1" == "compose" && " $* " == *" up "* ]]; then
       exit 0
       ;;
   esac
+  exit 0
+fi
+
+if [[ "$1" == "compose" && " $* " == *" exec -T redis redis-cli -p 6379 ping "* ]]; then
+  readiness_attempt_file="$state_dir/readiness-attempts"
+  readiness_attempts="$(cat "$readiness_attempt_file" 2>/dev/null || printf '%s' 0)"
+  readiness_attempts=$((readiness_attempts + 1))
+  printf '%s\n' "$readiness_attempts" >"$readiness_attempt_file"
+  case "$STUB_PHASE" in
+    delayed-readiness)
+      if [[ "$readiness_attempts" -lt 3 ]]; then
+        printf '%s\n' "LOADING Redis is loading the dataset in memory"
+        exit 0
+      fi
+      ;;
+    readiness-failure)
+      printf '%s\n' "LOADING Redis is loading the dataset in memory"
+      exit 0
+      ;;
+  esac
+  printf '%s\n' "PONG"
   exit 0
 fi
 
@@ -290,7 +314,9 @@ assert_ordered "$fixture/commands.log" \
   "docker load" \
   "docker image inspect --format" \
   "docker container ls --all --quiet --filter label=com.docker.compose.project=" \
-  " up --exit-code-from e2etests" \
+  " up --detach redis" \
+  " exec -T redis redis-cli -p 6379 ping" \
+  " up --no-deps --exit-code-from e2etests e2etests" \
   " down" \
   "docker image rm sha256:owned-"
 assert_contains "$fixture/commands.log" \
@@ -305,6 +331,45 @@ second_sequential_owner="$(cat "$fixture/docker-state/image-owner")"
 if [[ "$first_sequential_owner" == "$second_sequential_owner" ]]; then
   fail "sequential invocations reused ownership token $first_sequential_owner"
 fi
+
+fixture="$(run_case delayed-readiness delayed-readiness 0)"
+assert_ordered "$fixture/commands.log" \
+  " up --detach redis" \
+  " exec -T redis redis-cli -p 6379 ping" \
+  " up --no-deps --exit-code-from e2etests e2etests"
+if [[ "$(cat "$fixture/docker-state/readiness-attempts")" -ne 3 ]]; then
+  fail "delayed Redis readiness did not retry until the third PING"
+fi
+
+fixture="$(create_fixture readiness-failure)"
+: >"$fixture/commands.log"
+set +e
+PATH="$fixture/bin:$PATH" \
+  STUB_LOG="$fixture/commands.log" \
+  STUB_PHASE="readiness-failure" \
+  STUB_ROOT="$fixture" \
+  REDIS_E2E_READINESS_ATTEMPTS=2 \
+  REDIS_E2E_READINESS_INTERVAL_SECONDS=0 \
+  /bin/bash "$fixture/scripts/run-e2e-tests.sh" \
+  >"$fixture/output" 2>&1
+readiness_status=$?
+set -e
+assert_status 1 "$readiness_status" "readiness-failure"
+assert_contains "$fixture/output" \
+  "standalone Redis did not answer PING after 2 attempts"
+assert_ordered "$fixture/commands.log" \
+  " up --detach redis" \
+  " exec -T redis redis-cli -p 6379 ping" \
+  " down" \
+  "docker image rm sha256:owned-"
+if [[ "$(cat "$fixture/docker-state/readiness-attempts")" -ne 2 ]]; then
+  fail "readiness failure did not respect the configured attempt bound"
+fi
+assert_contains "$fixture/commands.log" " ps"
+assert_contains "$fixture/commands.log" " logs --no-color redis"
+assert_not_contains "$fixture/commands.log" \
+  " up --no-deps --exit-code-from e2etests e2etests"
+assert_runtime_removed "$fixture"
 
 fixture="$(run_case cert-failure cert-failure 1)"
 assert_contains "$fixture/output" \
@@ -353,13 +418,13 @@ assert_not_contains "$fixture/commands.log" " down"
 
 fixture="$(run_case compose-start-failure compose-start-failure 25)"
 assert_ordered "$fixture/commands.log" \
-  " up --exit-code-from e2etests" \
+  " up --no-deps --exit-code-from e2etests e2etests" \
   " down" \
   "docker image rm sha256:owned-"
 
 fixture="$(run_case compose-failure compose-failure 42)"
 assert_ordered "$fixture/commands.log" \
-  " up --exit-code-from e2etests" \
+  " up --no-deps --exit-code-from e2etests e2etests" \
   " down" \
   "docker image rm sha256:owned-"
 
@@ -381,7 +446,7 @@ assert_contains "$fixture/output" \
 
 fixture="$(run_case signal signal 143)"
 assert_ordered "$fixture/commands.log" \
-  " up --exit-code-from e2etests" \
+  " up --no-deps --exit-code-from e2etests e2etests" \
   " down" \
   "docker image rm sha256:owned-"
 
@@ -426,7 +491,8 @@ set -e
 assert_status 2 "$make_status" "make test-e2e"
 assert_contains "$fixture/make.out" "Error 42"
 assert_contains "$fixture/commands.log" "test-tls-fixtures"
-assert_contains "$fixture/commands.log" " up --exit-code-from e2etests"
+assert_contains "$fixture/commands.log" \
+  " up --no-deps --exit-code-from e2etests e2etests"
 assert_contains "$fixture/commands.log" " down"
 
 printf '%s\n' "Standalone E2E runner exit and cleanup checks passed."

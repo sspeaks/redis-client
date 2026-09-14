@@ -18,6 +18,7 @@ E2E_IMAGE=""
 IMAGE_OWNER_LABEL="com.redis-client.e2e.owner"
 IMAGE_OWNERSHIP_ESTABLISHED=0
 COMPOSE_OWNERSHIP_ESTABLISHED=0
+COMPOSE=()
 
 reserve_run_identity() {
   local candidate
@@ -78,6 +79,13 @@ assert_compose_identity_available() {
   COMPOSE_OWNERSHIP_ESTABLISHED=1
 }
 
+diagnostics() {
+  echo "Standalone E2E diagnostics for project $PROJECT_NAME:" >&2
+  "${COMPOSE[@]}" ps >&2 || true
+  echo "--- redis ---" >&2
+  "${COMPOSE[@]}" logs --no-color redis >&2 || true
+}
+
 cleanup() {
   local primary_status=$?
   local cleanup_status=0
@@ -89,8 +97,12 @@ cleanup() {
   trap - EXIT INT TERM HUP
   set +e
 
+  if [[ "$primary_status" -ne 0 && "$COMPOSE_OWNERSHIP_ESTABLISHED" -eq 1 ]]; then
+    diagnostics
+  fi
+
   if [[ "$COMPOSE_OWNERSHIP_ESTABLISHED" -eq 1 ]]; then
-    docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" down \
+    "${COMPOSE[@]}" down \
       >/dev/null 2>&1
     command_status=$?
     if [[ "$command_status" -ne 0 ]]; then
@@ -175,6 +187,36 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+wait_for_redis() {
+  local attempt
+  local attempts="${REDIS_E2E_READINESS_ATTEMPTS:-30}"
+  local interval_seconds="${REDIS_E2E_READINESS_INTERVAL_SECONDS:-1}"
+
+  if ! [[ "$attempts" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: REDIS_E2E_READINESS_ATTEMPTS must be a positive integer." >&2
+    return 1
+  fi
+  if ! [[ "$interval_seconds" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "Error: REDIS_E2E_READINESS_INTERVAL_SECONDS must be a non-negative number." >&2
+    return 1
+  fi
+
+  for attempt in $(seq 1 "$attempts"); do
+    if "${COMPOSE[@]}" exec -T redis redis-cli -p 6379 ping 2>/dev/null | \
+      grep -qx 'PONG'; then
+      echo "Standalone Redis is ready."
+      return 0
+    fi
+    if [[ "$attempt" -lt "$attempts" ]]; then
+      echo "Waiting for standalone Redis readiness ($attempt/$attempts)..." >&2
+      sleep "$interval_seconds"
+    fi
+  done
+
+  echo "Error: standalone Redis did not answer PING after $attempts attempts." >&2
+  return 1
+}
+
 cd "$REPO_ROOT"
 
 reserve_run_identity
@@ -214,5 +256,9 @@ if [[ "$loaded_owner" != "$RUN_TOKEN" ]]; then
 fi
 
 assert_compose_identity_available
-docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" \
-  up --exit-code-from e2etests
+COMPOSE=(docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE")
+"${COMPOSE[@]}" up --detach redis
+if ! wait_for_redis; then
+  exit 1
+fi
+"${COMPOSE[@]}" up --no-deps --exit-code-from e2etests e2etests
