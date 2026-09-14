@@ -1,6 +1,23 @@
 # Redis Client
 
-A Haskell Redis client with support for standalone and cluster modes, plaintext and TLS connections, and RESP protocol implementation.
+A Haskell Redis client with standalone and cluster modes, plaintext and TLS
+connections, and a RESP2-first command protocol implementation.
+
+### RESP support
+
+The public command parser and encoder support this exact value set:
+
+- RESP2 simple strings, errors, integers, bulk strings (including null bulk
+  strings), and non-null arrays.
+- RESP3-shaped map and set aggregates.
+
+They do not provide general RESP3 support: pushes, attributes, streamed
+encodings, booleans, doubles, big numbers, bulk errors, verbatim strings, and
+arbitrary module replies are unsupported, and the client does not negotiate
+RESP3 session semantics. The pinned cluster tunnel is different: its opaque
+fallback forwards complete RESP3 frames that are outside `RespData`, including
+streamed values, byte-for-byte for transport compatibility. Parsed map and set
+replies are re-encoded, so their original ordering is not preserved.
 
 ## Quick Start
 
@@ -59,13 +76,15 @@ supports every request size accepted by Redis itself. Clients that need larger
 requests should connect directly to the cluster nodes (or use pinned mode) and
 remain within the applicable Redis deployment limits.
 
-Pinned cluster tunnels forward traffic in both directions. They rewrite complete
-RESP2 topology replies while preserving complete opaque RESP3 values, including
-streamed values, byte-for-byte. Malformed or incomplete streamed RESP3 framing
-fails closed by closing the connection rather than attempting to resynchronize
-inside a possible binary payload. This narrow framing compatibility is not a
-claim of general RESP3 command support. Incomplete pinned replies retain at
-most a 512 MiB Redis bulk payload plus its RESP framing overhead.
+Pinned cluster tunnels forward traffic in both directions. Replies represented
+by `RespData`, including RESP3-shaped maps and sets, are parsed and re-encoded
+while applicable topology values are rewritten. The opaque fallback forwards
+complete RESP3 frames outside that subset, including streamed values,
+byte-for-byte. Malformed or incomplete streamed RESP3 framing fails closed by
+closing the connection rather than attempting to resynchronize inside a
+possible binary payload. This narrow framing compatibility is not a claim of
+general RESP3 command support. Incomplete pinned replies retain at most a
+512 MiB Redis bulk payload plus its RESP framing overhead.
 
 ### Command Options
 
