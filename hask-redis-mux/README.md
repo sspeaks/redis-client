@@ -20,10 +20,12 @@ errors, verbatim strings, or arbitrary module replies. The client also does not
 negotiate RESP3 session semantics; authenticated connections explicitly retain
 RESP2 with `HELLO 2`.
 
-The pinned cluster tunnel has a separate compatibility path that can forward
-complete opaque RESP3 frames, including streamed values, without constructing
-`RespData`. Opaque forwarding is transport framing compatibility only and does
-not make those RESP3 types available to command APIs.
+The pinned cluster tunnel has a separate opaque fallback that forwards complete
+RESP3 frames outside `RespData`, including streamed values, byte-for-byte.
+RESP3-shaped maps and sets take the `RespData` path and are re-encoded, so their
+original ordering is not preserved. Opaque forwarding is transport framing
+compatibility only and does not make those RESP3 types available to command
+APIs.
 
 ## Features
 

@@ -11,9 +11,10 @@
 -- as pushes, attributes, streamed encodings, booleans, doubles, big numbers,
 -- bulk errors, verbatim strings, or module-specific replies.
 --
--- The pinned cluster tunnel has a separate opaque framing path that can
--- forward complete RESP3 values without turning them into 'RespData'; that
--- transport behavior is not general RESP3 command support.
+-- The pinned cluster tunnel has a separate opaque framing fallback for
+-- complete RESP3 values outside this subset. Maps and sets take this module's
+-- 'RespData' path and are re-encoded, so their original ordering is not
+-- preserved. That transport behavior is not general RESP3 command support.
 --
 -- @since 0.1.0.0
 module Database.Redis.Resp
