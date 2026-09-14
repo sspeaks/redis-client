@@ -5,9 +5,11 @@ module LibraryE2E.StandaloneConcurrencyTests (spec) where
 
 import           Control.Concurrent.Async              (mapConcurrently)
 import           Control.Exception                     (SomeException, try)
-import           Control.Monad                         (forM_)
-import           Data.IORef                            (atomicModifyIORef',
+import           Control.Monad                         (forM, forM_)
+import           Data.IORef                            (IORef,
+                                                        atomicModifyIORef',
                                                         newIORef, readIORef)
+import qualified Data.Map.Strict                       as Map
 import           Database.Redis.Client                 (PlainTextClient)
 import           Database.Redis.Cluster                (NodeAddress (..))
 import           Database.Redis.Command                (RedisCommands (..),
@@ -24,6 +26,10 @@ import           Database.Redis.Standalone             (StandaloneClient,
                                                         closeStandaloneClient,
                                                         createStandaloneClient,
                                                         runStandaloneClient)
+import           LibraryE2E.StormAssertions            (commandFailure,
+                                                        recordProgress,
+                                                        trySynchronous)
+import           System.Timeout                        (timeout)
 
 import           Test.Hspec
 
@@ -40,6 +46,28 @@ createTestStandaloneClient =
 run :: StandaloneClient -> StandaloneCommandClient RespData -> IO RespData
 run = runStandaloneClient
 
+runStormWorker
+  :: StandaloneClient
+  -> IORef (Map.Map Int String)
+  -> Int
+  -> Int
+  -> IO [String]
+runStormWorker client progress opsPerThread tid = do
+  let prefix = "conc-t" <> showBS tid <> "-"
+
+  failures <- forM [1..opsPerThread] $ \i -> do
+    let key = prefix <> showBS i
+        value = "v-" <> showBS tid <> "-" <> showBS i
+
+    recordProgress progress tid "SET" key
+    setResult <- trySynchronous $ run client (set key value)
+    recordProgress progress tid "GET" key
+    getResult <- trySynchronous $ run client (get key)
+    pure $
+      commandFailure tid "SET" key (RespSimpleString "OK") setResult
+        ++ commandFailure tid "GET" key (RespBulkString value) getResult
+  pure (concat failures)
+
 spec :: Spec
 spec = describe "Concurrency and Stress Tests" $ do
 
@@ -51,38 +79,23 @@ spec = describe "Concurrency and Stress Tests" $ do
 
       let threadCount = 50 :: Int
           opsPerThread = 100 :: Int
+          stormTimeoutMicros = 60 * 1000000
 
-      results <- mapConcurrently (\tid -> do
-        let prefix = "conc-t" <> showBS tid <> "-"
-        errors <- newIORef (0 :: Int)
-
-        forM_ [1..opsPerThread] $ \i -> do
-          let key = prefix <> showBS i
-              val = "v-" <> showBS tid <> "-" <> showBS i
-
-          -- SET
-          sr <- try (run client (set key val))
-                  :: IO (Either SomeException RespData)
-          case sr of
-            Left _  -> atomicModifyIORef' errors (\n -> (n + 1, ()))
-            Right _ -> return ()
-
-          -- GET and verify
-          gr <- try (run client (get key))
-                  :: IO (Either SomeException RespData)
-          case gr of
-            Right (RespBulkString v) | v == val -> return ()
-            Right (RespBulkString _) ->
-              -- Wrong value = cross-thread corruption!
-              atomicModifyIORef' errors (\n -> (n + 1, ()))
-            _ -> return ()  -- Nil or transient error, not corruption
-
-        readIORef errors
-        ) [1..threadCount]
-
-      -- Sum up corruption errors across all threads
-      let totalErrors = sum results
-      totalErrors `shouldBe` 0
+      progress <- newIORef Map.empty
+      result <- timeout stormTimeoutMicros $
+        mapConcurrently
+          (runStormWorker client progress opsPerThread)
+          [1..threadCount]
+      case result of
+        Nothing -> do
+          workerProgress <- readIORef progress
+          expectationFailure $ unlines
+            [ "Standalone SET/GET storm timed out after 60 seconds."
+            , "Last operation for each worker:"
+            , unlines (Map.elems workerProgress)
+            ]
+        Just failures ->
+          concat failures `shouldBe` []
 
       _ <- run client flushAll
       closeStandaloneClient client
