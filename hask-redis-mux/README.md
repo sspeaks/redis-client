@@ -3,8 +3,29 @@
 [![Hackage](https://img.shields.io/hackage/v/hask-redis-mux.svg)](https://hackage.haskell.org/package/hask-redis-mux)
 [![CI](https://github.com/sspeaks/redis-client/actions/workflows/runTests.yml/badge.svg)](https://github.com/sspeaks/redis-client/actions/workflows/runTests.yml)
 
-A multiplexed Redis client library for Haskell with full RESP protocol support,
-Redis Cluster topology discovery, connection pooling, and TLS.
+A multiplexed Redis client library for Haskell with RESP2-first command
+support, Redis Cluster topology discovery, connection pooling, and TLS.
+
+## RESP support
+
+The command client parses and encodes this exact `RespData` subset:
+
+- RESP2 simple strings, errors, integers, bulk strings (including null bulk
+  strings), and non-null arrays.
+- RESP3-shaped maps and sets as aggregate values.
+
+This is not full RESP3 support. The command parser does not interpret RESP3
+pushes, attributes, streamed encodings, booleans, doubles, big numbers, bulk
+errors, verbatim strings, or arbitrary module replies. The client also does not
+negotiate RESP3 session semantics; authenticated connections explicitly retain
+RESP2 with `HELLO 2`.
+
+The pinned cluster tunnel has a separate opaque fallback that forwards complete
+RESP3 frames outside `RespData`, including streamed values, byte-for-byte.
+RESP3-shaped maps and sets take the `RespData` path and are re-encoded, so their
+original ordering is not preserved. Opaque forwarding is transport framing
+compatibility only and does not make those RESP3 types available to command
+APIs.
 
 ## Features
 

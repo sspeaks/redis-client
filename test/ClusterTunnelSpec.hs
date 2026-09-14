@@ -182,6 +182,13 @@ main = hspec $ do
           (push <> "-MOVED 3999 127.0.0.1:6381\r\n")
           BS.empty
 
+    it "parses and re-encodes RESP3 maps and sets instead of forwarding them opaquely" $ do
+      let respMap = "%2\r\n+z\r\n:1\r\n+a\r\n:2\r\n"
+          respSet = "~2\r\n+z\r\n+a\r\n"
+          expected = "%2\r\n+a\r\n:2\r\n+z\r\n:1\r\n~2\r\n+a\r\n+z\r\n"
+      parsePinnedResponses BS.empty (respMap <> respSet)
+        `shouldBe` PinnedResponses expected BS.empty
+
     it "preserves a streamed blob payload exactly before rewriting a later response" $ do
       let payload = "x\n-MOVED 3999 redis.example:6381\r\n\NUL\255\n-ASK 10 redis.example:6382\r\n"
           stream = streamedBlob [payload]
