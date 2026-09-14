@@ -1,11 +1,15 @@
 cabal-version:      3.0
 name:               hask-redis-mux
 version:            0.2.0.0
-synopsis:           A RESP protocol implementation and multiplexed Redis client library
+synopsis:           A RESP2-first multiplexed Redis client library
 description:
-    hask-redis-mux provides a full RESP protocol parser, Redis client with TLS support,
-    CRC16 hash slot computation, and a multiplexed Redis Cluster client with connection
-    pooling and automatic topology discovery.
+    hask-redis-mux provides a RESP2-first Redis client with TLS support, CRC16
+    hash slot computation, and a multiplexed Redis Cluster client with
+    connection pooling and automatic topology discovery. Its public RESP
+    parser and encoder support simple strings, errors, integers, bulk strings
+    (including null bulk strings), non-null arrays, and the RESP3-shaped map
+    and set aggregates. It does not provide general RESP3 session or scalar
+    type support.
 license:            MIT
 license-file:       LICENSE
 author:             Seth Speaks

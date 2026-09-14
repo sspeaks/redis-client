@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+*   **Qualified RESP support**
+    *   Command parsing and encoding are RESP2-first, with RESP3-shaped map
+        and set aggregates only. RESP3 session and scalar types remain
+        unsupported by command APIs; pinned tunnel opaque forwarding is
+        documented separately.
 *   **Connection-pool synchronization API change**
     *   `ConnectionPool(..)` now exposes per-node synchronization state rather than
         the former single pool-wide `MVar`; code that constructed or inspected this

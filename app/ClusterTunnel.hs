@@ -397,7 +397,8 @@ data PinnedResponseResult
   deriving (Eq, Show)
 
 -- | Drain complete response frames, rewriting only completed topology frames.
--- RESP3 values outside the RESP2-compatible subset are forwarded unchanged.
+-- Responses representable as 'RespData', including maps and sets, are
+-- re-encoded; opaque fallback frames are forwarded unchanged.
 -- A malformed streamed value terminates the connection rather than allowing
 -- line resynchronization to reinterpret bytes that might be chunk payload.
 parsePinnedResponses :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
