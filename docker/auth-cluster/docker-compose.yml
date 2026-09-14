@@ -1,6 +1,6 @@
 services:
   auth-redis1:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     hostname: redis-auth1.local
     volumes:
       - ./redis1.conf:/usr/local/etc/redis/redis.conf:ro
@@ -9,7 +9,7 @@ services:
       - auth-cluster-net
 
   auth-redis2:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     hostname: redis-auth2.local
     volumes:
       - ./redis2.conf:/usr/local/etc/redis/redis.conf:ro
@@ -18,7 +18,7 @@ services:
       - auth-cluster-net
 
   auth-redis3:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     hostname: redis-auth3.local
     volumes:
       - ./redis3.conf:/usr/local/etc/redis/redis.conf:ro

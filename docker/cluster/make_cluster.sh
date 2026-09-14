@@ -70,7 +70,7 @@ fi
 # Create the cluster with a timeout using a container in the same network
 # This allows the cluster nodes to communicate using their container hostnames
 echo "Creating Redis cluster using container hostnames..."
-if timeout 120 docker run --rm --network "$NETWORK_NAME" redis redis-cli \
+if timeout 120 docker run --rm --network "$NETWORK_NAME" redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7 redis-cli \
   --cluster create "${CLUSTER_NODES[@]}" --cluster-yes; then
   echo "Redis cluster created successfully!"
 else

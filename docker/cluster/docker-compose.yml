@@ -1,6 +1,6 @@
 services:
   redis1:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     hostname: redis1.local
     container_name: redis-cluster-node1
     ports:
@@ -12,7 +12,7 @@ services:
       - redis-cluster-net
 
   redis2:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     hostname: redis2.local
     container_name: redis-cluster-node2
     ports:
@@ -24,7 +24,7 @@ services:
       - redis-cluster-net
 
   redis3:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     hostname: redis3.local
     container_name: redis-cluster-node3
     ports:
@@ -36,7 +36,7 @@ services:
       - redis-cluster-net
 
   redis4:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     hostname: redis4.local
     container_name: redis-cluster-node4
     ports:
@@ -48,7 +48,7 @@ services:
       - redis-cluster-net
 
   redis5:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     hostname: redis5.local
     container_name: redis-cluster-node5
     ports:
@@ -60,7 +60,7 @@ services:
       - redis-cluster-net
 
   redis-standalone:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     hostname: redis-standalone.local
     container_name: redis-standalone
     ports:

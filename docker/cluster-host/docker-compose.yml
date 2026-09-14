@@ -1,6 +1,6 @@
 services:
   redis1:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     container_name: redis-host-node1
     profiles: ["host-network"]
     network_mode: host
@@ -9,7 +9,7 @@ services:
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
 
   redis2:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     container_name: redis-host-node2
     profiles: ["host-network"]
     network_mode: host
@@ -18,7 +18,7 @@ services:
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
 
   redis3:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     container_name: redis-host-node3
     profiles: ["host-network"]
     network_mode: host
@@ -27,7 +27,7 @@ services:
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
 
   redis4:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     container_name: redis-host-node4
     profiles: ["host-network"]
     network_mode: host
@@ -36,7 +36,7 @@ services:
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
 
   redis5:
-    image: redis
+    image: redis:7@sha256:71da9275c5f3fcb97d0fa0c8c5b36cc995327265420f17a04bfd544f458059f7
     container_name: redis-host-node5
     profiles: ["host-network"]
     network_mode: host
