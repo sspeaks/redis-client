@@ -32,6 +32,8 @@ module Database.Redis.Internal.Multiplexer
   , submitCommandAsync
   , waitSlot
   , sameResponseSlot
+  , slotPoolRetainedSlots
+  , slotPoolRetentionCap
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where
@@ -87,6 +89,7 @@ instance Exception MultiplexerException
 data ResponseSlot = ResponseSlot
   { slotResult :: !(IORef (Maybe (Either SomeException RespData)))
   , slotSignal :: !(MVar ())
+  , slotStripe :: !Int
   }
   deriving Eq
 
@@ -98,38 +101,44 @@ sameResponseSlot left right = slotSignal left == slotSignal right
 -- Uses multiple IORef-based stacks indexed by capability (core) to reduce
 -- CAS contention between threads on different cores.
 data SlotPool = SlotPool
-  { spStripes    :: !(V.Vector (IORef [ResponseSlot]))
-  , spNumStripes :: !Int
+  { spStripes      :: !(V.Vector (IORef [ResponseSlot]))
+  , spStripeCaps   :: !(V.Vector Int)
+  , spNumStripes   :: !Int
+  , spRetentionCap :: !Int
   }
 
--- | Create a striped pool. Each stripe gets @n `div` numStripes@ pre-allocated slots.
+-- | Create a striped pool retaining at most @n@ slots across all stripes.
 createSlotPool :: Int -> IO SlotPool
 createSlotPool n = do
   let numStripes = 16
-      perStripe = max 4 (n `div` numStripes)
-  stripes <- V.replicateM numStripes $ do
+      retentionCap = max 1 n
+      (perStripe, extraSlots) = retentionCap `divMod` numStripes
+      stripeCaps = V.generate numStripes $ \index ->
+        perStripe + if index < extraSlots then 1 else 0
+  stripes <- V.imapM (\index stripeCap -> do
     slots <- mapM (\_ -> do
       r <- newIORef Nothing
       s <- newEmptyMVar
-      return $ ResponseSlot r s
-      ) [1..perStripe]
+      return $ ResponseSlot r s index
+      ) [1..stripeCap]
     newIORef slots
-  return $ SlotPool stripes numStripes
+    ) stripeCaps
+  return $ SlotPool stripes stripeCaps numStripes retentionCap
 
 -- | Pick a stripe based on the current thread's capability.
-getStripe :: SlotPool -> IO (IORef [ResponseSlot])
+getStripe :: SlotPool -> IO (Int, IORef [ResponseSlot])
 getStripe sp = do
   tid <- myThreadId
   (cap, _) <- GHC.threadCapability tid
   let !idx = cap `mod` spNumStripes sp
-  return $! spStripes sp V.! idx
+  return $! (idx, spStripes sp V.! idx)
 {-# INLINE getStripe #-}
 
 -- | Acquire a ResponseSlot from the pool, or allocate a fresh one if empty.
 -- Resets the slot's IORef to Nothing before returning.
 acquireSlot :: SlotPool -> IO ResponseSlot
 acquireSlot sp = do
-  ref <- getStripe sp
+  (stripe, ref) <- getStripe sp
   mSlot <- atomicModifyIORef' ref $ \case
     []     -> ([], Nothing)
     (x:xs) -> (xs, Just x)
@@ -140,15 +149,29 @@ acquireSlot sp = do
     Nothing -> do
       r <- newIORef Nothing
       s <- newEmptyMVar
-      return $ ResponseSlot r s
+      return $ ResponseSlot r s stripe
 {-# INLINE acquireSlot #-}
 
 -- | Return a ResponseSlot to the pool for reuse.
 releaseSlot :: SlotPool -> ResponseSlot -> IO ()
-releaseSlot sp slot = do
-  ref <- getStripe sp
-  atomicModifyIORef' ref $ \xs -> (slot : xs, ())
+releaseSlot sp slot =
+  let stripe = slotStripe slot
+      ref = spStripes sp V.! stripe
+      cap = spStripeCaps sp V.! stripe
+  in atomicModifyIORef' ref $ \slots ->
+       if length slots < cap
+         then (slot : slots, ())
+         else (slots, ())
 {-# INLINE releaseSlot #-}
+
+-- | Number of idle slots currently retained for reuse.
+slotPoolRetainedSlots :: SlotPool -> IO Int
+slotPoolRetainedSlots sp =
+  sum <$> mapM (fmap length . readIORef) (V.toList $ spStripes sp)
+
+-- | Configured maximum number of idle slots retained across all stripes.
+slotPoolRetentionCap :: SlotPool -> Int
+slotPoolRetentionCap = spRetentionCap
 
 -- | A command waiting to be sent, paired with a response slot.
 data PendingCommand = PendingCommand
@@ -456,7 +479,7 @@ submitCommand :: Multiplexer -> Builder.Builder -> IO RespData
 submitCommand mux cmdBuilder = do
   resultRef <- newIORef Nothing
   signal <- newEmptyMVar
-  let slot = ResponseSlot resultRef signal
+  let slot = ResponseSlot resultRef signal 0
       pending = PendingCommand cmdBuilder slot
   accepted <- commandEnqueue (muxCommandQueue mux) pending
   if accepted

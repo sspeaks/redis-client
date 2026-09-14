@@ -258,6 +258,19 @@ slotPoolSpec = describe "SlotPool" $ do
       ) [1..n]
     destroyMultiplexer mux
 
+  it "retains only the originating stripe's configured share after a burst" $
+    runOnCapabilityZero $ do
+      pool <- createSlotPool 128
+      (client, addRecv) <- createMockClient
+      mux <- createMultiplexer client (receive client)
+      slots <- replicateM 64 $ submitCommandAsync pool mux (encodeCmd ["PING"])
+      addRecv $ mconcat $ replicate 64 (encodeResp (RespSimpleString "OK"))
+      mapM_ (waitSlot pool) slots
+      slotPoolRetentionCap pool `shouldBe` 128
+      retained <- slotPoolRetainedSlots pool
+      retained `shouldBe` 128
+      destroyMultiplexer mux
+
   it "striped distribution across cores does not crash" $ do
     -- Verify that pool creation with various sizes works
     pool1 <- createSlotPool 1
@@ -324,6 +337,22 @@ responseSlotSpec = describe "ResponseSlot" $ do
     addRecv (encodeResp (RespSimpleString "OK"))
     waitSlot pool reuseSlot `shouldReturn` RespSimpleString "OK"
     destroyMultiplexer reuseMux
+
+  it "returns a cancelled waiter slot once after teardown" $
+    runOnCapabilityZero $ do
+      pool <- createSlotPool 16
+      (client, awaitSend, _) <- createBlockingClient
+      mux <- createMultiplexer client (receive client)
+      slot <- submitCommandAsync pool mux (encodeCmd ["GET", "blocked"])
+      awaitSend
+      waiter <- async (waitSlot pool slot)
+      threadDelay 10000
+      cancel waiter
+      _ <- waitCatch waiter
+      destroyMultiplexer mux
+      awaitRetainedSlots pool 16
+      retained <- slotPoolRetainedSlots pool
+      retained `shouldBe` 16
 
   it "reclaims both ASKING pair slots when the first wait fails" $ do
     pool <- createSlotPool 1
@@ -510,9 +539,9 @@ multiplexerLifecycleSpec = describe "Multiplexer lifecycle" $ do
   it "a later destroy resumes cancelled teardown across active, pending, and queued slots" $
     runOnCapabilityZero $ do
       -- All acquisition and release workers are pinned to stripe zero. With
-      -- createSlotPool 16 this starts with exactly four slots, so the eight
+      -- createSlotPool 128 this starts with exactly eight slots, so the eight
       -- held slots fully characterize the stripe after teardown.
-      pool <- createSlotPool 16
+      pool <- createSlotPool 128
       ( client
         , awaitFirstSend
         , awaitSecondSendGate
@@ -762,6 +791,13 @@ runOnCapabilityZero action = do
     Nothing         -> expectationFailure "pinned slot reuse test timed out"
     Just (Left err) -> throwIO (err :: SomeException)
     Just (Right ()) -> return ()
+
+awaitRetainedSlots :: SlotPool -> Int -> IO ()
+awaitRetainedSlots pool expected = do
+  retained <- slotPoolRetainedSlots pool
+  if retained == expected
+    then return ()
+    else threadDelay 1000 >> awaitRetainedSlots pool expected
 
 isTimedMultiplexerDead
   :: Maybe (Either SomeException RespData)
