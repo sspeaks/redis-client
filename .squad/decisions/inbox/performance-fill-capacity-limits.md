@@ -1,4 +1,0 @@
-### 2026-09-14: Bound fill concurrency by retained client memory
-**By:** Performance
-**What:** Fill mode defaults to two connections and rejects plans above 8 processes, 16 connections per process, 32 total workers, or 2 GiB of estimated retained client memory unless `--allow-high-scale-fill` is explicitly supplied. The estimate reserves 128 MiB for each process's random-noise buffer and one encoded pipeline batch per worker. Cluster mode rechecks the multiplied process, primary, and connection total before launching workers.
-**Why:** A comparable local one-gigabyte, two-connection fill profile measured 0.67 s / 2,594,328,552 bytes on the branch base and 0.69 s / 2,613,260,632 bytes after the configuration-only change. The default path shows no material throughput regression, while unbounded process and batch multiplication could retain multi-gigabyte client buffers before Redis backpressure applies.

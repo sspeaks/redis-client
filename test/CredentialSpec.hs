@@ -8,6 +8,7 @@ import           CredentialConfig  (rejectCredentialArguments,
 import           Data.List         (isInfixOf)
 import           FillLimits        (FillConcurrencyPlan (..),
                                     clusterFillConcurrencyPlan,
+                                    effectiveFillConnections,
                                     fillConcurrencyPlan)
 import           FillProcess       (buildChildArgs)
 import           System.IO.Error   (doesNotExistErrorType, mkIOError,
@@ -135,6 +136,21 @@ main = hspec $ do
           , plannedWorkerCount = 6
           , estimatedMemoryBytes = 2 * 128 * 1024 * 1024 + 6 * 10 * (100 + 200 + 64)
           }
+
+    it "uses two standalone workers by default" $
+      fillConcurrencyPlan defaultRunState `shouldBe`
+        Right FillConcurrencyPlan
+          { plannedProcesses = 1
+          , plannedConnections = 2
+          , plannedWorkerCount = 2
+          , estimatedMemoryBytes = 128 * 1024 * 1024 + 2 * 8192 * (512 + 512 + 64)
+          }
+
+    it "reports one effective connection in serial mode" $ do
+      let state = defaultRunState {serial = True, numConnections = Just 16}
+      effectiveFillConnections state `shouldBe` 1
+      fillConcurrencyPlan state `shouldSatisfy`
+        either (const False) (\plan -> plannedConnections plan == 1 && plannedWorkerCount plan == 1)
 
     it "rejects excessive process and connection counts unless explicitly authorized" $ do
       fillConcurrencyPlan (defaultRunState {numProcesses = Just 9})

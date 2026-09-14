@@ -1,5 +1,6 @@
 module FillLimits
   ( FillConcurrencyPlan (..)
+  , effectiveFillConnections
   , fillConcurrencyPlan
   , clusterFillConcurrencyPlan
   , formatMemoryEstimate
@@ -34,14 +35,20 @@ clusterFillConcurrencyPlan masterCount state
   | masterCount < 1 = Left "Cluster fill requires at least one primary node"
   | otherwise = buildPlan state masterCount
 
+effectiveFillConnections :: RunState -> Int
+effectiveFillConnections state
+  | serial state = 1
+  | otherwise = fromMaybe 2 (numConnections state)
+
 buildPlan :: RunState -> Int -> Either String FillConcurrencyPlan
 buildPlan state masterCount = do
   processes <- positive "Process count" $ fromMaybe 1 (numProcesses state)
-  connections <- positive "Connection count" $ fromMaybe 2 (numConnections state)
+  configuredConnections <- positive "Connection count" $ fromMaybe 2 (numConnections state)
   pipeline <- positive "Pipeline batch size" $ pipelineBatchSize state
   keyBytes <- positive "Key size" $ keySize state
   valueBytes <- positive "Value size" $ valueSize state
-  let workersPerProcess = if serial state then 1 else connections
+  let connections = effectiveFillConnections state
+      workersPerProcess = connections
       workers = toInteger processes * toInteger masterCount * toInteger workersPerProcess
       bytesPerCommand = toInteger keyBytes + toInteger valueBytes + 64
       pipelineBytes = toInteger pipeline * bytesPerCommand
@@ -54,7 +61,7 @@ buildPlan state masterCount = do
       if processes > maxProcesses
         then Left $ "Process count must not exceed " ++ show maxProcesses ++ overrideHint
         else Right ()
-      if connections > maxConnections
+      if configuredConnections > maxConnections
         then Left $ "Connection count must not exceed " ++ show maxConnections ++ overrideHint
         else Right ()
       if workers > maxWorkers

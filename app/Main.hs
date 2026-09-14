@@ -70,6 +70,7 @@ import           Filler                                (fillCacheWithData,
                                                         initRandomNoise)
 import           FillLimits                            (FillConcurrencyPlan (..),
                                                         clusterFillConcurrencyPlan,
+                                                        effectiveFillConnections,
                                                         fillConcurrencyPlan,
                                                         formatMemoryEstimate)
 import           FillProcess                           (buildChildArgs)
@@ -307,11 +308,11 @@ tunnCluster state = do
 
 fill :: RunState -> IO ()
 fill state = do
-  plan <-
-    case fillConcurrencyPlan state of
-      Left message -> hPutStrLn stderr message >> exitFailure
-      Right value  -> pure value
-  when (dataGBs state > 0) $ reportFillPlan "Fill capacity" plan
+  (masterCount, plan) <- preflightFillPlan state
+  when (dataGBs state > 0) $
+    maybe (reportFillPlan "Fill capacity" plan)
+      (\count -> reportClusterFillPlan count plan)
+      masterCount
   when (flush state) $ do
     let target = canonicalFlushTarget (host state) (port state) (useTLS state) (useCluster state)
     confirmation <- confirmFlush (flushConfirmation state) target
@@ -345,6 +346,28 @@ fill state = do
 
       -- Exit with success
       exitSuccess
+
+preflightFillPlan :: RunState -> IO (Maybe Int, FillConcurrencyPlan)
+preflightFillPlan state
+  | useCluster state && dataGBs state > 0 = do
+    let discover connector =
+          withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient -> do
+            topology <- readTVarIO $ clusterTopology clusterClient
+            let primaryCount = length
+                  [ node
+                  | node <- Map.elems (topologyNodes topology)
+                  , nodeRole node == Master
+                  ]
+            case clusterFillConcurrencyPlan primaryCount state of
+              Left message -> hPutStrLn stderr message >> exitFailure
+              Right plan   -> pure (Just primaryCount, plan)
+    if useTLS state
+      then discover (createTLSConnector state)
+      else discover (createPlaintextConnector state)
+  | otherwise =
+    case fillConcurrencyPlan state of
+      Left message -> hPutStrLn stderr message >> exitFailure
+      Right plan   -> pure (Nothing, plan)
 
 -- | Spawn multiple fill processes in parallel
 spawnFillProcesses :: RunState -> Int -> IO ()
@@ -417,8 +440,7 @@ fillStandalone state = do
           then runCommandsAgainstTLSHost state $ fillCacheWithData baseSeed seedOffset (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
           else runCommandsAgainstPlaintextHost state $ fillCacheWithData baseSeed seedOffset (dataGBs state) (pipelineBatchSize state) (keySize state) (valueSize state)
       else do
-        -- Use numConnections (defaults to 8)
-        let nConns = fromMaybe 8 (numConnections state)
+        let nConns = effectiveFillConnections state
             totalMB = dataGBs state * 1024  -- Work in MB for finer granularity
             baseMB = totalMB `div` nConns
             remainder = totalMB `mod` nConns
@@ -483,6 +505,16 @@ reportFillPlan label plan =
   printf "%s: %d processes x %d connections = %d workers; estimated peak client memory %s\n"
     label
     (plannedProcesses plan)
+    (plannedConnections plan)
+    (plannedWorkerCount plan)
+    (formatMemoryEstimate $ estimatedMemoryBytes plan)
+
+reportClusterFillPlan :: Int -> FillConcurrencyPlan -> IO ()
+reportClusterFillPlan masterCount plan =
+  printf "%d-primary cluster fill capacity: %d processes x %d primaries x %d connections = %d workers; estimated peak client memory %s\n"
+    masterCount
+    (plannedProcesses plan)
+    masterCount
     (plannedConnections plan)
     (plannedWorkerCount plan)
     (formatMemoryEstimate $ estimatedMemoryBytes plan)

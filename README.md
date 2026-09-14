@@ -107,7 +107,8 @@ general RESP3 command support. Incomplete pinned replies retain at most a
 ### Fill capacity limits
 
 Before connecting or spawning children, fill mode validates positive process,
-connection, and pipeline values. The normal safety envelope is **8 processes**,
+connection, and pipeline values. Serial mode always executes one connection per
+process, regardless of `--connections`. The normal safety envelope is **8 processes**,
 **16 connections per process**, **32 total workers**, and an estimated
 **2 GiB** peak client-memory ceiling. The estimate reserves **128 MiB per
 process** for the shared random-noise buffer plus one conservatively sized
