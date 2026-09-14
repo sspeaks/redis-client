@@ -49,6 +49,7 @@ test-suite CredentialSpec
     main-is:          CredentialSpec.hs
     other-modules:    AppConfig
                     , CredentialConfig
+                    , FillLimits
                     , FillProcess
     hs-source-dirs:   app
     build-depends:    bytestring
@@ -120,6 +121,7 @@ test-suite StructuredConcurrencySpec
     main-is:          StructuredConcurrencySpec.hs
     other-modules:    ClusterFiller
                     , FillHelpers
+                    , FillLimits
                     , Filler
                     , ProcessLifecycle
                     , StructuredConcurrency
@@ -263,6 +265,7 @@ executable redis-client
                     , ClusterTunnel
                     , CredentialConfig
                     , FillHelpers
+                    , FillLimits
                     , FillProcess
                     , FlushConfirmation
                     , Filler

@@ -16,6 +16,7 @@ buildChildArgs state idx dataGB =
   ]
   ++ (["-t" | useTLS state])
   ++ (["--allow-insecure-plaintext-auth" | allowInsecurePlaintextAuth state])
+  ++ (["--allow-high-scale-fill" | allowHighScaleFill state])
   ++ (["-c" | useCluster state])
   ++ (["-s" | serial state])
   ++ (case port state of
@@ -24,4 +25,7 @@ buildChildArgs state idx dataGB =
   ++ (if username state /= "default" then ["-u", username state] else [])
   ++ (case numConnections state of
         Just n  -> ["-n", show n]
+        Nothing -> [])
+  ++ (case numProcesses state of
+        Just n  -> ["--processes", show n]
         Nothing -> [])

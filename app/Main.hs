@@ -68,6 +68,10 @@ import           Database.Redis.Resp                   (Encodable (encode),
 import           Filler                                (fillCacheWithData,
                                                         fillCacheWithDataMB,
                                                         initRandomNoise)
+import           FillLimits                            (FillConcurrencyPlan (..),
+                                                        clusterFillConcurrencyPlan,
+                                                        fillConcurrencyPlan,
+                                                        formatMemoryEstimate)
 import           FillProcess                           (buildChildArgs)
 import           FlushConfirmation                     (canonicalFlushTarget,
                                                         confirmFlush)
@@ -91,57 +95,70 @@ import           System.Process                        (ProcessHandle,
                                                         createProcess, proc)
 import           System.Random                         (randomIO)
 import           Text.Printf                           (printf)
+import           Text.Read                             (readMaybe)
 
 options :: [OptDescr (RunState -> IO RunState)]
 options =
   [ Option ['h'] ["host"] (ReqArg (\arg opt -> return $ opt {host = arg}) "HOST") "Host to connect to",
-    Option ['p'] ["port"] (ReqArg (\arg opt -> return $ opt {port = Just . read $ arg}) "PORT") "Port to connect to. Will default to 6379 for plaintext and 6380 for TLS",
+    Option ['p'] ["port"] (ReqArg (setInt "Port" (\value opt -> opt {port = Just value})) "PORT") "Port to connect to. Will default to 6379 for plaintext and 6380 for TLS",
     Option ['u'] ["username"] (ReqArg (\arg opt -> return $ opt {username = arg}) "USERNAME") "Username to authenticate with (default: 'default')",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option [] ["allow-insecure-plaintext-auth"] (NoArg (\opt -> return $ opt {allowInsecurePlaintextAuth = True})) "Allow credentials over plaintext and emit a warning",
-    Option ['d'] ["data"] (ReqArg (\arg opt -> return $ opt {dataGBs = read arg}) "GBs") "Random data amount to send in GB",
+    Option ['d'] ["data"] (ReqArg (setInt "Data amount" (\value opt -> opt {dataGBs = value})) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Request a destructive FLUSHALL; requires confirmation",
     Option [] ["confirm-flush"] (ReqArg (\arg opt -> return $ opt {flushConfirmation = Just arg}) "TARGET") "Non-interactive acknowledgement of the exact displayed flush target",
     Option ['s'] ["serial"] (NoArg (\opt -> return $ opt {serial = True})) "Run in serial mode (no concurrency)",
-    Option ['n'] ["connections"] (ReqArg (\arg opt -> return $ opt {numConnections = Just . read $ arg}) "NUM") "Number of parallel connections (default: 2)",
+    Option ['n'] ["connections"] (ReqArg (setInt "Connection count" (\value opt -> opt {numConnections = Just value})) "NUM") "Number of parallel connections per process (default: 2; maximum: 16 without --allow-high-scale-fill)",
     Option ['c'] ["cluster"] (NoArg (\opt -> return $ opt {useCluster = True})) "Use Redis Cluster mode",
     Option [] ["tunnel-mode"] (ReqArg (\arg opt -> return $ opt {tunnelMode = arg}) "MODE") "Tunnel mode: 'smart' (default) or 'pinned'",
     Option [] ["key-size"] (ReqArg (\arg opt -> do
-        let size = read arg :: Int
+        size <- readInt "Key size" arg
         if size < 1
           then ioError (userError "Key size must be at least 1 byte")
           else if size > 65536
             then ioError (userError "Key size must not exceed 65536 bytes")
             else return $ opt {keySize = size}) "BYTES") "Size of each key in bytes (default: 512, range: 1-65536)",
     Option [] ["value-size"] (ReqArg (\arg opt -> do
-        let size = read arg :: Int
+        size <- readInt "Value size" arg
         if size < 1
           then ioError (userError "Value size must be at least 1 byte")
           else if size > 524288
             then ioError (userError "Value size must not exceed 524288 bytes")
             else return $ opt {valueSize = size}) "BYTES") "Size of each value in bytes (default: 512, range: 1-524288)",
     Option [] ["pipeline"] (ReqArg (\arg opt -> do
-        let size = read arg :: Int
+        size <- readInt "Pipeline batch size" arg
         if size < 1
           then ioError (userError "Pipeline batch size must be at least 1")
           else return $ opt {pipelineBatchSize = size}) "COUNT") "Number of commands per pipeline batch (default: 8192)",
-    Option ['P'] ["processes"] (ReqArg (\arg opt -> return $ opt {numProcesses = Just . read $ arg}) "NUM") "Number of parallel processes to spawn (default: 1)",
-    Option [] ["process-index"] (ReqArg (\arg opt -> return $ opt {processIndex = Just . read $ arg}) "INDEX") "Internal: Process index (used when spawning child processes)",
+    Option ['P'] ["processes"] (ReqArg (setInt "Process count" (\value opt -> opt {numProcesses = Just value})) "NUM") "Number of parallel processes to spawn (default: 1; maximum: 8 without --allow-high-scale-fill)",
+    Option [] ["process-index"] (ReqArg (setInt "Process index" (\value opt -> opt {processIndex = Just value})) "INDEX") "Internal: Process index (used when spawning child processes)",
+    Option [] ["allow-high-scale-fill"] (NoArg (\opt -> return $ opt {allowHighScaleFill = True})) "Allow fill plans above the 8-process, 16-connection, 32-worker, and 2 GiB estimated-memory safety limits",
     Option [] ["operation"] (ReqArg (\arg opt -> do
         if arg `elem` ["set", "get", "mixed"]
           then return $ opt {benchOperation = arg}
           else ioError (userError "Operation must be 'set', 'get', or 'mixed'")) "OP") "Benchmark operation: set, get, or mixed (default: set)",
     Option [] ["duration"] (ReqArg (\arg opt -> do
-        let dur = read arg :: Int
+        dur <- readInt "Duration" arg
         if dur < 1
           then ioError (userError "Duration must be at least 1 second")
           else return $ opt {benchDuration = dur}) "SECS") "Benchmark duration in seconds (default: 30)",
     Option [] ["mux-count"] (ReqArg (\arg opt -> do
-        let cnt = read arg :: Int
+        cnt <- readInt "Mux count" arg
         if cnt < 1
           then ioError (userError "Mux count must be at least 1")
           else return $ opt {muxCount = cnt}) "NUM") "Number of multiplexers per cluster node (default: 1)"
   ]
+
+readInt :: String -> String -> IO Int
+readInt label value =
+  case readMaybe value of
+    Nothing  -> ioError $ userError $ label ++ " must be a valid integer"
+    Just int -> pure int
+
+setInt :: String -> (Int -> RunState -> RunState) -> String -> RunState -> IO RunState
+setInt label update value state = do
+  int <- readInt label value
+  pure $ update int state
 
 handleArgs :: [String] -> IO (RunState, [String])
 handleArgs args = do
@@ -290,6 +307,11 @@ tunnCluster state = do
 
 fill :: RunState -> IO ()
 fill state = do
+  plan <-
+    case fillConcurrencyPlan state of
+      Left message -> hPutStrLn stderr message >> exitFailure
+      Right value  -> pure value
+  when (dataGBs state > 0) $ reportFillPlan "Fill capacity" plan
   when (flush state) $ do
     let target = canonicalFlushTarget (host state) (port state) (useTLS state) (useCluster state)
     confirmation <- confirmFlush (flushConfirmation state) target
@@ -432,13 +454,38 @@ fillCluster state = do
       then do
         let connector = createTLSConnector state
         withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
-          fillClusterWithData clusterClient connector
-            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
+          runClusterFill state clusterClient connector threadsPerNode baseSeed
       else do
         let connector = createPlaintextConnector state
         withClusterFillClient (createClusterClientFromState state connector) $ \clusterClient ->
-          fillClusterWithData clusterClient connector
-            (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
+          runClusterFill state clusterClient connector threadsPerNode baseSeed
+
+runClusterFill :: Client client => RunState -> ClusterClient client -> Connector client -> Int -> Word64 -> IO ()
+runClusterFill state clusterClient connector threadsPerNode baseSeed = do
+  topology <- readTVarIO $ clusterTopology clusterClient
+  let masterCount = length [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
+  plan <-
+    case clusterFillConcurrencyPlan masterCount state of
+      Left message -> hPutStrLn stderr message >> exitFailure
+      Right value  -> pure value
+  printf
+    "Cluster fill capacity: %d processes x %d primaries x %d connections = %d workers; estimated peak client memory %s\n"
+    (plannedProcesses plan)
+    masterCount
+    (plannedConnections plan)
+    (plannedWorkerCount plan)
+    (formatMemoryEstimate $ estimatedMemoryBytes plan)
+  fillClusterWithData clusterClient connector
+    (dataGBs state) threadsPerNode baseSeed (keySize state) (valueSize state) (pipelineBatchSize state)
+
+reportFillPlan :: String -> FillConcurrencyPlan -> IO ()
+reportFillPlan label plan =
+  printf "%s: %d processes x %d connections = %d workers; estimated peak client memory %s\n"
+    label
+    (plannedProcesses plan)
+    (plannedConnections plan)
+    (plannedWorkerCount plan)
+    (formatMemoryEstimate $ estimatedMemoryBytes plan)
 
 cli :: RunState -> IO ()
 cli state = do

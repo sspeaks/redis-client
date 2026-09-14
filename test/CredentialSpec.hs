@@ -6,6 +6,9 @@ import           Control.Exception (IOException, displayException, try)
 import           CredentialConfig  (rejectCredentialArguments,
                                     resolveRedisPasswordFrom)
 import           Data.List         (isInfixOf)
+import           FillLimits        (FillConcurrencyPlan (..),
+                                    clusterFillConcurrencyPlan,
+                                    fillConcurrencyPlan)
 import           FillProcess       (buildChildArgs)
 import           System.IO.Error   (doesNotExistErrorType, mkIOError,
                                     permissionErrorType)
@@ -106,6 +109,56 @@ main = hspec $ do
       args `shouldSatisfy` (\values -> "-f" `notElem` values)
       args `shouldSatisfy` (\values -> "--flush" `notElem` values)
       args `shouldSatisfy` (\values -> "--confirm-flush" `notElem` values)
+
+    it "propagates high-scale authorization and the parent process count" $ do
+      let state = defaultRunState
+            { allowHighScaleFill = True
+            , numProcesses = Just 3
+            }
+          args = buildChildArgs state 0 1
+      args `shouldContain` ["--allow-high-scale-fill"]
+      args `shouldContain` ["--processes", "3"]
+
+  describe "fill concurrency limits" $ do
+    it "estimates one 128 MiB noise buffer per process and one pipeline per worker" $ do
+      let state = defaultRunState
+            { numProcesses = Just 2
+            , numConnections = Just 3
+            , pipelineBatchSize = 10
+            , keySize = 100
+            , valueSize = 200
+            }
+      fillConcurrencyPlan state `shouldBe`
+        Right FillConcurrencyPlan
+          { plannedProcesses = 2
+          , plannedConnections = 3
+          , plannedWorkerCount = 6
+          , estimatedMemoryBytes = 2 * 128 * 1024 * 1024 + 6 * 10 * (100 + 200 + 64)
+          }
+
+    it "rejects excessive process and connection counts unless explicitly authorized" $ do
+      fillConcurrencyPlan (defaultRunState {numProcesses = Just 9})
+        `shouldSatisfy` either (isInfixOf "Process count must not exceed 8") (const False)
+      fillConcurrencyPlan (defaultRunState {numConnections = Just 17})
+        `shouldSatisfy` either (isInfixOf "Connection count must not exceed 16") (const False)
+      fillConcurrencyPlan
+        (defaultRunState
+          { numProcesses = Just 9
+          , numConnections = Just 17
+          , allowHighScaleFill = True
+          })
+        `shouldSatisfy` either (const False) (const True)
+
+    it "accounts for all primary nodes in the cluster worker limit" $ do
+      clusterFillConcurrencyPlan 3 (defaultRunState {numProcesses = Just 2, numConnections = Just 6})
+        `shouldSatisfy` either (isInfixOf "Total fill workers must not exceed 32") (const False)
+      clusterFillConcurrencyPlan 3
+        (defaultRunState
+          { numProcesses = Just 2
+          , numConnections = Just 6
+          , allowHighScaleFill = True
+          })
+        `shouldSatisfy` either (const False) (\plan -> plannedWorkerCount plan == 36)
 
   describe "plaintext authentication policy" $ do
     it "rejects credentialed plaintext connections by default" $ do

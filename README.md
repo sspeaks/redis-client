@@ -98,8 +98,27 @@ general RESP3 command support. Incomplete pinned replies retain at most a
 - `-f`, `--flush` - Request FLUSHALL before filling. This is intent only; it never flushes by itself.
 - `--confirm-flush TARGET` - Exact non-interactive acknowledgement of the displayed canonical target.
 - `-s`, `--serial` - Serial mode (no concurrency)
-- `-n`, `--connections NUM` - Parallel connections (default: 2)
+- `-n`, `--connections NUM` - Parallel connections per process (default: 2; maximum: 16 without the high-scale override)
+- `-P`, `--processes NUM` - Parallel fill processes (default: 1; maximum: 8 without the high-scale override)
+- `--pipeline COUNT` - Commands buffered in each fill batch (default: 8192)
+- `--allow-high-scale-fill` - Explicitly bypasses the fill safety limits for intentional large runs.
 - `--tunnel-mode MODE` - Tunnel mode: 'smart' or 'pinned' (default: 'smart')
+
+### Fill capacity limits
+
+Before connecting or spawning children, fill mode validates positive process,
+connection, and pipeline values. The normal safety envelope is **8 processes**,
+**16 connections per process**, **32 total workers**, and an estimated
+**2 GiB** peak client-memory ceiling. The estimate reserves **128 MiB per
+process** for the shared random-noise buffer plus one conservatively sized
+encoded pipeline batch per worker (`COUNT * (key bytes + value bytes + 64)`).
+
+Cluster mode discovers the primary count before launching fill workers and
+reports the multiplied total as `processes x primaries x connections`; that
+post-discovery total is also checked against the worker and memory limits.
+Use `--allow-high-scale-fill` only after sizing the host and Redis deployment:
+it is an explicit acknowledgement that these protective caps are intentionally
+being exceeded, not an automatic performance optimization.
 
 ### Safe flush confirmation
 
@@ -479,6 +498,17 @@ make redis-stop
 # Clean up profiling artifacts
 rm -f *.hp *.prof *.ps *.aux *.stat
 ```
+
+For the fill-capacity change, the comparable local standalone profile used
+`fill -h localhost -d 1 -f --confirm-flush
+'redis://localhost:6379?tls=false&scope=single-node' +RTS -p -RTS` with the
+default two connections. The branch-base run took **0.67 s** and allocated
+**2,594,328,552 bytes**; the bounded-capacity run took **0.69 s** and allocated
+**2,613,260,632 bytes**. The 0.02 s and 0.7% allocation differences are within
+one-run noise for this configuration-only path; command generation remains the
+dominant allocator. The 8-process, 16-connection, 32-worker, and 2 GiB limits
+therefore prioritize preventing accidental multi-gigabyte retained buffers
+without changing the normal two-worker throughput path.
 
 **Profiling tools:**
 - `hp2ps -e18in -c redis-client.hp` - Convert heap profile to PostScript
