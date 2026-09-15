@@ -45,7 +45,7 @@ module Database.Redis.Internal.Multiplexer
 
 import           Control.Concurrent               (ThreadId, forkIO,
                                                    forkIOWithUnmask, killThread,
-                                                   myThreadId)
+                                                   myThreadId, yield)
 import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
@@ -511,6 +511,27 @@ commandDrainUpTo cq limit = do
     Nothing    -> commandDrainUpTo cq limit
     Just batch -> return batch
 
+-- | Opportunistically extend the writer-owned batch without blocking.
+commandTopUpActiveBatch :: CommandQueue -> Int -> IO [PendingCommand]
+commandTopUpActiveBatch cq limit
+  | limit <= 0 = return []
+  | otherwise =
+      atomicModifyIORef' (cqState cq) $ \state ->
+        case reverse (cqsQueued state) of
+          [] -> (state, [])
+          queued ->
+            let (drained, remaining) = splitAt limit queued
+                remainingRev = reverse remaining
+            in
+              ( state
+                  { cqsCount = cqsCount state - length drained
+                  , cqsQueued = remainingRev
+                  , cqsActive = cqsActive state <> drained
+                  }
+              , drained
+              )
+{-# INLINE commandTopUpActiveBatch #-}
+
 -- | Finish the masked handoff of the writer-owned batch to the pending queue.
 commandBatchTransferred :: CommandQueue -> IO ()
 commandBatchTransferred cq =
@@ -865,36 +886,42 @@ writerLoop transferLock batchLimit cmdQueue pendingQueue conn admission alive = 
       if not isAlive
         then return ()
         else do
-          batch <- commandDrainUpTo cmdQueue batchLimit
-          if null batch
+          batch0 <- commandDrainUpTo cmdQueue batchLimit
+          if null batch0
             then return ()
             else do
+              batch <-
+                if length batch0 < max 1 batchLimit
+                  then do
+                    yield
+                    extra <- commandTopUpActiveBatch cmdQueue (max 1 batchLimit - length batch0)
+                    return (batch0 <> extra)
+                  else return batch0
               -- Single-pass: extract slots (as Seq) and build the combined Builder
               let (!slots, !builder) = foldl'
                     (\(!sAcc, !bAcc) pc -> (sAcc Seq.|> pcSlot pc, bAcc <> pcBuilder pc))
                     (Seq.empty, mempty)
                     batch
 
-              transferred <- withMVar transferLock $ \() -> mask_ $ do
-                stillAlive <- readIORef alive
-                when stillAlive $ do
-                  pendingEnqueueSeq pendingQueue slots
-                  commandBatchTransferred cmdQueue
-                return stillAlive
-
-              when transferred $ do
-                -- Materialize with large buffer strategy and send via vectored I/O.
-                -- untrimmedStrategy avoids trimming/copying the final chunk.
-                -- 32KB initial / 64KB growth reduces chunk count vs default 4KB.
-                -- sendChunks uses writev(2) for zero-copy vectored I/O on plain sockets.
-                let !lbs = Builder.toLazyByteStringWith
-                             (Builder.untrimmedStrategy 32768 65536) LBS.empty builder
-                    !chunks = LBS.toChunks lbs
-                result <- try $ sendChunks conn chunks
-                case result of
-                  Right () -> go
-                  Left (e :: SomeException) ->
-                    failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
+              -- Materialize with large buffer strategy and send via vectored I/O.
+              -- untrimmedStrategy avoids trimming/copying the final chunk.
+              -- 32KB initial / 64KB growth reduces chunk count vs default 4KB.
+              -- sendChunks uses writev(2) for zero-copy vectored I/O on plain sockets.
+              let !lbs = Builder.toLazyByteStringWith
+                           (Builder.untrimmedStrategy 32768 65536) LBS.empty builder
+                  !chunks = LBS.toChunks lbs
+              result <- try $ sendChunks conn chunks
+              case result of
+                Right () -> do
+                  transferred <- withMVar transferLock $ \() -> mask_ $ do
+                    stillAlive <- readIORef alive
+                    when stillAlive $ do
+                      pendingEnqueueSeq pendingQueue slots
+                      commandBatchTransferred cmdQueue
+                    return stillAlive
+                  when transferred go
+                Left (e :: SomeException) ->
+                  failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
 
 -- Reader thread: pops response slots from the pending queue and fills
 -- them with parsed RESP responses. When the buffer contains additional
@@ -993,8 +1020,10 @@ completePendingSlot
   -> IO ()
 completePendingSlot admission pendingQueue slot result = mask_ $ do
   pendingCompleteOne pendingQueue
-  completed <- completeSlot slot result
-  when completed $ admissionRelease admission 1
+  completed <- storeSlotResult slot result
+  when completed $ do
+    admissionRelease admission 1
+    signalSlotCompletion slot
 {-# INLINE completePendingSlot #-}
 
 -- | Close admission and fail every slot still owned by either worker queue.
@@ -1018,21 +1047,26 @@ failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e =
     forM_ commands $ \pc -> failSlot admission (pcSlot pc) failure
     forM_ pending $ \slot -> failSlot admission slot failure
 
--- | Complete a response slot at most once. The result and wakeup are owned by
--- the thread that wins the atomic transition from 'Nothing'.
-completeSlot :: ResponseSlot -> Either SomeException RespData -> IO Bool
-completeSlot slot result = do
+-- | Store a response slot result at most once.
+storeSlotResult :: ResponseSlot -> Either SomeException RespData -> IO Bool
+storeSlotResult slot result = do
   completed <- atomicModifyIORef' (slotResult slot) $ \current ->
     case current of
       Nothing -> (Just result, True)
       Just _  -> (current, False)
-  when completed $ void $ tryPutMVar (slotSignal slot) ()
   return completed
-{-# INLINE completeSlot #-}
+{-# INLINE storeSlotResult #-}
+
+-- | Signal a response slot once its bookkeeping is fully committed.
+signalSlotCompletion :: ResponseSlot -> IO ()
+signalSlotCompletion slot = void $ tryPutMVar (slotSignal slot) ()
+{-# INLINE signalSlotCompletion #-}
 
 -- | Fail a response slot with an exception.
 failSlot :: AdmissionControl -> ResponseSlot -> SomeException -> IO ()
 failSlot admission slot e = do
-  completed <- completeSlot slot (Left e)
-  when completed $ admissionRelease admission 1
+  completed <- storeSlotResult slot (Left e)
+  when completed $ do
+    admissionRelease admission 1
+    signalSlotCompletion slot
 {-# INLINE failSlot #-}
