@@ -23,6 +23,7 @@ module Database.Redis.Internal.MultiplexPool
   , submitToNodeWithAsking
   , submitToNodeAsync
   , waitSlotResult
+  , getMultiplexPoolMuxStats
   , closeMultiplexPool
   ) where
 
@@ -43,11 +44,13 @@ import           Database.Redis.Client               (Client,
                                                       ConnectionStatus (..))
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Connector            (Connector)
-import           Database.Redis.Internal.Multiplexer (Multiplexer, ResponseSlot,
-                                                      SlotPool,
+import           Database.Redis.Internal.Multiplexer (Multiplexer,
+                                                      MultiplexerStats,
+                                                      ResponseSlot, SlotPool,
                                                       createMultiplexerFromConnectorWithHandoffHook,
                                                       createSlotPool,
                                                       destroyMultiplexer,
+                                                      getMultiplexerStats,
                                                       isMultiplexerAlive,
                                                       submitCommandAsync,
                                                       submitCommandPairPooled,
@@ -174,6 +177,12 @@ submitToNodeAsync pool addr cmdBuilder = do
 waitSlotResult :: MultiplexPool client -> ResponseSlot -> IO RespData
 waitSlotResult pool slot = waitSlot (poolSlotPool pool) slot
 {-# INLINE waitSlotResult #-}
+
+getMultiplexPoolMuxStats :: MultiplexPool client -> IO [MultiplexerStats]
+getMultiplexPoolMuxStats pool = do
+  nodes <- readIORef (poolNodesRef pool)
+  mapM getMultiplexerStats $
+    concatMap (V.toList . nmMuxes) (Map.elems nodes)
 
 -- | Get or create a multiplexer for a node, round-robin among N muxes.
 -- Uses readIORef for the common path (lock-free, no MVar overhead).
