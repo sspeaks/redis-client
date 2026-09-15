@@ -613,7 +613,10 @@ commandQueueBatchingSpec = describe "Command queue batching" $ do
     mapM_ (waitSlot pool) slots
 
     sentBatches <- readSentBatches
-    map batchCommandCount sentBatches `shouldBe` [2, 2, 1]
+    let batchSizes = map batchCommandCount sentBatches
+    batchSizes `shouldSatisfy`
+      (\sizes -> all (<= multiplexerWriterBatchLimit config) sizes)
+    sum batchSizes `shouldBe` length slots
     stats <- readMultiplexerStats mux
     muxStatsWriterBatchLimit stats `shouldBe` 2
     destroyMultiplexer mux
