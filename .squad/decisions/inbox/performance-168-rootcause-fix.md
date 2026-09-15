@@ -1,0 +1,4 @@
+### 2026-09-15: Revert accidental fill flush flags in PR 168 E2E coverage
+**By:** Performance
+**What:** Restored `test/E2E.hs` fill-mode assertions to their original argument lists by removing the 18 spurious `-f`/flush additions that the original PR introduced, and dropped the later `runBoundedFillValidation`/`GHCRTS`/forced `--pipeline 1024` wrapper so the tests again exercise the plain `fill` command paths from `origin/main`.
+**Why:** CI was failing because `-f` maps to `--flush`, and these fill tests were not supplying the required `--confirm-flush <exact-target>` acknowledgement. The CLI correctly refused those non-interactive invocations and exited 1, so the breakage was a test bug, not an RTS-defaults or memory-tuning regression. The branch had already been misdiagnosed twice as an RTS issue, and removing the stray flush flags returns the tests to the behavior they were originally intended to cover with less incidental complexity.

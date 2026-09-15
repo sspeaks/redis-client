@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit test-e2e-runner test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile clean"
+	@echo "Targets: setup build test test-unit test-e2e-runner test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -163,6 +163,15 @@ ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all --enable-profiling"
 else
 	cabal build all --enable-profiling
+endif
+
+# Run the lightweight RTS benchmark matrix used for issue #76
+benchmark-rts:
+ifeq ($(HAS_NIX),yes)
+	nix-shell -p redis --run "./scripts/benchmark-rts-profiles.sh"
+else
+	@echo "Error: benchmark-rts requires nix-shell so redis-server and redis-cli are available"
+	@exit 1
 endif
 
 # Clean build artifacts

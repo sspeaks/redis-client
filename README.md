@@ -543,6 +543,24 @@ without changing the normal two-worker throughput path.
 - `hp2ps -e18in -c redis-client.hp` - Convert heap profile to PostScript
 - [Speedscope](https://www.speedscope.app/) - Interactive flamegraph viewer
 
+### Runtime profiles
+
+The shared executable and test stanzas now use the RTS defaults that ship with GHC. That keeps CLI startup, tunnels, and test runs on conservative settings unless you opt into a workload-specific profile.
+
+For the fill pipeline in `app/FillHelpers.hs` and the default `pipelineBatchSize = 8192` in `app/AppConfig.hs`, use the wrapper script when you actually want a tuned profile:
+
+```sh
+# Measured high-throughput fill / bench profile (caps clamp to visible CPUs, max 4)
+./scripts/run-with-rts-profile.sh fill-throughput -- \
+  cabal run redis-client -- fill -h localhost -f -d 1
+
+# Memory-constrained fill profile for local test workloads
+./scripts/run-with-rts-profile.sh fill-bounded -- \
+  cabal run redis-client -- fill -h localhost -f -d 1 --pipeline 1024
+```
+
+The `fill-bounded` profile intentionally pairs `-f` with a smaller pipeline so local validation stays within tighter memory limits. For the legacy comparison profile and the measured benchmark matrix, see [docs/rts-profiles.md](docs/rts-profiles.md).
+
 ## Project Structure
 
 - `redis-client.cabal` - Root executable package definition.
