@@ -52,11 +52,11 @@ instance Client MockClient where
   send (MockConnected sendBuf _) lbs = liftIO $ do
     let !bs = LBS.toStrict lbs
     atomicModifyIORef' sendBuf $ \old -> (old <> bs, ())
-  receive (MockConnected sRef recvQueue) = liftIO $ recvLoop sRef recvQueue
+  receive (MockConnected _ recvQueue) = liftIO $ recvLoop recvQueue
 
 -- | Polling recv loop — retries until data is available.
-recvLoop :: IORef ByteString -> IORef [ByteString] -> IO ByteString
-recvLoop sRef recvQueue = do
+recvLoop :: IORef [ByteString] -> IO ByteString
+recvLoop recvQueue = do
   mChunk <- atomicModifyIORef' recvQueue $ \xs ->
     case xs of
       []     -> ([], Nothing)
@@ -65,7 +65,7 @@ recvLoop sRef recvQueue = do
     Just chunk -> return chunk
     Nothing -> do
       threadDelay 1000
-      recvLoop sRef recvQueue
+      recvLoop recvQueue
 
 -- | Create a mock client and return (client, addRecvData).
 -- addRecvData pushes response bytes that the reader thread will consume.
@@ -76,6 +76,31 @@ createMockClient = do
   let client = MockConnected sendBuf recvQueue
       addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
   return (client, addRecv)
+
+data RecordingClient (a :: ConnectionStatus) where
+  RecordingConnected
+    :: !(IORef [ByteString])
+    -> !(IORef [ByteString])
+    -> RecordingClient 'Connected
+
+instance Client RecordingClient where
+  connect = error "RecordingClient: connect not supported"
+  close _ = return ()
+  send (RecordingConnected sendLog _) lbs =
+    liftIO $
+      atomicModifyIORef' sendLog $ \batches ->
+        (batches ++ [LBS.toStrict lbs], ())
+  receive (RecordingConnected _ recvQueue) =
+    liftIO $ recvLoop recvQueue
+
+createRecordingClient
+  :: IO (RecordingClient 'Connected, ByteString -> IO (), IO [ByteString])
+createRecordingClient = do
+  sendLog <- newIORef []
+  recvQueue <- newIORef []
+  let client = RecordingConnected sendLog recvQueue
+      addRecv bs = atomicModifyIORef' recvQueue $ \xs -> (xs ++ [bs], ())
+  return (client, addRecv, readIORef sendLog)
 
 -- | Transport that confirms the writer reached 'send' and then withholds all
 -- responses. This lets lifecycle tests deterministically destroy a mux after
@@ -228,9 +253,143 @@ spec :: Spec
 spec = do
   slotPoolSpec
   responseSlotSpec
+  admissionBackpressureSpec
   commandQueueBatchingSpec
   multiplexerLifecycleSpec
   isMultiplexerAliveSpec
+
+admissionBackpressureSpec :: Spec
+admissionBackpressureSpec = describe "Admission backpressure" $ do
+  it "blocks new submissions at the configured outstanding limit until completion" $ do
+    pool <- createSlotPool 4
+    (client, addRecv) <- createMockClient
+    let config = MultiplexerConfig
+          { multiplexerAdmissionLimit = 2
+          , multiplexerWriterBatchLimit = 8
+          }
+    mux <- createMultiplexerWithConfig config client (receive client)
+    first <- submitCommandAsync pool mux (encodeCmd ["PING"])
+    second <- submitCommandAsync pool mux (encodeCmd ["PING"])
+    blockedResult <- newEmptyMVar
+    _ <- forkIO $
+      (try (submitCommandAsync pool mux (encodeCmd ["PING"]))
+        :: IO (Either SomeException ResponseSlot))
+        >>= putMVar blockedResult
+
+    blockedWhileFull <- fmap (maybe True (const False)) $
+      timeout 50000 (takeMVar blockedResult)
+    blockedWhileFull `shouldBe` True
+    statsWhileBlocked <- readMultiplexerStats mux
+    muxStatsAdmissionLimit statsWhileBlocked `shouldBe` 2
+    muxStatsPeakOutstanding statsWhileBlocked `shouldBe` 2
+    muxStatsOutstanding statsWhileBlocked `shouldBe` 2
+
+    addRecv (encodeResp (RespSimpleString "OK"))
+    waitSlot pool first `shouldReturn` RespSimpleString "OK"
+
+    resumed <- timeout 1000000 (takeMVar blockedResult)
+    fmap (either (const False) (const True)) resumed `shouldBe` Just True
+    case resumed of
+      Just (Right third) -> do
+        addRecv (encodeResp (RespSimpleString "OK") <> encodeResp (RespSimpleString "OK"))
+        waitSlot pool second `shouldReturn` RespSimpleString "OK"
+        waitSlot pool third `shouldReturn` RespSimpleString "OK"
+      _ -> expectationFailure "expected blocked submitter to resume after completion"
+
+    statsAfter <- readMultiplexerStats mux
+    muxStatsOutstanding statsAfter `shouldBe` 0
+    destroyMultiplexer mux
+
+  it "wakes blocked submitters when destroy closes admission" $ do
+    pool <- createSlotPool 2
+    (client, _) <- createMockClient
+    let config = MultiplexerConfig
+          { multiplexerAdmissionLimit = 1
+          , multiplexerWriterBatchLimit = 8
+          }
+    mux <- createMultiplexerWithConfig config client (receive client)
+    first <- submitCommandAsync pool mux (encodeCmd ["PING"])
+    blockedResult <- newEmptyMVar
+    _ <- forkIO $
+      (try (submitCommandAsync pool mux (encodeCmd ["PING"]))
+        :: IO (Either SomeException ResponseSlot))
+        >>= putMVar blockedResult
+
+    blockedWhileFull <- fmap (maybe True (const False)) $
+      timeout 50000 (takeMVar blockedResult)
+    blockedWhileFull `shouldBe` True
+    destroyMultiplexer mux
+
+    resumed <- timeout 1000000 (takeMVar blockedResult)
+    fmap isResponseSlotDead resumed `shouldBe` Just True
+    firstResult <- try (waitSlot pool first) :: IO (Either SomeException RespData)
+    firstResult `shouldSatisfy` isMultiplexerDead
+    statsAfter <- readMultiplexerStats mux
+    muxStatsOutstanding statsAfter `shouldBe` 0
+
+  it "releases admission after a cancelled waiter's response completes" $ do
+    pool <- createSlotPool 2
+    (client, addRecv) <- createMockClient
+    let config = MultiplexerConfig
+          { multiplexerAdmissionLimit = 1
+          , multiplexerWriterBatchLimit = 8
+          }
+    mux <- createMultiplexerWithConfig config client (receive client)
+    first <- submitCommandAsync pool mux (encodeCmd ["PING"])
+    waiter <- async (waitSlot pool first)
+    threadDelay 10000
+    cancel waiter
+    _ <- waitCatch waiter
+
+    blockedResult <- newEmptyMVar
+    _ <- forkIO $
+      (try (submitCommandAsync pool mux (encodeCmd ["PING"]))
+        :: IO (Either SomeException ResponseSlot))
+        >>= putMVar blockedResult
+    blockedWhileCancelled <- fmap (maybe True (const False)) $
+      timeout 50000 (takeMVar blockedResult)
+    blockedWhileCancelled `shouldBe` True
+
+    addRecv (encodeResp (RespSimpleString "OK"))
+    resumed <- timeout 1000000 (takeMVar blockedResult)
+    case resumed of
+      Just (Right second) -> do
+        addRecv (encodeResp (RespSimpleString "OK"))
+        waitSlot pool second `shouldReturn` RespSimpleString "OK"
+      _ -> expectationFailure "expected completion to release admission after cancellation"
+
+    statsAfter <- readMultiplexerStats mux
+    muxStatsOutstanding statsAfter `shouldBe` 0
+    destroyMultiplexer mux
+
+  it "releases admission on parser failure" $ do
+    pool <- createSlotPool 2
+    (client, addRecv) <- createMockClient
+    let config = MultiplexerConfig
+          { multiplexerAdmissionLimit = 1
+          , multiplexerWriterBatchLimit = 8
+          }
+    mux <- createMultiplexerWithConfig config client (receive client)
+    first <- submitCommandAsync pool mux (encodeCmd ["PING"])
+    blockedResult <- newEmptyMVar
+    _ <- forkIO $
+      (try (submitCommandAsync pool mux (encodeCmd ["PING"]))
+        :: IO (Either SomeException ResponseSlot))
+        >>= putMVar blockedResult
+
+    blockedWhileFailing <- fmap (maybe True (const False)) $
+      timeout 50000 (takeMVar blockedResult)
+    blockedWhileFailing `shouldBe` True
+    addRecv "+OK\rX"
+
+    firstResult <- timeout 1000000
+      (try (waitSlot pool first) :: IO (Either SomeException RespData))
+    firstResult `shouldSatisfy` isTimedMultiplexerParseFailure
+    resumed <- timeout 1000000 (takeMVar blockedResult)
+    fmap isResponseSlotDead resumed `shouldBe` Just True
+    statsAfter <- readMultiplexerStats mux
+    muxStatsOutstanding statsAfter `shouldBe` 0
+    destroyMultiplexer mux
 
 slotPoolSpec :: Spec
 slotPoolSpec = describe "SlotPool" $ do
@@ -438,6 +597,25 @@ commandQueueBatchingSpec = describe "Command queue batching" $ do
     result <- timeout 1000000
       (try (waitSlot pool slot) :: IO (Either SomeException RespData))
     result `shouldSatisfy` isTimedMultiplexerParseFailure
+    destroyMultiplexer mux
+
+  it "respects the configured writer batch limit" $ do
+    pool <- createSlotPool 8
+    (client, addRecv, readSentBatches) <- createRecordingClient
+    let config = MultiplexerConfig
+          { multiplexerAdmissionLimit = 16
+          , multiplexerWriterBatchLimit = 2
+          }
+    mux <- createMultiplexerWithConfig config client (receive client)
+    slots <- replicateM 5 $ submitCommandAsync pool mux (encodeCmd ["PING"])
+
+    addRecv $ mconcat $ replicate 5 (encodeResp (RespSimpleString "OK"))
+    mapM_ (waitSlot pool) slots
+
+    sentBatches <- readSentBatches
+    map batchCommandCount sentBatches `shouldBe` [2, 2, 1]
+    stats <- readMultiplexerStats mux
+    muxStatsWriterBatchLimit stats `shouldBe` 2
     destroyMultiplexer mux
 
 multiplexerLifecycleSpec :: Spec
@@ -816,6 +994,13 @@ isFailure :: Either SomeException a -> Bool
 isFailure (Left _)  = True
 isFailure (Right _) = False
 
+isResponseSlotDead :: Either SomeException ResponseSlot -> Bool
+isResponseSlotDead (Left e) =
+  case fromException e of
+    Just (MultiplexerDead _) -> True
+    _                        -> False
+isResponseSlotDead (Right _) = False
+
 isMultiplexerDead :: Either SomeException RespData -> Bool
 isMultiplexerDead (Left e) =
   case fromException e of
@@ -864,3 +1049,6 @@ isOkResponse _                               = False
 okResponseInteger :: Either SomeException RespData -> Maybe Integer
 okResponseInteger (Right (RespInteger value)) = Just value
 okResponseInteger _                           = Nothing
+
+batchCommandCount :: ByteString -> Int
+batchCommandCount = BS.count 42

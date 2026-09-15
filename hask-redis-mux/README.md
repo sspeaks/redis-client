@@ -44,7 +44,7 @@ remain available from their named modules. The legacy top-level package
 library retains its internal multiplexing re-exports for source compatibility,
 but they are intentionally not part of the `Database.Redis` facade.
 
-### Response-slot retention
+### Multiplexer backpressure and response-slot retention
 
 Multiplexed clients retain at most **256 idle response slots** per client pool.
 Slots are striped by capability and return to the stripe where they were
@@ -53,20 +53,52 @@ thread. Slots allocated during a traffic burst above that cap are released to
 the runtime after their response or failure is observed; they are never reused
 before completion.
 
-The cap bounds post-burst retention without limiting in-flight commands. It was
-selected as 16 slots across each of the 16 capability stripes: sufficient for
-the normal low-concurrency path while avoiding a permanently retained slot for
-every transient request in large bursts.
+The slot-pool cap bounds post-burst retention, while the separate admission cap
+below bounds total outstanding commands. The pool cap was selected as 16 slots
+across each of the 16 capability stripes: sufficient for the normal
+low-concurrency path while avoiding a permanently retained slot for every
+transient request in large bursts.
+
+Each multiplexer also applies bounded backpressure before queue admission:
+
+- At most **4,096 total submitted-but-not-yet-completed commands** may exist
+  across the command queue, the writer-owned active batch, and the pending
+  response queue.
+- The writer sends at most **512 commands per batch** before returning to the
+  shared queue, so a stalled connection cannot accumulate one arbitrarily large
+  builder or delay later commands behind an unlimited drain.
+- Completion, parser failure, connection close, and cancelled waiters all
+  release their admission capacity exactly once.
 
 `SlotPoolBurstBench` exercises 64, 1,024, and 4,096 outstanding commands plus
 a 1,024-command cancellation burst with RTS statistics enabled. On the
 reference local run, the 4,096-command burst retained 256 slots, allocated
-15,312,576 bytes, reached 8,388,608 bytes peak residency, settled at 590,440
+17,814,464 bytes, reached 8,388,608 bytes peak residency, settled at 590,792
 bytes live after GC, and
-completed at 996k operations/second with 0.31 microseconds p99 wait latency.
-The cancellation burst retained the same 256 slots and settled at 0.21 MiB
+completed at 857k operations/second with 0.24 microseconds p99 wait latency.
+The cancellation burst retained the same 256 slots, allocated 3,339,312 bytes,
+and settled at 0.21 MiB
 after GC. These synthetic transport measurements isolate slot lifecycle costs;
 they are not Redis network throughput claims.
+
+`MultiplexerBackpressureBench` drives 8,192 concurrent 4 KiB `SET` commands
+against a deliberately stalled synthetic server and reports peak outstanding
+commands, peak residency, throughput, and p50/p95/p99 latency. The benchmark
+accepts two modes:
+
+- `baseline` disables the new bounds for this workload by setting both limits
+  to 8,192, approximating the legacy "drain everything / admit everything"
+  behavior.
+- `bounded` uses the production defaults of 4,096 outstanding commands and 512
+  commands per writer batch.
+
+On the reference local run, `baseline` peaked at **8,192** outstanding
+commands, **93.0 MiB** peak residency, **10.6k ops/s**, and **623 ms** p99
+latency. The bounded run plateaued at **4,096** outstanding commands,
+**60.0 MiB** peak residency, **7.1k ops/s**, and **1.04 s** p99 latency while
+keeping writer batches capped at **512** commands. This synthetic overload
+benchmark intentionally trades some peak throughput and tail latency for a
+documented memory ceiling under stalled-server conditions.
 
 ## Installation
 

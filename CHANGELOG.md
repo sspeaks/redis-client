@@ -7,6 +7,18 @@
         and set aggregates only. RESP3 session and scalar types remain
         unsupported by command APIs; pinned tunnel opaque forwarding is
         documented separately.
+*   **Bounded multiplexer backpressure**
+    *   Each multiplexer now admits at most 4,096 submitted-but-not-yet-completed
+        commands across queued, writer-owned, and reader-owned states.
+    *   Writer drains are capped at 512 commands per batch instead of draining
+        the entire ready queue unconditionally.
+    *   Completion, parser failure, connection close, destroy, and cancelled
+        waiters all release admission capacity exactly once.
+    *   `MultiplexerBackpressureBench` documents the synthetic stalled-server
+        tradeoff: lower peak residency from 93.0 MiB to 60.0 MiB in exchange
+        for lower overload throughput and higher p99 latency, while
+        `MultiplexerSpec` covers admission closure, parser failure, and
+        cancellation release paths.
 *   **Connection-pool synchronization API change**
     *   `ConnectionPool(..)` now exposes per-node synchronization state rather than
         the former single pool-wide `MVar`; code that constructed or inspected this
