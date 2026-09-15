@@ -40,6 +40,7 @@ data RunState = RunState
     password                   :: String,
     useTLS                     :: Bool,
     allowInsecurePlaintextAuth :: Bool,
+    pinnedProxyVerboseTraffic  :: Bool,
     allowHighScaleFill         :: Bool,
     dataGBs                    :: Int,
     flush                      :: Bool,
@@ -66,6 +67,7 @@ defaultRunState = RunState
   , password = ""
   , useTLS = False
   , allowInsecurePlaintextAuth = False
+  , pinnedProxyVerboseTraffic = False
   , allowHighScaleFill = False
   , dataGBs = 0
   , flush = False
