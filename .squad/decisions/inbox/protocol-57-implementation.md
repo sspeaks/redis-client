@@ -1,0 +1,4 @@
+### 2026-09-15: Centralize typed command frames in shared descriptors
+**By:** Protocol
+**What:** I introduced shared `CommandDescriptor` definitions in `Database.Redis.Command` and rewired the sequential, standalone, and cluster `RedisCommands` instances to consume those descriptors instead of maintaining three separate command-frame implementations. The cluster interpreter now uses each descriptor's routing hint, including multi-key slot checks and metadata-driven validation for commands with non-trivial routing or option grammar.
+**Why:** Issue #57 required one source of truth for typed command encoding while preserving CLI/tunnel routing from the generated metadata layer. This keeps follow-up work on the cluster/error boundary localized, eliminates hand-copied command frames, and makes multi-key/cross-slot behavior explicit in one place.

@@ -133,18 +133,15 @@ import           Database.Redis.Cluster.Internal.Topology       (commitRefreshed
 import           Database.Redis.Command                         (ClientReplyModeUnsupported (..),
                                                                  ClientReplyValues (ON),
                                                                  ClientState (..),
+                                                                 CommandDescriptor,
+                                                                 CommandRoute (..),
                                                                  RedisCommandClient (..),
                                                                  RedisCommands (..),
                                                                  convertResp,
                                                                  encodeCommandBuilder,
-                                                                 geoRadiusFlagToList,
-                                                                 geoSearchByToList,
-                                                                 geoSearchFromToList,
-                                                                 geoSearchOptionToList,
-                                                                 geoUnitKeyword,
+                                                                 executeCommandDescriptor,
                                                                  parseWith,
-                                                                 runRedisCommandClient,
-                                                                 showBS)
+                                                                 runRedisCommandClient)
 import qualified Database.Redis.Command                         as RedisCommandClient
 import           Database.Redis.Connector                       (ConnectionPhase (..),
                                                                  ConnectionSetupException,
@@ -905,6 +902,7 @@ executeKeylessCommand action = do
 -- | Helper to unwrap Either ClusterError or fail
 unwrapClusterResult :: (Client client) => Either ClusterError a -> ClusterCommandClient client a
 unwrapClusterResult (Right a)  = pure a
+unwrapClusterResult (Left (CrossSlotError message)) = Prelude.fail message
 unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
 
 -- | Execute a keyed command and unwrap the result.
@@ -914,26 +912,6 @@ executeKeyed key cmdArgs = do
   client <- State.get
   result <- liftIO $ executeKeyedClusterCommand client key cmdArgs
   unwrapClusterResult result
-
--- | Execute a keyed command, unwrap, and convert via 'FromResp'.
-executeKeyedAs :: (Client client, FromResp a) => ByteString -> [ByteString] -> ClusterCommandClient client a
-executeKeyedAs key cmdArgs = executeKeyed key cmdArgs >>= convertResp
-
--- | Validate every key-bearing command against generated metadata before
--- selecting its slot, including all keys in typed multi-key commands.
-executeValidatedKeyedAs
-  :: (Client client, FromResp a)
-  => [ByteString]
-  -> ClusterCommandClient client a
-executeValidatedKeyedAs command =
-  case classifyCommandFrame command of
-    Right (FrameSingleSlot key _) -> executeKeyedAs key command
-    Right (FrameCrossSlot _) ->
-      Prelude.fail "CROSSSLOT Keys in request don't hash to the same slot"
-    Right FrameKeyless ->
-      Prelude.fail "expected a key-bearing Redis command"
-    Left errorValue ->
-      Prelude.fail $ renderCommandGrammarError errorValue
 
 -- | Execute a keyless command and unwrap the result
 executeKeyless
@@ -986,6 +964,64 @@ executeKeylessMaybeAttempt client action = do
               (runRedisCommandClient action)
               clientState
       return $ result >>= traverse classifyClusterReply
+
+crossSlotMessage :: String
+crossSlotMessage = "CROSSSLOT Keys in request don't hash to the same slot"
+
+ensureSingleSlot :: [ByteString] -> Either ClusterError ByteString
+ensureSingleSlot [] = Left $ TopologyError "expected at least one routing key"
+ensureSingleSlot (key : remainingKeys)
+  | all ((== calculateSlot key) . calculateSlot) remainingKeys = Right key
+  | otherwise = Left $ CrossSlotError crossSlotMessage
+
+executeKeylessDescriptor
+  :: (Client client, FromResp a)
+  => CommandDescriptor
+  -> ClusterCommandClient client a
+executeKeylessDescriptor descriptor =
+  executeKeyless (executeCommandDescriptor descriptor)
+
+executeKeylessMaybeDescriptor
+  :: (Client client)
+  => CommandDescriptor
+  -> ClusterCommandClient client (Maybe RespData)
+executeKeylessMaybeDescriptor descriptor =
+  executeKeylessMaybe (Just <$> RedisCommandClient.executeCommandDescriptor descriptor)
+
+executeCommandDescriptorCluster
+  :: (Client client)
+  => CommandDescriptor
+  -> ClusterCommandClient client RespData
+executeCommandDescriptorCluster descriptor =
+  case RedisCommandClient.commandDescriptorRoute descriptor of
+    CommandKeyless ->
+      executeKeylessCommand (RedisCommandClient.executeCommandDescriptor descriptor)
+        >>= unwrapClusterResult
+    CommandByKey key ->
+      executeKeyed key (RedisCommandClient.commandDescriptorFrame descriptor)
+    CommandByKeys keys ->
+      case ensureSingleSlot keys of
+        Left err -> unwrapClusterResult (Left err)
+        Right key ->
+          executeKeyed key (RedisCommandClient.commandDescriptorFrame descriptor)
+    CommandByMetadata ->
+      case classifyCommandFrame (RedisCommandClient.commandDescriptorFrame descriptor) of
+        Right FrameKeyless ->
+          executeKeylessCommand (RedisCommandClient.executeCommandDescriptor descriptor)
+            >>= unwrapClusterResult
+        Right (FrameSingleSlot key _) ->
+          executeKeyed key (RedisCommandClient.commandDescriptorFrame descriptor)
+        Right (FrameCrossSlot _) ->
+          unwrapClusterResult (Left $ CrossSlotError crossSlotMessage)
+        Left errorValue ->
+          Prelude.fail $ renderCommandGrammarError errorValue
+
+executeCommandDescriptorClusterAs
+  :: (Client client, FromResp a)
+  => CommandDescriptor
+  -> ClusterCommandClient client a
+executeCommandDescriptorClusterAs descriptor =
+  executeCommandDescriptorCluster descriptor >>= convertResp
 
 -- | Execute a keyed command via the multiplexer pool.
 -- Pre-encodes the command to a Builder, routes by slot, and handles MOVED/ASK redirection.
@@ -1167,129 +1203,264 @@ executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
 
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
   auth _ _ = liftIO $ throwIO ClusterRuntimeAuthenticationUnsupported
-  ping = executeKeyless RedisCommandClient.ping
-  set k v = executeKeyedAs k ["SET", k, v]
-  get k = executeKeyedAs k ["GET", k]
-  mget keys = case keys of
-    []    -> executeKeyless (RedisCommandClient.mget [])
-    (k:_) -> executeKeyedAs k ("MGET" : keys)
-  setnx k v = executeKeyedAs k ["SETNX", k, v]
-  decr k = executeKeyedAs k ["DECR", k]
-  append k v = executeValidatedKeyedAs ["APPEND", k, v]
-  strlen k = executeValidatedKeyedAs ["STRLEN", k]
-  setex k secs v = executeValidatedKeyedAs ["SETEX", k, showBS secs, v]
-  incrby k amt = executeValidatedKeyedAs ["INCRBY", k, showBS amt]
-  decrby k amt = executeValidatedKeyedAs ["DECRBY", k, showBS amt]
-  incrbyfloat k amt = executeValidatedKeyedAs ["INCRBYFLOAT", k, showBS amt]
-  getdel k = executeValidatedKeyedAs ["GETDEL", k]
-  getex k opts = executeValidatedKeyedAs (["GETEX", k] ++ opts)
-  psetex k ms v = executeKeyedAs k ["PSETEX", k, showBS ms, v]
-  bulkSet kvs = case kvs of
-    []         -> executeKeyless (RedisCommandClient.bulkSet [])
-    ((k, _):_) -> executeKeyedAs k (["MSET"] <> concatMap (\(k', v') -> [k', v']) kvs)
-  flushAll = executeKeyless RedisCommandClient.flushAll
-  dbsize = executeKeyless RedisCommandClient.dbsize
-  del keys = case keys of
-    []    -> executeKeyless (RedisCommandClient.del [])
-    (k:_) -> executeKeyedAs k ("DEL" : keys)
-  exists keys = case keys of
-    []    -> executeKeyless (RedisCommandClient.exists [])
-    (k:_) -> executeKeyedAs k ("EXISTS" : keys)
-  incr k = executeKeyedAs k ["INCR", k]
-  hset k f v = executeKeyedAs k ["HSET", k, f, v]
-  hget k f = executeKeyedAs k ["HGET", k, f]
-  hmget k fs = executeKeyedAs k ("HMGET" : k : fs)
-  hexists k f = executeKeyedAs k ["HEXISTS", k, f]
-  lpush k vs = executeKeyedAs k ("LPUSH" : k : vs)
-  lrange k start stop = executeKeyedAs k ["LRANGE", k, showBS start, showBS stop]
-  expire k secs = executeKeyedAs k ["EXPIRE", k, showBS secs]
-  ttl k = executeKeyedAs k ["TTL", k]
-  persist k = executeValidatedKeyedAs ["PERSIST", k]
-  keyType k = executeValidatedKeyedAs ["TYPE", k]
-  rename k newk = executeValidatedKeyedAs ["RENAME", k, newk]
-  renamenx k newk = executeValidatedKeyedAs ["RENAMENX", k, newk]
-  unlink keys = executeValidatedKeyedAs ("UNLINK" : keys)
-  pfadd k elements = executeValidatedKeyedAs ("PFADD" : k : elements)
-  pfcount keys = executeValidatedKeyedAs ("PFCOUNT" : keys)
-  pfmerge destk srckeys = executeValidatedKeyedAs ("PFMERGE" : destk : srckeys)
-  rpush k vs = executeKeyedAs k ("RPUSH" : k : vs)
-  lpop k = executeKeyedAs k ["LPOP", k]
-  rpop k = executeKeyedAs k ["RPOP", k]
-  sadd k vs = executeKeyedAs k ("SADD" : k : vs)
-  smembers k = executeKeyedAs k ["SMEMBERS", k]
-  scard k = executeKeyedAs k ["SCARD", k]
-  sismember k v = executeKeyedAs k ["SISMEMBER", k, v]
-  srem k members = executeValidatedKeyedAs ("SREM" : k : members)
-  sdiff keys = executeValidatedKeyedAs ("SDIFF" : keys)
-  sinter keys = executeValidatedKeyedAs ("SINTER" : keys)
-  sunion keys = executeValidatedKeyedAs ("SUNION" : keys)
-  spop k = executeValidatedKeyedAs ["SPOP", k]
-  srandmember k = executeValidatedKeyedAs ["SRANDMEMBER", k]
-  hdel k fs = executeKeyedAs k ("HDEL" : k : fs)
-  hkeys k = executeKeyedAs k ["HKEYS", k]
-  hvals k = executeKeyedAs k ["HVALS", k]
-  hgetall k = executeValidatedKeyedAs ["HGETALL", k]
-  hlen k = executeValidatedKeyedAs ["HLEN", k]
-  hsetnx k f v = executeValidatedKeyedAs ["HSETNX", k, f, v]
-  hincrby k f amt = executeValidatedKeyedAs ["HINCRBY", k, f, showBS amt]
-  hincrbyfloat k f amt = executeValidatedKeyedAs ["HINCRBYFLOAT", k, f, showBS amt]
-  llen k = executeKeyedAs k ["LLEN", k]
-  lindex k idx = executeKeyedAs k ["LINDEX", k, showBS idx]
-  linsert k pos pivot element = executeValidatedKeyedAs ["LINSERT", k, pos, pivot, element]
-  lset k idx element = executeValidatedKeyedAs ["LSET", k, showBS idx, element]
-  ltrim k start stop = executeValidatedKeyedAs ["LTRIM", k, showBS start, showBS stop]
-  lrem k count element = executeValidatedKeyedAs ["LREM", k, showBS count, element]
-  clientSetInfo args = executeKeyless (RedisCommandClient.clientSetInfo args)
-  clientReply ON  = executeKeylessMaybe (RedisCommandClient.clientReply ON)
+  ping =
+    executeKeylessDescriptor (RedisCommandClient.definedPing RedisCommandClient.redisCommandDefinitions)
+  set key value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSet RedisCommandClient.redisCommandDefinitions key value)
+  get key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGet RedisCommandClient.redisCommandDefinitions key)
+  mget keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedMget RedisCommandClient.redisCommandDefinitions keys)
+  setnx key value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSetnx RedisCommandClient.redisCommandDefinitions key value)
+  decr key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedDecr RedisCommandClient.redisCommandDefinitions key)
+  append key value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedAppend RedisCommandClient.redisCommandDefinitions key value)
+  strlen key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedStrlen RedisCommandClient.redisCommandDefinitions key)
+  setex key seconds value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSetex RedisCommandClient.redisCommandDefinitions key seconds value)
+  incrby key amount =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedIncrby RedisCommandClient.redisCommandDefinitions key amount)
+  decrby key amount =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedDecrby RedisCommandClient.redisCommandDefinitions key amount)
+  incrbyfloat key amount =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedIncrbyfloat RedisCommandClient.redisCommandDefinitions key amount)
+  getdel key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGetdel RedisCommandClient.redisCommandDefinitions key)
+  getex key opts =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGetex RedisCommandClient.redisCommandDefinitions key opts)
+  psetex key milliseconds value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedPsetex RedisCommandClient.redisCommandDefinitions key milliseconds value)
+  bulkSet pairs =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedBulkSet RedisCommandClient.redisCommandDefinitions pairs)
+  flushAll =
+    executeKeylessDescriptor
+      (RedisCommandClient.definedFlushAll RedisCommandClient.redisCommandDefinitions)
+  dbsize =
+    executeKeylessDescriptor
+      (RedisCommandClient.definedDbsize RedisCommandClient.redisCommandDefinitions)
+  del keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedDel RedisCommandClient.redisCommandDefinitions keys)
+  exists keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedExists RedisCommandClient.redisCommandDefinitions keys)
+  incr key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedIncr RedisCommandClient.redisCommandDefinitions key)
+  hset key field value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHset RedisCommandClient.redisCommandDefinitions key field value)
+  hget key field =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHget RedisCommandClient.redisCommandDefinitions key field)
+  hmget key fields =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHmget RedisCommandClient.redisCommandDefinitions key fields)
+  hexists key field =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHexists RedisCommandClient.redisCommandDefinitions key field)
+  lpush key values =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLpush RedisCommandClient.redisCommandDefinitions key values)
+  lrange key start stop =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLrange RedisCommandClient.redisCommandDefinitions key start stop)
+  expire key seconds =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedExpire RedisCommandClient.redisCommandDefinitions key seconds)
+  ttl key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedTtl RedisCommandClient.redisCommandDefinitions key)
+  persist key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedPersist RedisCommandClient.redisCommandDefinitions key)
+  keyType key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedKeyType RedisCommandClient.redisCommandDefinitions key)
+  rename key newkey =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedRename RedisCommandClient.redisCommandDefinitions key newkey)
+  renamenx key newkey =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedRenamenx RedisCommandClient.redisCommandDefinitions key newkey)
+  unlink keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedUnlink RedisCommandClient.redisCommandDefinitions keys)
+  pfadd key elements =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedPfadd RedisCommandClient.redisCommandDefinitions key elements)
+  pfcount keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedPfcount RedisCommandClient.redisCommandDefinitions keys)
+  pfmerge destkey sourcekeys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedPfmerge RedisCommandClient.redisCommandDefinitions destkey sourcekeys)
+  rpush key values =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedRpush RedisCommandClient.redisCommandDefinitions key values)
+  lpop key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLpop RedisCommandClient.redisCommandDefinitions key)
+  rpop key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedRpop RedisCommandClient.redisCommandDefinitions key)
+  sadd key members =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSadd RedisCommandClient.redisCommandDefinitions key members)
+  smembers key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSmembers RedisCommandClient.redisCommandDefinitions key)
+  scard key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedScard RedisCommandClient.redisCommandDefinitions key)
+  sismember key member =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSismember RedisCommandClient.redisCommandDefinitions key member)
+  srem key members =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSrem RedisCommandClient.redisCommandDefinitions key members)
+  sdiff keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSdiff RedisCommandClient.redisCommandDefinitions keys)
+  sinter keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSinter RedisCommandClient.redisCommandDefinitions keys)
+  sunion keys =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSunion RedisCommandClient.redisCommandDefinitions keys)
+  spop key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSpop RedisCommandClient.redisCommandDefinitions key)
+  srandmember key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedSrandmember RedisCommandClient.redisCommandDefinitions key)
+  hdel key fields =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHdel RedisCommandClient.redisCommandDefinitions key fields)
+  hkeys key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHkeys RedisCommandClient.redisCommandDefinitions key)
+  hvals key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHvals RedisCommandClient.redisCommandDefinitions key)
+  hgetall key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHgetall RedisCommandClient.redisCommandDefinitions key)
+  hlen key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHlen RedisCommandClient.redisCommandDefinitions key)
+  hsetnx key field value =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHsetnx RedisCommandClient.redisCommandDefinitions key field value)
+  hincrby key field amount =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHincrby RedisCommandClient.redisCommandDefinitions key field amount)
+  hincrbyfloat key field amount =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedHincrbyfloat RedisCommandClient.redisCommandDefinitions key field amount)
+  llen key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLlen RedisCommandClient.redisCommandDefinitions key)
+  lindex key index =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLindex RedisCommandClient.redisCommandDefinitions key index)
+  linsert key pos pivot element =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLinsert RedisCommandClient.redisCommandDefinitions key pos pivot element)
+  lset key index element =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLset RedisCommandClient.redisCommandDefinitions key index element)
+  ltrim key start stop =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLtrim RedisCommandClient.redisCommandDefinitions key start stop)
+  lrem key count element =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedLrem RedisCommandClient.redisCommandDefinitions key count element)
+  clientSetInfo args =
+    executeKeylessDescriptor
+      (RedisCommandClient.definedClientSetInfo RedisCommandClient.redisCommandDefinitions args)
+  clientReply ON =
+    executeKeylessMaybeDescriptor
+      (RedisCommandClient.definedClientReplyOn RedisCommandClient.redisCommandDefinitions)
   clientReply val = liftIO $ throwIO (ClientReplyModeUnsupported val)
-  zadd k members =
-    let payload = concatMap (\(score, member) -> [showBS score, member]) members
-    in executeKeyedAs k ("ZADD" : k : payload)
-  zrange k start stop withScores =
-    let base = ["ZRANGE", k, showBS start, showBS stop]
-        command = if withScores then base ++ ["WITHSCORES"] else base
-    in executeKeyedAs k command
-  zrem k members = executeValidatedKeyedAs ("ZREM" : k : members)
-  zcard k = executeValidatedKeyedAs ["ZCARD", k]
-  zscore k member = executeValidatedKeyedAs ["ZSCORE", k, member]
-  zrank k member = executeValidatedKeyedAs ["ZRANK", k, member]
-  zrevrank k member = executeValidatedKeyedAs ["ZREVRANK", k, member]
-  zcount k minScore maxScore = executeValidatedKeyedAs ["ZCOUNT", k, minScore, maxScore]
-  zincrby k increment member =
-    executeValidatedKeyedAs ["ZINCRBY", k, showBS increment, member]
-  zrangestore dst src minValue maxValue options =
-    executeValidatedKeyedAs
-      (["ZRANGESTORE", dst, src, minValue, maxValue] ++ options)
-  geoadd k entries =
-    let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
-    in executeKeyedAs k ("GEOADD" : k : payload)
-  geodist k m1 m2 unit =
-    let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
-    in executeKeyedAs k (["GEODIST", k, m1, m2] ++ unitPart)
-  geohash k members = executeKeyedAs k ("GEOHASH" : k : members)
-  geopos k members = executeKeyedAs k ("GEOPOS" : k : members)
-  georadius k lon lat radius unit flags =
-    let base = ["GEORADIUS", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
-  georadiusRo k lon lat radius unit flags =
-    let base = ["GEORADIUS_RO", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
-  georadiusByMember k member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER", k, member, showBS radius, geoUnitKeyword unit]
-    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
-  georadiusByMemberRo k member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER_RO", k, member, showBS radius, geoUnitKeyword unit]
-    in executeKeyedAs k (base ++ concatMap geoRadiusFlagToList flags)
-  geosearch k fromSpec bySpec options =
-    executeKeyedAs k (["GEOSEARCH", k]
-      ++ geoSearchFromToList fromSpec
-      ++ geoSearchByToList bySpec
-      ++ concatMap geoSearchOptionToList options)
+  zadd key members =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZadd RedisCommandClient.redisCommandDefinitions key members)
+  zrange key start stop withScores =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZrange RedisCommandClient.redisCommandDefinitions key start stop withScores)
+  zrem key members =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZrem RedisCommandClient.redisCommandDefinitions key members)
+  zcard key =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZcard RedisCommandClient.redisCommandDefinitions key)
+  zscore key member =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZscore RedisCommandClient.redisCommandDefinitions key member)
+  zrank key member =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZrank RedisCommandClient.redisCommandDefinitions key member)
+  zrevrank key member =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZrevrank RedisCommandClient.redisCommandDefinitions key member)
+  zcount key minValue maxValue =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZcount RedisCommandClient.redisCommandDefinitions key minValue maxValue)
+  zincrby key increment member =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZincrby RedisCommandClient.redisCommandDefinitions key increment member)
+  zrangestore dest src minValue maxValue options =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedZrangestore RedisCommandClient.redisCommandDefinitions dest src minValue maxValue options)
+  geoadd key entries =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeoadd RedisCommandClient.redisCommandDefinitions key entries)
+  geodist key member1 member2 unit =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeodist RedisCommandClient.redisCommandDefinitions key member1 member2 unit)
+  geohash key members =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeohash RedisCommandClient.redisCommandDefinitions key members)
+  geopos key members =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeopos RedisCommandClient.redisCommandDefinitions key members)
+  georadius key lon lat radius unit flags =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeoradius RedisCommandClient.redisCommandDefinitions key lon lat radius unit flags)
+  georadiusRo key lon lat radius unit flags =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeoradiusRo RedisCommandClient.redisCommandDefinitions key lon lat radius unit flags)
+  georadiusByMember key member radius unit flags =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeoradiusByMember RedisCommandClient.redisCommandDefinitions key member radius unit flags)
+  georadiusByMemberRo key member radius unit flags =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeoradiusByMemberRo RedisCommandClient.redisCommandDefinitions key member radius unit flags)
+  geosearch key fromSpec bySpec options =
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeosearch RedisCommandClient.redisCommandDefinitions key fromSpec bySpec options)
   geosearchstore dest src fromSpec bySpec options storeDist =
-    let base = ["GEOSEARCHSTORE", dest, src]
-            ++ geoSearchFromToList fromSpec
-            ++ geoSearchByToList bySpec
-            ++ concatMap geoSearchOptionToList options
-        command = if storeDist then base ++ ["STOREDIST"] else base
-    in executeKeyedAs dest command
-  clusterSlots = executeKeyless RedisCommandClient.clusterSlots
+    executeCommandDescriptorClusterAs
+      (RedisCommandClient.definedGeosearchstore RedisCommandClient.redisCommandDefinitions dest src fromSpec bySpec options storeDist)
+  clusterSlots =
+    executeKeylessDescriptor
+      (RedisCommandClient.definedClusterSlots RedisCommandClient.redisCommandDefinitions)

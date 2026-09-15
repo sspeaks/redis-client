@@ -56,7 +56,9 @@ import           Database.Redis.Cluster.Internal.Topology   (commitRefreshedTopo
                                                              mergeRefreshedTopology,
                                                              patchMovedSlot,
                                                              provisionalMovedPatches)
-import           Database.Redis.Command                     (ClientReplyValues (..))
+import           Database.Redis.Command                     (ClientReplyValues (..),
+                                                             GeoRadiusFlag (..),
+                                                             GeoUnit (..))
 import           Database.Redis.Connector                   (ConnectionPhase (..),
                                                              ConnectionSetupException (..),
                                                              withConnectionTimeout)
@@ -534,6 +536,12 @@ publicValidatedDispatchSpec =
   describe "public validated cluster command dispatch" $ do
     it "routes accepted typed commands to the selected node with exact wire frames" $ do
       assertPublicValidatedCommand
+        ["MGET", "{public}:one", "{public}:two"]
+        (mget ["{public}:one", "{public}:two"])
+      assertPublicValidatedCommand
+        ["MSET", "{public}:one", "one", "{public}:two", "two"]
+        (bulkSet [("{public}:one", "one"), ("{public}:two", "two")])
+      assertPublicValidatedCommand
         ["GETEX", "{public}:key", "PXAT", "123"]
         (getex "{public}:key" ["PXAT", "123"])
       assertPublicValidatedCommand
@@ -548,8 +556,17 @@ publicValidatedDispatchSpec =
         ]
         (zrangestore "{public}:destination" "{public}:source" "-inf" "+inf"
           ["LIMIT", "0", "1", "REV", "BYSCORE"])
+      assertPublicValidatedCommand
+        [ "GEORADIUS", "{public}:source", "0.0", "0.0", "1.0", "KM"
+        , "STORE", "{public}:destination"
+        ]
+        (georadius "{public}:source" 0 0 1 Kilometers [GeoRadiusStore "{public}:destination"])
 
     it "rejects malformed options and cross-slot typed multi-key commands before sending" $ do
+      assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
+        (mget ["{one}:first", "{two}:second"])
+      assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
+        (bulkSet [("{one}:first", "one"), ("{two}:second", "two")])
       assertPublicRejectedCommand "GETEX has malformed arguments"
         (getex "{public}:key" ["EX"])
       assertPublicRejectedCommand "ZCOUNT has malformed arguments"
@@ -561,6 +578,8 @@ publicValidatedDispatchSpec =
         (zrangestore "{public}:destination" "{public}:source" "-inf" "+inf" ["LIMIT", "0"])
       assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
         (rename "{one}:source" "{two}:destination")
+      assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
+        (georadius "{public}:source" 0 0 1 Kilometers [GeoRadiusStore "{other}:destination"])
 
 assertPublicValidatedCommand
   :: [ByteString]

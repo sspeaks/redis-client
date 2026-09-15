@@ -14,6 +14,10 @@ module Database.Redis.Command
     ClientState (..)
   , RedisCommandClient (..)
   , RedisCommands (..)
+  , CommandDescriptor (..)
+  , CommandRoute (..)
+  , RedisCommandDefinitions (..)
+  , redisCommandDefinitions
   , ClientReplyValues (..)
   , ClientReplyModeUnsupported (..)
   , ClientReplyUncertainWrite (..)
@@ -35,6 +39,8 @@ module Database.Redis.Command
   , encodeCommandBuilder
   , encodeSetBuilder
   , encodeGetBuilder
+  , executeCommandDescriptor
+  , executeCommandDescriptorAs
   , encodeBulkArg
   , showBS
   , geoUnitKeyword
@@ -229,6 +235,266 @@ class (MonadIO m) => RedisCommands m where
   geosearchstore :: (FromResp a) => ByteString -> ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> m a
   clusterSlots :: (FromResp a) => m a
 
+-- | Shared command-routing intent for Redis command backends.
+data CommandRoute
+  = CommandKeyless
+  | CommandByKey ByteString
+  | CommandByKeys [ByteString]
+  | CommandByMetadata
+  deriving (Eq, Show)
+
+-- | Shared command description used by sequential, standalone, and cluster
+-- backends. The frame is already encoded at the Redis command-argument level;
+-- backends only decide how to transport it.
+data CommandDescriptor = CommandDescriptor
+  { commandDescriptorFrame :: [ByteString]
+  , commandDescriptorRoute :: CommandRoute
+  }
+  deriving (Eq, Show)
+
+-- | Centralized definitions for every public Redis command.
+data RedisCommandDefinitions command = RedisCommandDefinitions
+  { definedAuth                :: ByteString -> ByteString -> command
+  , definedPing                :: command
+  , definedSet                 :: ByteString -> ByteString -> command
+  , definedGet                 :: ByteString -> command
+  , definedMget                :: [ByteString] -> command
+  , definedSetnx               :: ByteString -> ByteString -> command
+  , definedDecr                :: ByteString -> command
+  , definedAppend              :: ByteString -> ByteString -> command
+  , definedStrlen              :: ByteString -> command
+  , definedSetex               :: ByteString -> Int -> ByteString -> command
+  , definedIncrby              :: ByteString -> Int -> command
+  , definedDecrby              :: ByteString -> Int -> command
+  , definedIncrbyfloat         :: ByteString -> Double -> command
+  , definedGetdel              :: ByteString -> command
+  , definedGetex               :: ByteString -> [ByteString] -> command
+  , definedPsetex              :: ByteString -> Int -> ByteString -> command
+  , definedBulkSet             :: [(ByteString, ByteString)] -> command
+  , definedFlushAll            :: command
+  , definedDbsize              :: command
+  , definedDel                 :: [ByteString] -> command
+  , definedExists              :: [ByteString] -> command
+  , definedIncr                :: ByteString -> command
+  , definedHset                :: ByteString -> ByteString -> ByteString -> command
+  , definedHget                :: ByteString -> ByteString -> command
+  , definedHmget               :: ByteString -> [ByteString] -> command
+  , definedHexists             :: ByteString -> ByteString -> command
+  , definedLpush               :: ByteString -> [ByteString] -> command
+  , definedLrange              :: ByteString -> Int -> Int -> command
+  , definedExpire              :: ByteString -> Int -> command
+  , definedTtl                 :: ByteString -> command
+  , definedPersist             :: ByteString -> command
+  , definedKeyType             :: ByteString -> command
+  , definedRename              :: ByteString -> ByteString -> command
+  , definedRenamenx            :: ByteString -> ByteString -> command
+  , definedUnlink              :: [ByteString] -> command
+  , definedPfadd               :: ByteString -> [ByteString] -> command
+  , definedPfcount             :: [ByteString] -> command
+  , definedPfmerge             :: ByteString -> [ByteString] -> command
+  , definedRpush               :: ByteString -> [ByteString] -> command
+  , definedLpop                :: ByteString -> command
+  , definedRpop                :: ByteString -> command
+  , definedSadd                :: ByteString -> [ByteString] -> command
+  , definedSmembers            :: ByteString -> command
+  , definedScard               :: ByteString -> command
+  , definedSismember           :: ByteString -> ByteString -> command
+  , definedSrem                :: ByteString -> [ByteString] -> command
+  , definedSdiff               :: [ByteString] -> command
+  , definedSinter              :: [ByteString] -> command
+  , definedSunion              :: [ByteString] -> command
+  , definedSpop                :: ByteString -> command
+  , definedSrandmember         :: ByteString -> command
+  , definedHdel                :: ByteString -> [ByteString] -> command
+  , definedHkeys               :: ByteString -> command
+  , definedHvals               :: ByteString -> command
+  , definedHgetall             :: ByteString -> command
+  , definedHlen                :: ByteString -> command
+  , definedHsetnx              :: ByteString -> ByteString -> ByteString -> command
+  , definedHincrby             :: ByteString -> ByteString -> Int -> command
+  , definedHincrbyfloat        :: ByteString -> ByteString -> Double -> command
+  , definedLlen                :: ByteString -> command
+  , definedLindex              :: ByteString -> Int -> command
+  , definedLinsert             :: ByteString -> ByteString -> ByteString -> ByteString -> command
+  , definedLset                :: ByteString -> Int -> ByteString -> command
+  , definedLtrim               :: ByteString -> Int -> Int -> command
+  , definedLrem                :: ByteString -> Int -> ByteString -> command
+  , definedClientSetInfo       :: [ByteString] -> command
+  , definedClientReplyOn       :: command
+  , definedClientReplyOff      :: command
+  , definedClientReplySkip     :: command
+  , definedZadd                :: ByteString -> [(Int, ByteString)] -> command
+  , definedZrange              :: ByteString -> Int -> Int -> Bool -> command
+  , definedZrem                :: ByteString -> [ByteString] -> command
+  , definedZcard               :: ByteString -> command
+  , definedZscore              :: ByteString -> ByteString -> command
+  , definedZrank               :: ByteString -> ByteString -> command
+  , definedZrevrank            :: ByteString -> ByteString -> command
+  , definedZcount              :: ByteString -> ByteString -> ByteString -> command
+  , definedZincrby             :: ByteString -> Double -> ByteString -> command
+  , definedZrangestore         :: ByteString -> ByteString -> ByteString -> ByteString -> [ByteString] -> command
+  , definedGeoadd              :: ByteString -> [(Double, Double, ByteString)] -> command
+  , definedGeodist             :: ByteString -> ByteString -> ByteString -> Maybe GeoUnit -> command
+  , definedGeohash             :: ByteString -> [ByteString] -> command
+  , definedGeopos              :: ByteString -> [ByteString] -> command
+  , definedGeoradius           :: ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> command
+  , definedGeoradiusRo         :: ByteString -> Double -> Double -> Double -> GeoUnit -> [GeoRadiusFlag] -> command
+  , definedGeoradiusByMember   :: ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> command
+  , definedGeoradiusByMemberRo :: ByteString -> ByteString -> Double -> GeoUnit -> [GeoRadiusFlag] -> command
+  , definedGeosearch           :: ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> command
+  , definedGeosearchstore      :: ByteString -> ByteString -> GeoSearchFrom -> GeoSearchBy -> [GeoSearchOption] -> Bool -> command
+  , definedClusterSlots        :: command
+  }
+
+keylessCommand :: [ByteString] -> CommandDescriptor
+keylessCommand frame =
+  CommandDescriptor frame CommandKeyless
+
+keyedCommand :: ByteString -> [ByteString] -> CommandDescriptor
+keyedCommand key frame =
+  CommandDescriptor frame (CommandByKey key)
+
+keysCommand :: [ByteString] -> [ByteString] -> CommandDescriptor
+keysCommand keys frame
+  | null keys = keylessCommand frame
+  | otherwise = CommandDescriptor frame (CommandByKeys keys)
+
+metadataCommand :: [ByteString] -> CommandDescriptor
+metadataCommand frame =
+  CommandDescriptor frame CommandByMetadata
+
+redisCommandDefinitions :: RedisCommandDefinitions CommandDescriptor
+redisCommandDefinitions =
+  RedisCommandDefinitions
+    { definedAuth = \username password ->
+        if BS8.null username || username == "default"
+          then keylessCommand ["AUTH", password]
+          else keylessCommand ["HELLO", "2", "AUTH", username, password]
+    , definedPing = keylessCommand ["PING"]
+    , definedSet = \key value -> keyedCommand key ["SET", key, value]
+    , definedGet = \key -> keyedCommand key ["GET", key]
+    , definedMget = \keys -> keysCommand keys ("MGET" : keys)
+    , definedSetnx = \key value -> keyedCommand key ["SETNX", key, value]
+    , definedDecr = \key -> keyedCommand key ["DECR", key]
+    , definedAppend = \key value -> metadataCommand ["APPEND", key, value]
+    , definedStrlen = \key -> metadataCommand ["STRLEN", key]
+    , definedSetex = \key seconds value -> metadataCommand ["SETEX", key, showBS seconds, value]
+    , definedIncrby = \key amount -> metadataCommand ["INCRBY", key, showBS amount]
+    , definedDecrby = \key amount -> metadataCommand ["DECRBY", key, showBS amount]
+    , definedIncrbyfloat = \key amount -> metadataCommand ["INCRBYFLOAT", key, showBS amount]
+    , definedGetdel = \key -> metadataCommand ["GETDEL", key]
+    , definedGetex = \key opts -> metadataCommand (["GETEX", key] ++ opts)
+    , definedPsetex = \key milliseconds value -> keyedCommand key ["PSETEX", key, showBS milliseconds, value]
+    , definedBulkSet = \pairs ->
+        let frame = ["MSET"] <> concatMap (\(key, value) -> [key, value]) pairs
+        in keysCommand (fst <$> pairs) frame
+    , definedFlushAll = keylessCommand ["FLUSHALL"]
+    , definedDbsize = keylessCommand ["DBSIZE"]
+    , definedDel = \keys -> keysCommand keys ("DEL" : keys)
+    , definedExists = \keys -> keysCommand keys ("EXISTS" : keys)
+    , definedIncr = \key -> keyedCommand key ["INCR", key]
+    , definedHset = \key field value -> keyedCommand key ["HSET", key, field, value]
+    , definedHget = \key field -> keyedCommand key ["HGET", key, field]
+    , definedHmget = \key fields -> keyedCommand key ("HMGET" : key : fields)
+    , definedHexists = \key field -> keyedCommand key ["HEXISTS", key, field]
+    , definedLpush = \key values -> keyedCommand key ("LPUSH" : key : values)
+    , definedLrange = \key start stop -> keyedCommand key ["LRANGE", key, showBS start, showBS stop]
+    , definedExpire = \key seconds -> keyedCommand key ["EXPIRE", key, showBS seconds]
+    , definedTtl = \key -> keyedCommand key ["TTL", key]
+    , definedPersist = \key -> metadataCommand ["PERSIST", key]
+    , definedKeyType = \key -> metadataCommand ["TYPE", key]
+    , definedRename = \key newkey -> keysCommand [key, newkey] ["RENAME", key, newkey]
+    , definedRenamenx = \key newkey -> keysCommand [key, newkey] ["RENAMENX", key, newkey]
+    , definedUnlink = \keys -> keysCommand keys ("UNLINK" : keys)
+    , definedPfadd = \key elements -> metadataCommand ("PFADD" : key : elements)
+    , definedPfcount = \keys -> keysCommand keys ("PFCOUNT" : keys)
+    , definedPfmerge = \destkey sourcekeys -> keysCommand (destkey : sourcekeys) ("PFMERGE" : destkey : sourcekeys)
+    , definedRpush = \key values -> keyedCommand key ("RPUSH" : key : values)
+    , definedLpop = \key -> keyedCommand key ["LPOP", key]
+    , definedRpop = \key -> keyedCommand key ["RPOP", key]
+    , definedSadd = \key members -> keyedCommand key ("SADD" : key : members)
+    , definedSmembers = \key -> keyedCommand key ["SMEMBERS", key]
+    , definedScard = \key -> keyedCommand key ["SCARD", key]
+    , definedSismember = \key member -> keyedCommand key ["SISMEMBER", key, member]
+    , definedSrem = \key members -> metadataCommand ("SREM" : key : members)
+    , definedSdiff = \keys -> keysCommand keys ("SDIFF" : keys)
+    , definedSinter = \keys -> keysCommand keys ("SINTER" : keys)
+    , definedSunion = \keys -> keysCommand keys ("SUNION" : keys)
+    , definedSpop = \key -> metadataCommand ["SPOP", key]
+    , definedSrandmember = \key -> metadataCommand ["SRANDMEMBER", key]
+    , definedHdel = \key fields -> keyedCommand key ("HDEL" : key : fields)
+    , definedHkeys = \key -> keyedCommand key ["HKEYS", key]
+    , definedHvals = \key -> keyedCommand key ["HVALS", key]
+    , definedHgetall = \key -> metadataCommand ["HGETALL", key]
+    , definedHlen = \key -> metadataCommand ["HLEN", key]
+    , definedHsetnx = \key field value -> metadataCommand ["HSETNX", key, field, value]
+    , definedHincrby = \key field amount -> metadataCommand ["HINCRBY", key, field, showBS amount]
+    , definedHincrbyfloat = \key field amount -> metadataCommand ["HINCRBYFLOAT", key, field, showBS amount]
+    , definedLlen = \key -> keyedCommand key ["LLEN", key]
+    , definedLindex = \key index -> keyedCommand key ["LINDEX", key, showBS index]
+    , definedLinsert = \key pos pivot element -> metadataCommand ["LINSERT", key, pos, pivot, element]
+    , definedLset = \key index element -> metadataCommand ["LSET", key, showBS index, element]
+    , definedLtrim = \key start stop -> metadataCommand ["LTRIM", key, showBS start, showBS stop]
+    , definedLrem = \key count element -> metadataCommand ["LREM", key, showBS count, element]
+    , definedClientSetInfo = \args -> keylessCommand (["CLIENT", "SETINFO"] ++ args)
+    , definedClientReplyOn = keylessCommand ["CLIENT", "REPLY", "ON"]
+    , definedClientReplyOff = keylessCommand ["CLIENT", "REPLY", "OFF"]
+    , definedClientReplySkip = keylessCommand ["CLIENT", "REPLY", "SKIP"]
+    , definedZadd = \key members ->
+        let payload = concatMap (\(score, member) -> [showBS score, member]) members
+        in keyedCommand key ("ZADD" : key : payload)
+    , definedZrange = \key start stop withScores ->
+        let base = ["ZRANGE", key, showBS start, showBS stop]
+        in keyedCommand key (if withScores then base ++ ["WITHSCORES"] else base)
+    , definedZrem = \key members -> metadataCommand ("ZREM" : key : members)
+    , definedZcard = \key -> metadataCommand ["ZCARD", key]
+    , definedZscore = \key member -> metadataCommand ["ZSCORE", key, member]
+    , definedZrank = \key member -> metadataCommand ["ZRANK", key, member]
+    , definedZrevrank = \key member -> metadataCommand ["ZREVRANK", key, member]
+    , definedZcount = \key minScore maxScore -> metadataCommand ["ZCOUNT", key, minScore, maxScore]
+    , definedZincrby = \key increment member -> metadataCommand ["ZINCRBY", key, showBS increment, member]
+    , definedZrangestore = \dest source minVal maxVal options ->
+        metadataCommand (["ZRANGESTORE", dest, source, minVal, maxVal] ++ options)
+    , definedGeoadd = \key entries ->
+        let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
+        in keyedCommand key ("GEOADD" : key : payload)
+    , definedGeodist = \key member1 member2 unit ->
+        let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
+        in keyedCommand key (["GEODIST", key, member1, member2] ++ unitPart)
+    , definedGeohash = \key members -> keyedCommand key ("GEOHASH" : key : members)
+    , definedGeopos = \key members -> keyedCommand key ("GEOPOS" : key : members)
+    , definedGeoradius = \key lon lat radius unit flags ->
+        let base = ["GEORADIUS", key, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
+        in metadataCommand (base ++ concatMap geoRadiusFlagToList flags)
+    , definedGeoradiusRo = \key lon lat radius unit flags ->
+        let base = ["GEORADIUS_RO", key, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
+        in metadataCommand (base ++ concatMap geoRadiusFlagToList flags)
+    , definedGeoradiusByMember = \key member radius unit flags ->
+        let base = ["GEORADIUSBYMEMBER", key, member, showBS radius, geoUnitKeyword unit]
+        in metadataCommand (base ++ concatMap geoRadiusFlagToList flags)
+    , definedGeoradiusByMemberRo = \key member radius unit flags ->
+        let base = ["GEORADIUSBYMEMBER_RO", key, member, showBS radius, geoUnitKeyword unit]
+        in metadataCommand (base ++ concatMap geoRadiusFlagToList flags)
+    , definedGeosearch = \key fromSpec bySpec options ->
+        metadataCommand
+          ( [ "GEOSEARCH"
+            , key
+            ]
+            ++ geoSearchFromToList fromSpec
+            ++ geoSearchByToList bySpec
+            ++ concatMap geoSearchOptionToList options
+          )
+    , definedGeosearchstore = \dest source fromSpec bySpec options storeDist ->
+        let base = ["GEOSEARCHSTORE", dest, source]
+                ++ geoSearchFromToList fromSpec
+                ++ geoSearchByToList bySpec
+                ++ concatMap geoSearchOptionToList options
+        in keysCommand
+             [dest, source]
+             (if storeDist then base ++ ["STOREDIST"] else base)
+    , definedClusterSlots = keylessCommand ["CLUSTER", "SLOTS"]
+    }
+
 -- | Authenticate with the legacy/default Redis user while retaining RESP2.
 authenticatePassword
   :: (Client client, FromResp a)
@@ -299,6 +565,22 @@ executeCommand args = do
   ClientState !client _ <- State.get
   liftIO $ send client (Builder.toLazyByteString . encode $ wrapInRay args)
   parseWith (receive client)
+
+-- | Execute a shared command descriptor on a dedicated sequential connection.
+executeCommandDescriptor
+  :: (Client client)
+  => CommandDescriptor
+  -> RedisCommandClient client RespData
+executeCommandDescriptor =
+  executeCommand . commandDescriptorFrame
+
+-- | Execute a shared command descriptor and convert the response via 'FromResp'.
+executeCommandDescriptorAs
+  :: (Client client, FromResp a)
+  => CommandDescriptor
+  -> RedisCommandClient client a
+executeCommandDescriptorAs descriptor =
+  executeCommandDescriptor descriptor >>= convertResp
 
 -- | Send a command without reading a response on a dedicated sequential
 -- connection whose reply mode is already @OFF@. This is the required
@@ -524,142 +806,196 @@ instance Show ClientReplyUncertainWrite where
 instance Exception ClientReplyUncertainWrite
 
 instance (Client client) => RedisCommands (RedisCommandClient client) where
-  ping = executeCommandAs ["PING"]
-  set k v = executeCommandAs ["SET", k, v]
-  get k = executeCommandAs ["GET", k]
-  mget keys = executeCommandAs ("MGET" : keys)
-  setnx key value = executeCommandAs ["SETNX", key, value]
-  decr key = executeCommandAs ["DECR", key]
-  append key value = executeCommandAs ["APPEND", key, value]
-  strlen key = executeCommandAs ["STRLEN", key]
-  setex key seconds value = executeCommandAs ["SETEX", key, showBS seconds, value]
-  incrby key amount = executeCommandAs ["INCRBY", key, showBS amount]
-  decrby key amount = executeCommandAs ["DECRBY", key, showBS amount]
-  incrbyfloat key amount = executeCommandAs ["INCRBYFLOAT", key, showBS amount]
-  getdel key = executeCommandAs ["GETDEL", key]
-  getex key opts = executeCommandAs (["GETEX", key] ++ opts)
-  psetex key milliseconds value = executeCommandAs ["PSETEX", key, showBS milliseconds, value]
-  auth username password
-    | BS8.null username || username == "default" =
-        authenticatePassword password
-    | otherwise =
-        authenticateACL username password
-  bulkSet kvs = executeCommandAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
-  flushAll = executeCommandAs ["FLUSHALL"]
-  dbsize = executeCommandAs ["DBSIZE"]
-  del keys = executeCommandAs ("DEL" : keys)
-  exists keys = executeCommandAs ("EXISTS" : keys)
-  incr key = executeCommandAs ["INCR", key]
-  hset key field value = executeCommandAs ["HSET", key, field, value]
-  hget key field = executeCommandAs ["HGET", key, field]
-  hmget key fields = executeCommandAs ("HMGET" : key : fields)
-  hexists key field = executeCommandAs ["HEXISTS", key, field]
-  lpush key values = executeCommandAs ("LPUSH" : key : values)
-  lrange key start stop = executeCommandAs ["LRANGE", key, showBS start, showBS stop]
-  expire key seconds = executeCommandAs ["EXPIRE", key, showBS seconds]
-  ttl key = executeCommandAs ["TTL", key]
-  persist key = executeCommandAs ["PERSIST", key]
-  keyType key = executeCommandAs ["TYPE", key]
-  rename key newkey = executeCommandAs ["RENAME", key, newkey]
-  renamenx key newkey = executeCommandAs ["RENAMENX", key, newkey]
-  unlink keys = executeCommandAs ("UNLINK" : keys)
-  pfadd key elements = executeCommandAs ("PFADD" : key : elements)
-  pfcount keys = executeCommandAs ("PFCOUNT" : keys)
-  pfmerge destkey sourcekeys = executeCommandAs ("PFMERGE" : destkey : sourcekeys)
-  rpush key values = executeCommandAs ("RPUSH" : key : values)
-  lpop key = executeCommandAs ["LPOP", key]
-  rpop key = executeCommandAs ["RPOP", key]
-  sadd key members = executeCommandAs ("SADD" : key : members)
-  smembers key = executeCommandAs ["SMEMBERS", key]
-  scard key = executeCommandAs ["SCARD", key]
-  sismember key member = executeCommandAs ["SISMEMBER", key, member]
-  srem key members = executeCommandAs ("SREM" : key : members)
-  sdiff keys = executeCommandAs ("SDIFF" : keys)
-  sinter keys = executeCommandAs ("SINTER" : keys)
-  sunion keys = executeCommandAs ("SUNION" : keys)
-  spop key = executeCommandAs ["SPOP", key]
-  srandmember key = executeCommandAs ["SRANDMEMBER", key]
-  hdel key fields = executeCommandAs ("HDEL" : key : fields)
-  hkeys key = executeCommandAs ["HKEYS", key]
-  hvals key = executeCommandAs ["HVALS", key]
-  hgetall key = executeCommandAs ["HGETALL", key]
-  hlen key = executeCommandAs ["HLEN", key]
-  hsetnx key field value = executeCommandAs ["HSETNX", key, field, value]
-  hincrby key field amount = executeCommandAs ["HINCRBY", key, field, showBS amount]
-  hincrbyfloat key field amount = executeCommandAs ["HINCRBYFLOAT", key, field, showBS amount]
-  llen key = executeCommandAs ["LLEN", key]
-  lindex key index = executeCommandAs ["LINDEX", key, showBS index]
-  linsert key pos pivot element = executeCommandAs ["LINSERT", key, pos, pivot, element]
-  lset key index element = executeCommandAs ["LSET", key, showBS index, element]
-  ltrim key start stop = executeCommandAs ["LTRIM", key, showBS start, showBS stop]
-  lrem key count element = executeCommandAs ["LREM", key, showBS count, element]
-  clientSetInfo info = executeCommandAs (["CLIENT", "SETINFO"] ++ info)
-  clusterSlots = executeCommandAs ["CLUSTER", "SLOTS"]
+  auth username password =
+    executeCommandDescriptorAs (definedAuth redisCommandDefinitions username password)
+  ping =
+    executeCommandDescriptorAs (definedPing redisCommandDefinitions)
+  set key value =
+    executeCommandDescriptorAs (definedSet redisCommandDefinitions key value)
+  get key =
+    executeCommandDescriptorAs (definedGet redisCommandDefinitions key)
+  mget keys =
+    executeCommandDescriptorAs (definedMget redisCommandDefinitions keys)
+  setnx key value =
+    executeCommandDescriptorAs (definedSetnx redisCommandDefinitions key value)
+  decr key =
+    executeCommandDescriptorAs (definedDecr redisCommandDefinitions key)
+  append key value =
+    executeCommandDescriptorAs (definedAppend redisCommandDefinitions key value)
+  strlen key =
+    executeCommandDescriptorAs (definedStrlen redisCommandDefinitions key)
+  setex key seconds value =
+    executeCommandDescriptorAs (definedSetex redisCommandDefinitions key seconds value)
+  incrby key amount =
+    executeCommandDescriptorAs (definedIncrby redisCommandDefinitions key amount)
+  decrby key amount =
+    executeCommandDescriptorAs (definedDecrby redisCommandDefinitions key amount)
+  incrbyfloat key amount =
+    executeCommandDescriptorAs (definedIncrbyfloat redisCommandDefinitions key amount)
+  getdel key =
+    executeCommandDescriptorAs (definedGetdel redisCommandDefinitions key)
+  getex key opts =
+    executeCommandDescriptorAs (definedGetex redisCommandDefinitions key opts)
+  psetex key milliseconds value =
+    executeCommandDescriptorAs (definedPsetex redisCommandDefinitions key milliseconds value)
+  bulkSet pairs =
+    executeCommandDescriptorAs (definedBulkSet redisCommandDefinitions pairs)
+  flushAll =
+    executeCommandDescriptorAs (definedFlushAll redisCommandDefinitions)
+  dbsize =
+    executeCommandDescriptorAs (definedDbsize redisCommandDefinitions)
+  del keys =
+    executeCommandDescriptorAs (definedDel redisCommandDefinitions keys)
+  exists keys =
+    executeCommandDescriptorAs (definedExists redisCommandDefinitions keys)
+  incr key =
+    executeCommandDescriptorAs (definedIncr redisCommandDefinitions key)
+  hset key field value =
+    executeCommandDescriptorAs (definedHset redisCommandDefinitions key field value)
+  hget key field =
+    executeCommandDescriptorAs (definedHget redisCommandDefinitions key field)
+  hmget key fields =
+    executeCommandDescriptorAs (definedHmget redisCommandDefinitions key fields)
+  hexists key field =
+    executeCommandDescriptorAs (definedHexists redisCommandDefinitions key field)
+  lpush key values =
+    executeCommandDescriptorAs (definedLpush redisCommandDefinitions key values)
+  lrange key start stop =
+    executeCommandDescriptorAs (definedLrange redisCommandDefinitions key start stop)
+  expire key seconds =
+    executeCommandDescriptorAs (definedExpire redisCommandDefinitions key seconds)
+  ttl key =
+    executeCommandDescriptorAs (definedTtl redisCommandDefinitions key)
+  persist key =
+    executeCommandDescriptorAs (definedPersist redisCommandDefinitions key)
+  keyType key =
+    executeCommandDescriptorAs (definedKeyType redisCommandDefinitions key)
+  rename key newkey =
+    executeCommandDescriptorAs (definedRename redisCommandDefinitions key newkey)
+  renamenx key newkey =
+    executeCommandDescriptorAs (definedRenamenx redisCommandDefinitions key newkey)
+  unlink keys =
+    executeCommandDescriptorAs (definedUnlink redisCommandDefinitions keys)
+  pfadd key elements =
+    executeCommandDescriptorAs (definedPfadd redisCommandDefinitions key elements)
+  pfcount keys =
+    executeCommandDescriptorAs (definedPfcount redisCommandDefinitions keys)
+  pfmerge destkey sourcekeys =
+    executeCommandDescriptorAs (definedPfmerge redisCommandDefinitions destkey sourcekeys)
+  rpush key values =
+    executeCommandDescriptorAs (definedRpush redisCommandDefinitions key values)
+  lpop key =
+    executeCommandDescriptorAs (definedLpop redisCommandDefinitions key)
+  rpop key =
+    executeCommandDescriptorAs (definedRpop redisCommandDefinitions key)
+  sadd key members =
+    executeCommandDescriptorAs (definedSadd redisCommandDefinitions key members)
+  smembers key =
+    executeCommandDescriptorAs (definedSmembers redisCommandDefinitions key)
+  scard key =
+    executeCommandDescriptorAs (definedScard redisCommandDefinitions key)
+  sismember key member =
+    executeCommandDescriptorAs (definedSismember redisCommandDefinitions key member)
+  srem key members =
+    executeCommandDescriptorAs (definedSrem redisCommandDefinitions key members)
+  sdiff keys =
+    executeCommandDescriptorAs (definedSdiff redisCommandDefinitions keys)
+  sinter keys =
+    executeCommandDescriptorAs (definedSinter redisCommandDefinitions keys)
+  sunion keys =
+    executeCommandDescriptorAs (definedSunion redisCommandDefinitions keys)
+  spop key =
+    executeCommandDescriptorAs (definedSpop redisCommandDefinitions key)
+  srandmember key =
+    executeCommandDescriptorAs (definedSrandmember redisCommandDefinitions key)
+  hdel key fields =
+    executeCommandDescriptorAs (definedHdel redisCommandDefinitions key fields)
+  hkeys key =
+    executeCommandDescriptorAs (definedHkeys redisCommandDefinitions key)
+  hvals key =
+    executeCommandDescriptorAs (definedHvals redisCommandDefinitions key)
+  hgetall key =
+    executeCommandDescriptorAs (definedHgetall redisCommandDefinitions key)
+  hlen key =
+    executeCommandDescriptorAs (definedHlen redisCommandDefinitions key)
+  hsetnx key field value =
+    executeCommandDescriptorAs (definedHsetnx redisCommandDefinitions key field value)
+  hincrby key field amount =
+    executeCommandDescriptorAs (definedHincrby redisCommandDefinitions key field amount)
+  hincrbyfloat key field amount =
+    executeCommandDescriptorAs (definedHincrbyfloat redisCommandDefinitions key field amount)
+  llen key =
+    executeCommandDescriptorAs (definedLlen redisCommandDefinitions key)
+  lindex key index =
+    executeCommandDescriptorAs (definedLindex redisCommandDefinitions key index)
+  linsert key pos pivot element =
+    executeCommandDescriptorAs (definedLinsert redisCommandDefinitions key pos pivot element)
+  lset key index element =
+    executeCommandDescriptorAs (definedLset redisCommandDefinitions key index element)
+  ltrim key start stop =
+    executeCommandDescriptorAs (definedLtrim redisCommandDefinitions key start stop)
+  lrem key count element =
+    executeCommandDescriptorAs (definedLrem redisCommandDefinitions key count element)
+  clientSetInfo info =
+    executeCommandDescriptorAs (definedClientSetInfo redisCommandDefinitions info)
+  clusterSlots =
+    executeCommandDescriptorAs (definedClusterSlots redisCommandDefinitions)
 
   clientReply val = do
     case val of
-      ON -> Just <$> executeCommand ["CLIENT", "REPLY", showBS val]
-      OFF -> sendCommandWithoutReply ["CLIENT", "REPLY", showBS val] >> return Nothing
+      ON ->
+        Just <$> executeCommandDescriptor (definedClientReplyOn redisCommandDefinitions)
+      OFF -> do
+        sendCommandWithoutReply
+          (commandDescriptorFrame $ definedClientReplyOff redisCommandDefinitions)
+        return Nothing
       SKIP -> liftIO $ throwIO (ClientReplyModeUnsupported SKIP)
-
   zadd key members =
-    let payload = concatMap (\(score, member) -> [showBS score, member]) members
-    in executeCommandAs ("ZADD" : key : payload)
-
+    executeCommandDescriptorAs (definedZadd redisCommandDefinitions key members)
   zrange key start stop withScores =
-    let base = ["ZRANGE", key, showBS start, showBS stop]
-        command = if withScores then base ++ ["WITHSCORES"] else base
-    in executeCommandAs command
-
-  zrem key members = executeCommandAs ("ZREM" : key : members)
-  zcard key = executeCommandAs ["ZCARD", key]
-  zscore key member = executeCommandAs ["ZSCORE", key, member]
-  zrank key member = executeCommandAs ["ZRANK", key, member]
-  zrevrank key member = executeCommandAs ["ZREVRANK", key, member]
-  zcount key minScore maxScore = executeCommandAs ["ZCOUNT", key, minScore, maxScore]
-  zincrby key increment member = executeCommandAs ["ZINCRBY", key, showBS increment, member]
-  zrangestore dst src minVal maxVal opts = executeCommandAs (["ZRANGESTORE", dst, src, minVal, maxVal] ++ opts)
-
+    executeCommandDescriptorAs (definedZrange redisCommandDefinitions key start stop withScores)
+  zrem key members =
+    executeCommandDescriptorAs (definedZrem redisCommandDefinitions key members)
+  zcard key =
+    executeCommandDescriptorAs (definedZcard redisCommandDefinitions key)
+  zscore key member =
+    executeCommandDescriptorAs (definedZscore redisCommandDefinitions key member)
+  zrank key member =
+    executeCommandDescriptorAs (definedZrank redisCommandDefinitions key member)
+  zrevrank key member =
+    executeCommandDescriptorAs (definedZrevrank redisCommandDefinitions key member)
+  zcount key minScore maxScore =
+    executeCommandDescriptorAs (definedZcount redisCommandDefinitions key minScore maxScore)
+  zincrby key increment member =
+    executeCommandDescriptorAs (definedZincrby redisCommandDefinitions key increment member)
+  zrangestore dst src minVal maxVal opts =
+    executeCommandDescriptorAs (definedZrangestore redisCommandDefinitions dst src minVal maxVal opts)
   geoadd key entries =
-    let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
-    in executeCommandAs ("GEOADD" : key : payload)
-
+    executeCommandDescriptorAs (definedGeoadd redisCommandDefinitions key entries)
   geodist key member1 member2 unit =
-    let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
-    in executeCommandAs (["GEODIST", key, member1, member2] ++ unitPart)
-
-  geohash key members = executeCommandAs ("GEOHASH" : key : members)
-  geopos key members = executeCommandAs ("GEOPOS" : key : members)
-
+    executeCommandDescriptorAs (definedGeodist redisCommandDefinitions key member1 member2 unit)
+  geohash key members =
+    executeCommandDescriptorAs (definedGeohash redisCommandDefinitions key members)
+  geopos key members =
+    executeCommandDescriptorAs (definedGeopos redisCommandDefinitions key members)
   georadius key longitude latitude radius unit flags =
-    let base = ["GEORADIUS", key, showBS longitude, showBS latitude, showBS radius, geoUnitKeyword unit]
-    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
-
+    executeCommandDescriptorAs
+      (definedGeoradius redisCommandDefinitions key longitude latitude radius unit flags)
   georadiusRo key longitude latitude radius unit flags =
-    let base = ["GEORADIUS_RO", key, showBS longitude, showBS latitude, showBS radius, geoUnitKeyword unit]
-    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
-
+    executeCommandDescriptorAs
+      (definedGeoradiusRo redisCommandDefinitions key longitude latitude radius unit flags)
   georadiusByMember key member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER", key, member, showBS radius, geoUnitKeyword unit]
-    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
-
+    executeCommandDescriptorAs
+      (definedGeoradiusByMember redisCommandDefinitions key member radius unit flags)
   georadiusByMemberRo key member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER_RO", key, member, showBS radius, geoUnitKeyword unit]
-    in executeCommandAs (base ++ concatMap geoRadiusFlagToList flags)
-
+    executeCommandDescriptorAs
+      (definedGeoradiusByMemberRo redisCommandDefinitions key member radius unit flags)
   geosearch key fromSpec bySpec options =
-    executeCommandAs (["GEOSEARCH", key]
-      ++ geoSearchFromToList fromSpec
-      ++ geoSearchByToList bySpec
-      ++ concatMap geoSearchOptionToList options)
-
+    executeCommandDescriptorAs
+      (definedGeosearch redisCommandDefinitions key fromSpec bySpec options)
   geosearchstore dest source fromSpec bySpec options storeDist =
-    let base = ["GEOSEARCHSTORE", dest, source]
-            ++ geoSearchFromToList fromSpec
-            ++ geoSearchByToList bySpec
-            ++ concatMap geoSearchOptionToList options
-        command = if storeDist then base ++ ["STOREDIST"] else base
-    in executeCommandAs command
+    executeCommandDescriptorAs
+      (definedGeosearchstore redisCommandDefinitions dest source fromSpec bySpec options storeDist)
 
 -- | Receive exactly one RESP value, fetching more bytes from the connection as needed.
 -- Throws 'ParseError' on malformed data and 'ConnectionClosed' if the remote end hangs up.
