@@ -12,6 +12,17 @@ STANDALONE_MODE=""
 CLUSTER_ROOT="$ARTIFACT_DIR/cluster-fixture"
 CLUSTER_STARTED=0
 
+run_benchmark() {
+  local -a cmd=(cabal run redis-client-benchmark -- "$@")
+  local rendered_cmd
+
+  printf -v rendered_cmd '%q ' "${cmd[@]}"
+  (
+    cd "$REPO_ROOT"
+    nix-shell --run "$rendered_cmd"
+  ) >/dev/null
+}
+
 cleanup() {
   local status=$?
   trap - EXIT INT TERM HUP
@@ -60,7 +71,7 @@ else
 fi
 STANDALONE_STARTED=1
 
-cabal run redis-client-benchmark -- \
+run_benchmark \
   --scenario standalone \
   --host 127.0.0.1 \
   --port 6379 \
@@ -74,9 +85,9 @@ cabal run redis-client-benchmark -- \
   --operation mixed \
   --timeout-ms 500 \
   --output "$ARTIFACT_DIR/standalone.json" \
-  +RTS -T -RTS >/dev/null
+  +RTS -T -RTS
 
-cabal run redis-client-benchmark -- \
+run_benchmark \
   --scenario slow-server \
   --duration 1 \
   --warmup 0 \
@@ -90,7 +101,7 @@ cabal run redis-client-benchmark -- \
   --response-delay-ms 50 \
   --stall-after-requests 4 \
   --output "$ARTIFACT_DIR/slow-server.json" \
-  +RTS -T -RTS >/dev/null
+  +RTS -T -RTS
 
 mkdir -p "$CLUSTER_ROOT"
 for port in 7000 7001 7002; do
@@ -134,7 +145,7 @@ redis-cli --cluster create \
   127.0.0.1:7002 \
   --cluster-yes >/dev/null
 
-cabal run redis-client-benchmark -- \
+run_benchmark \
   --scenario cluster \
   --host 127.0.0.1 \
   --port 7000 \
@@ -148,7 +159,7 @@ cabal run redis-client-benchmark -- \
   --operation mixed \
   --timeout-ms 500 \
   --output "$ARTIFACT_DIR/cluster.json" \
-  +RTS -T -RTS >/dev/null
+  +RTS -T -RTS
 
 python3 - <<'PY'
 import json
