@@ -63,6 +63,7 @@ The CLI reference below is kept in parity with `redis-client --help`.
 | `-t`, `--tls` | `cli`, `fill`, `tunn`, `bench` | Use TLS for the upstream Redis connection. |
 | `--allow-insecure-plaintext-auth` | `cli`, `fill`, `tunn`, `bench` | Allow environment-provided credentials over plaintext and emit a warning naming the target host. |
 | `-c`, `--cluster` | `cli`, `fill`, `tunn`, `bench` | Enable Redis Cluster behavior. Required for `bench`; optional for the other modes. |
+| `--verbose-pinned-proxy-traffic` | `tunn` | Enable opt-in pinned-proxy request/response payload previews for debugging. Default: off. |
 | `-d`, `--data GBs` | `fill` | Random data size in GiB. Required unless `--flush` is the only requested action. |
 | `-f`, `--flush` | `fill` | Request `FLUSHALL` before filling, or perform a flush-only run when `--data` is omitted. Requires exact confirmation. |
 | `--confirm-flush TARGET` | `fill` | Exact non-interactive acknowledgement for `--flush`. Required whenever stdin is not a terminal. |
@@ -103,6 +104,7 @@ redis-client fill -h localhost -d 5 --pipeline 4096 --key-size 128 --value-size 
 redis-client fill -h localhost -f --confirm-flush 'redis://localhost:6379?tls=false&scope=single-node'
 redis-client fill -h redis1.local -c -d 10 -n 4 -P 2
 redis-client tunn -h redis1.local -t -c --tunnel-mode smart
+redis-client tunn -h redis1.local -c --tunnel-mode pinned --verbose-pinned-proxy-traffic
 redis-client bench -h redis1.local -c --operation mixed --duration 15 --connections 32 --mux-count 2
 REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h cache.local -t
 ```

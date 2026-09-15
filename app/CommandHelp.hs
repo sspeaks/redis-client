@@ -171,6 +171,11 @@ optionDocs =
       , optionDetails = "Enable Redis Cluster behavior. Required for `bench`; optional for the other modes."
       }
   , OptionDoc
+      { optionFlags = "`--verbose-pinned-proxy-traffic`"
+      , optionApplies = "`tunn`"
+      , optionDetails = "Enable opt-in pinned-proxy request/response payload previews for debugging. Default: off."
+      }
+  , OptionDoc
       { optionFlags = "`-d`, `--data GBs`"
       , optionApplies = "`fill`"
       , optionDetails = "Random data size in GiB. Required unless `--flush` is the only requested action."
@@ -262,6 +267,7 @@ exampleCommands =
   , "redis-client fill -h localhost -f --confirm-flush 'redis://localhost:6379?tls=false&scope=single-node'"
   , "redis-client fill -h redis1.local -c -d 10 -n 4 -P 2"
   , "redis-client tunn -h redis1.local -t -c --tunnel-mode smart"
+  , "redis-client tunn -h redis1.local -c --tunnel-mode pinned --verbose-pinned-proxy-traffic"
   , "redis-client bench -h redis1.local -c --operation mixed --duration 15 --connections 32 --mux-count 2"
   , "REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h cache.local -t"
   ]

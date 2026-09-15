@@ -5,11 +5,15 @@
 module ClusterTunnel
   ( serveSmartProxy
   , servePinnedProxy
+  , servePinnedProxyWith
   , routeSmartProxyCommandWith
   , rewriteClusterResponse
   , SmartProxyFrameResult (..)
   , smartProxyFrameLimit
   , parseSmartProxyFrames
+  , PinnedProxyLogMode (..)
+  , PinnedProxyLogEntry (..)
+  , emitPinnedProxyTrafficLog
   , PinnedResponseResult (..)
   , pinnedResponseFrameLimit
   , parsePinnedResponses
@@ -36,6 +40,10 @@ import qualified Data.ByteString.Builder                    as Builder
 import qualified Data.ByteString.Char8                      as BS8
 import qualified Data.ByteString.Lazy                       as LBS
 import           Data.Char                                  (isAlphaNum)
+import           Data.IORef                                 (IORef,
+                                                             atomicModifyIORef',
+                                                             newIORef,
+                                                             readIORef)
 import           Data.List                                  (intercalate,
                                                              isPrefixOf)
 import qualified Data.Map.Strict                            as Map
@@ -75,6 +83,112 @@ import           System.IO                                  (BufferMode (LineBuf
                                                              stdout)
 import           System.Timeout                             (timeout)
 import           Text.Printf                                (printf)
+
+data PinnedProxyLogMode
+  = PinnedProxyLifecycleOnly
+  | PinnedProxyVerboseTraffic
+  deriving (Eq, Show)
+
+data PinnedProxyLogEntry = PinnedProxyLogEntry
+  { pinnedProxyLogMessage :: String
+  , pinnedProxyLogFlush   :: Bool
+  }
+  deriving (Eq, Show)
+
+type PinnedProxyLogSink = PinnedProxyLogEntry -> IO ()
+
+data PinnedProxyTransferStats = PinnedProxyTransferStats
+  { pinnedProxyClientChunks :: !Int
+  , pinnedProxyClientBytes  :: !Int
+  , pinnedProxyRedisChunks  :: !Int
+  , pinnedProxyRedisBytes   :: !Int
+  }
+  deriving (Eq, Show)
+
+emptyPinnedProxyTransferStats :: PinnedProxyTransferStats
+emptyPinnedProxyTransferStats =
+  PinnedProxyTransferStats
+    { pinnedProxyClientChunks = 0
+    , pinnedProxyClientBytes = 0
+    , pinnedProxyRedisChunks = 0
+    , pinnedProxyRedisBytes = 0
+    }
+
+stdoutPinnedProxyLogSink :: PinnedProxyLogSink
+stdoutPinnedProxyLogSink entry = do
+  putStrLn (pinnedProxyLogMessage entry)
+  when (pinnedProxyLogFlush entry) $
+    hFlush stdout
+
+emitPinnedProxyLog :: PinnedProxyLogSink -> Bool -> String -> IO ()
+emitPinnedProxyLog sink shouldFlush message =
+  sink
+    PinnedProxyLogEntry
+      { pinnedProxyLogMessage = message
+      , pinnedProxyLogFlush = shouldFlush
+      }
+
+emitPinnedProxyTrafficLog ::
+  PinnedProxyLogMode ->
+  PinnedProxyLogSink ->
+  NodeAddress ->
+  String ->
+  BS.ByteString ->
+  IO ()
+emitPinnedProxyTrafficLog logMode sink addr direction payload =
+  case logMode of
+    PinnedProxyLifecycleOnly -> pure ()
+    PinnedProxyVerboseTraffic ->
+      emitPinnedProxyLog sink False $
+        printf "[Pinned %s:%d] %s %d bytes preview=%s"
+          (nodeHost addr)
+          (nodePort addr)
+          direction
+          (BS.length payload)
+          (renderPinnedProxyPayloadPreview payload)
+
+renderPinnedProxyPayloadPreview :: BS.ByteString -> String
+renderPinnedProxyPayloadPreview payload =
+  let previewLimit = 96
+      preview = show (BS.take previewLimit payload)
+  in if BS.length payload > previewLimit
+       then preview ++ "..."
+       else preview
+
+recordPinnedProxyClientChunk ::
+  IORef PinnedProxyTransferStats ->
+  BS.ByteString ->
+  IO ()
+recordPinnedProxyClientChunk statsRef payload =
+  atomicModifyIORef' statsRef $ \stats ->
+    ( stats
+        { pinnedProxyClientChunks = pinnedProxyClientChunks stats + 1
+        , pinnedProxyClientBytes = pinnedProxyClientBytes stats + BS.length payload
+        }
+    , ()
+    )
+
+recordPinnedProxyRedisChunk ::
+  IORef PinnedProxyTransferStats ->
+  BS.ByteString ->
+  IO ()
+recordPinnedProxyRedisChunk statsRef payload =
+  atomicModifyIORef' statsRef $ \stats ->
+    ( stats
+        { pinnedProxyRedisChunks = pinnedProxyRedisChunks stats + 1
+        , pinnedProxyRedisBytes = pinnedProxyRedisBytes stats + BS.length payload
+        }
+    , ()
+    )
+
+formatPinnedProxyTransferStats :: PinnedProxyTransferStats -> String
+formatPinnedProxyTransferStats stats =
+  printf
+    "client=%d chunks/%d bytes redis=%d chunks/%d bytes"
+    (pinnedProxyClientChunks stats)
+    (pinnedProxyClientBytes stats)
+    (pinnedProxyRedisChunks stats)
+    (pinnedProxyRedisBytes stats)
 
 -- | Smart proxy mode: Makes cluster appear as single Redis instance
 -- Creates single listening socket and routes commands to appropriate nodes
@@ -256,7 +370,13 @@ executeKeyedCommand dispatch key respData = do
 servePinnedProxy :: (Client client) =>
   ClusterClient client ->
   IO ()
-servePinnedProxy clusterClient = do
+servePinnedProxy = servePinnedProxyWith PinnedProxyLifecycleOnly
+
+servePinnedProxyWith :: (Client client) =>
+  PinnedProxyLogMode ->
+  ClusterClient client ->
+  IO ()
+servePinnedProxyWith logMode clusterClient = do
   hSetBuffering stdout LineBuffering
 
   -- Get cluster topology
@@ -268,23 +388,30 @@ servePinnedProxy clusterClient = do
     putStrLn "ERROR: No master nodes found in cluster topology"
     throwIO (userError "No master nodes in cluster")
 
-  printf "Pinned proxy mode: Creating %d listeners for cluster nodes\n" (length masters)
+  emitPinnedProxyLog
+    stdoutPinnedProxyLogSink
+    True
+    (printf "Pinned proxy mode: Creating %d listeners for cluster nodes" (length masters))
 
   -- Create a listener for each master node
-  mvars <- mapM (createPinnedListener connector) masters
+  mvars <- mapM (createPinnedListener logMode stdoutPinnedProxyLogSink connector) masters
 
-  putStrLn "All pinned listeners started. Press Ctrl+C to stop."
-  hFlush stdout
+  emitPinnedProxyLog
+    stdoutPinnedProxyLogSink
+    True
+    "All pinned listeners started. Press Ctrl+C to stop."
 
   -- Wait for all threads to complete (they won't unless there's an error)
   mapM_ takeMVar mvars
 
 -- | Create a listener for a specific cluster node
 createPinnedListener :: (Client client) =>
+  PinnedProxyLogMode ->
+  PinnedProxyLogSink ->
   Connector client ->
   ClusterNode ->
   IO (MVar ())
-createPinnedListener connector node = do
+createPinnedListener logMode logSink connector node = do
   mvar <- newEmptyMVar
   let addr = nodeAddress node
       localPort = nodePort addr
@@ -294,15 +421,19 @@ createPinnedListener connector node = do
       setSocketOption sock ReuseAddr 1
       bind sock (SockAddrInet (fromIntegral localPort) (tupleToHostAddress (127, 0, 0, 1)))
       listen sock 1024
-      printf "Pinned listener on localhost:%d -> %s:%d\n"
-        localPort (nodeHost addr) (nodePort addr)
-      hFlush stdout
+      emitPinnedProxyLog
+        logSink
+        True
+        (printf "Pinned listener on localhost:%d -> %s:%d"
+          localPort (nodeHost addr) (nodePort addr))
 
       -- Accept connections for this node
       forever $ do
         (clientSock, clientAddr) <- S.accept sock
-        printf "[Port %d] Accepted connection from %s\n" localPort (show clientAddr)
-        hFlush stdout
+        emitPinnedProxyLog
+          logSink
+          True
+          (printf "[Port %d] Accepted connection from %s" localPort (show clientAddr))
 
         -- Create dedicated connection for this pinned listener
         -- This is intentionally NOT using the connection pool because:
@@ -310,17 +441,28 @@ createPinnedListener connector node = do
         -- 2. Each listener needs its own connection tied to its lifecycle
         -- 3. Connection lifetime matches listener lifetime (closed when listener stops)
         redisConn <- connector addr
+        statsRef <- newIORef emptyPinnedProxyTransferStats
 
         -- Handle forwarding in a separate thread
         void $ forkIO $ do
-          result <- try $ forwardPinnedConnection clientSock redisConn addr
+          result <- try $ forwardPinnedConnection logMode logSink statsRef clientSock redisConn addr
+          stats <- readIORef statsRef
           case result of
             Left (e :: SomeException) -> do
-              printf "[Port %d] Forwarding error: %s\n" localPort (show e)
-              hFlush stdout
+              emitPinnedProxyLog
+                logSink
+                True
+                (printf "[Port %d] Forwarding error: %s (%s)"
+                  localPort
+                  (show e)
+                  (formatPinnedProxyTransferStats stats))
             Right _ -> do
-              printf "[Port %d] Forwarding completed normally\n" localPort
-              hFlush stdout
+              emitPinnedProxyLog
+                logSink
+                True
+                (printf "[Port %d] Forwarding completed normally (%s)"
+                  localPort
+                  (formatPinnedProxyTransferStats stats))
           finally
             (do
               S.close clientSock
@@ -329,7 +471,10 @@ createPinnedListener connector node = do
 
     case result of
       Left (e :: SomeException) -> do
-        printf "Pinned listener on port %d failed: %s\n" localPort (show e)
+        emitPinnedProxyLog
+          logSink
+          True
+          (printf "Pinned listener on port %d failed: %s" localPort (show e))
         putMVar mvar ()
       Right _ -> putMVar mvar ()
 
@@ -338,13 +483,18 @@ createPinnedListener connector node = do
 -- | Forward traffic bidirectionally between client and cluster node.
 -- Completed Redis responses are rewritten independently of TCP or TLS chunking.
 forwardPinnedConnection :: (Client client) =>
+  PinnedProxyLogMode ->
+  PinnedProxyLogSink ->
+  IORef PinnedProxyTransferStats ->
   Socket ->
   client 'Connected ->
   NodeAddress ->
   IO ()
-forwardPinnedConnection clientSock redisConn addr = do
-  printf "[Pinned %s:%d] Starting forwarding loop\n" (nodeHost addr) (nodePort addr)
-  hFlush stdout
+forwardPinnedConnection logMode logSink statsRef clientSock redisConn addr = do
+  emitPinnedProxyLog
+    logSink
+    True
+    (printf "[Pinned %s:%d] Starting forwarding loop" (nodeHost addr) (nodePort addr))
   withAsync copyClientToRedis $ \toRedis ->
     withAsync (copyRedisToClient BS.empty) $ \toClient -> do
       result <- waitEitherCatch toRedis toClient
@@ -365,22 +515,29 @@ forwardPinnedConnection clientSock redisConn addr = do
       dat <- recv clientSock 4096
       if BS.null dat
         then pure ()
-        else send redisConn (LBS.fromStrict dat) >> copyClientToRedis
+        else do
+          recordPinnedProxyClientChunk statsRef dat
+          emitPinnedProxyTrafficLog logMode logSink addr "client->redis" dat
+          send redisConn (LBS.fromStrict dat)
+          copyClientToRedis
 
     copyRedisToClient pending = do
       response <- receive redisConn
       if BS.null response
         then pure ()
-        else case parsePinnedResponses pending response of
-          PinnedResponses output nextPending -> do
-            sendAll clientSock output
-            copyRedisToClient nextPending
-          PinnedResponseLimitExceeded output -> do
-            sendAll clientSock output
-            throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
-          PinnedResponseMalformed output -> do
-            sendAll clientSock output
-            throwIO $ userError "pinned response contains malformed streamed RESP3 framing"
+        else do
+          recordPinnedProxyRedisChunk statsRef response
+          emitPinnedProxyTrafficLog logMode logSink addr "redis->client" response
+          case parsePinnedResponses pending response of
+            PinnedResponses output nextPending -> do
+              sendAll clientSock output
+              copyRedisToClient nextPending
+            PinnedResponseLimitExceeded output -> do
+              sendAll clientSock output
+              throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
+            PinnedResponseMalformed output -> do
+              sendAll clientSock output
+              throwIO $ userError "pinned response contains malformed streamed RESP3 framing"
 
 halfCloseDrainMicros :: Int
 halfCloseDrainMicros = 100000
