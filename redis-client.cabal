@@ -138,6 +138,16 @@ test-suite StructuredConcurrencySpec
                     , time
                     , vector
 
+test-suite StormAssertionsSpec
+    import:           test-defaults
+    type:             exitcode-stdio-1.0
+    main-is:          StormAssertionsSpec.hs
+    other-modules:    LibraryE2E.StormAssertions
+    hs-source-dirs:   test
+    build-depends:    bytestring
+                    , containers
+                    , hask-redis-mux
+
 -- ---------------------------------------------------------------------------
 -- Flags
 -- ---------------------------------------------------------------------------
@@ -240,6 +250,7 @@ executable LibraryE2E
                     , LibraryE2E.TopologyTests
                     , LibraryE2E.ResilienceTests
                     , LibraryE2E.ConcurrencyTests
+                    , LibraryE2E.StormAssertions
                     , LibraryE2E.ApiTests
                     , LibraryE2E.StandaloneTests
                     , LibraryE2E.StandaloneConcurrencyTests

@@ -102,6 +102,27 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
           ]
     directCommands `seq` clusterCommands `seq` (pure () :: IO ())
 
+  it "exports the documented standalone lifecycle facade" $ do
+    let runDefault
+          :: StandaloneCommandClient RespData
+          -> IO RespData
+        runDefault = runRedis defaultStandaloneConfig
+    runDefault `seq` (pure () :: IO ())
+
+  it "exports the documented cluster lifecycle facade" $ do
+    let withCluster
+          :: ClusterConfig
+          -> Connector PlainTextClient
+          -> (ClusterClient PlainTextClient -> IO RespData)
+          -> IO RespData
+        withCluster = withClusterClient
+        runCommand
+          :: ClusterClient PlainTextClient
+          -> ClusterCommandClient PlainTextClient RespData
+          -> IO RespData
+        runCommand = runClusterCommandClient
+    withCluster `seq` runCommand `seq` (pure () :: IO ())
+
   it "keeps Database.Redis cluster call sites source compatible" $ do
     let createClient
           :: ClusterConfig
@@ -226,6 +247,10 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
       "Database.Redis.Cluster.Internal.CommandGrammar"
     rootFacade `shouldNotContain`
       "Database.Redis.Cluster.Internal.CommandMetadata"
+    rootFacade `shouldNotContain`
+      "Database.Redis.Internal.Multiplexer"
+    rootFacade `shouldNotContain`
+      "Database.Redis.Internal.MultiplexPool"
     rootFacade `shouldNotContain` "executeRawClusterCommand"
     rootFacade `shouldNotContain` "RawClusterRoute"
     rootFacade `shouldNotContain` "sendClientReplySkipAndCommand"

@@ -36,6 +36,38 @@ APIs.
 - **Bracket-style resource management** — `withStandaloneClient` / `withClusterClient` for exception-safe cleanup
 - **Connection pooling** — automatic pool management for cluster nodes
 
+`Database.Redis` is the stable convenience facade for the documented
+standalone and cluster lifecycle APIs, including `runRedis`,
+`defaultStandaloneConfig`, `withStandaloneClient`, `withClusterClient`, and
+`runClusterCommandClient`. Advanced connection, pooling, and raw-command APIs
+remain available from their named modules. The legacy top-level package
+library retains its internal multiplexing re-exports for source compatibility,
+but they are intentionally not part of the `Database.Redis` facade.
+
+### Response-slot retention
+
+Multiplexed clients retain at most **256 idle response slots** per client pool.
+Slots are striped by capability and return to the stripe where they were
+acquired, preserving local reuse even when cancellation cleanup runs on another
+thread. Slots allocated during a traffic burst above that cap are released to
+the runtime after their response or failure is observed; they are never reused
+before completion.
+
+The cap bounds post-burst retention without limiting in-flight commands. It was
+selected as 16 slots across each of the 16 capability stripes: sufficient for
+the normal low-concurrency path while avoiding a permanently retained slot for
+every transient request in large bursts.
+
+`SlotPoolBurstBench` exercises 64, 1,024, and 4,096 outstanding commands plus
+a 1,024-command cancellation burst with RTS statistics enabled. On the
+reference local run, the 4,096-command burst retained 256 slots, allocated
+15,312,576 bytes, reached 8,388,608 bytes peak residency, settled at 590,440
+bytes live after GC, and
+completed at 996k operations/second with 0.31 microseconds p99 wait latency.
+The cancellation burst retained the same 256 slots and settled at 0.21 MiB
+after GC. These synthetic transport measurements isolate slot lifecycle costs;
+they are not Redis network throughput claims.
+
 ## Installation
 
 Add to your `.cabal` file:

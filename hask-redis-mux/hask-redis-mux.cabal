@@ -51,6 +51,8 @@ common test-defaults
 
 library
     import:           defaults
+    -- Keep these legacy package-level re-exports for source compatibility.
+    -- Database.Redis intentionally omits them from its convenience facade.
     reexported-modules:
         Database.Redis.Resp
       , Database.Redis.FromResp
@@ -171,6 +173,18 @@ benchmark ConnectionPoolBench
                     , client
                     , cluster
                     , containers >=0.6 && <0.8
+
+benchmark SlotPoolBurstBench
+    import:           defaults
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   bench
+    main-is:          SlotPoolBurstBench.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:    async >=2.2 && <2.3
+                    , bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , resp
 
 benchmark GrammarProfile
     import:           defaults
