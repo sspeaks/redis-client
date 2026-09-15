@@ -50,7 +50,7 @@ rec {
   justClient = pkgs.lib.pipe fullPackage [
     pkgs.haskell.lib.justStaticExecutables
     pkgs.haskell.lib.dontCheck
-    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "redis-client" ])
+    (pkgs.lib.flip pkgs.haskell.lib.setBuildTargets [ "redis-client" "redis-client-benchmark" ])
   ];
 
   dockerImage = pkgs.dockerTools.buildLayeredImage {

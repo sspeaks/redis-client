@@ -20,6 +20,7 @@
 module Database.Redis.Internal.Multiplexer
   ( Multiplexer
   , MultiplexerException (..)
+  , MultiplexerStats (..)
   , SlotPool
   , ResponseSlot
   , createSlotPool
@@ -34,6 +35,7 @@ module Database.Redis.Internal.Multiplexer
   , sameResponseSlot
   , slotPoolRetainedSlots
   , slotPoolRetentionCap
+  , getMultiplexerStats
   , destroyMultiplexer
   , isMultiplexerAlive
   ) where
@@ -92,6 +94,14 @@ data ResponseSlot = ResponseSlot
   , slotStripe :: !Int
   }
   deriving Eq
+
+data MultiplexerStats = MultiplexerStats
+  { statsCurrentQueuedCommands :: !Int
+  , statsQueueHighWater        :: !Int
+  , statsCurrentInFlight       :: !Int
+  , statsInFlightHighWater     :: !Int
+  }
+  deriving (Eq, Show)
 
 -- | Test and diagnostics identity for a pooled response slot.
 sameResponseSlot :: ResponseSlot -> ResponseSlot -> Bool
@@ -183,26 +193,39 @@ data PendingCommand = PendingCommand
 -- Writer is sole producer, reader is sole consumer.
 -- Uses IORef + MVar signaling instead of STM TQueue.
 data PendingQueue = PendingQueue
-  { pqState  :: !(IORef PendingQueueState)
-  , pqSignal :: !(MVar ())  -- signaled when new items are available
+  { pqState     :: !(IORef PendingQueueState)
+  , pqHighWater :: !(IORef Int)
+  , pqSignal    :: !(MVar ())  -- signaled when new items are available
   }
 
 data PendingQueueState = PendingQueueState
-  { pqsQueued :: !(Seq ResponseSlot)
-  , pqsActive :: !(Seq ResponseSlot)
+  { pqsQueued      :: !(Seq ResponseSlot)
+  , pqsQueuedCount :: !Int
+  , pqsActive      :: !(Seq ResponseSlot)
+  , pqsActiveCount :: !Int
   }
 
 newPendingQueue :: IO PendingQueue
 newPendingQueue = do
-  state <- newIORef $ PendingQueueState Seq.empty Seq.empty
+  state <- newIORef $ PendingQueueState Seq.empty 0 Seq.empty 0
+  highWater <- newIORef 0
   signal <- newEmptyMVar
-  return $ PendingQueue state signal
+  return $ PendingQueue state highWater signal
 
 -- | Enqueue a Seq of response slots directly (avoids Seq.fromList conversion).
 pendingEnqueueSeq :: PendingQueue -> Seq ResponseSlot -> IO ()
 pendingEnqueueSeq pq newSlots = do
-  atomicModifyIORef' (pqState pq) $ \state ->
-    (state { pqsQueued = pqsQueued state <> newSlots }, ())
+  let queuedCount = Seq.length newSlots
+  current <- atomicModifyIORef' (pqState pq) $ \state ->
+    let updatedQueued = pqsQueuedCount state + queuedCount
+        currentTotal = updatedQueued + pqsActiveCount state
+    in ( state
+           { pqsQueued = pqsQueued state <> newSlots
+           , pqsQueuedCount = updatedQueued
+           }
+       , currentTotal
+       )
+  updateHighWater (pqHighWater pq) current
   void $ tryPutMVar (pqSignal pq) ()
 {-# INLINE pendingEnqueueSeq #-}
 
@@ -216,7 +239,9 @@ pendingDequeue pq = do
       slot Seq.:< rest ->
         ( state
             { pqsQueued = rest
+            , pqsQueuedCount = pqsQueuedCount state - 1
             , pqsActive = pqsActive state Seq.|> slot
+            , pqsActiveCount = pqsActiveCount state + 1
             }
         , Just slot
         )
@@ -233,9 +258,12 @@ pendingDequeueUpTo :: PendingQueue -> Int -> IO (Seq ResponseSlot)
 pendingDequeueUpTo pq n = do
   atomicModifyIORef' (pqState pq) $ \state ->
     let (taken, rest) = Seq.splitAt n (pqsQueued state)
+        takenCount = Seq.length taken
     in ( state
            { pqsQueued = rest
+           , pqsQueuedCount = pqsQueuedCount state - takenCount
            , pqsActive = pqsActive state <> taken
+           , pqsActiveCount = pqsActiveCount state + takenCount
            }
        , taken
        )
@@ -247,7 +275,13 @@ pendingCompleteOne pq =
   atomicModifyIORef' (pqState pq) $ \state ->
     case Seq.viewl (pqsActive state) of
       Seq.EmptyL    -> (state, ())
-      _ Seq.:< rest -> (state { pqsActive = rest }, ())
+      _ Seq.:< rest ->
+        ( state
+            { pqsActive = rest
+            , pqsActiveCount = pqsActiveCount state - 1
+            }
+        , ()
+        )
 {-# INLINE pendingCompleteOne #-}
 
 -- | Drain all queued and reader-owned slots (for error propagation).
@@ -255,28 +289,38 @@ pendingDrainAll :: PendingQueue -> IO [ResponseSlot]
 pendingDrainAll pq = do
   slots <- atomicModifyIORef' (pqState pq) $ \state ->
     let allSlots = pqsActive state <> pqsQueued state
-    in (PendingQueueState Seq.empty Seq.empty, allSlots)
+    in (PendingQueueState Seq.empty 0 Seq.empty 0, allSlots)
   return $ foldr (:) [] slots
+
+updateHighWater :: IORef Int -> Int -> IO ()
+updateHighWater highWater current =
+  atomicModifyIORef' highWater $ \previous ->
+    (max previous current, ())
+{-# INLINE updateHighWater #-}
 
 -- | Lock-free MPSC (multi-producer, single-consumer) command queue.
 -- Producers use atomicModifyIORef' to cons onto the list (single CAS).
 -- The consumer reverses once per drain. MVar signals new item availability.
 data CommandQueue = CommandQueue
-  { cqState  :: !(IORef CommandQueueState)
-  , cqSignal :: !(MVar ())                 -- wake writer when items available
+  { cqState     :: !(IORef CommandQueueState)
+  , cqHighWater :: !(IORef Int)
+  , cqSignal    :: !(MVar ())                 -- wake writer when items available
   }
 
 data CommandQueueState = CommandQueueState
-  { cqsOpen   :: !Bool
-  , cqsQueued :: ![PendingCommand] -- reverse order (newest first)
-  , cqsActive :: ![PendingCommand] -- writer-owned batch, submission order
+  { cqsOpen        :: !Bool
+  , cqsQueued      :: ![PendingCommand] -- reverse order (newest first)
+  , cqsQueuedCount :: !Int
+  , cqsActive      :: ![PendingCommand] -- writer-owned batch, submission order
+  , cqsActiveCount :: !Int
   }
 
 newCommandQueue :: IO CommandQueue
 newCommandQueue = do
-  state  <- newIORef $ CommandQueueState True [] []
+  state  <- newIORef $ CommandQueueState True [] 0 [] 0
+  highWater <- newIORef 0
   signal <- newEmptyMVar
-  return $ CommandQueue state signal
+  return $ CommandQueue state highWater signal
 
 -- | Enqueue a command (caller thread — multi-producer safe).
 -- Returns 'False' once teardown has closed admission.
@@ -284,10 +328,21 @@ commandEnqueue :: CommandQueue -> PendingCommand -> IO Bool
 commandEnqueue cq pc = do
   accepted <- atomicModifyIORef' (cqState cq) $ \state ->
     if cqsOpen state
-      then (state { cqsQueued = pc : cqsQueued state }, True)
-      else (state, False)
-  when accepted $ void $ tryPutMVar (cqSignal cq) ()
-  return accepted
+      then
+        let queuedCount = cqsQueuedCount state + 1
+        in ( state
+               { cqsQueued = pc : cqsQueued state
+               , cqsQueuedCount = queuedCount
+               }
+           , Just (queuedCount + cqsActiveCount state)
+           )
+      else (state, Nothing)
+  case accepted of
+    Just queuedTotal -> do
+      updateHighWater (cqHighWater cq) queuedTotal
+      void $ tryPutMVar (cqSignal cq) ()
+      return True
+    Nothing -> return False
 {-# INLINE commandEnqueue #-}
 
 -- | Enqueue two commands atomically (caller thread — multi-producer safe).
@@ -298,10 +353,21 @@ commandEnqueuePair :: CommandQueue -> PendingCommand -> PendingCommand -> IO Boo
 commandEnqueuePair cq pc1 pc2 = do
   accepted <- atomicModifyIORef' (cqState cq) $ \state ->
     if cqsOpen state
-      then (state { cqsQueued = pc2 : pc1 : cqsQueued state }, True)
-      else (state, False)
-  when accepted $ void $ tryPutMVar (cqSignal cq) ()
-  return accepted
+      then
+        let queuedCount = cqsQueuedCount state + 2
+        in ( state
+               { cqsQueued = pc2 : pc1 : cqsQueued state
+               , cqsQueuedCount = queuedCount
+               }
+           , Just (queuedCount + cqsActiveCount state)
+           )
+      else (state, Nothing)
+  case accepted of
+    Just queuedTotal -> do
+      updateHighWater (cqHighWater cq) queuedTotal
+      void $ tryPutMVar (cqSignal cq) ()
+      return True
+    Nothing -> return False
 {-# INLINE commandEnqueuePair #-}
 
 -- | Drain all commands (writer thread only — single consumer).
@@ -317,7 +383,15 @@ commandDrain cq = do
         | cqsOpen state -> (state, Nothing)
         | otherwise     -> (state, Just [])
       batch ->
-        (state { cqsQueued = [], cqsActive = batch }, Just batch)
+        let batchCount = cqsQueuedCount state
+        in ( state
+               { cqsQueued = []
+               , cqsQueuedCount = 0
+               , cqsActive = batch
+               , cqsActiveCount = batchCount
+               }
+           , Just batch
+           )
   case result of
     Nothing    -> commandDrain cq
     Just batch -> return batch
@@ -328,9 +402,12 @@ commandTryDrain :: CommandQueue -> IO [PendingCommand]
 commandTryDrain cq =
   atomicModifyIORef' (cqState cq) $ \state ->
     let batch = reverse (cqsQueued state)
+        batchCount = cqsQueuedCount state
     in ( state
            { cqsQueued = []
+           , cqsQueuedCount = 0
            , cqsActive = cqsActive state <> batch
+           , cqsActiveCount = cqsActiveCount state + batchCount
            }
        , batch
        )
@@ -339,7 +416,7 @@ commandTryDrain cq =
 commandBatchTransferred :: CommandQueue -> IO ()
 commandBatchTransferred cq =
   atomicModifyIORef' (cqState cq) $ \state ->
-    (state { cqsActive = [] }, ())
+    (state { cqsActive = [], cqsActiveCount = 0 }, ())
 {-# INLINE commandBatchTransferred #-}
 
 -- | Atomically stop accepting submissions. Returns whether this call closed it.
@@ -357,7 +434,14 @@ commandDrainAll :: CommandQueue -> IO [PendingCommand]
 commandDrainAll cq =
   atomicModifyIORef' (cqState cq) $ \state ->
     let allCommands = cqsActive state <> reverse (cqsQueued state)
-    in (state { cqsQueued = [], cqsActive = [] }, allCommands)
+    in ( state
+           { cqsQueued = []
+           , cqsQueuedCount = 0
+           , cqsActive = []
+           , cqsActiveCount = 0
+           }
+       , allCommands
+       )
 
 -- | A multiplexer wrapping a single Redis connection.
 data Multiplexer = Multiplexer
@@ -608,6 +692,22 @@ destroyMultiplexer mux =
 -- | Check if the multiplexer's threads are still running.
 isMultiplexerAlive :: Multiplexer -> IO Bool
 isMultiplexerAlive = readIORef . muxAlive
+
+getMultiplexerStats :: Multiplexer -> IO MultiplexerStats
+getMultiplexerStats mux = do
+  commandState <- readIORef (cqState $ muxCommandQueue mux)
+  pendingState <- readIORef (pqState $ muxPendingQueue mux)
+  queueHighWater <- readIORef (cqHighWater $ muxCommandQueue mux)
+  inFlightHighWater <- readIORef (pqHighWater $ muxPendingQueue mux)
+  return $
+    MultiplexerStats
+      { statsCurrentQueuedCommands =
+          cqsQueuedCount commandState + cqsActiveCount commandState
+      , statsQueueHighWater = queueHighWater
+      , statsCurrentInFlight =
+          pqsQueuedCount pendingState + pqsActiveCount pendingState
+      , statsInFlightHighWater = inFlightHighWater
+      }
 
 -- Writer thread: drains command queue, pushes response slots onto pending
 -- queue (in IO, not STM), and sends batched bytes over the wire.
