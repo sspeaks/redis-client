@@ -392,6 +392,27 @@ in
   pkgs.haskellPackages.callCabal2nix "my-app" ./. { }
 ```
 
+## Versioning and releases
+
+This repository ships two independently versioned Cabal packages:
+`redis-client` for the executable and `hask-redis-mux` for the reusable
+library. Most changes advance only the package they touch. A coordinated
+release is reserved for changes that intentionally ship both packages from the
+same commit; even then, each package keeps its own version, changelog, and tag.
+
+- `redis-client` uses release tags of the form `redis-client-vX.Y.Z.W`.
+- `hask-redis-mux` uses release tags of the form `hask-redis-mux-vX.Y.Z.W`.
+- CLI release tags publish `ghcr.io/sspeaks/redis-client:X.Y.Z.W` and
+  `ghcr.io/sspeaks/redis-client:sha-<12-hex-commit>`. The mutable `latest` tag
+  moves only when an explicit CLI release tag is pushed.
+- Library releases remain a manual Hackage publication step, but they must be
+  cut from the exact commit named by the matching `hask-redis-mux-v...` tag.
+
+The detailed checklist lives in
+[`docs/release-process.md`](docs/release-process.md). CI enforces the Cabal
+version, latest changelog heading, and release-tag convention through
+`scripts/check-release-metadata.py`.
+
 ## Development
 
 ### Contributor prerequisites

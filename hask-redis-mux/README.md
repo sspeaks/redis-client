@@ -112,6 +112,20 @@ build-depends:
   text >= 2.1 && < 2.2
 ```
 
+## Versioning and releases
+
+`hask-redis-mux` follows the Haskell PVP independently of the `redis-client`
+executable. Breaking API changes bump the major component, additive API changes
+increment the minor component, and compatible fixes update the patch level. The
+package usually advances on its own; it only releases alongside the CLI when a
+single commit intentionally ships both packages.
+
+The release tag for this package is `hask-redis-mux-vX.Y.Z.W`. That tag must
+match the version in `hask-redis-mux.cabal` and the latest version heading in
+`hask-redis-mux/CHANGELOG.md`. The repository-wide release checklist, including
+the manual Hackage publication step, lives in
+[`../docs/release-process.md`](../docs/release-process.md).
+
 ## Quick Start
 
 ```haskell

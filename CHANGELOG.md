@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+*   **Release pipeline now follows package-specific versioning**
+    *   `redis-client` and `hask-redis-mux` now keep separate changelogs, tag
+        namespaces, and release rules.
+    *   CI validates Cabal versions, changelog headings, and release tags before
+        a tagged release can publish artifacts.
+    *   CLI releases publish immutable Docker tags for the package version and
+        source commit SHA; `latest` advances only from an explicit CLI release tag.
 *   **Breaking unified public error model**
     *   Sequential, standalone, cluster, low-level command, and topology-refresh
         runners now return `Either RedisClientError`; the previous mixture of
@@ -87,28 +94,6 @@
     *   MOVED, ASK, TRYAGAIN, CLUSTERDOWN, CROSSSLOT, and ordinary Redis errors now share one strict reply classifier across keyed, keyless, and redirected paths.
     *   TRYAGAIN retries the current route with bounded saturating exponential backoff; CLUSTERDOWN performs a best-effort refresh before bounded backoff without replacing the Redis cause when refresh validation or I/O fails.
     *   CROSSSLOT and ordinary server errors return immediately as typed `ClusterError` values, preserving the complete server error payload.
-*   **Strict smart routing**
-    *   Smart cluster routing now validates commands, subcommands, and argument counts against the pinned Redis 7.2 metadata before dispatch.
-    *   Unknown or malformed commands and cross-slot multi-key requests are rejected instead of falling through to first-argument routing.
-    *   The exported `keylessCommands` and `requiresKeyCommands` routing lists are now generated from the pinned metadata snapshot.
-
-## 0.6.0.0 -- 2026-02-13
-
-*   **Multiplexing Now Default**
-    *   Cluster mode (`ClusterConfig`) now uses multiplexing by default (`clusterUseMultiplexing = True`).
-      Set `clusterUseMultiplexing = False` to opt out.
-*   **New: Standalone Multiplexed Client**
-    *   Added `StandaloneClient` module for pipelined throughput on a single (non-cluster) Redis server.
-    *   Provides `createStandaloneClient`, `createStandaloneClientFromConfig`, `closeStandaloneClient`,
-      and `runStandaloneClient` lifecycle functions.
-    *   `StandaloneConfig` allows tuning multiplexer count and toggling multiplexing on/off.
-    *   Implements `RedisCommands` typeclass — all existing commands work transparently.
-    *   Re-exported from the top-level `Redis` module.
-*   **Testing**
-    *   Added `MultiplexerSpec` — 14 unit tests for multiplexer internals (slot pool, response slot, lifecycle).
-    *   Added `MultiplexPoolSpec` — 8 unit tests for per-node multiplexer management and round-robin routing.
-    *   Added standalone E2E tests for all command families (string, hash, list, set, sorted set).
-    *   Added concurrency stress tests (50+ threads, submit-after-destroy, multi-multiplexer distribution).
 
 ## 0.5.0.0 -- 2026-02-05
 
