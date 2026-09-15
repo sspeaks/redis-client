@@ -41,7 +41,7 @@ common defaults
 
 common test-defaults
     import:           defaults
-    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N -H1024M -A128m -n8m -qb"
+    ghc-options:      -threaded -rtsopts
     build-depends:    hspec >=2.11 && <2.12
     hs-source-dirs:   test
 
