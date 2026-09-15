@@ -36,6 +36,14 @@ APIs.
 - **Bracket-style resource management** — `withStandaloneClient` / `withClusterClient` for exception-safe cleanup
 - **Connection pooling** — automatic pool management for cluster nodes
 
+`Database.Redis` is the stable convenience facade for the documented
+standalone and cluster lifecycle APIs, including `runRedis`,
+`defaultStandaloneConfig`, `withStandaloneClient`, `withClusterClient`, and
+`runClusterCommandClient`. Advanced connection, pooling, and raw-command APIs
+remain available from their named modules. The legacy top-level package
+library retains its internal multiplexing re-exports for source compatibility,
+but they are intentionally not part of the `Database.Redis` facade.
+
 ## Installation
 
 Add to your `.cabal` file:

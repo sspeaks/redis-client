@@ -1,6 +1,12 @@
--- | Convenience re-export module for the hask-redis-mux library.
+-- | Stable convenience facade for common standalone and cluster workflows.
 --
 -- Import this single module for both standalone and cluster Redis usage.
+-- The lifecycle and configuration entry points exported here are the
+-- recommended starting point for application code. Advanced connection,
+-- pooling, and raw-command APIs remain available from their named modules.
+--
+-- The legacy top-level package library still exposes the internal multiplexing
+-- modules for source compatibility, but this facade does not re-export them.
 --
 -- __Standalone usage with bracket pattern (recommended):__
 --
@@ -50,9 +56,6 @@ module Database.Redis
   , module Database.Redis.Cluster
   , module Database.Redis.Cluster.Client
   , module Database.Redis.Cluster.ConnectionPool
-    -- * Multiplexing
-  , module Database.Redis.Internal.Multiplexer
-  , module Database.Redis.Internal.MultiplexPool
     -- * Standalone Multiplexed Client
   , module Database.Redis.Standalone
     -- * Connection Helpers
@@ -83,6 +86,7 @@ import           Database.Redis.Cluster.Client         (ClusterAuthentication (.
                                                         createClusterClientWithAuthentication,
                                                         refreshTopology,
                                                         runClusterCommandClient,
+                                                        withClusterClient,
                                                         withClusterClientAuthentication)
 import           Database.Redis.Cluster.ConnectionPool (ConnectionPool (..),
                                                         ConnectionPoolException (..),
@@ -121,17 +125,6 @@ import           Database.Redis.Connector              (ConnectionPhase (..),
                                                         withConnectionTimeout,
                                                         withConnectionTimeoutSupervised)
 import           Database.Redis.FromResp               (FromResp (..))
-import           Database.Redis.Internal.Multiplexer   (Multiplexer,
-                                                        MultiplexerException (..),
-                                                        createMultiplexer,
-                                                        destroyMultiplexer,
-                                                        isMultiplexerAlive,
-                                                        submitCommand)
-import           Database.Redis.Internal.MultiplexPool (MultiplexPool,
-                                                        MultiplexPoolException (..),
-                                                        closeMultiplexPool,
-                                                        createMultiplexPool,
-                                                        submitToNode)
 import           Database.Redis.Resp                   (Encodable (..),
                                                         RespData (..),
                                                         parseRespData,
@@ -142,4 +135,7 @@ import           Database.Redis.Standalone             (StandaloneClient,
                                                         closeStandaloneClient,
                                                         createStandaloneClient,
                                                         createStandaloneClientFromConfig,
-                                                        runStandaloneClient)
+                                                        defaultStandaloneConfig,
+                                                        runRedis,
+                                                        runStandaloneClient,
+                                                        withStandaloneClient)

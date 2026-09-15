@@ -51,6 +51,8 @@ common test-defaults
 
 library
     import:           defaults
+    -- Keep these legacy package-level re-exports for source compatibility.
+    -- Database.Redis intentionally omits them from its convenience facade.
     reexported-modules:
         Database.Redis.Resp
       , Database.Redis.FromResp
