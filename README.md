@@ -504,40 +504,149 @@ make redis-cluster-stop     # Stop Redis cluster
 
 Note: Do NOT start Redis manually before running E2E tests (`make test-e2e` or `make test-cluster-e2e`). Those tests manage their own Docker instances.
 
-### Profiling
+### Reproducible performance benchmarks
 
-Profile before and after changes to detect regressions:
+The repository ships a dedicated `redis-client-benchmark` executable for
+repeatable JSON benchmark runs instead of relying on the ad hoc cluster-only
+`redis-client bench` CLI mode.
+
+It covers:
+
+- `--scenario standalone` - multiplexed standalone Redis.
+- `--scenario cluster` - routed cluster traffic through the cluster client's
+  per-node multiplexer pool.
+- `--scenario slow-server` - a built-in delayed or stalled RESP server for
+  backpressure, timeout, and memory-stability checks.
+
+Every run records the benchmark configuration, machine metadata, selected RTS
+settings, ops/s, latency percentiles (`p50`, `p95`, `p99`, `p999`),
+errors/timeouts, allocation bytes per attempted operation, peak residency,
+post-GC live bytes, GC CPU%, and sampled queue/in-flight high-water marks.
+
+**Fast smoke benchmark**:
 
 ```sh
-# Start local Redis (if needed)
-make redis-start
-
-# Profile with -p flag (easiest to compare); this does not request FLUSHALL.
-cabal run --enable-profiling -- fill -h localhost -d 1 +RTS -p -RTS
-
-# Make changes...
-
-# Profile again, still without a destructive flush
-cabal run --enable-profiling -- fill -h localhost -d 1 +RTS -p -RTS
-
-# Compare .prof files for regressions
-# Stop Redis
-make redis-stop
-
-# Clean up profiling artifacts
-rm -f *.hp *.prof *.ps *.aux *.stat
+make benchmark-smoke
 ```
 
-For the fill-capacity change, the comparable local standalone profile used
-`fill -h localhost -d 1 -f --confirm-flush
-'redis://localhost:6379?tls=false&scope=single-node' +RTS -p -RTS` with the
-default two connections. The branch-base run took **0.67 s** and allocated
-**2,594,328,552 bytes**; the bounded-capacity run took **0.69 s** and allocated
-**2,613,260,632 bytes**. The 0.02 s and 0.7% allocation differences are within
-one-run noise for this configuration-only path; command generation remains the
-dominant allocator. The 8-process, 16-connection, 32-worker, and 2 GiB limits
-therefore prioritize preventing accidental multi-gigabyte retained buffers
-without changing the normal two-worker throughput path.
+That smoke path runs short standalone, cluster, and slow-server workloads,
+writes JSON artifacts to `artifacts/benchmark-smoke/`, and is the benchmark
+coverage used in CI. Longer sweeps and higher-concurrency variants stay opt-in.
+
+**Representative opt-in commands**:
+
+```sh
+# Standalone
+cabal run redis-client-benchmark -- \
+  --scenario standalone \
+  --host 127.0.0.1 \
+  --port 6379 \
+  --duration 15 \
+  --warmup 3 \
+  --concurrency 16 \
+  --batch-size 64 \
+  --mux-count 2 \
+  --key-size 32 \
+  --payload-size 256 \
+  --operation mixed \
+  --timeout-ms 1000 \
+  --output artifacts/standalone-benchmark.json \
+  +RTS -T -RTS
+
+# Cluster (for the local Docker fixture, run from the host against published ports)
+cabal run redis-client-benchmark -- \
+  --scenario cluster \
+  --host 127.0.0.1 \
+  --port 6379 \
+  --duration 15 \
+  --warmup 3 \
+  --concurrency 16 \
+  --batch-size 64 \
+  --mux-count 2 \
+  --key-size 32 \
+  --payload-size 256 \
+  --operation mixed \
+  --timeout-ms 1000 \
+  --output artifacts/cluster-benchmark.json \
+  +RTS -T -RTS
+
+# Slow / stalled server
+cabal run redis-client-benchmark -- \
+  --scenario slow-server \
+  --duration 10 \
+  --warmup 0 \
+  --concurrency 8 \
+  --batch-size 32 \
+  --mux-count 1 \
+  --key-size 16 \
+  --payload-size 64 \
+  --operation ping \
+  --timeout-ms 100 \
+  --response-delay-ms 50 \
+  --stall-after-requests 32 \
+  --output artifacts/slow-server-benchmark.json \
+  +RTS -T -RTS
+```
+
+### Profiling
+
+Profile before and after changes with the same benchmark shape so the JSON
+output and `.prof` report are directly comparable:
+
+```sh
+# Baseline on main
+git switch main
+make redis-start
+
+# Capture the before result and cost-centre profile
+cabal run redis-client-benchmark --enable-profiling -- \
+  --scenario standalone \
+  --host 127.0.0.1 \
+  --port 6379 \
+  --duration 15 \
+  --warmup 3 \
+  --concurrency 16 \
+  --batch-size 64 \
+  --mux-count 2 \
+  --key-size 32 \
+  --payload-size 256 \
+  --operation mixed \
+  --timeout-ms 1000 \
+  --output artifacts/before-standalone-benchmark.json \
+  +RTS -T -p -s -RTS
+mv redis-client-benchmark.prof artifacts/before-standalone-benchmark.prof
+
+# Make the change, rebuild, and capture the after result with the exact same command
+cabal run redis-client-benchmark --enable-profiling -- \
+  --scenario standalone \
+  --host 127.0.0.1 \
+  --port 6379 \
+  --duration 15 \
+  --warmup 3 \
+  --concurrency 16 \
+  --batch-size 64 \
+  --mux-count 2 \
+  --key-size 32 \
+  --payload-size 256 \
+  --operation mixed \
+  --timeout-ms 1000 \
+  --output artifacts/after-standalone-benchmark.json \
+  +RTS -T -p -s -RTS
+mv redis-client-benchmark.prof artifacts/after-standalone-benchmark.prof
+
+# Compare the structured benchmark output first
+python3 scripts/compare-benchmark-results.py \
+  artifacts/before-standalone-benchmark.json \
+  artifacts/after-standalone-benchmark.json
+
+# Then inspect the cost-centre profiles side by side
+diff -u artifacts/before-standalone-benchmark.prof artifacts/after-standalone-benchmark.prof || true
+
+make redis-stop
+
+# Clean up profiling artifacts when you're done
+rm -f *.hp *.prof *.ps *.aux *.stat
+```
 
 **Profiling tools:**
 - `hp2ps -e18in -c redis-client.hp` - Convert heap profile to PostScript
@@ -564,7 +673,8 @@ The `fill-bounded` profile intentionally pairs `-f` with a smaller pipeline so l
 ## Project Structure
 
 - `redis-client.cabal` - Root executable package definition.
-- `app/` - `redis-client` executable sources for CLI, fill, tunnel, and benchmark modes.
+- `app/` - `redis-client` executable sources for CLI, fill, and tunnel modes.
+- `bench/` - Dedicated reproducible benchmark executable sources.
 - `test/` - Root executable unit tests and Docker E2E test programs.
 - `hask-redis-mux/hask-redis-mux.cabal` - Public Redis client library package.
 - `hask-redis-mux/lib/resp/` - RESP protocol implementation.

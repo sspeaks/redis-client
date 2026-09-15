@@ -539,6 +539,21 @@ responseSlotSpec = describe "ResponseSlot" $ do
 
 commandQueueBatchingSpec :: Spec
 commandQueueBatchingSpec = describe "Command queue batching" $ do
+  it "tracks queue and in-flight high-water marks during stalled batches" $ do
+    pool <- createSlotPool 64
+    (client, awaitSend, _) <- createBlockingClient
+    mux <- createMultiplexer client (receive client)
+
+    _ <- replicateM 3 $ submitCommandAsync pool mux (encodeCmd ["PING"])
+    awaitSend
+    threadDelay 20000
+
+    stats <- readMultiplexerStats mux
+    statsQueueHighWater stats `shouldSatisfy` (>= 3)
+    statsInFlightHighWater stats `shouldSatisfy` (>= 1)
+
+    destroyMultiplexer mux
+
   it "multiple enqueued commands are drained together" $ do
     pool <- createSlotPool 64
     (client, addRecv) <- createMockClient

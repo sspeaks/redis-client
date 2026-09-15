@@ -22,3 +22,4 @@ __pycache__
 node_modules
 bench.db
 docker/standalone/.runtime/
+artifacts/benchmark-smoke/

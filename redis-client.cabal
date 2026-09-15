@@ -298,3 +298,23 @@ executable redis-client
                     , stm
                     , time
                     , vector
+
+executable redis-client-benchmark
+    import:           exe-defaults
+    main-is:          BenchmarkMain.hs
+    hs-source-dirs:   bench
+                    , app
+    other-modules:    AppConfig
+                    , ClusterSetup
+                    , CredentialConfig
+    build-depends:    aeson
+                    , async
+                    , attoparsec
+                    , bytestring
+                    , containers
+                    , hask-redis-mux
+                    , mtl
+                    , network
+                    , stm
+                    , time
+                    , vector

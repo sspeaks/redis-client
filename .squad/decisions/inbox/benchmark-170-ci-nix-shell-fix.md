@@ -1,0 +1,4 @@
+### 2026-09-15: Route benchmark smoke cabal runs through the project devShell
+**By:** Benchmark
+**What:** Updated `scripts/run-benchmark-smoke.sh` so every `redis-client-benchmark` invocation runs as `nix-shell --run "cabal run redis-client-benchmark -- ..."` from the repo root instead of using whatever ambient `cabal` and GHC happen to be on PATH inside the script's lightweight shebang shell.
+**Why:** The script's shebang opens an isolated `nix-shell -p bash coreutils openssl python3 redis` environment that does not include the project's pinned Haskell toolchain. Bare `cabal run` in that shell fell through to the CI runner's incompatible ambient GHC/Cabal (`base-4.22`), causing dependency resolution to fail. Re-entering the project's own devShell for benchmark builds keeps the smoke step on the same pinned toolchain as the rest of the Makefile targets.

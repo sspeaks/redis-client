@@ -4,11 +4,14 @@
 module ClusterSetup
   ( createPlaintextConnector
   , createTLSConnector
+  , clusterConfigFromState
   , createClusterClientFromState
+  , createClusterClientFromStateWithMuxCount
   , flushAllClusterNodes
   ) where
 
 import           AppConfig                             (RunState (..),
+                                                        authenticate,
                                                         enforcePlaintextAuthenticationPolicy)
 import           Control.Concurrent.STM                (readTVarIO)
 import qualified Control.Monad.State                   as State
@@ -26,7 +29,8 @@ import           Database.Redis.Cluster.Client         (ClusterAuthentication (.
                                                         ClusterClient (..),
                                                         ClusterConfig (..),
                                                         createClusterClient,
-                                                        createClusterClientWithAuthentication)
+                                                        createClusterClientWithAuthentication,
+                                                        createClusterClientWithFactories)
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (PoolConfig))
 import qualified Database.Redis.Cluster.ConnectionPool as CP
 import           Database.Redis.Command                (ClientState (ClientState),
@@ -35,6 +39,7 @@ import qualified Database.Redis.Command                as RedisCommand
 import           Database.Redis.Connector              (Connector,
                                                         clusterPlaintextConnector,
                                                         clusterTLSConnector)
+import           Database.Redis.Internal.MultiplexPool (createMultiplexPool)
 import           Database.Redis.Resp                   (RespData)
 import           Text.Printf                           (printf)
 
@@ -55,27 +60,84 @@ createClusterClientFromState :: (Client client) =>
   RunState ->
   Connector client ->
   IO (ClusterClient client)
-createClusterClientFromState state connector = do
+createClusterClientFromState state =
+  createClusterClientFromStateWithMuxCount state 1
+
+clusterConfigFromState :: RunState -> ClusterConfig
+clusterConfigFromState state =
   let defaultPort = if useTLS state then 6380 else 6379
       seedNode = NodeAddress (host state) (fromMaybe defaultPort (port state))
       poolConfig = PoolConfig
-        { CP.maxConnectionsPerNode = 10  -- Max connections per node
-        , CP.connectionTimeout = 300     -- 5 minutes timeout
+        { CP.maxConnectionsPerNode = 10
+        , CP.connectionTimeout = 300
         , CP.maxRetries = 3
         , CP.useTLS = useTLS state
         }
-      clusterCfg = ClusterConfig
-        { clusterSeedNode = seedNode
-        , clusterPoolConfig = poolConfig
-        , clusterMaxRetries = 3
-        , clusterRetryDelay = 100000  -- 100ms
-        , clusterTopologyRefreshInterval = 600  -- 10 minutes
-        }
+  in ClusterConfig
+      { clusterSeedNode = seedNode
+      , clusterPoolConfig = poolConfig
+      , clusterMaxRetries = 3
+      , clusterRetryDelay = 100000
+      , clusterTopologyRefreshInterval = 600
+      }
+
+createClusterClientFromStateWithMuxCount :: (Client client) =>
+  RunState ->
+  Int ->
+  Connector client ->
+  IO (ClusterClient client)
+createClusterClientFromStateWithMuxCount state requestedMuxCount connector = do
+  let clusterCfg = clusterConfigFromState state
+      muxCount = max 1 requestedMuxCount
   case clusterAuthentication state of
     Nothing ->
-      createClusterClient clusterCfg connector
+      if muxCount == 1
+        then createClusterClient clusterCfg connector
+        else createClusterClientWithMuxCount clusterCfg connector muxCount
     Just authentication ->
-      createClusterClientWithAuthentication clusterCfg authentication connector
+      if muxCount == 1
+        then createClusterClientWithAuthentication clusterCfg authentication connector
+        else createAuthenticatedClusterClientWithMuxCount
+          clusterCfg authentication connector muxCount
+
+createClusterClientWithMuxCount
+  :: (Client client)
+  => ClusterConfig
+  -> Connector client
+  -> Int
+  -> IO (ClusterClient client)
+createClusterClientWithMuxCount clusterCfg connector muxCount =
+  createClusterClientWithFactories
+    CP.createPool
+    (\boundedConnector _ -> createMultiplexPool boundedConnector muxCount)
+    clusterCfg
+    connector
+
+createAuthenticatedClusterClientWithMuxCount
+  :: (Client client)
+  => ClusterConfig
+  -> ClusterAuthentication
+  -> Connector client
+  -> Int
+  -> IO (ClusterClient client)
+createAuthenticatedClusterClientWithMuxCount clusterCfg authentication connector muxCount =
+  createClusterClientWithFactories
+    CP.createPool
+    (\boundedConnector _ -> createMultiplexPool boundedConnector muxCount)
+    clusterCfg
+    authenticatedConnector
+  where
+    authenticatedConnector addr = do
+      conn <- connector addr
+      let clientState = ClientState conn BS.empty
+      _ <- State.evalStateT (RedisCommand.runRedisCommandClient authenticationAction) clientState
+      return conn
+    authenticationAction =
+      case authentication of
+        ClusterPassword passwordValue ->
+          authenticate "default" (BS8.unpack passwordValue)
+        ClusterACL usernameValue passwordValue ->
+          authenticate (BS8.unpack usernameValue) (BS8.unpack passwordValue)
 
 clusterAuthentication :: RunState -> Maybe ClusterAuthentication
 clusterAuthentication state
