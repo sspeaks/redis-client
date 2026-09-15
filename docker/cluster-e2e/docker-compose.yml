@@ -1,6 +1,6 @@
 services:
   redis1:
-    image: redis:7.2.12
+    image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: redis1.local
     command: &redis-command
       - redis-server
@@ -34,7 +34,7 @@ services:
       start_period: 2s
 
   redis2:
-    image: redis:7.2.12
+    image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: redis2.local
     command:
       - redis-server
@@ -63,7 +63,7 @@ services:
     healthcheck: *redis-healthcheck
 
   redis3:
-    image: redis:7.2.12
+    image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: redis3.local
     command:
       - redis-server
@@ -92,7 +92,7 @@ services:
     healthcheck: *redis-healthcheck
 
   redis4:
-    image: redis:7.2.12
+    image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: redis4.local
     command:
       - redis-server
@@ -121,7 +121,7 @@ services:
     healthcheck: *redis-healthcheck
 
   redis5:
-    image: redis:7.2.12
+    image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: redis5.local
     command:
       - redis-server
@@ -150,7 +150,7 @@ services:
     healthcheck: *redis-healthcheck
 
   redis6:
-    image: redis:7.2.12
+    image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: redis6.local
     command:
       - redis-server
