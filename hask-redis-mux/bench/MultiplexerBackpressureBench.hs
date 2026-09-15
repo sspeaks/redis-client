@@ -106,7 +106,7 @@ runBench mode = do
   performGC
   after <- getRTSStats
   printf
-    "mode=%s total_commands=%d payload_bytes=%d admission_limit=%d writer_batch_limit=%d peak_outstanding=%d send_batches=%d max_batch_commands=%d allocated_bytes=%d peak_residency_bytes=%d post_gc_live_bytes=%d throughput_ops_s=%.2f latency_p50_us=%.2f latency_p95_us=%.2f latency_p99_us=%.2f\n"
+    "mode=%s total_commands=%d payload_bytes=%d admission_limit=%d writer_batch_limit=%d peak_outstanding=%d send_batches=%d max_batch_commands=%d allocated_bytes=%d peak_residency_bytes=%d post_gc_live_bytes=%d mutator_cpu_s=%.3f gc_cpu_s=%.3f total_cpu_s=%.3f throughput_ops_s=%.2f latency_p50_us=%.2f latency_p95_us=%.2f latency_p99_us=%.2f\n"
     (show mode)
     totalCommands
     payloadBytes
@@ -118,6 +118,9 @@ runBench mode = do
     (allocated_bytes after - allocated_bytes before)
     (max_mem_in_use_bytes after)
     (gcdetails_live_bytes $ gc after)
+    (nsToSeconds (mutator_cpu_ns after - mutator_cpu_ns before))
+    (nsToSeconds (gc_cpu_ns after - gc_cpu_ns before))
+    (nsToSeconds (cpu_ns after - cpu_ns before))
     (throughput totalCommands started finished)
     (percentile 50 latencies)
     (percentile 95 latencies)
@@ -190,6 +193,9 @@ countSubstrings needle haystack
 throughput :: Int -> Word64 -> Word64 -> Double
 throughput operations started finished =
   fromIntegral operations / (fromIntegral (finished - started) / 1.0e9 :: Double)
+
+nsToSeconds :: Integral a => a -> Double
+nsToSeconds = (/ 1.0e9) . fromIntegral
 
 percentile :: Int -> [Word64] -> Double
 percentile _ [] = 0

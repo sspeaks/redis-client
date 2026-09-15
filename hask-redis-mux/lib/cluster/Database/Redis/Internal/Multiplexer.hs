@@ -50,8 +50,6 @@ import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
                                                    tryPutMVar, withMVar)
-import           Control.Concurrent.STM           (TVar, atomically, newTVarIO,
-                                                   readTVar, retry, writeTVar)
 import           Control.Exception                (Exception, SomeException,
                                                    catch, finally, mask, mask_,
                                                    onException, throwIO,
@@ -208,7 +206,7 @@ data PendingCommand = PendingCommand
 
 data AdmissionControl = AdmissionControl
   { acCapacity :: !Int
-  , acState    :: !(TVar AdmissionState)
+  , acState    :: !(MVar AdmissionState)
   }
 
 data AdmissionState = AdmissionState
@@ -216,62 +214,135 @@ data AdmissionState = AdmissionState
   , acAvailable       :: !Int
   , acOutstanding     :: !Int
   , acPeakOutstanding :: !Int
+  , acWaiters         :: !(Seq AdmissionWaiter)
   }
 
 newAdmissionControl :: Int -> IO AdmissionControl
 newAdmissionControl capacity = do
   let boundedCapacity = max 1 capacity
-  state <- newTVarIO $ AdmissionState True boundedCapacity 0 0
+  state <- newMVar $ AdmissionState True boundedCapacity 0 0 Seq.empty
   return $ AdmissionControl boundedCapacity state
 
+data AdmissionWaiter = AdmissionWaiter
+  { awRequested :: !Int
+  , awSignal    :: !(MVar AdmissionWakeup)
+  }
+
+data AdmissionWakeup
+  = AdmissionGranted
+  | AdmissionClosed
+
 admissionAcquire :: AdmissionControl -> Int -> IO Bool
-admissionAcquire control requested =
-  atomically $ do
-    state <- readTVar (acState control)
-    if not (acOpen state)
-      then return False
-      else
-        if acAvailable state >= requested
-          then do
-            let outstanding = acOutstanding state + requested
-            writeTVar (acState control) $
-              state
-                { acAvailable = acAvailable state - requested
-                , acOutstanding = outstanding
-                , acPeakOutstanding = max (acPeakOutstanding state) outstanding
-                }
-            return True
-          else retry
+admissionAcquire control requested
+  | requested <= 0 = error "Multiplexer admission requests must be positive"
+  | requested > acCapacity control =
+      error "Multiplexer admission request exceeds configured capacity"
+  | otherwise = mask $ \restore -> do
+      signal <- newEmptyMVar
+      let waiter = AdmissionWaiter requested signal
+      result <- modifyMVar (acState control) $ \state ->
+        if not (acOpen state)
+          then return (state, Nothing)
+          else
+            if Seq.null (acWaiters state) && acAvailable state >= requested
+              then do
+                let granted = grantAdmission requested state
+                return (granted, Just True)
+              else
+                return (state { acWaiters = acWaiters state Seq.|> waiter }, Just False)
+      case result of
+        Nothing -> return False
+        Just True -> return True
+        Just False -> do
+          wakeup <- restore (takeMVar signal)
+            `onException` cancelAdmissionWaiter control waiter
+          case wakeup of
+            AdmissionGranted -> return True
+            AdmissionClosed  -> return False
 
 admissionRelease :: AdmissionControl -> Int -> IO ()
-admissionRelease control released =
-  atomically $ do
-    state <- readTVar (acState control)
-    let available = acAvailable state + released
-        outstanding = acOutstanding state - released
-    if available > acCapacity control || outstanding < 0
-      then error "Multiplexer admission accounting underflow/overflow"
-      else
-        writeTVar (acState control) $
-          state
-            { acAvailable = available
-            , acOutstanding = outstanding
-            }
+admissionRelease control released
+  | released <= 0 = error "Multiplexer admission releases must be positive"
+  | otherwise =
+      modifyMVar (acState control) $ \state -> do
+        let available = acAvailable state + released
+            outstanding = acOutstanding state - released
+        if available > acCapacity control || outstanding < 0
+          then error "Multiplexer admission accounting underflow/overflow"
+          else do
+            let (updated, wakeups) =
+                  grantWaitingWaiters
+                    state
+                      { acAvailable = available
+                      , acOutstanding = outstanding
+                      }
+            mapM_ (`putMVar` AdmissionGranted) wakeups
+            return (updated, ())
 
 admissionClose :: AdmissionControl -> IO Bool
 admissionClose control =
-  atomically $ do
-    state <- readTVar (acState control)
+  modifyMVar (acState control) $ \state ->
     if acOpen state
       then do
-        writeTVar (acState control) state { acOpen = False }
-        return True
-      else return False
+        mapM_ (`putMVar` AdmissionClosed) (fmap awSignal $ foldr (:) [] (acWaiters state))
+        return (state { acOpen = False, acWaiters = Seq.empty }, True)
+      else return (state, False)
 
 readAdmissionStats :: AdmissionControl -> IO (Int, Int)
 readAdmissionStats control = do
-  state <- atomically $ readTVar (acState control)
+  state <- readMVar (acState control)
   return (acOutstanding state, acPeakOutstanding state)
+
+grantAdmission :: Int -> AdmissionState -> AdmissionState
+grantAdmission requested state =
+  let outstanding = acOutstanding state + requested
+  in state
+       { acAvailable = acAvailable state - requested
+       , acOutstanding = outstanding
+       , acPeakOutstanding = max (acPeakOutstanding state) outstanding
+       }
+
+grantWaitingWaiters :: AdmissionState -> (AdmissionState, [MVar AdmissionWakeup])
+grantWaitingWaiters = go []
+  where
+    go wakeups state =
+      case Seq.viewl (acWaiters state) of
+        waiter Seq.:< rest
+          | acAvailable state >= awRequested waiter ->
+              let granted =
+                    grantAdmission (awRequested waiter) state
+                      { acWaiters = rest
+                      }
+              in go (awSignal waiter : wakeups) granted
+        _ -> (state, reverse wakeups)
+
+cancelAdmissionWaiter :: AdmissionControl -> AdmissionWaiter -> IO ()
+cancelAdmissionWaiter control waiter = do
+  removed <- modifyMVar (acState control) $ \state ->
+    let (waiters, wasQueued) = removeAdmissionWaiter waiter (acWaiters state)
+    in if wasQueued
+         then return (state { acWaiters = waiters }, True)
+         else return (state, False)
+  if removed
+    then return ()
+    else do
+      wakeup <- takeMVar (awSignal waiter)
+      case wakeup of
+        AdmissionGranted -> admissionRelease control (awRequested waiter)
+        AdmissionClosed  -> return ()
+
+removeAdmissionWaiter :: AdmissionWaiter -> Seq AdmissionWaiter -> (Seq AdmissionWaiter, Bool)
+removeAdmissionWaiter waiter = go Seq.empty
+  where
+    go acc remaining =
+      case Seq.viewl remaining of
+        Seq.EmptyL -> (acc, False)
+        current Seq.:< rest
+          | sameAdmissionWaiter waiter current -> (acc <> rest, True)
+          | otherwise -> go (acc Seq.|> current) rest
+
+sameAdmissionWaiter :: AdmissionWaiter -> AdmissionWaiter -> Bool
+sameAdmissionWaiter left right = awSignal left == awSignal right
 
 -- | SPSC queue for pending response slots.
 -- Writer is sole producer, reader is sole consumer.

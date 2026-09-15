@@ -83,8 +83,10 @@ they are not Redis network throughput claims.
 
 `MultiplexerBackpressureBench` drives 8,192 concurrent 4 KiB `SET` commands
 against a deliberately stalled synthetic server and reports peak outstanding
-commands, peak residency, throughput, and p50/p95/p99 latency. The benchmark
-accepts two modes:
+commands, peak residency, mutator/GC/total CPU-seconds, throughput, and
+p50/p95/p99 latency. Run it with RTS stats enabled (`+RTS -T -s -RTS`) so the
+machine-readable line and the RTS summary expose overload CPU costs. The
+benchmark accepts two modes:
 
 - `baseline` disables the new bounds for this workload by setting both limits
   to 8,192, approximating the legacy "drain everything / admit everything"
