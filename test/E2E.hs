@@ -85,10 +85,20 @@ main = do
         let combined = tlsExtras ++ extra
             filteredBase = filter (\(k, _) -> k `notElem` map fst combined) baseEnv
          in combined ++ filteredBase
+      boundedFillValidationRts = "-N2 -A16m -n4m -qb"
       runRedisClient args input =
         readCreateProcessWithExitCode ((proc redisClient args) {env = Just (mergeEnv [])}) input
       runRedisClientWithEnv extra args input =
         readCreateProcessWithExitCode ((proc redisClient args) {env = Just (mergeEnv extra)}) input
+      -- Large 1GB fill assertions are sensitive to CI memory pressure now that
+      -- the binary no longer bakes in the old blanket RTS defaults. Pin the
+      -- documented bounded profile so these tests validate fill accuracy rather
+      -- than host-dependent heap tuning.
+      runBoundedFillValidation extra args input =
+        runRedisClientWithEnv
+          (("GHCRTS", boundedFillValidationRts) : extra)
+          (args ++ ["--pipeline", "1024"])
+          input
       chunkKilosForTest :: Integer
       chunkKilosForTest = 4
   hspec $ do
@@ -367,7 +377,11 @@ main = do
             `shouldReturn` [RespBulkString ("VALUE" <> BS8.pack (show n)) | n <- [1 .. 100 :: Int]]
     describe "redis-client modes" $ beforeAll_ (void $ runFlushAll) $ do
       it "fill --data 1 writes expected number of keys" $ do
-        (code, stdoutOut, _) <- runRedisClientWithEnv [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)] ["fill", "--host", "redis.local", "--data", "1", "-f"] ""
+        (code, stdoutOut, _) <-
+          runBoundedFillValidation
+            [("REDIS_CLIENT_FILL_CHUNK_KB", show chunkKilosForTest)]
+            ["fill", "--host", "redis.local", "--data", "1", "-f"]
+            ""
         code `shouldBe` ExitSuccess
         stdoutOut `shouldSatisfy` ("Filling 1GB" `isInfixOf`)
         runRedisAction dbsize `shouldReturn` RespInteger 1048576
@@ -440,7 +454,7 @@ main = do
 
       it "fill with --key-size 128 fills accurate memory (1GB)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "128", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=128, bytesPerCommand = 128 + 512 = 640 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -457,7 +471,7 @@ main = do
 
       it "fill with --key-size 64 fills accurate memory (1GB)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "64", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=64, bytesPerCommand = 64 + 512 = 576 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -474,7 +488,7 @@ main = do
 
       it "fill with --key-size 256 fills accurate memory (1GB)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=256, bytesPerCommand = 256 + 512 = 768 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -491,7 +505,7 @@ main = do
 
       it "fill with --key-size 512 fills accurate memory (1GB, backward compatible)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, bytesPerCommand = 512 + 512 = 1024 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -592,7 +606,7 @@ main = do
 
       it "fill with --value-size 1024 fills accurate memory (1GB)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "1024", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "1024", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, valueSize=1024, bytesPerCommand = 512 + 1024 = 1536 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -609,7 +623,7 @@ main = do
 
       it "fill with --value-size 8192 fills accurate memory (1GB)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "8192", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "512", "--value-size", "8192", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=512, valueSize=8192, bytesPerCommand = 512 + 8192 = 8704 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
@@ -626,7 +640,7 @@ main = do
 
       it "fill with custom --key-size and --value-size fills accurate memory (1GB)" $ do
         void $ runFlushAll
-        (code, _, _) <- runRedisClient ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256", "--value-size", "1024", "-f"] ""
+        (code, _, _) <- runBoundedFillValidation [] ["fill", "--host", "redis.local", "--data", "1", "--key-size", "256", "--value-size", "1024", "-f"] ""
         code `shouldBe` ExitSuccess
         -- With keySize=256, valueSize=1024, bytesPerCommand = 256 + 1024 = 1280 bytes
         -- 1GB = 1024 MB = 1,073,741,824 bytes
