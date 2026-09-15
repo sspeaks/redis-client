@@ -40,6 +40,7 @@ data RunState = RunState
     password                   :: String,
     useTLS                     :: Bool,
     allowInsecurePlaintextAuth :: Bool,
+    allowHighScaleFill         :: Bool,
     dataGBs                    :: Int,
     flush                      :: Bool,
     flushConfirmation          :: Maybe String,
@@ -65,6 +66,7 @@ defaultRunState = RunState
   , password = ""
   , useTLS = False
   , allowInsecurePlaintextAuth = False
+  , allowHighScaleFill = False
   , dataGBs = 0
   , flush = False
   , flushConfirmation = Nothing
