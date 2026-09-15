@@ -176,6 +176,21 @@ main = hspec $ do
           })
         `shouldSatisfy` either (const False) (\plan -> plannedWorkerCount plan == 36)
 
+    it "reports one effective connection per primary in serial cluster mode" $ do
+      let state = defaultRunState
+            { serial = True
+            , numProcesses = Just 8
+            , numConnections = Just 16
+            }
+      effectiveFillConnections state `shouldBe` 1
+      clusterFillConcurrencyPlan 3 state `shouldBe`
+        Right FillConcurrencyPlan
+          { plannedProcesses = 8
+          , plannedConnections = 1
+          , plannedWorkerCount = 24
+          , estimatedMemoryBytes = 8 * 128 * 1024 * 1024 + 24 * 8192 * (512 + 512 + 64)
+          }
+
   describe "plaintext authentication policy" $ do
     it "rejects credentialed plaintext connections by default" $ do
       let state = defaultRunState {host = "cache.example", password = syntheticJwt}

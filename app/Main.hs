@@ -466,7 +466,7 @@ fillCluster state = do
     baseSeed <- randomIO :: IO Word64
 
     -- Determine number of threads per node
-    let threadsPerNode = fromMaybe 2 (numConnections state)
+    let threadsPerNode = effectiveFillConnections state
 
     printf "Filling %dGB across cluster with %d threads/node\n"
            (dataGBs state) threadsPerNode
