@@ -174,6 +174,18 @@ benchmark ConnectionPoolBench
                     , cluster
                     , containers >=0.6 && <0.8
 
+benchmark SlotPoolBurstBench
+    import:           defaults
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   bench
+    main-is:          SlotPoolBurstBench.hs
+    ghc-options:      -threaded -rtsopts
+    build-depends:    async >=2.2 && <2.3
+                    , bytestring >=0.12 && <0.13
+                    , client
+                    , cluster
+                    , resp
+
 benchmark GrammarProfile
     import:           defaults
     type:             exitcode-stdio-1.0
