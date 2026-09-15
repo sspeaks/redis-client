@@ -293,7 +293,7 @@ You can script the selection process (though interactive mode is recommended):
 
 ## Performance Tips
 
-The script automatically applies optimized performance settings for fill operations:
+The script automatically applies optimized Redis workload parameters for fill operations:
 
 ### Cluster Caches (Premium tier with multiple shards)
 
@@ -303,22 +303,30 @@ The script automatically detects cluster mode and applies optimal settings:
 - **Large values**: 256 KB value size for realistic workloads
 - **Efficient batching**: 8,192 commands per pipeline batch
 
-**Performance characteristics:**
-- Expected throughput: ~9.4 Gbps on Azure Premium tier
-- CPU utilization: 70-80% across all cores
-- Network utilization: ~40% of Premium tier capacity
-- Memory overhead: Optimized GC settings via Haskell RTS flags
+Pair large fill and benchmark runs with the explicit RTS profiles documented in
+[`docs/rts-profiles.md`](rts-profiles.md). The shared binary no longer bakes a
+high-memory profile into every executable and test run.
 
 ### Standalone Caches
 
 For non-clustered caches, the script uses conservative settings optimized for single-node deployments.
 
-### GHC Runtime Optimizations
+### GHC Runtime Profiles
 
-The redis-client binary is built with optimized Haskell GC settings:
-- `-A128m`: Large allocation area (63x fewer GC cycles)
-- `-n8m`: 8MB chunk size for better multi-core utilization
-- `-qb`: Disabled load-balancing for better cache locality
+Use the explicit wrapper script when a fill or benchmark job needs more throughput than
+the conservative CLI/test defaults:
 
-These settings were determined through comprehensive performance testing and provide
-99% improvement over default settings (4.7 Gbps → 9.4 Gbps).
+```bash
+./scripts/run-with-rts-profile.sh fill-throughput -- \
+  redis-client fill -h <host> -p <port> -t -c -f -d 5
+```
+
+For bounded local validation, keep `-f` and reduce the pipeline size:
+
+```bash
+./scripts/run-with-rts-profile.sh fill-bounded -- \
+  redis-client fill -h localhost -f -d 1 --pipeline 1024
+```
+
+`docs/rts-profiles.md` records the measured trade-offs between the conservative defaults,
+the legacy global profile, and the new fill-specific opt-in profile.
