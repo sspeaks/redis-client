@@ -2,8 +2,11 @@
 
 module Main (main) where
 
-import           ClusterTunnel                              (PinnedResponseResult (..),
+import           ClusterTunnel                              (PinnedProxyLogEntry (..),
+                                                             PinnedProxyLogMode (..),
+                                                             PinnedResponseResult (..),
                                                              SmartProxyFrameResult (..),
+                                                             emitPinnedProxyTrafficLog,
                                                              parsePinnedResponses,
                                                              parsePinnedResponsesWithLimit,
                                                              parseSmartProxyFrames,
@@ -18,6 +21,8 @@ import qualified Data.ByteString.Lazy                       as LBS
 import           Data.IORef                                 (modifyIORef',
                                                              newIORef,
                                                              readIORef)
+import           Data.List                                  (isInfixOf)
+import           Database.Redis.Cluster                     (NodeAddress (..))
 import           Database.Redis.Cluster.Internal.RawCommand (RawClusterRoute (..))
 import           Database.Redis.Resp
 import           Test.Hspec
@@ -232,11 +237,46 @@ main = hspec $ do
       parsePinnedResponsesWithLimit limit BS.empty rejected
         `shouldBe` PinnedResponseLimitExceeded BS.empty
 
+  describe "pinned proxy traffic logging" $ do
+    it "suppresses per-request payload logging by default" $ do
+      observed <- captureTrafficLogs PinnedProxyLifecycleOnly "client->redis" pingFrame
+      observed `shouldBe` []
+
+    it "emits preview-only traffic logs without forcing a flush in verbose mode" $ do
+      observed <- captureTrafficLogs PinnedProxyVerboseTraffic "redis->client" movedFrame
+      case observed of
+        [PinnedProxyLogEntry message shouldFlush] -> do
+          shouldFlush `shouldBe` False
+          message `shouldSatisfy` isInfixOf "redis->client"
+          message `shouldSatisfy` isInfixOf "preview="
+          message `shouldSatisfy` isInfixOf "MOVED 3999 redis.example:6381"
+        _ -> expectationFailure $ "unexpected traffic log output: " <> show observed
+
 commandFrame :: [BS.ByteString] -> RespData
 commandFrame = RespArray . fmap RespBulkString
 
 encodeFrame :: RespData -> BS.ByteString
 encodeFrame = LBS.toStrict . Builder.toLazyByteString . encode
+
+loggingNodeAddress :: NodeAddress
+loggingNodeAddress = NodeAddress "redis.example" 6381
+
+pingFrame :: BS.ByteString
+pingFrame = encodeFrame $ commandFrame ["PING"]
+
+movedFrame :: BS.ByteString
+movedFrame = "-MOVED 3999 redis.example:6381\r\n"
+
+captureTrafficLogs :: PinnedProxyLogMode -> String -> BS.ByteString -> IO [PinnedProxyLogEntry]
+captureTrafficLogs mode direction payload = do
+  observed <- newIORef []
+  emitPinnedProxyTrafficLog
+    mode
+    (\entry -> modifyIORef' observed (<> [entry]))
+    loggingNodeAddress
+    direction
+    payload
+  readIORef observed
 
 assertSplitFrame :: RespData -> BS.ByteString -> Int -> Expectation
 assertSplitFrame expected wire splitAt = do

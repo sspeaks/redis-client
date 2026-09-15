@@ -16,7 +16,8 @@ import           ClusterSetup                          (createClusterClientFromS
                                                         createPlaintextConnector,
                                                         createTLSConnector,
                                                         flushAllClusterNodes)
-import           ClusterTunnel                         (servePinnedProxy,
+import           ClusterTunnel                         (PinnedProxyLogMode (..),
+                                                        servePinnedProxyWith,
                                                         serveSmartProxy)
 import           Control.Exception                     (bracket, mask)
 
@@ -105,6 +106,7 @@ options =
     Option ['u'] ["username"] (ReqArg (\arg opt -> return $ opt {username = arg}) "USERNAME") "Username to authenticate with (default: 'default')",
     Option ['t'] ["tls"] (NoArg (\opt -> return $ opt {useTLS = True})) "Use TLS",
     Option [] ["allow-insecure-plaintext-auth"] (NoArg (\opt -> return $ opt {allowInsecurePlaintextAuth = True})) "Allow credentials over plaintext and emit a warning",
+    Option [] ["verbose-pinned-proxy-traffic"] (NoArg (\opt -> return $ opt {pinnedProxyVerboseTraffic = True})) "Emit per-request pinned-proxy payload previews (debug only)",
     Option ['d'] ["data"] (ReqArg (setInt "Data amount" (\value opt -> opt {dataGBs = value})) "GBs") "Random data amount to send in GB",
     Option ['f'] ["flush"] (NoArg (\opt -> return $ opt {flush = True})) "Request a destructive FLUSHALL; requires confirmation",
     Option [] ["confirm-flush"] (ReqArg (\arg opt -> return $ opt {flushConfirmation = Just arg}) "TARGET") "Non-interactive acknowledgement of the exact displayed flush target",
@@ -236,7 +238,7 @@ tunnCluster state = do
           serveSmartProxy clusterClient
         "pinned" -> do
           putStrLn "Pinned mode: Creating one listener per cluster node"
-          servePinnedProxy clusterClient
+          servePinnedProxyWith (pinnedProxyLogMode state) clusterClient
         _ -> do
           printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
           exitFailure
@@ -251,10 +253,15 @@ tunnCluster state = do
         "pinned" -> do
           putStrLn "Pinned mode: Creating one listener per cluster node"
           putStrLn "Note: TLS is recommended for production use"
-          servePinnedProxy clusterClient
+          servePinnedProxyWith (pinnedProxyLogMode state) clusterClient
         _ -> do
           printf "Invalid tunnel mode '%s'. Valid modes: smart, pinned\n" (tunnelMode state)
           exitFailure
+
+pinnedProxyLogMode :: RunState -> PinnedProxyLogMode
+pinnedProxyLogMode state
+  | pinnedProxyVerboseTraffic state = PinnedProxyVerboseTraffic
+  | otherwise = PinnedProxyLifecycleOnly
 
 fill :: RunState -> IO ()
 fill state = do
