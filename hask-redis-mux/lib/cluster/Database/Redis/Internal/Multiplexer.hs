@@ -19,13 +19,18 @@
 -- @since 0.1.0.0
 module Database.Redis.Internal.Multiplexer
   ( Multiplexer
+  , MultiplexerConfig (..)
+  , MultiplexerStats (..)
   , MultiplexerException (..)
   , SlotPool
   , ResponseSlot
+  , defaultMultiplexerConfig
   , createSlotPool
   , createMultiplexer
+  , createMultiplexerWithConfig
   , createMultiplexerFromConnector
   , createMultiplexerFromConnectorWithHandoffHook
+  , readMultiplexerStats
   , submitCommand
   , submitCommandPooled
   , submitCommandPairPooled
@@ -40,7 +45,7 @@ module Database.Redis.Internal.Multiplexer
 
 import           Control.Concurrent               (ThreadId, forkIO,
                                                    forkIOWithUnmask, killThread,
-                                                   myThreadId)
+                                                   myThreadId, yield)
 import           Control.Concurrent.MVar          (MVar, modifyMVar,
                                                    newEmptyMVar, newMVar,
                                                    putMVar, readMVar, takeMVar,
@@ -81,6 +86,26 @@ data MultiplexerException
   deriving (Show, Typeable)
 
 instance Exception MultiplexerException
+
+data MultiplexerConfig = MultiplexerConfig
+  { multiplexerAdmissionLimit   :: !Int
+  , multiplexerWriterBatchLimit :: !Int
+  }
+
+data MultiplexerStats = MultiplexerStats
+  { muxStatsAdmissionLimit   :: !Int
+  , muxStatsWriterBatchLimit :: !Int
+  , muxStatsOutstanding      :: !Int
+  , muxStatsPeakOutstanding  :: !Int
+  }
+
+-- | Production defaults: bound outstanding commands to 4,096 and each writer
+-- drain to 512 commands.
+defaultMultiplexerConfig :: MultiplexerConfig
+defaultMultiplexerConfig = MultiplexerConfig
+  { multiplexerAdmissionLimit = 4096
+  , multiplexerWriterBatchLimit = 512
+  }
 
 -- | Response slot: an IORef for the result and an MVar for signaling.
 -- The reader writes the result to the IORef, then signals the MVar.
@@ -179,6 +204,146 @@ data PendingCommand = PendingCommand
   , pcSlot    :: !ResponseSlot
   }
 
+data AdmissionControl = AdmissionControl
+  { acCapacity :: !Int
+  , acState    :: !(MVar AdmissionState)
+  }
+
+data AdmissionState = AdmissionState
+  { acOpen            :: !Bool
+  , acAvailable       :: !Int
+  , acOutstanding     :: !Int
+  , acPeakOutstanding :: !Int
+  , acWaiters         :: !(Seq AdmissionWaiter)
+  }
+
+newAdmissionControl :: Int -> IO AdmissionControl
+newAdmissionControl capacity = do
+  let boundedCapacity = max 1 capacity
+  state <- newMVar $ AdmissionState True boundedCapacity 0 0 Seq.empty
+  return $ AdmissionControl boundedCapacity state
+
+data AdmissionWaiter = AdmissionWaiter
+  { awRequested :: !Int
+  , awSignal    :: !(MVar AdmissionWakeup)
+  }
+
+data AdmissionWakeup
+  = AdmissionGranted
+  | AdmissionClosed
+
+admissionAcquire :: AdmissionControl -> Int -> IO Bool
+admissionAcquire control requested
+  | requested <= 0 = error "Multiplexer admission requests must be positive"
+  | requested > acCapacity control =
+      error "Multiplexer admission request exceeds configured capacity"
+  | otherwise = mask $ \restore -> do
+      signal <- newEmptyMVar
+      let waiter = AdmissionWaiter requested signal
+      result <- modifyMVar (acState control) $ \state ->
+        if not (acOpen state)
+          then return (state, Nothing)
+          else
+            if Seq.null (acWaiters state) && acAvailable state >= requested
+              then do
+                let granted = grantAdmission requested state
+                return (granted, Just True)
+              else
+                return (state { acWaiters = acWaiters state Seq.|> waiter }, Just False)
+      case result of
+        Nothing -> return False
+        Just True -> return True
+        Just False -> do
+          wakeup <- restore (takeMVar signal)
+            `onException` cancelAdmissionWaiter control waiter
+          case wakeup of
+            AdmissionGranted -> return True
+            AdmissionClosed  -> return False
+
+admissionRelease :: AdmissionControl -> Int -> IO ()
+admissionRelease control released
+  | released <= 0 = error "Multiplexer admission releases must be positive"
+  | otherwise =
+      modifyMVar (acState control) $ \state -> do
+        let available = acAvailable state + released
+            outstanding = acOutstanding state - released
+        if available > acCapacity control || outstanding < 0
+          then error "Multiplexer admission accounting underflow/overflow"
+          else do
+            let (updated, wakeups) =
+                  grantWaitingWaiters
+                    state
+                      { acAvailable = available
+                      , acOutstanding = outstanding
+                      }
+            mapM_ (`putMVar` AdmissionGranted) wakeups
+            return (updated, ())
+
+admissionClose :: AdmissionControl -> IO Bool
+admissionClose control =
+  modifyMVar (acState control) $ \state ->
+    if acOpen state
+      then do
+        mapM_ (`putMVar` AdmissionClosed) (fmap awSignal $ foldr (:) [] (acWaiters state))
+        return (state { acOpen = False, acWaiters = Seq.empty }, True)
+      else return (state, False)
+
+readAdmissionStats :: AdmissionControl -> IO (Int, Int)
+readAdmissionStats control = do
+  state <- readMVar (acState control)
+  return (acOutstanding state, acPeakOutstanding state)
+
+grantAdmission :: Int -> AdmissionState -> AdmissionState
+grantAdmission requested state =
+  let outstanding = acOutstanding state + requested
+  in state
+       { acAvailable = acAvailable state - requested
+       , acOutstanding = outstanding
+       , acPeakOutstanding = max (acPeakOutstanding state) outstanding
+       }
+
+grantWaitingWaiters :: AdmissionState -> (AdmissionState, [MVar AdmissionWakeup])
+grantWaitingWaiters = go []
+  where
+    go wakeups state =
+      case Seq.viewl (acWaiters state) of
+        waiter Seq.:< rest
+          | acAvailable state >= awRequested waiter ->
+              let granted =
+                    grantAdmission (awRequested waiter) state
+                      { acWaiters = rest
+                      }
+              in go (awSignal waiter : wakeups) granted
+        _ -> (state, reverse wakeups)
+
+cancelAdmissionWaiter :: AdmissionControl -> AdmissionWaiter -> IO ()
+cancelAdmissionWaiter control waiter = do
+  removed <- modifyMVar (acState control) $ \state ->
+    let (waiters, wasQueued) = removeAdmissionWaiter waiter (acWaiters state)
+    in if wasQueued
+         then return (state { acWaiters = waiters }, True)
+         else return (state, False)
+  if removed
+    then return ()
+    else do
+      wakeup <- takeMVar (awSignal waiter)
+      case wakeup of
+        AdmissionGranted -> admissionRelease control (awRequested waiter)
+        AdmissionClosed  -> return ()
+
+removeAdmissionWaiter :: AdmissionWaiter -> Seq AdmissionWaiter -> (Seq AdmissionWaiter, Bool)
+removeAdmissionWaiter waiter = go Seq.empty
+  where
+    go acc remaining =
+      case Seq.viewl remaining of
+        Seq.EmptyL -> (acc, False)
+        current Seq.:< rest
+          | sameAdmissionWaiter waiter current -> (acc <> rest, True)
+          | otherwise -> go (acc Seq.|> current) rest
+
+sameAdmissionWaiter :: AdmissionWaiter -> AdmissionWaiter -> Bool
+sameAdmissionWaiter left right = awSignal left == awSignal right
+
 -- | SPSC queue for pending response slots.
 -- Writer is sole producer, reader is sole consumer.
 -- Uses IORef + MVar signaling instead of STM TQueue.
@@ -268,13 +433,14 @@ data CommandQueue = CommandQueue
 
 data CommandQueueState = CommandQueueState
   { cqsOpen   :: !Bool
+  , cqsCount  :: !Int
   , cqsQueued :: ![PendingCommand] -- reverse order (newest first)
   , cqsActive :: ![PendingCommand] -- writer-owned batch, submission order
   }
 
 newCommandQueue :: IO CommandQueue
 newCommandQueue = do
-  state  <- newIORef $ CommandQueueState True [] []
+  state  <- newIORef $ CommandQueueState True 0 [] []
   signal <- newEmptyMVar
   return $ CommandQueue state signal
 
@@ -284,7 +450,13 @@ commandEnqueue :: CommandQueue -> PendingCommand -> IO Bool
 commandEnqueue cq pc = do
   accepted <- atomicModifyIORef' (cqState cq) $ \state ->
     if cqsOpen state
-      then (state { cqsQueued = pc : cqsQueued state }, True)
+      then
+        ( state
+            { cqsCount = cqsCount state + 1
+            , cqsQueued = pc : cqsQueued state
+            }
+        , True
+        )
       else (state, False)
   when accepted $ void $ tryPutMVar (cqSignal cq) ()
   return accepted
@@ -298,42 +470,67 @@ commandEnqueuePair :: CommandQueue -> PendingCommand -> PendingCommand -> IO Boo
 commandEnqueuePair cq pc1 pc2 = do
   accepted <- atomicModifyIORef' (cqState cq) $ \state ->
     if cqsOpen state
-      then (state { cqsQueued = pc2 : pc1 : cqsQueued state }, True)
+      then
+        ( state
+            { cqsCount = cqsCount state + 2
+            , cqsQueued = pc2 : pc1 : cqsQueued state
+            }
+        , True
+        )
       else (state, False)
   when accepted $ void $ tryPutMVar (cqSignal cq) ()
   return accepted
 {-# INLINE commandEnqueuePair #-}
 
--- | Drain all commands (writer thread only — single consumer).
+-- | Drain up to the configured writer batch size (writer thread only).
 -- Blocks if empty. Stale wakeups are retried while admission remains open;
 -- an empty result is reserved for a closed queue. Returns commands in
 -- submission order.
-commandDrain :: CommandQueue -> IO [PendingCommand]
-commandDrain cq = do
+commandDrainUpTo :: CommandQueue -> Int -> IO [PendingCommand]
+commandDrainUpTo cq limit = do
   takeMVar (cqSignal cq)
-  result <- atomicModifyIORef' (cqState cq) $ \state ->
+  (shouldWake, result) <- atomicModifyIORef' (cqState cq) $ \state ->
     case reverse (cqsQueued state) of
       []
-        | cqsOpen state -> (state, Nothing)
-        | otherwise     -> (state, Just [])
+        | cqsOpen state -> (state, (False, Nothing))
+        | otherwise     -> (state, (False, Just []))
       batch ->
-        (state { cqsQueued = [], cqsActive = batch }, Just batch)
+        let (drained, remaining) = splitAt (max 1 limit) batch
+            remainingRev = reverse remaining
+            hasRemaining = not (null remaining)
+        in
+          ( state
+              { cqsCount = length remaining
+              , cqsQueued = remainingRev
+              , cqsActive = drained
+              }
+          , (hasRemaining, Just drained)
+          )
+  when shouldWake $ void $ tryPutMVar (cqSignal cq) ()
   case result of
-    Nothing    -> commandDrain cq
+    Nothing    -> commandDrainUpTo cq limit
     Just batch -> return batch
 
--- | Non-blocking drain of any additional commands that have arrived.
--- Returns commands in submission order. Returns [] if none available.
-commandTryDrain :: CommandQueue -> IO [PendingCommand]
-commandTryDrain cq =
-  atomicModifyIORef' (cqState cq) $ \state ->
-    let batch = reverse (cqsQueued state)
-    in ( state
-           { cqsQueued = []
-           , cqsActive = cqsActive state <> batch
-           }
-       , batch
-       )
+-- | Opportunistically extend the writer-owned batch without blocking.
+commandTopUpActiveBatch :: CommandQueue -> Int -> IO [PendingCommand]
+commandTopUpActiveBatch cq limit
+  | limit <= 0 = return []
+  | otherwise =
+      atomicModifyIORef' (cqState cq) $ \state ->
+        case reverse (cqsQueued state) of
+          [] -> (state, [])
+          queued ->
+            let (drained, remaining) = splitAt limit queued
+                remainingRev = reverse remaining
+            in
+              ( state
+                  { cqsCount = cqsCount state - length drained
+                  , cqsQueued = remainingRev
+                  , cqsActive = cqsActive state <> drained
+                  }
+              , drained
+              )
+{-# INLINE commandTopUpActiveBatch #-}
 
 -- | Finish the masked handoff of the writer-owned batch to the pending queue.
 commandBatchTransferred :: CommandQueue -> IO ()
@@ -357,11 +554,13 @@ commandDrainAll :: CommandQueue -> IO [PendingCommand]
 commandDrainAll cq =
   atomicModifyIORef' (cqState cq) $ \state ->
     let allCommands = cqsActive state <> reverse (cqsQueued state)
-    in (state { cqsQueued = [], cqsActive = [] }, allCommands)
+    in (state { cqsCount = 0, cqsQueued = [], cqsActive = [] }, allCommands)
 
 -- | A multiplexer wrapping a single Redis connection.
 data Multiplexer = Multiplexer
-  { muxCommandQueue :: !CommandQueue
+  { muxConfig       :: !MultiplexerConfig
+  , muxAdmission    :: !AdmissionControl
+  , muxCommandQueue :: !CommandQueue
   , muxPendingQueue :: !PendingQueue
   , muxWriterThread :: !ThreadId
   , muxReaderThread :: !ThreadId
@@ -415,13 +614,22 @@ createMultiplexer
   => client 'Connected
   -> IO ByteString       -- ^ Action to receive bytes from the connection
   -> IO Multiplexer
-createMultiplexer conn recv = mask_ $ do
+createMultiplexer = createMultiplexerWithConfig defaultMultiplexerConfig
+
+createMultiplexerWithConfig
+  :: (Client client)
+  => MultiplexerConfig
+  -> client 'Connected
+  -> IO ByteString
+  -> IO Multiplexer
+createMultiplexerWithConfig config conn recv = mask_ $ do
   transport <- newTransportFinalizer (close conn)
     `onException` (close conn `catch` \(_ :: SomeException) -> return ())
   build transport
     `onException` (closeTransport transport `catch` \(_ :: SomeException) -> return ())
   where
     build transport = do
+      admission    <- newAdmissionControl (multiplexerAdmissionLimit config)
       cmdQueue     <- newCommandQueue
       pendingQueue <- newPendingQueue
       transferLock <- newMVar ()
@@ -432,17 +640,25 @@ createMultiplexer conn recv = mask_ $ do
       writerDone   <- newEmptyMVar
 
       readerId <- forkIOWithUnmask $ \unmask ->
-        unmask (readerLoop transferLock cmdQueue pendingQueue recv alive)
+        unmask (readerLoop transferLock admission cmdQueue pendingQueue recv alive)
           `finally` putMVar readerDone ()
       writerId <- (forkIOWithUnmask $ \unmask ->
-        unmask (writerLoop transferLock cmdQueue pendingQueue conn alive)
+        unmask
+          (writerLoop
+            transferLock
+            (multiplexerWriterBatchLimit config)
+            cmdQueue
+            pendingQueue
+            conn
+            admission
+            alive)
           `finally` putMVar writerDone ())
         `onException` do
           killThread readerId
           readMVar readerDone
 
       return $ Multiplexer
-        cmdQueue pendingQueue writerId readerId writerDone readerDone
+        config admission cmdQueue pendingQueue writerId readerId writerDone readerDone
         alive lifecycle destroyLock transport
 
 -- | Acquire a connected transport and transfer it to a multiplexer without an
@@ -471,40 +687,69 @@ createMultiplexerFromConnectorWithHandoffHook connector addr handoffHook =
       `onException` (close conn `catch` \(_ :: SomeException) -> return ())
     createMultiplexer conn (receive conn)
 
+readMultiplexerStats :: Multiplexer -> IO MultiplexerStats
+readMultiplexerStats mux = do
+  (outstanding, peakOutstanding) <- readAdmissionStats (muxAdmission mux)
+  return $ MultiplexerStats
+    { muxStatsAdmissionLimit = multiplexerAdmissionLimit (muxConfig mux)
+    , muxStatsWriterBatchLimit = multiplexerWriterBatchLimit (muxConfig mux)
+    , muxStatsOutstanding = outstanding
+    , muxStatsPeakOutstanding = peakOutstanding
+    }
+
 multiplexerDestroyed :: SomeException
 multiplexerDestroyed = toException $ MultiplexerDead "Multiplexer destroyed"
 
+admitCommands :: Multiplexer -> Int -> IO Bool
+admitCommands mux commandCount =
+  admissionAcquire (muxAdmission mux) commandCount
+
+releaseAdmission :: Multiplexer -> Int -> IO ()
+releaseAdmission mux = admissionRelease (muxAdmission mux)
+
 -- | Submit a pre-encoded RESP command as a Builder and block until the response arrives.
 submitCommand :: Multiplexer -> Builder.Builder -> IO RespData
-submitCommand mux cmdBuilder = do
-  resultRef <- newIORef Nothing
-  signal <- newEmptyMVar
-  let slot = ResponseSlot resultRef signal 0
-      pending = PendingCommand cmdBuilder slot
-  accepted <- commandEnqueue (muxCommandQueue mux) pending
-  if accepted
+submitCommand mux cmdBuilder = mask $ \restore -> do
+  admitted <- restore $ admitCommands mux 1
+  if admitted
     then do
-      takeMVar signal
-      mResult <- readIORef resultRef
-      case mResult of
-        Just (Right resp) -> return resp
-        Just (Left e)     -> throwIO e
-        Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+      resultRef <- newIORef Nothing
+      signal <- newEmptyMVar
+      let slot = ResponseSlot resultRef signal 0
+          pending = PendingCommand cmdBuilder slot
+      accepted <- commandEnqueue (muxCommandQueue mux) pending
+        `onException` releaseAdmission mux 1
+      if accepted
+        then do
+          restore (takeMVar signal)
+          mResult <- readIORef resultRef
+          case mResult of
+            Just (Right resp) -> return resp
+            Just (Left e)     -> throwIO e
+            Nothing           -> throwIO $ MultiplexerDead "Response slot empty after signal"
+        else do
+          releaseAdmission mux 1
+          throwIO multiplexerDestroyed
     else throwIO multiplexerDestroyed
 
 -- | Like 'submitCommand', but acquires a 'ResponseSlot' from the pool
 -- instead of allocating a fresh IORef+MVar per call.
 submitCommandPooled :: SlotPool -> Multiplexer -> Builder.Builder -> IO RespData
-submitCommandPooled pool mux cmdBuilder = mask $ \_ -> do
-  slot <- acquireSlot pool
-  let pending = PendingCommand cmdBuilder slot
-  accepted <- commandEnqueue (muxCommandQueue mux) pending
-    `onException` releaseSlot pool slot
-  if accepted
-    then awaitSlotResult pool slot
+submitCommandPooled pool mux cmdBuilder = mask $ \restore -> do
+  admitted <- restore $ admitCommands mux 1
+  if not admitted
+    then throwIO multiplexerDestroyed
     else do
-      releaseSlot pool slot
-      throwIO multiplexerDestroyed
+      slot <- acquireSlot pool `onException` releaseAdmission mux 1
+      let pending = PendingCommand cmdBuilder slot
+      accepted <- commandEnqueue (muxCommandQueue mux) pending
+        `onException` (releaseSlot pool slot >> releaseAdmission mux 1)
+      if accepted
+        then restore $ awaitSlotResult pool slot
+        else do
+          releaseSlot pool slot
+          releaseAdmission mux 1
+          throwIO multiplexerDestroyed
 {-# INLINE submitCommandPooled #-}
 
 -- | Submit two commands atomically as a pair. Both are enqueued in a single
@@ -513,39 +758,51 @@ submitCommandPooled pool mux cmdBuilder = mask $ \_ -> do
 -- Used for ASKING + command sequences where ASKING must immediately precede
 -- the target command on the same connection.
 submitCommandPairPooled :: SlotPool -> Multiplexer -> Builder.Builder -> Builder.Builder -> IO RespData
-submitCommandPairPooled pool mux firstBuilder secondBuilder = mask $ \_ -> do
-  slot1 <- acquireSlot pool
-  slot2 <- acquireSlot pool `onException` releaseSlot pool slot1
-  let pending1 = PendingCommand firstBuilder slot1
-      pending2 = PendingCommand secondBuilder slot2
-  accepted <- commandEnqueuePair (muxCommandQueue mux) pending1 pending2
-    `onException` (releaseSlot pool slot1 >> releaseSlot pool slot2)
-  if accepted
-    then do
-      -- Wait for and discard the first response (ASKING → +OK)
-      void (awaitSlotResult pool slot1)
-        `onException` releaseAfterSignal pool slot2
-      -- Wait for the actual command response
-      awaitSlotResult pool slot2
+submitCommandPairPooled pool mux firstBuilder secondBuilder = mask $ \restore -> do
+  admitted <- restore $ admitCommands mux 2
+  if not admitted
+    then throwIO multiplexerDestroyed
     else do
-      releaseSlot pool slot1
-      releaseSlot pool slot2
-      throwIO multiplexerDestroyed
+      slot1 <- acquireSlot pool `onException` releaseAdmission mux 2
+      slot2 <- acquireSlot pool
+        `onException` (releaseSlot pool slot1 >> releaseAdmission mux 2)
+      let pending1 = PendingCommand firstBuilder slot1
+          pending2 = PendingCommand secondBuilder slot2
+      accepted <- commandEnqueuePair (muxCommandQueue mux) pending1 pending2
+        `onException`
+          (releaseSlot pool slot1 >> releaseSlot pool slot2 >> releaseAdmission mux 2)
+      if accepted
+        then do
+          -- Wait for and discard the first response (ASKING → +OK)
+          void (restore $ awaitSlotResult pool slot1)
+            `onException` releaseAfterSignal pool slot2
+          -- Wait for the actual command response
+          restore $ awaitSlotResult pool slot2
+        else do
+          releaseSlot pool slot1
+          releaseSlot pool slot2
+          releaseAdmission mux 2
+          throwIO multiplexerDestroyed
 {-# INLINE submitCommandPairPooled #-}
 
 -- | Submit a command asynchronously: enqueue it and return the ResponseSlot.
 -- The caller must later call 'waitSlot' to get the result, then 'releaseSlot'.
 submitCommandAsync :: SlotPool -> Multiplexer -> Builder.Builder -> IO ResponseSlot
-submitCommandAsync pool mux cmdBuilder = mask $ \_ -> do
-  slot <- acquireSlot pool
-  let pending = PendingCommand cmdBuilder slot
-  accepted <- commandEnqueue (muxCommandQueue mux) pending
-    `onException` releaseSlot pool slot
-  if accepted
-    then return slot
+submitCommandAsync pool mux cmdBuilder = mask $ \restore -> do
+  admitted <- restore $ admitCommands mux 1
+  if not admitted
+    then throwIO multiplexerDestroyed
     else do
-      releaseSlot pool slot
-      throwIO multiplexerDestroyed
+      slot <- acquireSlot pool `onException` releaseAdmission mux 1
+      let pending = PendingCommand cmdBuilder slot
+      accepted <- commandEnqueue (muxCommandQueue mux) pending
+        `onException` (releaseSlot pool slot >> releaseAdmission mux 1)
+      if accepted
+        then return slot
+        else do
+          releaseSlot pool slot
+          releaseAdmission mux 1
+          throwIO multiplexerDestroyed
 {-# INLINE submitCommandAsync #-}
 
 -- | Wait for an async submission's result and release the slot back to the pool.
@@ -581,6 +838,7 @@ destroyMultiplexer mux =
       when (lifecycle == MultiplexerOpen) $ do
         writeIORef (muxLifecycle mux) MultiplexerDestroying
         void $ commandClose (muxCommandQueue mux)
+        void $ admissionClose (muxAdmission mux)
         atomicWriteIORef (muxAlive mux) False
 
       transportDone <- startTransportClose (muxTransport mux)
@@ -599,8 +857,8 @@ destroyMultiplexer mux =
       uninterruptibleMask_ $ do
         commands <- commandDrainAll (muxCommandQueue mux)
         pending <- pendingDrainAll (muxPendingQueue mux)
-        forM_ commands $ \pc -> failSlot (pcSlot pc) multiplexerDestroyed
-        forM_ pending $ \slot -> failSlot slot multiplexerDestroyed
+        forM_ commands $ \pc -> failSlot (muxAdmission mux) (pcSlot pc) multiplexerDestroyed
+        forM_ pending $ \slot -> failSlot (muxAdmission mux) slot multiplexerDestroyed
         writeIORef (muxLifecycle mux) MultiplexerDestroyed
 
       either throwIO return transportResult
@@ -614,53 +872,56 @@ isMultiplexerAlive = readIORef . muxAlive
 writerLoop
   :: (Client client)
   => MVar ()
+  -> Int
   -> CommandQueue
   -> PendingQueue
   -> client 'Connected
+  -> AdmissionControl
   -> IORef Bool
   -> IO ()
-writerLoop transferLock cmdQueue pendingQueue conn alive = go
+writerLoop transferLock batchLimit cmdQueue pendingQueue conn admission alive = go
   where
     go = do
       isAlive <- readIORef alive
       if not isAlive
         then return ()
         else do
-          -- Drain command queue (lock-free MPSC, blocks if empty)
-          batch <- commandDrain cmdQueue
-          -- Non-blocking double-drain: pick up extra commands that arrived
-          extra <- commandTryDrain cmdQueue
-          let allCmds = batch ++ extra
-
-          if null allCmds
+          batch0 <- commandDrainUpTo cmdQueue batchLimit
+          if null batch0
             then return ()
             else do
+              batch <-
+                if length batch0 < max 1 batchLimit
+                  then do
+                    yield
+                    extra <- commandTopUpActiveBatch cmdQueue (max 1 batchLimit - length batch0)
+                    return (batch0 <> extra)
+                  else return batch0
               -- Single-pass: extract slots (as Seq) and build the combined Builder
               let (!slots, !builder) = foldl'
                     (\(!sAcc, !bAcc) pc -> (sAcc Seq.|> pcSlot pc, bAcc <> pcBuilder pc))
                     (Seq.empty, mempty)
-                    allCmds
+                    batch
 
-              transferred <- withMVar transferLock $ \() -> mask_ $ do
-                stillAlive <- readIORef alive
-                when stillAlive $ do
-                  pendingEnqueueSeq pendingQueue slots
-                  commandBatchTransferred cmdQueue
-                return stillAlive
-
-              when transferred $ do
-                -- Materialize with large buffer strategy and send via vectored I/O.
-                -- untrimmedStrategy avoids trimming/copying the final chunk.
-                -- 32KB initial / 64KB growth reduces chunk count vs default 4KB.
-                -- sendChunks uses writev(2) for zero-copy vectored I/O on plain sockets.
-                let !lbs = Builder.toLazyByteStringWith
-                             (Builder.untrimmedStrategy 32768 65536) LBS.empty builder
-                    !chunks = LBS.toChunks lbs
-                result <- try $ sendChunks conn chunks
-                case result of
-                  Right () -> go
-                  Left (e :: SomeException) ->
-                    failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+              -- Materialize with large buffer strategy and send via vectored I/O.
+              -- untrimmedStrategy avoids trimming/copying the final chunk.
+              -- 32KB initial / 64KB growth reduces chunk count vs default 4KB.
+              -- sendChunks uses writev(2) for zero-copy vectored I/O on plain sockets.
+              let !lbs = Builder.toLazyByteStringWith
+                           (Builder.untrimmedStrategy 32768 65536) LBS.empty builder
+                  !chunks = LBS.toChunks lbs
+              result <- try $ sendChunks conn chunks
+              case result of
+                Right () -> do
+                  transferred <- withMVar transferLock $ \() -> mask_ $ do
+                    stillAlive <- readIORef alive
+                    when stillAlive $ do
+                      pendingEnqueueSeq pendingQueue slots
+                      commandBatchTransferred cmdQueue
+                    return stillAlive
+                  when transferred go
+                Left (e :: SomeException) ->
+                  failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
 
 -- Reader thread: pops response slots from the pending queue and fills
 -- them with parsed RESP responses. When the buffer contains additional
@@ -669,12 +930,13 @@ writerLoop transferLock cmdQueue pendingQueue conn alive = go
 -- Uses Attoparsec IResult directly to avoid Either allocation per response.
 readerLoop
   :: MVar ()
+  -> AdmissionControl
   -> CommandQueue
   -> PendingQueue
   -> IO ByteString
   -> IORef Bool
   -> IO ()
-readerLoop transferLock cmdQueue pendingQueue recv alive = go BS.empty
+readerLoop transferLock admission cmdQueue pendingQueue recv alive = go BS.empty
   where
     go !buffer = do
       isAlive <- readIORef alive
@@ -687,23 +949,23 @@ readerLoop transferLock cmdQueue pendingQueue recv alive = go BS.empty
     -- Drive the incremental parser, feeding data until Done or Fail.
     -- Avoids allocating Either/tuple wrappers on the hot path.
     feedParse !slot (StrictParse.Done !remainder !resp) = do
-      completePendingSlot pendingQueue slot (Right resp)
+      completePendingSlot admission pendingQueue slot (Right resp)
       -- If there's remaining data, try to parse more in a tight loop
       if BS.null remainder
         then go remainder
         else drainBuffer remainder
     feedParse !_slot (StrictParse.Fail _ _ err) = do
       let !e = toException $ MultiplexerParseError err
-      failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+      failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
     feedParse !slot (StrictParse.Partial cont) = do
       moreResult <- try recv
       case moreResult of
         Left (e :: SomeException) ->
-          failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+          failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
         Right moreData
           | BS.null moreData -> do
               let !e = toException MultiplexerConnectionClosed
-              failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+              failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
           | otherwise -> feedParse slot (cont moreData)
 
     -- Tight inner loop: buffer has data, grab available slots and parse
@@ -726,7 +988,7 @@ readerLoop transferLock cmdQueue pendingQueue recv alive = go BS.empty
       feedParseBatch slot remaining (StrictParse.parse parseRespData buffer)
 
     feedParseBatch !slot !remaining (StrictParse.Done !remainder !resp) = do
-      completePendingSlot pendingQueue slot (Right resp)
+      completePendingSlot admission pendingQueue slot (Right resp)
       case Seq.viewl remaining of
         Seq.EmptyL ->
           if BS.null remainder
@@ -736,63 +998,75 @@ readerLoop transferLock cmdQueue pendingQueue recv alive = go BS.empty
           feedParseBatch nextSlot restSlots (StrictParse.parse parseRespData remainder)
     feedParseBatch !_slot !_remaining (StrictParse.Fail _ _ err) = do
       let !e = toException $ MultiplexerParseError err
-      failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+      failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
     feedParseBatch !slot !remaining (StrictParse.Partial cont) = do
       moreResult <- try recv
       case moreResult of
         Left (e :: SomeException) ->
-          failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+          failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
         Right moreData
           | BS.null moreData -> do
               let !e = toException MultiplexerConnectionClosed
-              failMultiplexerQueues transferLock cmdQueue pendingQueue alive e
+              failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e
           | otherwise -> feedParseBatch slot remaining (cont moreData)
 
 -- | Remove a reader-owned slot from lifecycle tracking and complete it without
 -- allowing teardown to interrupt the handoff between those two operations.
 completePendingSlot
-  :: PendingQueue
+  :: AdmissionControl
+  -> PendingQueue
   -> ResponseSlot
   -> Either SomeException RespData
   -> IO ()
-completePendingSlot pendingQueue slot result = mask_ $ do
+completePendingSlot admission pendingQueue slot result = mask_ $ do
   pendingCompleteOne pendingQueue
-  void $ completeSlot slot result
+  completed <- storeSlotResult slot result
+  when completed $ do
+    admissionRelease admission 1
+    signalSlotCompletion slot
 {-# INLINE completePendingSlot #-}
 
 -- | Close admission and fail every slot still owned by either worker queue.
 failMultiplexerQueues
   :: MVar ()
+  -> AdmissionControl
   -> CommandQueue
   -> PendingQueue
   -> IORef Bool
   -> SomeException
   -> IO ()
-failMultiplexerQueues transferLock cmdQueue pendingQueue alive e =
+failMultiplexerQueues transferLock admission cmdQueue pendingQueue alive e =
   withMVar transferLock $ \() -> mask_ $ do
     wasAlive <- readIORef alive
     let failure = if wasAlive then e else multiplexerDestroyed
     atomicWriteIORef alive False
     void $ commandClose cmdQueue
+    void $ admissionClose admission
     commands <- commandDrainAll cmdQueue
     pending <- pendingDrainAll pendingQueue
-    forM_ commands $ \pc -> failSlot (pcSlot pc) failure
-    forM_ pending $ \slot -> failSlot slot failure
+    forM_ commands $ \pc -> failSlot admission (pcSlot pc) failure
+    forM_ pending $ \slot -> failSlot admission slot failure
 
--- | Complete a response slot at most once. The result and wakeup are owned by
--- the thread that wins the atomic transition from 'Nothing'.
-completeSlot :: ResponseSlot -> Either SomeException RespData -> IO Bool
-completeSlot slot result = do
+-- | Store a response slot result at most once.
+storeSlotResult :: ResponseSlot -> Either SomeException RespData -> IO Bool
+storeSlotResult slot result = do
   completed <- atomicModifyIORef' (slotResult slot) $ \current ->
     case current of
       Nothing -> (Just result, True)
       Just _  -> (current, False)
-  when completed $ void $ tryPutMVar (slotSignal slot) ()
   return completed
-{-# INLINE completeSlot #-}
+{-# INLINE storeSlotResult #-}
+
+-- | Signal a response slot once its bookkeeping is fully committed.
+signalSlotCompletion :: ResponseSlot -> IO ()
+signalSlotCompletion slot = void $ tryPutMVar (slotSignal slot) ()
+{-# INLINE signalSlotCompletion #-}
 
 -- | Fail a response slot with an exception.
-failSlot :: ResponseSlot -> SomeException -> IO ()
-failSlot slot e =
-  void $ completeSlot slot (Left e)
+failSlot :: AdmissionControl -> ResponseSlot -> SomeException -> IO ()
+failSlot admission slot e = do
+  completed <- storeSlotResult slot (Left e)
+  when completed $ do
+    admissionRelease admission 1
+    signalSlotCompletion slot
 {-# INLINE failSlot #-}
