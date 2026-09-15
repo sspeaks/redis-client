@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
+.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile setup
 
 # Default target
 help:
@@ -45,8 +45,8 @@ endif
 # Run all tests
 test: test-unit test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
-# Run unit tests (hask-redis-mux tests run via nix dependency build; FillHelpersSpec from redis-client)
-test-unit: test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner
+# Run unit tests (hask-redis-mux tests run via nix dependency build; redis-client specs via cabal)
+test-unit: test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all"
 else
@@ -75,6 +75,13 @@ test-e2e-runner:
 
 test-cluster-e2e-runner:
 	./scripts/test-run-cluster-e2e-tests.sh
+
+test-cli-help-parity:
+ifeq ($(HAS_NIX),yes)
+	nix-shell --run "bash ./scripts/test-cli-help-parity.sh"
+else
+	bash ./scripts/test-cli-help-parity.sh
+endif
 
 # Validate ephemeral TLS credential generation without starting Docker.
 test-tls-fixtures:

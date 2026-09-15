@@ -40,27 +40,73 @@ cabal install
 
 ### Basic Usage
 
-The client has three modes: `cli` (interactive), `fill` (testing), and `tunn` (TLS proxy).
+The CLI reference below is kept in parity with `redis-client --help`.
 
-**Interactive CLI:**
+<!-- BEGIN GENERATED CLI REFERENCE -->
+#### Public modes
+
+| Mode | Purpose | Notes |
+| --- | --- | --- |
+| `cli` | Interactive Redis REPL. | Standalone by default; add `--cluster` for cluster seed-node routing. |
+| `fill` | Load random data for testing. | Supports destructive flushes only with exact confirmation. |
+| `tunn` | Start the proxy/tunnel entrypoint. | Standalone mode requires `--tls`; cluster mode supports `smart` and `pinned`. |
+| `bench` | Measure cluster throughput. | Requires `--cluster` and emits a JSON summary to stdout. |
+
+#### Public options
+
+| Option | Applies to | Details |
+| --- | --- | --- |
+| `--help` | all | Print this help text and exit with status 0. |
+| `-h`, `--host HOST` | `cli`, `fill`, `tunn`, `bench` | Redis host or cluster seed node. Required for every mode except `--help`. |
+| `-p`, `--port PORT` | `cli`, `fill`, `tunn`, `bench` | Connection port. Defaults to 6379 for plaintext and 6380 for TLS. |
+| `-u`, `--username USERNAME` | `cli`, `fill`, `tunn`, `bench` | ACL username used with environment-provided credentials. Default: `default`. |
+| `-t`, `--tls` | `cli`, `fill`, `tunn`, `bench` | Use TLS for the upstream Redis connection. |
+| `--allow-insecure-plaintext-auth` | `cli`, `fill`, `tunn`, `bench` | Allow environment-provided credentials over plaintext and emit a warning naming the target host. |
+| `-c`, `--cluster` | `cli`, `fill`, `tunn`, `bench` | Enable Redis Cluster behavior. Required for `bench`; optional for the other modes. |
+| `-d`, `--data GBs` | `fill` | Random data size in GiB. Required unless `--flush` is the only requested action. |
+| `-f`, `--flush` | `fill` | Request `FLUSHALL` before filling, or perform a flush-only run when `--data` is omitted. Requires exact confirmation. |
+| `--confirm-flush TARGET` | `fill` | Exact non-interactive acknowledgement for `--flush`. Required whenever stdin is not a terminal. |
+| `-s`, `--serial` | `fill` | Disable concurrent fill workers and run the fill loop serially. |
+| `-n`, `--connections NUM` | `fill`, `bench` | Parallel worker count. Default: 2. In `fill`, this is standalone connections or cluster threads per node; in `bench`, this is benchmark worker threads. |
+| `--key-size BYTES` | `fill`, `bench` | Key size. Default: 512 bytes. Range: 1-65536. |
+| `--value-size BYTES` | `fill`, `bench` | Value size. Default: 512 bytes. Range: 1-524288. |
+| `--pipeline COUNT` | `fill` | Commands per pipeline batch. Default: 8192. Minimum: 1. |
+| `-P`, `--processes NUM` | `fill` | Parallel child processes for `fill`. Default: 1. Only the parent process confirms and performs `--flush`. |
+| `--tunnel-mode MODE` | `tunn` | Cluster tunnel strategy. Values: `smart` or `pinned`. Default: `smart`. |
+| `--operation OP` | `bench` | Benchmark workload. Values: `set`, `get`, or `mixed`. Default: `set`. |
+| `--duration SECS` | `bench` | Benchmark duration in seconds. Default: 30. Minimum: 1. |
+| `--mux-count NUM` | `bench` | Multiplexers per cluster node during `bench`. Default: 1. Minimum: 1. |
+
+#### Environment variables
+
+| Name | Details |
+| --- | --- |
+| `REDIS_CLIENT_PASSWORD_FILE` | Path to a Redis credential file. Highest precedence; strips one trailing newline. |
+| `REDIS_CLIENT_PASSWORD` | Redis credential value used only when `REDIS_CLIENT_PASSWORD_FILE` is unset. |
+| `REDIS_CLIENT_TLS_INSECURE` | Set to exactly `1` to disable TLS certificate verification. Unset, empty, `0`, and `false` keep verification enabled; every other value is rejected. |
+
+#### Flush confirmation
+
+- `--flush` is intent only. The client never sends `FLUSHALL` without an exact confirmation target.
+- Standalone target: `redis://HOST:PORT?tls=true|false&scope=single-node`
+- Cluster target: `redis+cluster://HOST:PORT?tls=true|false&scope=all-primaries`
+- In a terminal, the client prompts for the exact displayed target. In non-interactive automation, pass that exact value with `--confirm-flush`.
+- With `--processes N` for `N > 1`, only the parent process confirms and flushes once before spawning children.
+
+#### Representative examples
+
 ```sh
+redis-client --help
 redis-client cli -h localhost
-redis-client cli -h localhost -c          # Cluster mode
-redis-client cli -h localhost -t          # With TLS
+redis-client cli -h localhost -c
+redis-client fill -h localhost -d 5 --pipeline 4096 --key-size 128 --value-size 1024
+redis-client fill -h localhost -f --confirm-flush 'redis://localhost:6379?tls=false&scope=single-node'
+redis-client fill -h redis1.local -c -d 10 -n 4 -P 2
+redis-client tunn -h redis1.local -t -c --tunnel-mode smart
+redis-client bench -h redis1.local -c --operation mixed --duration 15 --connections 32 --mux-count 2
+REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h cache.local -t
 ```
-
-**Fill cache with data:**
-```sh
-redis-client fill -h localhost -d 5       # Fill 5GB
-redis-client fill -h localhost -d 5 -c    # Fill 5GB in cluster
-redis-client fill -h localhost -f         # Displays an interactive confirmation target
-```
-
-**TLS Tunnel:**
-```sh
-redis-client tunn -h localhost -t
-redis-client tunn -h localhost -t -c --tunnel-mode smart  # Cluster mode
-```
+<!-- END GENERATED CLI REFERENCE -->
 
 ### Smart cluster tunnel framing
 
@@ -86,24 +132,6 @@ possible binary payload. This narrow framing compatibility is not a claim of
 general RESP3 command support. Incomplete pinned replies retain at most a
 512 MiB Redis bulk payload plus its RESP framing overhead.
 
-### Command Options
-
-- `-h`, `--host HOST` - Host to connect to (required)
-- `-p`, `--port PORT` - Port (default: 6379 for plaintext, 6380 for TLS)
-- `-u`, `--username USERNAME` - Username (default: 'default')
-- `-t`, `--tls` - Use TLS connection
-- `--allow-insecure-plaintext-auth` - Explicitly allow credentials over plaintext. Emits a warning naming the target host.
-- `-c`, `--cluster` - Redis Cluster mode
-- `-d`, `--data GBs` - Amount of random data to fill (in GB)
-- `-f`, `--flush` - Request FLUSHALL before filling. This is intent only; it never flushes by itself.
-- `--confirm-flush TARGET` - Exact non-interactive acknowledgement of the displayed canonical target.
-- `-s`, `--serial` - Serial mode (no concurrency)
-- `-n`, `--connections NUM` - Parallel connections per process (default: 2; maximum: 16 without the high-scale override)
-- `-P`, `--processes NUM` - Parallel fill processes (default: 1; maximum: 8 without the high-scale override)
-- `--pipeline COUNT` - Commands buffered in each fill batch (default: 8192)
-- `--allow-high-scale-fill` - Explicitly bypasses the fill safety limits for intentional large runs.
-- `--tunnel-mode MODE` - Tunnel mode: 'smart' or 'pinned' (default: 'smart')
-
 ### Fill capacity limits
 
 Before connecting or spawning children, fill mode validates positive process,
@@ -121,7 +149,7 @@ Use `--allow-high-scale-fill` only after sizing the host and Redis deployment:
 it is an explicit acknowledgement that these protective caps are intentionally
 being exceeded, not an automatic performance optimization.
 
-### Safe flush confirmation
+### Flush confirmation details
 
 `--flush` is deliberately insufficient, including for localhost. In a terminal,
 the client displays the canonical target and requires it to be typed exactly.
@@ -185,14 +213,10 @@ redis-client fill -h 127.0.0.1 -p 16379 -f \
   --confirm-flush 'redis://127.0.0.1:16379?tls=false&scope=single-node'
 ```
 
-### Environment Variables
+### Credential handling
 
-- `REDIS_CLIENT_PASSWORD_FILE` - Path to a file containing the Redis password, access key, or Entra token. This has highest precedence. A single trailing newline is removed.
-- `REDIS_CLIENT_PASSWORD` - Redis password, access key, or Entra token used only when `REDIS_CLIENT_PASSWORD_FILE` is not set.
-- `REDIS_CLIENT_TLS_INSECURE` - Set to exactly `1` to disable TLS certificate verification. Unset, empty, `0`, and `false` keep verification enabled; every other value is rejected.
-- `REDIS_CLIENT_FILL_CHUNK_KB` - Size of each command batch sent to Redis in kilobytes (default: 8192 KB, range: 1024-8192 KB). Larger values reduce network round-trips but use more memory. Use smaller values (1024-2048 KB) in memory-constrained environments or larger values (4096-8192 KB) for maximum throughput.
-
-Credential command-line options are no longer accepted. This is a breaking security change that keeps live credentials out of process arguments and parallel fill child arguments. Prefer an owner-only credential file:
+Credential command-line options are intentionally unsupported. Use an owner-only
+credential file where possible:
 
 ```sh
 install -d -m 700 "$HOME/.config/redis-client"
@@ -206,10 +230,12 @@ REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
   redis-client cli -h localhost -t
 ```
 
-Environment values are convenient for automation but may be visible to other same-user or privileged processes, depending on operating-system and platform policy. Avoid exporting credentials into shell startup files.
+Environment variables are convenient for automation but may be visible to other
+same-user or privileged processes, depending on operating-system and platform
+policy. Avoid exporting credentials into shell startup files.
 
-Credentialed connections require TLS by default. For a trusted local test server
-that does not support TLS, the risk must be acknowledged explicitly:
+Credentialed connections require TLS by default. For a trusted local test
+server that does not support TLS, acknowledge the risk explicitly:
 
 ```sh
 REDIS_CLIENT_PASSWORD_FILE="$HOME/.config/redis-client/password" \
@@ -221,8 +247,8 @@ credential is being sent unencrypted. Do not use it across shared or untrusted
 networks.
 
 TLS certificate verification remains enabled unless
-`REDIS_CLIENT_TLS_INSECURE=1` is set. This bypass is intended only for controlled
-testing with a server whose certificate cannot be verified:
+`REDIS_CLIENT_TLS_INSECURE=1` is set. This bypass is intended only for
+controlled testing with a server whose certificate cannot be verified:
 
 ```sh
 REDIS_CLIENT_TLS_INSECURE=1 redis-client cli -h test-cache.local -t
@@ -518,7 +544,7 @@ without changing the normal two-worker throughput path.
 ## Project Structure
 
 - `redis-client.cabal` - Root executable package definition.
-- `app/` - `redis-client` executable sources for CLI, fill, and tunnel modes.
+- `app/` - `redis-client` executable sources for CLI, fill, tunnel, and benchmark modes.
 - `test/` - Root executable unit tests and Docker E2E test programs.
 - `hask-redis-mux/hask-redis-mux.cabal` - Public Redis client library package.
 - `hask-redis-mux/lib/resp/` - RESP protocol implementation.
