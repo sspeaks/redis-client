@@ -274,6 +274,7 @@ executable redis-client
                     , ClusterFiller
                     , ClusterSetup
                     , ClusterTunnel
+                    , CommandHelp
                     , CredentialConfig
                     , FillHelpers
                     , FillLimits

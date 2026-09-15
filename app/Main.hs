@@ -27,13 +27,13 @@ import           AppConfig                             (RunState (..),
                                                         runCommandsAgainstTLSHost,
                                                         warnIfInsecurePlaintextAuthentication)
 import           ClusterCli                            (routeAndExecuteCommand)
+import           CommandHelp                           (helpFlag, publicModes,
+                                                        renderCommandHelp)
 import           Control.Concurrent.STM                (readTVarIO)
 import           Control.Monad                         (unless, void, when)
 import           Control.Monad.IO.Class
 import qualified Control.Monad.State                   as State
-import           CredentialConfig                      (passwordEnvironmentVariable,
-                                                        passwordFileEnvironmentVariable,
-                                                        rejectCredentialArguments)
+import           CredentialConfig                      (rejectCredentialArguments)
 import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Builder               as Builder
 import qualified Data.ByteString.Char8                 as BS8
@@ -83,7 +83,7 @@ import           StructuredConcurrency                 (runConcurrentlyFailFast,
 import           System.Console.GetOpt                 (ArgDescr (..),
                                                         ArgOrder (..),
                                                         OptDescr (Option),
-                                                        getOpt, usageInfo)
+                                                        getOpt)
 import           System.Console.Readline               (addHistory, readline)
 import           System.Environment                    (getArgs,
                                                         getExecutablePath)
@@ -164,8 +164,8 @@ setInt label update value state = do
 handleArgs :: [String] -> IO (RunState, [String])
 handleArgs args = do
   case getOpt Permute options args of
-    (o, n, []) -> (,n) <$> foldl (>>=) (return defaultRunState) o
-    (_, _, errs) -> ioError (userError (concat errs ++ usageInfo "Usage: redis-client [mode] [OPTION...]" options))
+    (o, n, [])   -> (,n) <$> foldl (>>=) (return defaultRunState) o
+    (_, _, errs) -> ioError (userError (concat errs ++ renderCommandHelp))
 
 main :: IO ()
 main = do
@@ -173,19 +173,21 @@ main = do
   case rejectCredentialArguments args' of
     Left message -> hPutStrLn stderr message >> exitFailure
     Right ()     -> pure ()
+  when (helpFlag `elem` args') $ do
+    putStr renderCommandHelp
+    exitSuccess
   case args' of
-    [] -> printUsage >> exitFailure
-    ["--help"] -> printUsage >> exitSuccess
+    [] -> putStr renderCommandHelp >> exitFailure
     (mode : args) -> do
       (parsedState, _) <- handleArgs args
       state <- resolveRunStateCredentials parsedState
-      unless (mode `elem` ["cli", "fill", "tunn", "bench"]) $ do
-        printf "Invalid mode '%s' specified\nValid modes are 'cli', 'fill', 'tunn', and 'bench'\n" mode
-        putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
+      unless (mode `elem` publicModes) $ do
+        printf "Invalid mode '%s' specified\nValid modes are %s\n" mode (quoteModes publicModes)
+        putStr renderCommandHelp
         exitFailure
       when (null (host state)) $ do
         putStrLn "No host specified\n"
-        putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
+        putStr renderCommandHelp
         exitFailure
       warnIfInsecurePlaintextAuthentication state
       when (mode == "tunn") $ tunn state
@@ -193,63 +195,11 @@ main = do
       when (mode == "fill") $ fill state
       when (mode == "bench") $ bench state
 
-printUsage :: IO ()
-printUsage = do
-  putStrLn $ usageInfo "Usage: redis-client [mode] [OPTION...]" options
-  putStrLn ""
-  putStrLn "Credentials:"
-  putStrLn $ "  " ++ passwordFileEnvironmentVariable ++ "  Path to a credential file (highest precedence)"
-  putStrLn $ "  " ++ passwordEnvironmentVariable ++ "       Credential value used when no file is configured"
-  putStrLn "  Command-line password options are rejected to keep credentials out of process listings."
-  putStrLn "  Credentialed connections require TLS unless --allow-insecure-plaintext-auth is explicitly supplied."
-  putStrLn "  REDIS_CLIENT_TLS_INSECURE=1 disables TLS certificate verification; all other non-false values are rejected."
-  putStrLn ""
-  putStrLn "Modes:"
-  putStrLn "  cli     Interactive Redis command-line interface"
-  putStrLn "  fill    Fill Redis cache with random data for testing"
-  putStrLn "  tunn    Start TLS tunnel proxy (requires -t flag)"
-  putStrLn "  bench   Benchmark cluster throughput (requires -c flag)"
-  putStrLn ""
-  putStrLn "Cluster Mode:"
-  putStrLn "  Use -c/--cluster flag to enable Redis Cluster support"
-  putStrLn ""
-  putStrLn "Flush confirmation:"
-  putStrLn "  --flush is only intent; it never flushes without confirmation."
-  putStrLn "  Canonical target: redis://HOST:PORT?tls=true|false&scope=single-node"
-  putStrLn "  Cluster target:   redis+cluster://HOST:PORT?tls=true|false&scope=all-primaries"
-  putStrLn "  HOST is the --host value; IPv6 literals are written as [address]."
-  putStrLn "  PORT is --port, or 6379 without --tls / 6380 with --tls."
-  putStrLn "  --tls controls the connection: tls=true with it, tls=false without it."
-  putStrLn "  In a terminal, type the exact displayed target; EOF or any mismatch cancels."
-  putStrLn "  Without a terminal, pass the exact target with --confirm-flush."
-  putStrLn "  With --processes > 1, the parent confirms and flushes once before spawning children."
-  putStrLn "  Children never repeat the flush or prompt for confirmation."
-  putStrLn ""
-  putStrLn "Smart cluster tunnel framing:"
-  putStrLn "  Smart mode accepts RESP request frames up to 1,048,576 encoded bytes."
-  putStrLn "  Malformed, incomplete-at-EOF, or oversized frames receive one error when applicable, then close."
-  putStrLn "  This bounded proxy scope is not a claim of compatibility with Redis's maximum request size."
-  putStrLn "  Pinned mode byte-preserves opaque RESP3 frames outside the RespData subset, including streamed values."
-  putStrLn "  Parsed RESP3 maps and sets are re-encoded, so their original ordering is not preserved."
-  putStrLn "  Malformed or incomplete streamed RESP3 framing closes the pinned connection rather than resynchronizing within a payload."
-  putStrLn "  Incomplete pinned replies allow a 512 MiB bulk payload plus RESP framing overhead."
-  putStrLn "  Pinned topology rewriting buffers incomplete responses up to Redis's 512 MiB bulk-string limit."
-  putStrLn "  This framing compatibility is not a claim of general RESP3 command support."
-  putStrLn ""
-  putStrLn "Command protocol support:"
-  putStrLn "  RESP2 simple strings, errors, integers, bulk strings, and non-null arrays."
-  putStrLn "  RESP3-shaped maps and sets are supported as aggregate values."
-  putStrLn "  RESP3 pushes, attributes, streamed encodings, booleans, doubles, big numbers,"
-  putStrLn "  bulk errors, verbatim strings, and module replies are not command values."
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  REDIS_CLIENT_PASSWORD_FILE=/secure/redis.pass redis-client cli -h localhost"
-  putStrLn "  redis-client fill -h localhost -d 5                     # Fill 5GB standalone"
-  putStrLn "  redis-client fill -h localhost -f                       # prompts for exact flush target"
-  putStrLn "  redis-client fill -h node1 -d 5 -c                      # Fill 5GB cluster"
-  putStrLn "  redis-client cli -h localhost -c                        # CLI with cluster"
-  putStrLn "  redis-client tunn -h node1 -t -c --tunnel-mode smart    # Smart cluster proxy"
-  putStrLn "  redis-client fill ... --pipeline 4096                   # Use 4096 commands per pipeline"
+quoteModes :: [String] -> String
+quoteModes []             = ""
+quoteModes [mode]         = "'" ++ mode ++ "'"
+quoteModes [modeA, modeB] = "'" ++ modeA ++ "' and '" ++ modeB ++ "'"
+quoteModes (mode:rest)    = "'" ++ mode ++ "', " ++ quoteModes rest
 
 
 tunn :: RunState -> IO ()
@@ -323,7 +273,7 @@ fill state = do
   -- If no data specified and no flush flag, show error
   when (dataGBs state <= 0 && not (flush state)) $ do
     putStrLn "No data specified or data is 0GB or fewer\n"
-    putStrLn $ usageInfo "Usage: redis-client [OPTION...]" options
+    putStr renderCommandHelp
     exitFailure
 
   -- If only flush requested (no data), just flush and exit
