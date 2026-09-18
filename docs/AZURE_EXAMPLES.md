@@ -113,19 +113,20 @@ When you select fill mode, you'll be prompted for:
 - **Data size**: How many GB of data to generate
 - **Flush option**: Whether to clear the cache first
 
-The script automatically applies optimized parameters based on extensive performance testing:
+The script applies a conservative starting preset that stays compatible with the
+client's normal fill concurrency and memory guardrails:
 
 **For clustered caches:**
-- **8 parallel processes** (`-P 8`) for maximum throughput
-- **6 threads per process** (`-n 6`) for optimal parallelism
+- **1 process** (`-P 1`)
+- **2 connections per primary** (`-n 2`)
 - **Key size: 512 bytes**
-- **Value size: 262,144 bytes (256 KB)** for realistic workloads
-- **Pipeline: 8,192 commands/batch** for efficient batching
-- **Expected performance: ~9.4 Gbps** on Azure Premium tier
+- **Value size: 512 bytes**
+- **Pipeline: 1,024 commands/batch**
 
 **For standalone caches:**
-- Same key/value sizes and pipelining
-- Single process with multiple threads
+- **Key size: 512 bytes**
+- **Value size: 512 bytes**
+- **Pipeline: 1,024 commands/batch**
 
 Example interaction:
 ```
@@ -136,23 +137,30 @@ Select mode (1-3): 1
 Enter data size in GB (e.g., 5): 10
 Flush the cache before filling? (y/n): y
 
-✓ Using optimized cluster fill parameters:
-  - 8 parallel processes (-P 8)
-  - 6 threads per process (-n 6)
-  - Key size: 512 bytes
-  - Value size: 262,144 bytes (256 KB)
-  - Pipeline: 8,192 commands/batch
+✓ Using conservative cluster fill starting parameters:
+  - Parallel processes: 1 (-P 1)
+  - Connections per primary: 2 (-n 2)
+  - Key size: 512 bytes (--key-size 512)
+  - Value size: 512 bytes (--value-size 512)
+  - Pipeline: 1,024 commands/batch (--pipeline 1024)
+  - Increase one concurrency or pipeline setting at a time and observe
+    the client's worker and estimated-memory report before proceeding.
 
 Launching redis-client with command:
   redis-client fill -h my-cache.redis.cache.windows.net -p 10000 -t -c \
-    -d 10 -f -P 8 -n 6 \
-    --key-size 512 --value-size 262144 --pipeline 8192
+    -d 10 -f -P 1 -n 2 \
+    --key-size 512 --value-size 512 --pipeline 1024
 ```
 
 The Azure helper supplies the token or access key through the child environment, not through command arguments.
 
-These optimized parameters were determined through comprehensive GHC runtime and concurrency testing,
-achieving 99% performance improvement (4.7 Gbps → 9.4 Gbps) on Azure Redis Premium tier clusters.
+This preset is not a throughput guarantee or a claim that one concurrency level
+is optimal for every Azure SKU. The client reports the multiplied worker count
+and estimated peak client memory before starting. Increase `--processes`,
+`--connections`, or `--pipeline` one setting at a time, record throughput and
+Redis/client CPU, and stop when throughput plateaus or latency, errors, or
+memory pressure worsen. Avoid `--allow-high-scale-fill` unless a measured run
+justifies exceeding the normal 32-worker or 2 GiB estimated-memory limits.
 
 ### CLI Mode
 
@@ -293,15 +301,23 @@ You can script the selection process (though interactive mode is recommended):
 
 ## Performance Tips
 
-The script automatically applies optimized Redis workload parameters for fill operations:
+The script supplies a bounded starting point for fill operations. It does not
+embed a universal Azure performance recommendation.
 
 ### Cluster Caches (Premium tier with multiple shards)
 
-The script automatically detects cluster mode and applies optimal settings:
-- **Multi-process execution**: 8 parallel processes for maximum throughput
-- **Concurrent threads**: 6 threads per process (48 total)
-- **Large values**: 256 KB value size for realistic workloads
-- **Efficient batching**: 8,192 commands per pipeline batch
+The script automatically detects cluster mode and applies:
+- **Multi-process execution**: 1 process
+- **Concurrent connections**: 2 per primary
+- **Key/value size**: 512 bytes each
+- **Pipeline batch**: 1,024 commands
+
+Total workers are `processes × primaries × connections`. Each fill process also
+retains a 128 MiB random-noise buffer, and each worker can hold an encoded
+pipeline batch. More processes multiply the 128 MiB baseline; more connections
+multiply sockets, TLS work, and in-flight pipeline memory. Larger pipelines can
+raise throughput while also increasing allocation, residency, and recovery
+cost after errors.
 
 Pair large fill and benchmark runs with the explicit RTS profiles documented in
 [`docs/rts-profiles.md`](rts-profiles.md). The shared binary no longer bakes a
@@ -309,7 +325,8 @@ high-memory profile into every executable and test run.
 
 ### Standalone Caches
 
-For non-clustered caches, the script uses conservative settings optimized for single-node deployments.
+For non-clustered caches, the script uses the same 512-byte key/value sizes and
+1,024-command pipeline without adding process or connection overrides.
 
 ### GHC Runtime Profiles
 
@@ -327,6 +344,21 @@ For bounded local validation, keep `-f` and reduce the pipeline size:
 ./scripts/run-with-rts-profile.sh fill-bounded -- \
   redis-client fill -h localhost -f -d 1 --pipeline 1024
 ```
+
+The checked-in #76 RTS matrix measured this bounded local shape, not an Azure
+Premium throughput result. To make an Azure tuning result reproducible, retain:
+
+1. The git commit and `redis-client --help`/GHC versions.
+2. Azure cache SKU, shard/primary count, TLS/auth mode, region, and Redis version.
+3. Client VM SKU, region, visible CPU count, memory, and network limits.
+4. The complete credential-free command, RTS profile, fill size, and whether
+   the cache was flushed (`-f`).
+5. At least three runs with elapsed time, throughput, client/Redis CPU, peak
+   residency, GC percentage, errors/timeouts, and relevant latency percentiles.
+
+Compare one change at a time against the starting preset. Issue #81 tracks a
+structured benchmark suite; until that evidence exists, do not generalize a
+single environment's result into an Azure-wide default or expected throughput.
 
 `docs/rts-profiles.md` records the measured trade-offs between the conservative defaults,
 the legacy global profile, and the new fill-specific opt-in profile.

@@ -25,6 +25,42 @@ from typing import List, Dict, Optional
 PASSWORD_ENVIRONMENT_VARIABLE = "REDIS_CLIENT_PASSWORD"
 PASSWORD_FILE_ENVIRONMENT_VARIABLE = "REDIS_CLIENT_PASSWORD_FILE"
 
+COMMON_FILL_PRESET_OPTIONS = (
+    ("Key size", "--key-size", 512, " bytes"),
+    ("Value size", "--value-size", 512, " bytes"),
+    ("Pipeline", "--pipeline", 1024, " commands/batch"),
+)
+CLUSTER_FILL_PRESET_OPTIONS = (
+    ("Parallel processes", "-P", 1, ""),
+    ("Connections per primary", "-n", 2, ""),
+) + COMMON_FILL_PRESET_OPTIONS
+
+
+def fill_preset_options(clustered: bool):
+    """Return the single source used to display and build Azure fill options."""
+    return CLUSTER_FILL_PRESET_OPTIONS if clustered else COMMON_FILL_PRESET_OPTIONS
+
+
+def fill_preset_arguments(clustered: bool) -> List[str]:
+    """Render the Azure fill preset as redis-client arguments."""
+    return [
+        argument
+        for _, flag, value, _ in fill_preset_options(clustered)
+        for argument in (flag, str(value))
+    ]
+
+
+def print_fill_preset(clustered: bool) -> None:
+    """Display the exact Azure fill preset that will be executed."""
+    preset_kind = "cluster" if clustered else "standalone"
+    print(f"\n✓ Using conservative {preset_kind} fill starting parameters:")
+    for label, flag, value, unit in fill_preset_options(clustered):
+        print(f"  - {label}: {value:,}{unit} ({flag} {value})")
+    print("  - Increase one concurrency or pipeline setting at a time and observe")
+    print("    the client's worker and estimated-memory report before proceeding.")
+    print("  - Optional RTS profile: scripts/run-with-rts-profile.sh fill-throughput -- redis-client ...")
+
+
 # Save terminal settings at startup
 _original_terminal_settings = None
 if sys.stdin.isatty():
@@ -643,36 +679,11 @@ class AzureRedisConnector:
                         if flush == 'y':
                             command.append('-f')
                         
-                        # Add optimized Redis-side parameters for cluster fills.
-                        # RTS tuning is now opt-in and documented separately.
-                        if cache_type == 'Enterprise' or (shard_count and int(shard_count) > 0):
-                            # Cluster mode: use optimized settings
-                            print("\n✓ Using optimized cluster fill parameters:")
-                            print("  - 8 parallel processes (-P 8)")
-                            print("  - 2 threads per process (-n 2)")
-                            print("  - Key size: 512 bytes")
-                            print("  - Value size: 262,144 bytes (256 KB)")
-                            print("  - Pipeline: 8,192 commands/batch")
-                            print("  - Optional RTS profile: scripts/run-with-rts-profile.sh fill-throughput -- redis-client ...")
-                            command.extend([
-                                '-P', '8',              # 8 parallel processes
-                                '-n', '2',              # 2 threads per process
-                                '--key-size', '512',
-                                '--value-size', '262144',
-                                '--pipeline', '8192'
-                            ])
-                        else:
-                            # Non-cluster mode: use lighter settings
-                            print("\n✓ Using optimized standalone fill parameters:")
-                            print("  - Key size: 512 bytes")
-                            print("  - Value size: 262,144 bytes (256 KB)")
-                            print("  - Pipeline: 8,192 commands/batch")
-                            print("  - Optional RTS profile: scripts/run-with-rts-profile.sh fill-throughput -- redis-client ...")
-                            command.extend([
-                                '--key-size', '512',
-                                '--value-size', '262144',
-                                '--pipeline', '8192'
-                            ])
+                        clustered = cache_type == 'Enterprise' or bool(
+                            shard_count and int(shard_count) > 0
+                        )
+                        print_fill_preset(clustered)
+                        command.extend(fill_preset_arguments(clustered))
                         
                         break
                     else:

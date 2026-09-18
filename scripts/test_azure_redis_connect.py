@@ -167,6 +167,37 @@ class AzureRedisCredentialTests(unittest.TestCase):
         self.assertNotIn(SYNTHETIC_JWT_CLAIMS, contents)
         self.assertIn("exec redis-client cli -h cache.example", contents)
 
+    def test_cluster_fill_display_and_generated_command_share_one_preset(self):
+        cache = self.cache.copy()
+        cache["shardCount"] = 3
+        stdout = io.StringIO()
+        with mock.patch.object(
+            self.connector, "check_entra_auth", return_value=False
+        ), mock.patch.object(
+            self.connector, "get_access_key", return_value=SYNTHETIC_ACCESS_KEY
+        ), mock.patch(
+            "builtins.input", side_effect=["1", "y", "n"]
+        ), mock.patch.object(
+            MODULE.subprocess, "run"
+        ) as run, redirect_stdout(stdout):
+            self.connector.launch_redis_client(cache, "fill")
+
+        command = run.call_args.args[0]
+        output = stdout.getvalue()
+        self.assertIn("-f", command)
+        self.assertIn("-c", command)
+        for label, flag, value, unit in MODULE.CLUSTER_FILL_PRESET_OPTIONS:
+            flag_index = command.index(flag)
+            self.assertEqual(command[flag_index + 1], str(value))
+            self.assertIn(
+                f"- {label}: {value:,}{unit} ({flag} {value})",
+                output,
+            )
+        self.assertIn(
+            f"Launching redis-client with command:\n  {MODULE.shlex.join(command)}",
+            output,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
