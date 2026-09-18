@@ -36,7 +36,7 @@ import           Database.Redis.RedisError (RedisClientError (..),
                                             RedisLifecycleFailure (..))
 import           Database.Redis.Resp       (RespData (..))
 import           Database.Redis.Standalone
-import           System.Timeout            (timeout)
+import           System.Timeout                      (timeout)
 import           Test.Hspec
 
 data MockClient (a :: ConnectionStatus) where
@@ -73,6 +73,30 @@ instance Client CountingClient where
     atomicModifyIORef' (sentCounts !! index) $ \count -> (count + 1, ())
     putMVar (replies !! index) "+PONG\r\n"
   receive (CountingConnected index _ replies _) =
+    liftIO $ takeMVar (replies !! index)
+
+data ShutdownClient (a :: ConnectionStatus) where
+  ShutdownConnected
+    :: !Int
+    -> !(IORef Int)
+    -> ![IORef Int]
+    -> ![MVar ByteString]
+    -> !(MVar ())
+    -> !(MVar ())
+    -> ShutdownClient 'Connected
+
+instance Client ShutdownClient where
+  connect = error "ShutdownClient: connect not supported"
+  close (ShutdownConnected index closeCount _ _ closeStarted releaseClose) =
+    liftIO $ do
+      atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+      when (index == 0) $ do
+        void $ tryPutMVar closeStarted ()
+        takeMVar releaseClose
+  send (ShutdownConnected index _ sentCounts replies _ _) _ = liftIO $ do
+    atomicModifyIORef' (sentCounts !! index) $ \count -> (count + 1, ())
+    putMVar (replies !! index) "+PONG\r\n"
+  receive (ShutdownConnected index _ _ replies _ _) =
     liftIO $ takeMVar (replies !! index)
 
 data SendPhase
@@ -214,6 +238,90 @@ main = hspec $ do
       result `shouldBe` Left (RedisLifecycleError RedisClientClosed)
       readIORef connectionCount `shouldReturn` 1
       readIORef closeCount `shouldReturn` 1
+
+    it "rejects commands on every mux as soon as aggregate close starts" $ do
+      connectionCount <- newIORef (0 :: Int)
+      closeCount <- newIORef (0 :: Int)
+      sentCounts <- mapM (const $ newIORef 0) [1 .. 2 :: Int]
+      replies <- mapM (const newEmptyMVar) [1 .. 2 :: Int]
+      closeStarted <- newEmptyMVar
+      releaseClose <- newEmptyMVar
+      let connector _ = do
+            index <- atomicModifyIORef' connectionCount $ \count ->
+              (count + 1, count)
+            return $ ShutdownConnected
+              index closeCount sentCounts replies closeStarted releaseClose
+          config = StandaloneConfig
+            { standaloneNodeAddress = NodeAddress "127.0.0.1" 6379
+            , standaloneConnector = connector
+            , standaloneMultiplexerCount = 2
+            }
+
+      client <- createStandaloneClientFromConfig config
+      closeResult <- newEmptyMVar
+      _ <- forkFinally (closeStandaloneClient client) (putMVar closeResult)
+      timeout 1000000 (takeMVar closeStarted) `shouldReturn` Just ()
+
+      commandResults <- mapM
+        (\_ -> do
+          result <- newEmptyMVar
+          _ <- forkResult result $
+            runStandaloneClient client
+              (ping :: StandaloneCommandClient ByteString)
+          return result)
+        [1 .. 16 :: Int]
+      results <- mapM (timeout 1000000 . takeMVar) commandResults
+      results `shouldSatisfy` all isClosedFailure
+      mapM readIORef sentCounts `shouldReturn` [0, 0]
+
+      putMVar releaseClose ()
+      completedClose <- timeout 1000000 (takeMVar closeResult)
+      case completedClose of
+        Just (Right ()) -> return ()
+        Just (Left failure) ->
+          expectationFailure $
+            "aggregate close failed: " <> displayException failure
+        Nothing ->
+          expectationFailure "aggregate close did not complete"
+      readIORef closeCount `shouldReturn` 2
+
+    it "resumes aggregate cleanup after a close caller is cancelled" $ do
+      connectionCount <- newIORef (0 :: Int)
+      closeCount <- newIORef (0 :: Int)
+      sentCounts <- mapM (const $ newIORef 0) [1 .. 2 :: Int]
+      replies <- mapM (const newEmptyMVar) [1 .. 2 :: Int]
+      closeStarted <- newEmptyMVar
+      releaseClose <- newEmptyMVar
+      let connector _ = do
+            index <- atomicModifyIORef' connectionCount $ \count ->
+              (count + 1, count)
+            return $ ShutdownConnected
+              index closeCount sentCounts replies closeStarted releaseClose
+          config = StandaloneConfig
+            { standaloneNodeAddress = NodeAddress "127.0.0.1" 6379
+            , standaloneConnector = connector
+            , standaloneMultiplexerCount = 2
+            }
+
+      client <- createStandaloneClientFromConfig config
+      firstCloseResult <- newEmptyMVar
+      firstCloseThread <- forkFinally
+        (closeStandaloneClient client)
+        (putMVar firstCloseResult)
+      timeout 1000000 (takeMVar closeStarted) `shouldReturn` Just ()
+      killThread firstCloseThread
+      cancelledClose <- timeout 1000000 (takeMVar firstCloseResult)
+      cancelledClose `shouldSatisfy` maybe False isFailure
+      readIORef closeCount `shouldReturn` 2
+
+      putMVar releaseClose ()
+      closeStandaloneClient client
+      closeStandaloneClient client
+      readIORef closeCount `shouldReturn` 2
+      result <- try $ runStandaloneClient client
+        (ping :: StandaloneCommandClient ByteString)
+      result `shouldSatisfy` isClosedFailure . Just
+      mapM readIORef sentCounts `shouldReturn` [0, 0]
 
   describe "Standalone authentication protocol" $ do
     it "uses one-argument AUTH for the default user" $
@@ -505,3 +613,10 @@ createPhaseClient phase closeGate closeFails = do
 isFailure :: Either SomeException a -> Bool
 isFailure (Left _)  = True
 isFailure (Right _) = False
+
+isClosedFailure :: Maybe (Either SomeException a) -> Bool
+isClosedFailure (Just (Left failure)) =
+  case fromException failure of
+    Just (MultiplexerDead message) -> message == "Standalone client closed"
+    _                              -> False
+isClosedFailure _ = False

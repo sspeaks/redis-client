@@ -43,11 +43,12 @@ module Database.Redis.Standalone
   , runStandaloneClient
   ) where
 
+import           Control.Concurrent.MVar             (MVar, newMVar, withMVar)
 import           Control.Exception                   (Exception,
                                                       SomeAsyncException,
                                                       SomeException, bracket,
                                                       fromException, mask,
-                                                      onException, throwIO,
+                                                      mask_, onException, throwIO,
                                                       toException, try)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
@@ -196,10 +197,16 @@ defaultStandaloneConfig = StandaloneConfig
 -- | A standalone Redis client backed by round-robin multiplexers and a shared
 -- response-slot pool.
 data StandaloneClient = StandaloneClient
-  { standaloneMuxes   :: !(Vector Multiplexer)
-  , standaloneCounter :: !(IORef Int)
-  , standalonePool    :: !SlotPool
+  { standaloneMuxes     :: !(Vector Multiplexer)
+  , standaloneLifecycle :: !(IORef StandaloneLifecycle)
+  , standaloneCloseLock :: !(MVar ())
+  , standalonePool      :: !SlotPool
   }
+
+data StandaloneLifecycle
+  = StandaloneOpen !Int
+  | StandaloneClosing !Int
+  | StandaloneClosed !Int
 
 -- | Create a standalone multiplexed client by connecting to a single Redis node.
 -- This is the simple API; for more control, use 'createStandaloneClientFromConfig'.
@@ -226,11 +233,17 @@ createStandaloneClientFromConfig config
   | count <= 0 = throwIO $ InvalidStandaloneMultiplexerCount count
   | otherwise = mask $ \restore -> do
       muxes <- createMuxes restore [] count
-      counter <- newIORef 0
+      lifecycle <- newIORef (StandaloneOpen 0)
+        `onException` closeStandaloneMuxes muxes
+      closeLock <- newMVar ()
         `onException` closeStandaloneMuxes muxes
       pool <- createSlotPool 256
         `onException` closeStandaloneMuxes muxes
-      return $ StandaloneClient (V.fromList $ reverse muxes) counter pool
+      return $ StandaloneClient
+        (V.fromList $ reverse muxes)
+        lifecycle
+        closeLock
+        pool
   where
     count = standaloneMultiplexerCount config
     createMuxes _ acc 0 = return acc
@@ -240,20 +253,46 @@ createStandaloneClientFromConfig config
         `onException` closeStandaloneMuxes acc
       createMuxes restore (mux : acc) (remaining - 1)
 
--- | Close the standalone client, destroying the underlying multiplexer.
--- The owned plaintext or TLS transport is closed exactly once. Closure is
--- terminal and idempotent; later commands fail instead of reconnecting.
+-- | Close the standalone client, atomically disabling routing before
+-- destroying its multiplexers. Owned plaintext or TLS transports are closed
+-- exactly once. Closure is terminal and idempotent; later commands fail with
+-- 'MultiplexerDead' instead of routing to a mux that has not yet been destroyed.
+-- An interrupted close can be resumed by calling this function again.
 --
 -- Consider using 'withStandaloneClient' instead for automatic cleanup.
 closeStandaloneClient :: StandaloneClient -> IO ()
-closeStandaloneClient client =
-  closeStandaloneMuxes $ V.toList $ standaloneMuxes client
-
-closeStandaloneMux :: Multiplexer -> IO ()
-closeStandaloneMux = destroyMultiplexer
+closeStandaloneClient client = mask_ $
+  withMVar (standaloneCloseLock client) $ \() -> do
+    lifecycle <- atomicModifyIORef' (standaloneLifecycle client) $ \current ->
+      case current of
+        StandaloneOpen index ->
+          (StandaloneClosing index, current)
+        _ ->
+          (current, current)
+    case lifecycle of
+      StandaloneClosed _ -> return ()
+      _ -> do
+        closeStandaloneMuxes $ V.toList $ standaloneMuxes client
+        atomicModifyIORef' (standaloneLifecycle client) $ \current ->
+          case current of
+            StandaloneClosing index ->
+              (StandaloneClosed index, ())
+            _ ->
+              (current, ())
 
 closeStandaloneMuxes :: [Multiplexer] -> IO ()
-closeStandaloneMuxes = mapM_ closeStandaloneMux
+closeStandaloneMuxes muxes = do
+  results <- mapM tryDestroy muxes
+  case
+    [ asyncException
+    | Left failure <- results
+    , Just asyncException <- [fromException failure :: Maybe SomeAsyncException]
+    ] of
+    asyncException : _ -> throwIO asyncException
+    []                 -> return ()
+  where
+    tryDestroy mux =
+      try (destroyMultiplexer mux) :: IO (Either SomeException ())
 
 -- | Bracket-style resource management for standalone clients.
 --
@@ -395,11 +434,17 @@ submitMux args = do
   liftIO $ submitCommandPooled (standalonePool client) mux cmdBuilder
 
 nextStandaloneMux :: StandaloneClient -> IO Multiplexer
-nextStandaloneMux client
-  | V.length muxes == 1 = return $! V.unsafeHead muxes
-  | otherwise = do
-      index <- atomicModifyIORef' (standaloneCounter client) $ \current ->
-        (current + 1, current)
+nextStandaloneMux client = do
+  -- Selection and the close transition share one atomic lifecycle update.
+  selection <- atomicModifyIORef' (standaloneLifecycle client) $ \lifecycle ->
+    case lifecycle of
+      StandaloneOpen index ->
+        (StandaloneOpen $ index + 1, Right index)
+      _ ->
+        (lifecycle, Left $ MultiplexerDead "Standalone client closed")
+  case selection of
+    Left failure -> throwIO failure
+    Right index ->
       return $! muxes `V.unsafeIndex` (index `mod` V.length muxes)
   where
     muxes = standaloneMuxes client

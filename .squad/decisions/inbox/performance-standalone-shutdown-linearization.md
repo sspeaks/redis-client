@@ -1,0 +1,4 @@
+### 2026-09-18: Linearize standalone routing against aggregate shutdown
+**By:** Performance
+**What:** Multi-mux standalone clients maintain an aggregate Open/Closing/Closed lifecycle. Round-robin selection and the Open-to-Closing transition share one atomic update, so commands that begin after close starts fail with MultiplexerDead before selecting any mux. A serialized close owner attempts every mux and leaves Closing resumable if asynchronous cancellation interrupts teardown.
+**Why:** Sequentially destroying muxes without a client-level terminal state allowed new commands to route to later muxes while an earlier transport was blocked in close. The aggregate lifecycle provides a single shutdown linearization point without serializing normal command execution and preserves complete, retryable cleanup.
