@@ -1858,6 +1858,18 @@ data ExpectedPathError
   = ImmediateError ClusterError
   | ExhaustedWith String
 
+data ProtocolFailure
+  = ParseFailure
+  | ConnectionClosed
+  deriving Show
+
+data ProtocolFailurePath
+  = NormalKeyedPath
+  | MovedTargetPath
+  | AskingTargetPath
+  | RawKeyedPath
+  deriving (Eq, Show)
+
 clusterErrorReplies :: [(String, RespData, ExpectedPathError)]
 clusterErrorReplies =
   [ ( "MOVED"
@@ -1959,9 +1971,77 @@ runRedirectTargetErrorPath useAsking reply = do
   closeClusterClient client
   return result
 
+protocolFailureActions :: ProtocolFailure -> [IO ByteString]
+protocolFailureActions ParseFailure =
+  [return "+OK\rX"]
+protocolFailureActions ConnectionClosed =
+  [return BS.empty]
+
+assertProtocolFailure
+  :: ProtocolFailure
+  -> Either RedisClientError RespData
+  -> Expectation
+assertProtocolFailure ParseFailure result =
+  case result of
+    Left (RedisProtocolError (RedisParseFailure message)) ->
+      message `shouldSatisfy` (not . null)
+    other ->
+      expectationFailure $
+        "Expected RedisParseFailure, got: " ++ show other
+assertProtocolFailure ConnectionClosed result =
+  result `shouldBe` Left (RedisProtocolError RedisConnectionClosed)
+
+runProtocolFailurePath
+  :: ProtocolFailurePath
+  -> ProtocolFailure
+  -> IO (Either RedisClientError RespData)
+runProtocolFailurePath path failure = do
+  let key = "protocol-failure-key"
+      redirect useAsking
+        | useAsking = RespError "ASK 3999 127.0.0.2:6380"
+        | otherwise = RespError "MOVED 3999 127.0.0.2:6380"
+      script address index
+        | address == node1 && index == 0 =
+            return [replyWith validClusterSlots]
+        | path == MovedTargetPath
+        , address == node1 =
+            return [replyWith $ redirect False]
+        | path == AskingTargetPath
+        , address == node1 =
+            return [replyWith $ redirect True]
+        | otherwise =
+            return $ protocolFailureActions failure
+  (connector, _) <- createAuthMockConnector script
+  client <- createClusterClient (retryTestConfig 2 1) connector
+  result <- case path of
+    RawKeyedPath ->
+      executeRawClusterCommand
+        client
+        (RawRouteByKey key)
+        (RespArray [RespBulkString "GET", RespBulkString key])
+    _ ->
+      executeKeyedClusterCommand client key ["GET", key]
+  closeClusterClient client
+  return result
+
 clusterErrorClassificationSpec :: Spec
 clusterErrorClassificationSpec =
   describe "cluster error execution and retry policy" $ do
+    describe "multiplexer protocol failures" $ do
+      forM_
+        [ NormalKeyedPath
+        , MovedTargetPath
+        , AskingTargetPath
+        , RawKeyedPath
+        ] $ \path ->
+          forM_ [ParseFailure, ConnectionClosed] $ \failure ->
+            it
+              ( "classifies " ++ show failure ++ " on "
+                  ++ show path
+              ) $ do
+                runProtocolFailurePath path failure
+                  >>= assertProtocolFailure failure
+
     describe "identical classification across execution paths" $ do
       forM_ clusterErrorReplies $ \(label, reply, expected) -> do
         it ("classifies " ++ label ++ " on the normal slot path") $ do

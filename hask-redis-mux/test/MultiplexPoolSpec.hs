@@ -9,9 +9,12 @@ import           Control.Concurrent                    (forkFinally, forkIO,
                                                         killThread, threadDelay)
 import           Control.Concurrent.MVar               (MVar, newEmptyMVar,
                                                         putMVar, takeMVar)
-import           Control.Exception                     (SomeException, bracket_,
+import           Control.Exception                     (AsyncException (ThreadKilled),
+                                                        SomeAsyncException,
+                                                        SomeException, bracket_,
                                                         fromException, throwIO,
                                                         try)
+import           Control.Monad                         (forM_)
 import           Control.Monad.IO.Class                (liftIO)
 import           Data.ByteString                       (ByteString)
 import qualified Data.ByteString                       as BS
@@ -183,6 +186,32 @@ createHandoffConnector firstSendFails = do
         return $ HandoffConnected
           attempt closeCount activeReaders (firstSendFails && attempt == 1) replies
   return (connector, attempts, closeCount, activeReaders)
+
+data CancellationClient (a :: ConnectionStatus) where
+  CancellationConnected
+    :: !(IORef Int)
+    -> CancellationClient 'Connected
+
+instance Client CancellationClient where
+  connect = error "CancellationClient: connect not supported"
+  close (CancellationConnected closeCount) =
+    liftIO $ atomicModifyIORef' closeCount $ \count -> (count + 1, ())
+  send _ _ = liftIO $ throwIO ThreadKilled
+  receive _ = liftIO $ threadDelay maxBound >> return BS.empty
+
+createCancellationConnector
+  :: IO
+       ( NodeAddress -> IO (CancellationClient 'Connected)
+       , IORef Int
+       , IORef Int
+       )
+createCancellationConnector = do
+  attempts <- newIORef 0
+  closeCount <- newIORef 0
+  let connector _ = do
+        atomicModifyIORef' attempts $ \count -> (count + 1, ())
+        return $ CancellationConnected closeCount
+  return (connector, attempts, closeCount)
 
 handoffGate
   :: Int
@@ -542,6 +571,24 @@ constructionFailureSpec = describe "Partial multiplexer construction" $ do
 
 replacementFailureSpec :: Spec
 replacementFailureSpec = describe "Multiplexer replacement failure" $ do
+  forM_ [("single command", submitSingle), ("ASKING pair", submitAsking)] $
+    \(label, submit) ->
+      it ("rethrows cancellation before replacing a dead mux for " ++ label) $ do
+        (connector, attempts, closeCount) <- createCancellationConnector
+        pool <- createMultiplexPool connector 1
+
+        result <- try $ submit pool
+        result `shouldSatisfy` \case
+          Left err ->
+            case fromException err :: Maybe SomeAsyncException of
+              Just _  -> True
+              Nothing -> False
+          Right _ -> False
+        readIORef attempts `shouldReturn` 1
+
+        closeMultiplexPool pool
+        readIORef closeCount `shouldReturn` 1
+
   it "closes the dead transport and leaves no replacement behind" $ do
     (connector, _, attempts, closeCount) <-
       createCountingConnector (Just 2) True
@@ -580,6 +627,12 @@ replacementFailureSpec = describe "Multiplexer replacement failure" $ do
     readIORef closeCount `shouldReturn` 2
     closeMultiplexPool pool
     readIORef closeCount `shouldReturn` 2
+  where
+    submitSingle pool =
+      submitToNode pool node1 $ encodeCmd ["PING"]
+    submitAsking pool =
+      submitToNodeWithAsking
+        pool node1 (encodeCmd ["ASKING"]) (encodeCmd ["PING"])
 
 askingSpec :: Spec
 askingSpec = describe "ASKING support (submitToNodeWithAsking)" $ do

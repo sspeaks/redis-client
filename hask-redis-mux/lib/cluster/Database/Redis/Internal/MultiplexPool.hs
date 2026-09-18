@@ -28,9 +28,11 @@ module Database.Redis.Internal.MultiplexPool
   ) where
 
 import           Control.Concurrent.MVar             (MVar, modifyMVar, newMVar)
-import           Control.Exception                   (Exception, SomeException,
-                                                      catch, mask_, throwIO,
-                                                      try)
+import           Control.Exception                   (Exception,
+                                                      SomeAsyncException,
+                                                      SomeException, catch,
+                                                      fromException, mask_,
+                                                      throwIO, try)
 import qualified Data.ByteString.Builder             as Builder
 import           Data.IORef                          (IORef, atomicModifyIORef',
                                                       atomicWriteIORef,
@@ -127,14 +129,8 @@ submitToNode
 submitToNode pool addr cmdBuilder = do
   mux <- getMultiplexer pool addr
   submitCommandPooled (poolSlotPool pool) mux cmdBuilder
-    `catch` \(e :: SomeException) -> do
-      -- Multiplexer may be dead; try to replace and retry once
-      alive <- isMultiplexerAlive mux
-      if alive
-        then throwIO e  -- mux is alive, error is something else
-        else do
-          newMux <- replaceMux pool addr mux
-          submitCommandPooled (poolSlotPool pool) newMux cmdBuilder
+    `catch` retryAfterDeadMultiplexer pool addr mux
+      (\newMux -> submitCommandPooled (poolSlotPool pool) newMux cmdBuilder)
 {-# INLINE submitToNode #-}
 
 -- | Submit an ASKING command followed by a real command atomically to a node.
@@ -151,13 +147,10 @@ submitToNodeWithAsking
 submitToNodeWithAsking pool addr askingBuilder cmdBuilder = do
   mux <- getMultiplexer pool addr
   submitCommandPairPooled (poolSlotPool pool) mux askingBuilder cmdBuilder
-    `catch` \(e :: SomeException) -> do
-      alive <- isMultiplexerAlive mux
-      if alive
-        then throwIO e
-        else do
-          newMux <- replaceMux pool addr mux
-          submitCommandPairPooled (poolSlotPool pool) newMux askingBuilder cmdBuilder
+    `catch` retryAfterDeadMultiplexer pool addr mux
+      (\newMux ->
+        submitCommandPairPooled
+          (poolSlotPool pool) newMux askingBuilder cmdBuilder)
 {-# INLINE submitToNodeWithAsking #-}
 
 -- | Async version of submitToNode: enqueue the command and return a ResponseSlot.
@@ -273,6 +266,23 @@ replaceMux pool addr _oldMux = do
           (poolConnector pool) (poolHandoffHook pool) addr (poolMuxCount pool)
         atomicWriteIORef (poolNodesRef pool) (Map.insert addr nm m)
         return ((), V.head (nmMuxes nm))
+
+retryAfterDeadMultiplexer
+  :: (Client client)
+  => MultiplexPool client
+  -> NodeAddress
+  -> Multiplexer
+  -> (Multiplexer -> IO a)
+  -> SomeException
+  -> IO a
+retryAfterDeadMultiplexer pool addr mux retry exception =
+  case fromException exception of
+    Just async -> throwIO (async :: SomeAsyncException)
+    Nothing -> do
+      alive <- isMultiplexerAlive mux
+      if alive
+        then throwIO exception
+        else replaceMux pool addr mux >>= retry
 
 -- | Tear down all multiplexers and their owned transports across all nodes.
 -- Closure is terminal and idempotent; later submissions throw

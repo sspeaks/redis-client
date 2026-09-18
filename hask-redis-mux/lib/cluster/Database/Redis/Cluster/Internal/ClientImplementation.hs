@@ -170,6 +170,7 @@ import           Database.Redis.Connector                       (ConnectionPhase
                                                                  withConnectionTimeout,
                                                                  withConnectionTimeoutSupervised)
 import           Database.Redis.FromResp                        (FromResp (..))
+import           Database.Redis.Internal.Multiplexer            (MultiplexerException (..))
 import           Database.Redis.Internal.MultiplexPool          (MultiplexPool,
                                                                  MultiplexPoolException (..),
                                                                  closeMultiplexPool,
@@ -1007,6 +1008,11 @@ tryClusterAction action = do
               return $ Left $ RedisLifecycleError RedisClientClosed
           | Just MultiplexPoolClosed <- fromException e ->
               return $ Left $ RedisLifecycleError RedisClientClosed
+          | Just (MultiplexerParseError message) <- fromException e ->
+              return $ Left $ RedisProtocolError $
+                RedisParseFailure message
+          | Just MultiplexerConnectionClosed <- fromException e ->
+              return $ Left $ RedisProtocolError RedisConnectionClosed
           | Just (timeoutError :: ConnectionSetupException) <- fromException e ->
               return $ Left $ RedisTransportError $ toException timeoutError
           | Just (authenticationError :: ClusterAuthenticationException) <-
