@@ -69,8 +69,6 @@ defaultPoolConfig :: PoolConfig
 defaultPoolConfig = PoolConfig
   { maxConnectionsPerNode = 4
   , connectionTimeout     = 5000
-  , maxRetries            = 3
-  , useTLS = False
   }
 
 -- | Default cluster config for tests
@@ -78,6 +76,7 @@ defaultTestConfig :: ClusterConfig
 defaultTestConfig = ClusterConfig
   { clusterSeedNode                = seedNode
   , clusterPoolConfig              = defaultPoolConfig
+  , clusterMultiplexerCount        = 1
   , clusterMaxRetries              = 3
   , clusterRetryDelay              = 100000  -- 100ms
   , clusterTopologyRefreshInterval = 600     -- 10 minutes

@@ -37,9 +37,8 @@ testClusterConfig = ClusterConfig
   , clusterPoolConfig = PoolConfig
       { maxConnectionsPerNode = 2
       , connectionTimeout = 10
-      , maxRetries = 3
-      , useTLS = False
       }
+  , clusterMultiplexerCount = 1
   , clusterMaxRetries = 5
   , clusterRetryDelay = 100000
   , clusterTopologyRefreshInterval = 600

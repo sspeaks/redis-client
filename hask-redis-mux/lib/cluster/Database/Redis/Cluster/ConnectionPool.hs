@@ -18,6 +18,8 @@ module Database.Redis.Cluster.ConnectionPool
     ConnectionPoolException (..),
     ConnectionPoolStats (..),
     PoolConfig (..),
+    PoolConfigException (..),
+    defaultPoolConfig,
     createPool,
     withConnection,
     withConnectionBounded,
@@ -63,10 +65,23 @@ data ConnectionPoolStats = ConnectionPoolStats
 data PoolConfig = PoolConfig
   { maxConnectionsPerNode :: Int  -- ^ Maximum number of connections kept per node. Callers block when all connections are in use.
   , connectionTimeout     :: Int  -- ^ Per-attempt setup deadline in seconds. Covers DNS, TCP connect, and TLS context/handshake when enabled.
-  , maxRetries            :: Int  -- ^ Maximum retry attempts for cluster operations.
-  , useTLS                :: Bool -- ^ Whether to use TLS connections.
   }
-  deriving (Show)
+  deriving (Eq, Show)
+
+-- | Invalid connection-pool configuration.
+data PoolConfigException
+  = InvalidMaxConnectionsPerNode Int
+  | InvalidConnectionTimeout Int
+  deriving (Eq, Show, Typeable)
+
+instance Exception PoolConfigException
+
+-- | Production defaults for per-node connection pooling.
+defaultPoolConfig :: PoolConfig
+defaultPoolConfig = PoolConfig
+  { maxConnectionsPerNode = 10
+  , connectionTimeout = 300
+  }
 
 -- | Per-node connection state: available connections, total count, and waiters
 data NodePool client = NodePool
@@ -103,11 +118,16 @@ data ConnectionPool client = ConnectionPool
 -- | Create a new empty connection pool.
 -- Connections are created lazily when first requested.
 createPool :: PoolConfig -> IO (ConnectionPool client)
-createPool config = do
-  connections <- newIORef Map.empty
-  registryLock <- newMVar ()
-  closed <- newIORef False
-  return $ ConnectionPool connections registryLock closed config
+createPool config
+  | maxConnectionsPerNode config <= 0 =
+      throwIO $ InvalidMaxConnectionsPerNode $ maxConnectionsPerNode config
+  | connectionTimeout config <= 0 =
+      throwIO $ InvalidConnectionTimeout $ connectionTimeout config
+  | otherwise = do
+      connections <- newIORef Map.empty
+      registryLock <- newMVar ()
+      closed <- newIORef False
+      return $ ConnectionPool connections registryLock closed config
 
 -- | What to do after acquiring the MVar lock
 data CheckoutResult client
@@ -211,15 +231,13 @@ checkoutConnection connectorIsBounded pool addr connector restore = checkout
     if not open
       then throwIO ConnectionPoolClosed
       else do
-        let phase =
-              if useTLS (poolConfig pool)
-                then TLSConnectionSetup
-                else PlaintextConnectionSetup
-            boundedConnector
+        let boundedConnector
               | connectorIsBounded = connector
               | otherwise =
                   withConnectionTimeout
-                    (connectionTimeout $ poolConfig pool) phase connector
+                    (connectionTimeout $ poolConfig pool)
+                    DNSResolution
+                    connector
         connResult <- try (restore $ boundedConnector addr)
         case connResult of
           Right conn -> do

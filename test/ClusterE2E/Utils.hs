@@ -71,10 +71,9 @@ createTestClusterClient = do
         { clusterSeedNode = NodeAddress "redis1.local" 6379,
           clusterPoolConfig = PoolConfig
             { maxConnectionsPerNode = 1,
-              connectionTimeout = 5000,
-              maxRetries = 3,
-              useTLS = False
+              connectionTimeout = 5000
             },
+          clusterMultiplexerCount = 1,
           clusterMaxRetries = 3,
           clusterRetryDelay = 100000,
           clusterTopologyRefreshInterval = 600  -- 10 minutes

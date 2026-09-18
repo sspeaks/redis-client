@@ -25,6 +25,8 @@ module Database.Redis.Cluster.Client
   , pattern ClusterAuthenticationError
   , pattern ClusterClientClosed
   , ClusterConfig (..)
+  , ClusterConfigException (..)
+  , defaultClusterConfig
   , ClusterAuthentication (..)
   , ClusterAuthenticationException (..)
   , ClusterRuntimeAuthenticationUnsupported (..)

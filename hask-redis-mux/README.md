@@ -38,11 +38,12 @@ APIs.
 
 `Database.Redis` is the stable convenience facade for the documented
 standalone and cluster lifecycle APIs, including `runRedis`,
-`defaultStandaloneConfig`, `withStandaloneClient`, `withClusterClient`, and
-`runClusterCommandClient`. Advanced connection, pooling, and raw-command APIs
-remain available from their named modules. The legacy top-level package
-library retains its internal multiplexing re-exports for source compatibility,
-but they are intentionally not part of the `Database.Redis` facade.
+`defaultStandaloneConfig`, `defaultClusterConfig`, `defaultPoolConfig`,
+`withStandaloneClient`, `withClusterClient`, and `runClusterCommandClient`.
+Advanced connection, pooling, and raw-command APIs remain available from their
+named modules. The legacy top-level package library retains its internal
+multiplexing re-exports for source compatibility, but they are intentionally
+not part of the `Database.Redis` facade.
 
 ### Multiplexer backpressure and response-slot retention
 
@@ -331,6 +332,19 @@ main = do
       (set "key" "value" :: StandaloneCommandClient Bool)
   print result
 ```
+
+`standaloneMultiplexerCount` must be positive. The client opens exactly that
+many connections, shares one bounded response-slot pool across them, and routes
+successive commands round-robin. If any connection fails during construction,
+all earlier connections are closed before the failure is rethrown.
+
+For cluster clients, start with `defaultClusterConfig seedNode` and update
+`clusterMultiplexerCount` to control multiplexed connections per active node.
+Retry policy belongs only to `ClusterConfig`; `PoolConfig` contains only
+per-node capacity and the connection-setup timeout. TLS is selected solely by
+the connector (`clusterPlaintextConnector` or `clusterTLSConnector`), not by a
+Boolean pool setting. Invalid positive/range-constrained values fail with typed
+configuration exceptions before resource allocation.
 
 ## Cluster Authentication
 

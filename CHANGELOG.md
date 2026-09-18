@@ -27,6 +27,20 @@
         `RespData`. `ClusterError` remains as a deprecated migration alias.
     *   This API is released as `redis-client-0.6.0.0` and
         `hask-redis-mux-0.3.0.0`.
+*   **Validated client configuration**
+    *   `standaloneMultiplexerCount` now creates the requested number of
+        physical connections, routes commands round-robin, and cleans up
+        already-created multiplexers if later construction fails.
+    *   Added `clusterMultiplexerCount`; cluster construction now passes it to
+        the per-node multiplexer pool instead of hardcoding one connection.
+    *   Added `defaultPoolConfig` and `defaultClusterConfig`, plus typed
+        validation failures for non-positive pool capacity, setup timeout,
+        multiplexer counts, retry attempts, and refresh intervals and for
+        negative retry delays.
+    *   Removed inert `PoolConfig.maxRetries` and `PoolConfig.useTLS`.
+        Retry policy is owned by `ClusterConfig`, while TLS is selected by the
+        connector type/factory. This source-incompatible record change is part
+        of the unreleased `hask-redis-mux-0.3.0.0` PVP-breaking release.
 *   **Qualified RESP support**
     *   Command parsing and encoding are RESP2-first, with RESP3-shaped map
         and set aggregates only. RESP3 session and scalar types remain
@@ -99,7 +113,6 @@
     *   MOVED, ASK, TRYAGAIN, CLUSTERDOWN, CROSSSLOT, and ordinary Redis errors now share one strict reply classifier across keyed, keyless, and redirected paths.
     *   TRYAGAIN retries the current route with bounded saturating exponential backoff; CLUSTERDOWN performs a best-effort refresh before bounded backoff without replacing the Redis cause when refresh validation or I/O fails.
     *   CROSSSLOT and ordinary server errors return immediately as typed `ClusterError` values, preserving the complete server error payload.
-
 ## 0.5.0.0 -- 2026-02-05
 
 *   **Major Feature: Redis Cluster Support**

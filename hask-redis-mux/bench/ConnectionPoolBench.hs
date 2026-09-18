@@ -52,7 +52,7 @@ main = do
 
 runCase :: Int -> Int -> Int -> Int -> IO ()
 runCase capabilities nodeCount capacity waiterCount = do
-  let config = PoolConfig capacity 5 0 False
+  let config = PoolConfig capacity 5
       addresses =
         [NodeAddress ("benchmark-" <> show index) 6379 | index <- [0 .. nodeCount - 1]]
       holderCount = nodeCount * capacity

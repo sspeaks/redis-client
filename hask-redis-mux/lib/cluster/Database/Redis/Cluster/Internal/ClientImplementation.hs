@@ -61,6 +61,8 @@ module Database.Redis.Cluster.Internal.ClientImplementation
     pattern ClusterAuthenticationError,
     pattern ClusterClientClosed,
     ClusterConfig (..),
+    ClusterConfigException (..),
+    defaultClusterConfig,
     ClusterAuthentication (..),
     ClusterAuthenticationException (..),
     ClusterRuntimeAuthenticationUnsupported (..),
@@ -143,6 +145,7 @@ import           Database.Redis.Cluster.ConnectionPool          (ConnectionPool,
                                                                  PoolConfig (..),
                                                                  closePool,
                                                                  createPool,
+                                                                 defaultPoolConfig,
                                                                  withConnection,
                                                                  withConnectionBounded)
 import           Database.Redis.Cluster.Internal.CommandGrammar (CommandFrameRouting (..),
@@ -345,11 +348,33 @@ data RawClusterRoute
 data ClusterConfig = ClusterConfig
   { clusterSeedNode                :: NodeAddress -- ^ Initial node used to discover the cluster topology.
   , clusterPoolConfig              :: PoolConfig  -- ^ Connection pool settings applied to every node.
+  , clusterMultiplexerCount        :: Int -- ^ Multiplexed connections created per active cluster node (default: 1).
   , clusterMaxRetries              :: Int -- ^ Maximum retry attempts on MOVED\/ASK\/transient errors (default: 3).
   , clusterRetryDelay              :: Int -- ^ Initial retry delay in microseconds; doubled on each retry (default: 100000 = 100ms).
   , clusterTopologyRefreshInterval :: Int -- ^ Seconds between automatic background topology refreshes (default: 600 = 10 min).
   }
   deriving (Show)
+
+-- | Invalid cluster client configuration.
+data ClusterConfigException
+  = InvalidClusterMultiplexerCount Int
+  | InvalidClusterMaxRetries Int
+  | InvalidClusterRetryDelay Int
+  | InvalidClusterTopologyRefreshInterval Int
+  deriving (Eq, Show)
+
+instance Exception ClusterConfigException
+
+-- | Production cluster defaults for the supplied seed node.
+defaultClusterConfig :: NodeAddress -> ClusterConfig
+defaultClusterConfig seedNode = ClusterConfig
+  { clusterSeedNode = seedNode
+  , clusterPoolConfig = defaultPoolConfig
+  , clusterMultiplexerCount = 1
+  , clusterMaxRetries = 3
+  , clusterRetryDelay = 100000
+  , clusterTopologyRefreshInterval = 600
+  }
 
 -- | Authentication applied once to every physical cluster connection before
 -- it is used for topology discovery, pooling, multiplexing, or redirects.
@@ -486,9 +511,7 @@ createClusterClientWithAuthentication config authentication connector =
           setConnectionPhase supervisor Authentication
           authenticateClusterConnection authentication addr conn
             `onException` cleanup
-    initialPhase
-      | useTLS (clusterPoolConfig config) = TLSConnectionSetup
-      | otherwise = PlaintextConnectionSetup
+    initialPhase = DNSResolution
 
 authenticateClusterConnection
   :: (Client client)
@@ -550,6 +573,7 @@ createClusterClientWithFactoriesUsing
   -> IO (ClusterClient client)
 createClusterClientWithFactoriesUsing connectorIsBounded
     createConnectionPool createMuxPool config connector = do
+  validateClusterConfig config
   pool <- createConnectionPool (clusterPoolConfig config)
   build pool `onException` closePool pool
   where
@@ -571,17 +595,27 @@ createClusterClientWithFactoriesUsing connectorIsBounded
           topology <- newTVarIO initialTopology
           refreshLock <- newMVar ()
           let poolCfg = clusterPoolConfig config
-              phase =
-                if useTLS poolCfg
-                  then TLSConnectionSetup
-                  else PlaintextConnectionSetup
               boundedConnector
                 | connectorIsBounded = connector
                 | otherwise =
                     withConnectionTimeout
-                      (connectionTimeout poolCfg) phase connector
-          muxPool <- createMuxPool boundedConnector 1
+                      (connectionTimeout poolCfg) DNSResolution connector
+          muxPool <- createMuxPool boundedConnector $
+            clusterMultiplexerCount config
           return $ ClusterClient topology pool config boundedConnector refreshLock muxPool
+
+validateClusterConfig :: ClusterConfig -> IO ()
+validateClusterConfig config
+  | clusterMultiplexerCount config <= 0 =
+      throwIO $ InvalidClusterMultiplexerCount $ clusterMultiplexerCount config
+  | clusterMaxRetries config <= 0 =
+      throwIO $ InvalidClusterMaxRetries $ clusterMaxRetries config
+  | clusterRetryDelay config < 0 =
+      throwIO $ InvalidClusterRetryDelay $ clusterRetryDelay config
+  | clusterTopologyRefreshInterval config <= 0 =
+      throwIO $ InvalidClusterTopologyRefreshInterval $
+        clusterTopologyRefreshInterval config
+  | otherwise = return ()
 
 -- | Close all pooled connections across every node.
 -- Closure is terminal and idempotent: owned transports are closed exactly once,
