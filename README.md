@@ -285,52 +285,57 @@ See [docs/AZURE_EXAMPLES.md](docs/AZURE_EXAMPLES.md) for detailed examples.
 The standalone multiplexed client gives you pipelined throughput for a single (non-cluster) Redis server. Multiplexing is enabled by default.
 
 ```haskell
-import Redis
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
+import Database.Redis
 
 main :: IO ()
-main = do
-  let config = StandaloneConfig
-        { standaloneNodeAddress     = NodeAddress "localhost" 6379
-        , standaloneConnector       = clusterPlaintextConnector
-        , standaloneMultiplexerCount = 1
-        , standaloneUseMultiplexing = True   -- default
-        }
-  client <- createStandaloneClientFromConfig config
-  runStandaloneClient client $ do
-    set "mykey" "myvalue"
-    result <- get "mykey"
-    liftIO $ print result
-  closeStandaloneClient client
+main =
+  withStandaloneClient defaultStandaloneConfig $ \client -> do
+    result <- runStandaloneClient client $ do
+      (_ :: Bool) <- set "mykey" "myvalue"
+      get "mykey"
+    print (result :: ByteString)
 ```
 
-Set `standaloneUseMultiplexing = False` to fall back to sequential (non-pipelined) command execution.
-
-For TLS connections, use `clusterTLSConnector` instead of `clusterPlaintextConnector`.
+Set `standaloneMultiplexerCount` to control how many multiplexed connections
+the client creates. For TLS connections, update `standaloneConnector` to
+`clusterTLSConnector "redis.example.com"`.
 Library callers that issue `AUTH` directly are responsible for choosing a TLS
 connector; the CLI enforces the credentialed-plaintext policy because it owns
 both the credential and transport configuration.
 
 ### Cluster Client
 
-Cluster mode uses multiplexing by default for optimal throughput. Set `clusterUseMultiplexing = False` to opt out.
+Cluster mode uses multiplexing for command routing and pipelining.
 
 ```haskell
-import Redis
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
+import Database.Redis
 
 main :: IO ()
-main = do
-  let config = ClusterConfig
-        { clusterNodeAddress      = NodeAddress "localhost" 7000
-        , clusterConnector        = clusterPlaintextConnector
-        , clusterUseMultiplexing  = True   -- default
-        , clusterMultiplexerCount = 1
+main =
+  withClusterClient config clusterPlaintextConnector $ \client -> do
+    result <- runClusterCommandClient client $ do
+      (_ :: Bool) <- set "{example}:key" "myvalue"
+      get "{example}:key"
+    print (result :: ByteString)
+  where
+    config = ClusterConfig
+      { clusterSeedNode = NodeAddress "localhost" 7000
+      , clusterPoolConfig = PoolConfig
+          { maxConnectionsPerNode = 2
+          , connectionTimeout = 5
+          , maxRetries = 3
+          , useTLS = False
+          }
+      , clusterMaxRetries = 3
+      , clusterRetryDelay = 100000
+      , clusterTopologyRefreshInterval = 600
         }
-  client <- createClusterClient config clusterPlaintextConnector
-  runClusterCommandClient client $ do
-    set "mykey" "myvalue"
-    result <- get "mykey"
-    liftIO $ print result
-  closeClusterClient client
 ```
 
 ## Using as a Nix Overlay

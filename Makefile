@@ -5,11 +5,11 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e benchmark-smoke clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts setup
+.PHONY: help build test test-unit test-public-examples test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e benchmark-smoke clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts setup
 
 # Default target
 help:
-	@echo "Targets: setup build test test-unit benchmark-smoke test-e2e-runner test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts clean"
+	@echo "Targets: setup build test test-unit test-public-examples benchmark-smoke test-e2e-runner test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts clean"
 
 # Setup dependencies (run once in new environment)
 setup:
@@ -48,9 +48,16 @@ test: test-unit test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated
 # Run unit tests (hask-redis-mux tests run via nix dependency build; redis-client specs via cabal)
 test-unit: test-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity
 ifeq ($(HAS_NIX),yes)
-	nix-shell --run "cabal build all && cabal test all"
+	nix-shell --run "cabal build all && cabal test all && python3 scripts/test-public-haskell-examples.py"
 else
-	cabal build all && cabal test all
+	cabal build all && cabal test all && python3 scripts/test-public-haskell-examples.py
+endif
+
+test-public-examples:
+ifeq ($(HAS_NIX),yes)
+	nix-shell --run "cabal build hask-redis-mux && python3 scripts/test-public-haskell-examples.py"
+else
+	cabal build hask-redis-mux && python3 scripts/test-public-haskell-examples.py
 endif
 
 test-metadata:

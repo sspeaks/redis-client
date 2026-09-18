@@ -114,13 +114,15 @@ build-depends: hask-redis-mux >= 0.1 && < 0.2
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 import Database.Redis
 
 main :: IO ()
 main = do
   -- Connect to localhost:6379, run commands, auto-close
   result <- runRedis defaultStandaloneConfig $ do
-    set "greeting" "hello"
+    (_ :: Bool) <- set "greeting" "hello"
     (val :: ByteString) <- get "greeting"
     return val
   print result  -- "hello"
@@ -132,13 +134,22 @@ Commands return polymorphic types via the `FromResp` typeclass. Just add a
 type annotation and the response is parsed automatically:
 
 ```haskell
-runRedis defaultStandaloneConfig $ do
-  set "counter" "42"
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
-  (n :: Integer)      <- get "counter"   -- 42
-  (bs :: ByteString)  <- get "counter"   -- "42"
-  (mt :: Maybe Text)  <- get "missing"   -- Nothing
-  (ok :: Bool)        <- set "k" "v"     -- True (from +OK)
+import Data.Text (Text)
+import Database.Redis
+
+main :: IO ()
+main = do
+  result <- runRedis defaultStandaloneConfig $ do
+    (_ :: Bool) <- set "counter" "42"
+    (n :: Integer) <- get "counter"
+    (bs :: ByteString) <- get "counter"
+    (mt :: Maybe Text) <- get "missing"
+    (ok :: Bool) <- set "k" "v"
+    return (n, bs, mt, ok)
+  print result
 ```
 
 ## Additional Core Commands (Unreleased 0.2.0.0)
@@ -170,17 +181,38 @@ and is therefore part of the planned 0.2.0.0 release.
 Use bracket-style functions for exception-safe resource management:
 
 ```haskell
--- Standalone
-withStandaloneClient config $ \client ->
-  runStandaloneClient client $ do
-    set "key" "value"
-    get "key"
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
--- Cluster
-withClusterClient clusterConfig connector $ \client ->
-  runClusterCommandClient client $ do
-    set "key" "value"
-    get "key"
+import Database.Redis
+
+standaloneExample :: IO ByteString
+standaloneExample =
+  withStandaloneClient defaultStandaloneConfig $ \client ->
+    runStandaloneClient client $ do
+      (_ :: Bool) <- set "key" "value"
+      get "key"
+
+clusterExample :: IO ByteString
+clusterExample =
+  withClusterClient exampleClusterConfig clusterPlaintextConnector $ \client ->
+    runClusterCommandClient client $ do
+      (_ :: Bool) <- set "{example}:key" "value"
+      get "{example}:key"
+
+exampleClusterConfig :: ClusterConfig
+exampleClusterConfig = ClusterConfig
+  { clusterSeedNode = NodeAddress "localhost" 7000
+  , clusterPoolConfig = PoolConfig
+      { maxConnectionsPerNode = 2
+      , connectionTimeout = 5
+      , maxRetries = 3
+      , useTLS = False
+      }
+  , clusterMaxRetries = 3
+  , clusterRetryDelay = 100000
+  , clusterTopologyRefreshInterval = 600
+  }
 ```
 
 The callback owns the client only for its duration. When it returns or throws,
@@ -226,6 +258,8 @@ second compatibility runner.
 ## Custom Configuration
 
 ```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
 import Database.Redis
 
 main :: IO ()
@@ -235,9 +269,10 @@ main = do
         , standaloneConnector       = clusterPlaintextConnector
         , standaloneMultiplexerCount = 4  -- 4 multiplexed connections
         }
-  withStandaloneClient config $ \client ->
-    runStandaloneClient client $ do
-      set "key" "value"
+  result <- withStandaloneClient config $ \client ->
+    runStandaloneClient client
+      (set "key" "value" :: StandaloneCommandClient Bool)
+  print result
 ```
 
 ## Cluster Authentication
@@ -247,13 +282,31 @@ therefore apply credentials while each physical connection is created, before
 topology discovery or application commands:
 
 ```haskell
-let credentials = ClusterPassword "secret"
+{-# LANGUAGE OverloadedStrings #-}
 
-withClusterClientAuthentication
-    clusterConfig
-    credentials
-    (clusterTLSConnector "redis.example.net") $ \client ->
-  runClusterCommandClient client $ get "key"
+import Database.Redis
+
+authenticatedExample :: IO ByteString
+authenticatedExample =
+  withClusterClientAuthentication
+      exampleClusterConfig
+      (ClusterPassword "secret")
+      (clusterTLSConnector "redis.example.net") $ \client ->
+    runClusterCommandClient client $ get "{example}:key"
+
+exampleClusterConfig :: ClusterConfig
+exampleClusterConfig = ClusterConfig
+  { clusterSeedNode = NodeAddress "redis.example.net" 6380
+  , clusterPoolConfig = PoolConfig
+      { maxConnectionsPerNode = 2
+      , connectionTimeout = 5
+      , maxRetries = 3
+      , useTLS = True
+      }
+  , clusterMaxRetries = 3
+  , clusterRetryDelay = 100000
+  , clusterTopologyRefreshInterval = 600
+  }
 ```
 
 `ClusterPassword password` sends `AUTH password`, which authenticates the
@@ -315,12 +368,21 @@ take timeout configuration. Direct callers should use the timeout-aware
 variants:
 
 ```haskell
-conn <- connectTLSWithTimeout 5 "redis.example.net" 6380
+{-# LANGUAGE DataKinds #-}
 
-let standaloneConfig = defaultStandaloneConfig
+import Database.Redis
+
+tlsConnection :: IO (TLSClient 'Connected)
+tlsConnection =
+  connectTLSWithTimeout 5 "redis.example.net" 6380
+
+standalonePing :: IO ByteString
+standalonePing =
+  withStandaloneClient standaloneConfig $ \client ->
+    runStandaloneClient client ping
+  where
+    standaloneConfig = defaultStandaloneConfig
       { standaloneConnector = clusterPlaintextConnectorWithTimeout 5 }
-withStandaloneClient standaloneConfig $ \client ->
-  runStandaloneClient client ping
 ```
 
 `createClusterClientWithAuthentication` supervises the raw connector and AUTH
