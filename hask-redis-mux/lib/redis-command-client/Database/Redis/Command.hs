@@ -359,6 +359,11 @@ keysCommand keys frame
   | null keys = keylessCommand frame
   | otherwise = CommandDescriptor frame (CommandByKeys keys)
 
+requiredKeysCommand :: [ByteString] -> [ByteString] -> CommandDescriptor
+requiredKeysCommand keys frame
+  | null keys = metadataCommand frame
+  | otherwise = keysCommand keys frame
+
 metadataCommand :: [ByteString] -> CommandDescriptor
 metadataCommand frame =
   CommandDescriptor frame CommandByMetadata
@@ -405,9 +410,9 @@ redisCommandDefinitions =
     , definedKeyType = \key -> metadataCommand ["TYPE", key]
     , definedRename = \key newkey -> keysCommand [key, newkey] ["RENAME", key, newkey]
     , definedRenamenx = \key newkey -> keysCommand [key, newkey] ["RENAMENX", key, newkey]
-    , definedUnlink = \keys -> keysCommand keys ("UNLINK" : keys)
+    , definedUnlink = \keys -> requiredKeysCommand keys ("UNLINK" : keys)
     , definedPfadd = \key elements -> metadataCommand ("PFADD" : key : elements)
-    , definedPfcount = \keys -> keysCommand keys ("PFCOUNT" : keys)
+    , definedPfcount = \keys -> requiredKeysCommand keys ("PFCOUNT" : keys)
     , definedPfmerge = \destkey sourcekeys -> keysCommand (destkey : sourcekeys) ("PFMERGE" : destkey : sourcekeys)
     , definedRpush = \key values -> keyedCommand key ("RPUSH" : key : values)
     , definedLpop = \key -> keyedCommand key ["LPOP", key]
@@ -417,9 +422,9 @@ redisCommandDefinitions =
     , definedScard = \key -> keyedCommand key ["SCARD", key]
     , definedSismember = \key member -> keyedCommand key ["SISMEMBER", key, member]
     , definedSrem = \key members -> metadataCommand ("SREM" : key : members)
-    , definedSdiff = \keys -> keysCommand keys ("SDIFF" : keys)
-    , definedSinter = \keys -> keysCommand keys ("SINTER" : keys)
-    , definedSunion = \keys -> keysCommand keys ("SUNION" : keys)
+    , definedSdiff = \keys -> requiredKeysCommand keys ("SDIFF" : keys)
+    , definedSinter = \keys -> requiredKeysCommand keys ("SINTER" : keys)
+    , definedSunion = \keys -> requiredKeysCommand keys ("SUNION" : keys)
     , definedSpop = \key -> metadataCommand ["SPOP", key]
     , definedSrandmember = \key -> metadataCommand ["SRANDMEMBER", key]
     , definedHdel = \key fields -> keyedCommand key ("HDEL" : key : fields)

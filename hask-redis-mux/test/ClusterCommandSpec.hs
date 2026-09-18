@@ -535,6 +535,21 @@ publicValidatedDispatchSpec :: Spec
 publicValidatedDispatchSpec =
   describe "public validated cluster command dispatch" $ do
     it "routes accepted typed commands to the selected node with exact wire frames" $ do
+      let oneKey = "{public}:one"
+          twoKeys = ["{public}:one", "{public}:two"]
+      forM_
+        [ (["UNLINK", oneKey], unlink [oneKey])
+        , (["UNLINK"] ++ twoKeys, unlink twoKeys)
+        , (["PFCOUNT", oneKey], pfcount [oneKey])
+        , (["PFCOUNT"] ++ twoKeys, pfcount twoKeys)
+        , (["SDIFF", oneKey], sdiff [oneKey])
+        , (["SDIFF"] ++ twoKeys, sdiff twoKeys)
+        , (["SINTER", oneKey], sinter [oneKey])
+        , (["SINTER"] ++ twoKeys, sinter twoKeys)
+        , (["SUNION", oneKey], sunion [oneKey])
+        , (["SUNION"] ++ twoKeys, sunion twoKeys)
+        ] $ \(frame, command) ->
+          assertPublicValidatedCommand frame command
       assertPublicValidatedCommand
         ["MGET", "{public}:one", "{public}:two"]
         (mget ["{public}:one", "{public}:two"])
@@ -563,6 +578,14 @@ publicValidatedDispatchSpec =
         (georadius "{public}:source" 0 0 1 Kilometers [GeoRadiusStore "{public}:destination"])
 
     it "rejects malformed options and cross-slot typed multi-key commands before sending" $ do
+      forM_
+        [ unlink ["{one}:first", "{two}:second"]
+        , pfcount ["{one}:first", "{two}:second"]
+        , sdiff ["{one}:first", "{two}:second"]
+        , sinter ["{one}:first", "{two}:second"]
+        , sunion ["{one}:first", "{two}:second"]
+        ] $ assertPublicRejectedCommand
+          "CROSSSLOT Keys in request don't hash to the same slot"
       assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
         (mget ["{one}:first", "{two}:second"])
       assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
@@ -580,6 +603,18 @@ publicValidatedDispatchSpec =
         (rename "{one}:source" "{two}:destination")
       assertPublicRejectedCommand "CROSSSLOT Keys in request don't hash to the same slot"
         (georadius "{public}:source" 0 0 1 Kilometers [GeoRadiusStore "{other}:destination"])
+
+    it "rejects empty required-key commands before selecting a master" $ do
+      forM_
+        [ ("UNLINK", unlink [])
+        , ("PFCOUNT", pfcount [])
+        , ("SDIFF", sdiff [])
+        , ("SINTER", sinter [])
+        , ("SUNION", sunion [])
+        ] $ \(commandName, command) ->
+          assertPublicRejectedCommand
+            (commandName ++ " has invalid arity: expected 2 argument(s), got 1")
+            command
 
 assertPublicValidatedCommand
   :: [ByteString]
