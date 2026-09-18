@@ -26,7 +26,7 @@ on:
       - scripts/azure-redis-connect.py
 
 jobs:
-  copilot-setup-validation:
+  copilot-setup-steps:
 
     runs-on: ubuntu-latest
 

@@ -20,6 +20,9 @@ jobs:
     - name: Validate pull request template
       run: python3 .github/tests/test_pull_request_template.py
 
+    - name: Validate Copilot setup workflow contract
+      run: python3 .github/tests/test_copilot_setup_workflow.py
+
     - name: Test
       run: make test
 
