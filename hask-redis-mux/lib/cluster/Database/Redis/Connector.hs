@@ -23,18 +23,13 @@
 --     return ()
 --
 -- exampleClusterConfig :: ClusterConfig
--- exampleClusterConfig = ClusterConfig
---   { clusterSeedNode = NodeAddress \"redis.example.com\" 6380
---   , clusterPoolConfig = PoolConfig
+-- exampleClusterConfig =
+--   (defaultClusterConfig $ NodeAddress \"redis.example.com\" 6380)
+--     { clusterPoolConfig = defaultPoolConfig
 --       { maxConnectionsPerNode = 2
 --       , connectionTimeout = 5
---       , maxRetries = 3
---       , useTLS = True
 --       }
---   , clusterMaxRetries = 3
---   , clusterRetryDelay = 100000
---   , clusterTopologyRefreshInterval = 600
---   }
+--     }
 -- @
 --
 -- @since 0.1.0.0
@@ -373,18 +368,14 @@ connectTLSWithTimeout seconds host port =
 --     return ()
 --
 -- exampleClusterConfig :: ClusterConfig
--- exampleClusterConfig = ClusterConfig
---   { clusterSeedNode = NodeAddress \"localhost\" 7000
---   , clusterPoolConfig = PoolConfig
+-- exampleClusterConfig =
+--   (defaultClusterConfig $ NodeAddress \"localhost\" 7000)
+--     { clusterPoolConfig = defaultPoolConfig
 --       { maxConnectionsPerNode = 2
 --       , connectionTimeout = 5
---       , maxRetries = 3
---       , useTLS = False
 --       }
---   , clusterMaxRetries = 3
---   , clusterRetryDelay = 100000
---   , clusterTopologyRefreshInterval = 600
---   }
+--     , clusterMultiplexerCount = 2
+--     }
 -- @
 clusterPlaintextConnector :: Connector PlainTextClient
 clusterPlaintextConnector addr =
@@ -417,18 +408,13 @@ clusterPlaintextConnectorWithTimeout seconds =
 --     return ()
 --
 -- exampleClusterConfig :: ClusterConfig
--- exampleClusterConfig = ClusterConfig
---   { clusterSeedNode = NodeAddress \"redis.example.com\" 6380
---   , clusterPoolConfig = PoolConfig
+-- exampleClusterConfig =
+--   (defaultClusterConfig $ NodeAddress \"redis.example.com\" 6380)
+--     { clusterPoolConfig = defaultPoolConfig
 --       { maxConnectionsPerNode = 2
 --       , connectionTimeout = 5
---       , maxRetries = 3
---       , useTLS = True
 --       }
---   , clusterMaxRetries = 3
---   , clusterRetryDelay = 100000
---   , clusterTopologyRefreshInterval = 600
---   }
+--     }
 -- @
 clusterTLSConnector :: String -> Connector TLSClient
 clusterTLSConnector certHostname addr =

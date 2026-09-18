@@ -60,18 +60,14 @@
 --       get \"{example}:key\"
 --
 -- exampleClusterConfig :: ClusterConfig
--- exampleClusterConfig = ClusterConfig
---   { clusterSeedNode = NodeAddress \"localhost\" 7000
---   , clusterPoolConfig = PoolConfig
+-- exampleClusterConfig =
+--   (defaultClusterConfig $ NodeAddress \"localhost\" 7000)
+--     { clusterPoolConfig = defaultPoolConfig
 --       { maxConnectionsPerNode = 2
 --       , connectionTimeout = 5
---       , maxRetries = 3
---       , useTLS = False
 --       }
---   , clusterMaxRetries = 3
---   , clusterRetryDelay = 100000
---   , clusterTopologyRefreshInterval = 600
---   }
+--     , clusterMultiplexerCount = 2
+--     }
 -- @
 --
 -- @since 0.1.0.0

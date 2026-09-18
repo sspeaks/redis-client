@@ -219,18 +219,14 @@ clusterExample =
       get "{example}:key"
 
 exampleClusterConfig :: ClusterConfig
-exampleClusterConfig = ClusterConfig
-  { clusterSeedNode = NodeAddress "localhost" 7000
-  , clusterPoolConfig = PoolConfig
+exampleClusterConfig =
+  (defaultClusterConfig $ NodeAddress "localhost" 7000)
+    { clusterPoolConfig = defaultPoolConfig
       { maxConnectionsPerNode = 2
       , connectionTimeout = 5
-      , maxRetries = 3
-      , useTLS = False
       }
-  , clusterMaxRetries = 3
-  , clusterRetryDelay = 100000
-  , clusterTopologyRefreshInterval = 600
-  }
+    , clusterMultiplexerCount = 2
+    }
 ```
 
 The callback owns the client only for its duration. When it returns or throws,
@@ -366,18 +362,13 @@ authenticatedExample =
     runClusterCommandClient client $ get "{example}:key"
 
 exampleClusterConfig :: ClusterConfig
-exampleClusterConfig = ClusterConfig
-  { clusterSeedNode = NodeAddress "redis.example.net" 6380
-  , clusterPoolConfig = PoolConfig
+exampleClusterConfig =
+  (defaultClusterConfig $ NodeAddress "redis.example.net" 6380)
+    { clusterPoolConfig = defaultPoolConfig
       { maxConnectionsPerNode = 2
       , connectionTimeout = 5
-      , maxRetries = 3
-      , useTLS = True
       }
-  , clusterMaxRetries = 3
-  , clusterRetryDelay = 100000
-  , clusterTopologyRefreshInterval = 600
-  }
+    }
 ```
 
 `ClusterPassword password` sends `AUTH password`, which authenticates the
