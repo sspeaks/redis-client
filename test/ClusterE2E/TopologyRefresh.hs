@@ -34,10 +34,9 @@ spec = describe "Topology refresh" $ do
             { clusterSeedNode = NodeAddress "redis1.local" 6379,
               clusterPoolConfig = PoolConfig
                 { maxConnectionsPerNode = 1,
-                  connectionTimeout = 5000,
-                  maxRetries = 3,
-                  useTLS = False
+                  connectionTimeout = 5000
                 },
+              clusterMultiplexerCount = 1,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
               clusterTopologyRefreshInterval = 1  -- 1 second for fast testing
@@ -118,10 +117,9 @@ spec = describe "Topology refresh" $ do
             { clusterSeedNode = NodeAddress "redis1.local" 6379,
               clusterPoolConfig = PoolConfig
                 { maxConnectionsPerNode = 1,  -- Currently only 1 connection is used regardless
-                  connectionTimeout = 5000,
-                  maxRetries = 3,
-                  useTLS = False
+                  connectionTimeout = 5000
                 },
+              clusterMultiplexerCount = 1,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
               clusterTopologyRefreshInterval = 1  -- 1 second

@@ -27,6 +27,7 @@
 module Database.Redis.Standalone
   ( -- * Configuration
     StandaloneConfig (..)
+  , StandaloneConfigException (..)
   , defaultStandaloneConfig
     -- * Client type
   , StandaloneClient
@@ -42,14 +43,21 @@ module Database.Redis.Standalone
   , runStandaloneClient
   ) where
 
-import           Control.Exception                   (SomeAsyncException,
+import           Control.Concurrent.MVar             (MVar, newMVar, withMVar)
+import           Control.Exception                   (Exception,
+                                                      SomeAsyncException,
                                                       SomeException, bracket,
                                                       fromException, mask,
-                                                      onException, throwIO,
-                                                      toException, try)
+                                                      mask_, onException,
+                                                      throwIO, toException, try)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
+import           Data.IORef                          (IORef, atomicModifyIORef',
+                                                      newIORef)
+import           Data.Typeable                       (Typeable)
+import           Data.Vector                         (Vector)
+import qualified Data.Vector                         as V
 import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Command              (ClientReplyModeUnsupported (..),
@@ -157,6 +165,13 @@ data StandaloneConfig client = StandaloneConfig
   , standaloneMultiplexerCount :: !Int                -- ^ Number of multiplexers to create (default: 1).
   }
 
+-- | Invalid standalone client configuration.
+newtype StandaloneConfigException
+  = InvalidStandaloneMultiplexerCount Int
+  deriving (Eq, Show, Typeable)
+
+instance Exception StandaloneConfigException
+
 -- | Default configuration connecting to @localhost:6379@ over plaintext with 1 multiplexer.
 --
 -- @
@@ -178,11 +193,19 @@ defaultStandaloneConfig = StandaloneConfig
   , standaloneMultiplexerCount = 1
   }
 
--- | A standalone Redis client backed by a multiplexer and slot pool.
+-- | A standalone Redis client backed by round-robin multiplexers and a shared
+-- response-slot pool.
 data StandaloneClient = StandaloneClient
-  { standaloneMux  :: !Multiplexer
-  , standalonePool :: !SlotPool
+  { standaloneMuxes     :: !(Vector Multiplexer)
+  , standaloneLifecycle :: !(IORef StandaloneLifecycle)
+  , standaloneCloseLock :: !(MVar ())
+  , standalonePool      :: !SlotPool
   }
+
+data StandaloneLifecycle
+  = StandaloneOpen !Int
+  | StandaloneClosing !Int
+  | StandaloneClosed !Int
 
 -- | Create a standalone multiplexed client by connecting to a single Redis node.
 -- This is the simple API; for more control, use 'createStandaloneClientFromConfig'.
@@ -194,34 +217,81 @@ createStandaloneClient
   -> NodeAddress
   -> IO StandaloneClient
 createStandaloneClient connector addr = do
-  mux <- createMultiplexerFromConnector connector addr
-  pool <- createSlotPool 256
-    `onException` closeStandaloneMux mux
-  return $ StandaloneClient mux pool
+  createStandaloneClientFromConfig StandaloneConfig
+    { standaloneNodeAddress = addr
+    , standaloneConnector = connector
+    , standaloneMultiplexerCount = 1
+    }
 
 -- | Create a standalone client from a 'StandaloneConfig'.
 createStandaloneClientFromConfig
   :: (Client client)
   => StandaloneConfig client
   -> IO StandaloneClient
-createStandaloneClientFromConfig config = do
-  mux <- createMultiplexerFromConnector
-    (standaloneConnector config) (standaloneNodeAddress config)
-  pool <- createSlotPool 256
-    `onException` closeStandaloneMux mux
-  return $ StandaloneClient mux pool
+createStandaloneClientFromConfig config
+  | count <= 0 = throwIO $ InvalidStandaloneMultiplexerCount count
+  | otherwise = mask $ \restore -> do
+      muxes <- createMuxes restore [] count
+      lifecycle <- newIORef (StandaloneOpen 0)
+        `onException` closeStandaloneMuxes muxes
+      closeLock <- newMVar ()
+        `onException` closeStandaloneMuxes muxes
+      pool <- createSlotPool 256
+        `onException` closeStandaloneMuxes muxes
+      return $ StandaloneClient
+        (V.fromList $ reverse muxes)
+        lifecycle
+        closeLock
+        pool
+  where
+    count = standaloneMultiplexerCount config
+    createMuxes _ acc 0 = return acc
+    createMuxes restore acc remaining = do
+      mux <- restore (createMultiplexerFromConnector
+        (standaloneConnector config) (standaloneNodeAddress config))
+        `onException` closeStandaloneMuxes acc
+      createMuxes restore (mux : acc) (remaining - 1)
 
--- | Close the standalone client, destroying the underlying multiplexer.
--- The owned plaintext or TLS transport is closed exactly once. Closure is
--- terminal and idempotent; later commands fail instead of reconnecting.
+-- | Close the standalone client, atomically disabling routing before
+-- destroying its multiplexers. Owned plaintext or TLS transports are closed
+-- exactly once. Closure is terminal and idempotent; later commands fail with
+-- 'RedisClientClosed' instead of routing to a mux that has not yet been destroyed.
+-- An interrupted close can be resumed by calling this function again.
 --
 -- Consider using 'withStandaloneClient' instead for automatic cleanup.
 closeStandaloneClient :: StandaloneClient -> IO ()
-closeStandaloneClient client =
-  closeStandaloneMux (standaloneMux client)
+closeStandaloneClient client = mask_ $
+  withMVar (standaloneCloseLock client) $ \() -> do
+    lifecycle <- atomicModifyIORef' (standaloneLifecycle client) $ \current ->
+      case current of
+        StandaloneOpen index ->
+          (StandaloneClosing index, current)
+        _ ->
+          (current, current)
+    case lifecycle of
+      StandaloneClosed _ -> return ()
+      _ -> do
+        closeStandaloneMuxes $ V.toList $ standaloneMuxes client
+        atomicModifyIORef' (standaloneLifecycle client) $ \current ->
+          case current of
+            StandaloneClosing index ->
+              (StandaloneClosed index, ())
+            _ ->
+              (current, ())
 
-closeStandaloneMux :: Multiplexer -> IO ()
-closeStandaloneMux = destroyMultiplexer
+closeStandaloneMuxes :: [Multiplexer] -> IO ()
+closeStandaloneMuxes muxes = do
+  results <- mapM tryDestroy muxes
+  case
+    [ asyncException
+    | Left failure <- results
+    , Just asyncException <- [fromException failure :: Maybe SomeAsyncException]
+    ] of
+    asyncException : _ -> throwIO asyncException
+    []                 -> return ()
+  where
+    tryDestroy mux =
+      try (destroyMultiplexer mux) :: IO (Either SomeException ())
 
 -- | Bracket-style resource management for standalone clients.
 --
@@ -359,7 +429,24 @@ submitMux :: [ByteString] -> StandaloneCommandClient RespData
 submitMux args = do
   client <- StandaloneCommandClient ask
   let cmdBuilder = encodeCommandBuilder args
-  liftIO $ submitCommandPooled (standalonePool client) (standaloneMux client) cmdBuilder
+  mux <- liftIO $ nextStandaloneMux client
+  liftIO $ submitCommandPooled (standalonePool client) mux cmdBuilder
+
+nextStandaloneMux :: StandaloneClient -> IO Multiplexer
+nextStandaloneMux client = do
+  -- Selection and the close transition share one atomic lifecycle update.
+  selection <- atomicModifyIORef' (standaloneLifecycle client) $ \lifecycle ->
+    case lifecycle of
+      StandaloneOpen index ->
+        (StandaloneOpen $ index + 1, Right index)
+      _ ->
+        (lifecycle, Left $ MultiplexerDead "Standalone client closed")
+  case selection of
+    Left failure -> throwIO failure
+    Right index ->
+      return $! muxes `V.unsafeIndex` (index `mod` V.length muxes)
+  where
+    muxes = standaloneMuxes client
 
 -- | Submit a command and convert the result via 'FromResp'.
 submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a

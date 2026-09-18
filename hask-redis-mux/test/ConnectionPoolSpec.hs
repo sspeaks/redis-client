@@ -59,8 +59,6 @@ testPoolConfig :: PoolConfig
 testPoolConfig = PoolConfig
   { maxConnectionsPerNode = 1
   , connectionTimeout = 5
-  , maxRetries = 0
-  , useTLS = False
   }
 
 createCountingConnector
@@ -108,6 +106,28 @@ isRight = either (const False) (const True)
 
 main :: IO ()
 main = hspec $ describe "ConnectionPool lifecycle" $ do
+  it "provides validated production defaults" $ do
+    defaultPoolConfig `shouldBe` PoolConfig
+      { maxConnectionsPerNode = 10
+      , connectionTimeout = 300
+      }
+
+  it "rejects non-positive pool capacity" $ do
+    result <- Exception.try $ createPool testPoolConfig
+      { maxConnectionsPerNode = 0 }
+      :: IO (Either PoolConfigException (ConnectionPool MockClient))
+    case result of
+      Left err -> err `shouldBe` InvalidMaxConnectionsPerNode 0
+      Right _  -> expectationFailure "expected invalid pool capacity"
+
+  it "rejects non-positive connection timeouts" $ do
+    result <- Exception.try $ createPool testPoolConfig
+      { connectionTimeout = 0 }
+      :: IO (Either PoolConfigException (ConnectionPool MockClient))
+    case result of
+      Left err -> err `shouldBe` InvalidConnectionTimeout 0
+      Right _  -> expectationFailure "expected invalid connection timeout"
+
   it "recovers capacity when connector acquisition is cancelled" $ do
     pool <- createPool testPoolConfig
     connectionCount <- newIORef (0 :: Int)
@@ -136,15 +156,13 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
     closePool pool
     readIORef closeCount `shouldReturn` 1
 
-  mapM_ (\(label, tlsEnabled, expectedPhase) ->
+  mapM_ (\label ->
     it ("bounds stalled " <> label <> " setup and closes its allocated resource once") $ do
       attempts <- newIORef (0 :: Int)
       closeCount <- newIORef (0 :: Int)
       stalled <- newEmptyMVar
       let config = testPoolConfig
-            { connectionTimeout = 1
-            , useTLS = tlsEnabled
-            }
+            { connectionTimeout = 1 }
           connector _ = do
             atomicModifyIORef' attempts $ \count -> (count + 1, ())
             _ <- Exception.onException
@@ -164,7 +182,7 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       result `shouldSatisfy` \case
         Left err ->
           Exception.fromException err
-            == Just (ConnectionSetupTimeout expectedPhase node 1)
+            == Just (ConnectionSetupTimeout DNSResolution node 1)
         Right () -> False
       elapsedSeconds `shouldSatisfy` \elapsed ->
         elapsed >= 0.75 && elapsed < 3
@@ -176,8 +194,7 @@ main = hspec $ describe "ConnectionPool lifecycle" $ do
       closePool pool
       readIORef closeCount `shouldReturn` 1
     )
-    [ ("plaintext TCP connect", False, PlaintextConnectionSetup)
-    , ("TLS handshake", True, TLSConnectionSetup)
+    [ "connector"
     ]
 
   it "removes cancelled saturated waiters before direct handoff" $ do

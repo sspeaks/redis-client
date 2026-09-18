@@ -60,18 +60,14 @@
 --       get \"{example}:key\"
 --
 -- exampleClusterConfig :: ClusterConfig
--- exampleClusterConfig = ClusterConfig
---   { clusterSeedNode = NodeAddress \"localhost\" 7000
---   , clusterPoolConfig = PoolConfig
+-- exampleClusterConfig =
+--   (defaultClusterConfig $ NodeAddress \"localhost\" 7000)
+--     { clusterPoolConfig = defaultPoolConfig
 --       { maxConnectionsPerNode = 2
 --       , connectionTimeout = 5
---       , maxRetries = 3
---       , useTLS = False
 --       }
---   , clusterMaxRetries = 3
---   , clusterRetryDelay = 100000
---   , clusterTopologyRefreshInterval = 600
---   }
+--     , clusterMultiplexerCount = 2
+--     }
 -- @
 --
 -- @since 0.1.0.0
@@ -111,10 +107,12 @@ import           Database.Redis.Cluster.Client         (ClusterAuthentication (.
                                                         ClusterClient (..),
                                                         ClusterCommandClient,
                                                         ClusterConfig (..),
+                                                        ClusterConfigException (..),
                                                         ClusterRuntimeAuthenticationUnsupported (..),
                                                         closeClusterClient,
                                                         createClusterClient,
                                                         createClusterClientWithAuthentication,
+                                                        defaultClusterConfig,
                                                         refreshTopology,
                                                         runClusterCommandClient,
                                                         withClusterClient,
@@ -123,7 +121,9 @@ import           Database.Redis.Cluster.ConnectionPool (ConnectionPool (..),
                                                         ConnectionPoolException (..),
                                                         ConnectionPoolStats (..),
                                                         PoolConfig (..),
+                                                        PoolConfigException (..),
                                                         closePool, createPool,
+                                                        defaultPoolConfig,
                                                         getConnectionPoolStats,
                                                         withConnection)
 import           Database.Redis.Command                (ClientReplyModeUnsupported (..),
@@ -167,6 +167,7 @@ import           Database.Redis.Resp                   (Encodable (..),
 import           Database.Redis.Standalone             (StandaloneClient,
                                                         StandaloneCommandClient,
                                                         StandaloneConfig (..),
+                                                        StandaloneConfigException (..),
                                                         closeStandaloneClient,
                                                         createStandaloneClient,
                                                         createStandaloneClientFromConfig,

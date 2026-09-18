@@ -487,14 +487,13 @@ testPoolConfig :: PoolConfig
 testPoolConfig = PoolConfig
   { maxConnectionsPerNode = 4
   , connectionTimeout = 1
-  , maxRetries = 1
-  , useTLS = False
   }
 
 testClusterConfig :: ClusterConfig
 testClusterConfig = ClusterConfig
   { clusterSeedNode = testAddress
   , clusterPoolConfig = testPoolConfig
+  , clusterMultiplexerCount = 1
   , clusterMaxRetries = 1
   , clusterRetryDelay = 1
   , clusterTopologyRefreshInterval = 600

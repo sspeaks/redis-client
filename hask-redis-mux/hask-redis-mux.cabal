@@ -321,7 +321,8 @@ test-suite StandaloneSpec
     import:           test-defaults
     type:             exitcode-stdio-1.0
     main-is:          StandaloneSpec.hs
-    build-depends:    bytestring >=0.12 && <0.13
+    build-depends:    async >=2.2 && <2.3
+                    , bytestring >=0.12 && <0.13
                     , client
                     , cluster
                     , mtl >=2.3 && <2.4

@@ -50,7 +50,8 @@ import           Database.Redis.Cluster                     (ClusterNode (..),
                                                              findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
 import           Database.Redis.Cluster.ConnectionPool      (PoolConfig (..),
-                                                             createPool)
+                                                             createPool,
+                                                             defaultPoolConfig)
 import           Database.Redis.Cluster.Internal.RawCommand
 import           Database.Redis.Cluster.Internal.Topology   (commitRefreshedTopology,
                                                              mergeRefreshedTopology,
@@ -292,17 +293,26 @@ spec = do
     it "creates valid cluster config" $ do
       let poolConfig = PoolConfig
             { maxConnectionsPerNode = 1,
-              connectionTimeout = 5000,
-              maxRetries = 3,
-              useTLS = False
+              connectionTimeout = 5000
             }
           config = ClusterConfig
             { clusterSeedNode = NodeAddress "127.0.0.1" 7000,
               clusterPoolConfig = poolConfig,
+              clusterMultiplexerCount = 1,
               clusterMaxRetries = 3,
               clusterRetryDelay = 100000,
               clusterTopologyRefreshInterval = 600
             }
+      clusterMaxRetries config `shouldBe` 3
+      clusterRetryDelay config `shouldBe` 100000
+      clusterTopologyRefreshInterval config `shouldBe` 600
+
+    it "provides production defaults for a seed node" $ do
+      let seed = NodeAddress "redis.example" 6379
+          config = defaultClusterConfig seed
+      clusterSeedNode config `shouldBe` seed
+      clusterPoolConfig config `shouldBe` defaultPoolConfig
+      clusterMultiplexerCount config `shouldBe` 1
       clusterMaxRetries config `shouldBe` 3
       clusterRetryDelay config `shouldBe` 100000
       clusterTopologyRefreshInterval config `shouldBe` 600
@@ -468,14 +478,13 @@ testPoolConfig :: PoolConfig
 testPoolConfig = PoolConfig
   { maxConnectionsPerNode = 1
   , connectionTimeout     = 5000
-  , maxRetries            = 3
-  , useTLS                = False
   }
 
 testClusterConfig :: ClusterConfig
 testClusterConfig = ClusterConfig
   { clusterSeedNode                = node1
   , clusterPoolConfig              = testPoolConfig
+  , clusterMultiplexerCount        = 1
   , clusterMaxRetries              = 5
   , clusterRetryDelay              = 1000
   , clusterTopologyRefreshInterval = 600
@@ -660,6 +669,51 @@ assertPublicRejectedCommand expectedFailure command = do
 
 clusterLifecycleSpec :: Spec
 clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
+  it "passes the configured multiplexer count to cluster construction" $ do
+    (connector, _, _) <- createLifecycleConnector validClusterSlots
+    observedCount <- newIORef 0
+    let createMuxPool boundedConnector count = do
+          atomicModifyIORef' observedCount $ \_ -> (count, ())
+          createMultiplexPool boundedConnector count
+        config = testClusterConfig { clusterMultiplexerCount = 4 }
+    client <- createClusterClientWithFactories
+      createPool createMuxPool config connector
+    readIORef observedCount `shouldReturn` 4
+    closeClusterClient client
+
+  it "rejects invalid cluster values before allocating resources" $ do
+    let invalidCases =
+          [ ( testClusterConfig { clusterMultiplexerCount = 0 }
+            , InvalidClusterMultiplexerCount 0
+            )
+          , ( testClusterConfig { clusterMaxRetries = 0 }
+            , InvalidClusterMaxRetries 0
+            )
+          , ( testClusterConfig { clusterRetryDelay = -1 }
+            , InvalidClusterRetryDelay (-1)
+            )
+          , ( testClusterConfig { clusterTopologyRefreshInterval = 0 }
+            , InvalidClusterTopologyRefreshInterval 0
+            )
+          ]
+    forM_ invalidCases $ \(config, expected) -> do
+      allocations <- newIORef (0 :: Int)
+      let createConnectionPool poolConfig = do
+            atomicModifyIORef' allocations $ \count -> (count + 1, ())
+            createPool poolConfig
+          connector _ = error "connector must not run"
+      result <- try $
+        createClusterClientWithFactories
+          createConnectionPool
+          createMultiplexPool
+          config
+          connector
+        :: IO (Either ClusterConfigException (ClusterClient MockClient))
+      case result of
+        Left err -> err `shouldBe` expected
+        Right _  -> expectationFailure "expected invalid cluster configuration"
+      readIORef allocations `shouldReturn` 0
+
   it "closes the discovery connection when topology parsing fails" $ do
     (connector, connectionCount, closeCount) <-
       createLifecycleConnector (RespSimpleString "not cluster slots")
@@ -796,7 +850,6 @@ clusterLifecycleSpec = describe "Cluster client lifecycle" $ do
           { clusterPoolConfig =
               testPoolConfig
                 { connectionTimeout = 1
-                , useTLS = True
                 }
           , clusterMaxRetries = 2
           , clusterRetryDelay = 1000

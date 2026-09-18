@@ -210,9 +210,8 @@ createTLSCluster =
       , clusterPoolConfig = PoolConfig
           { maxConnectionsPerNode = 2
           , connectionTimeout = 5
-          , maxRetries = 3
-          , useTLS = True
           }
+      , clusterMultiplexerCount = 1
       , clusterMaxRetries = 3
       , clusterRetryDelay = 100000
       , clusterTopologyRefreshInterval = 600

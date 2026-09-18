@@ -111,6 +111,18 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
         runDefault = runRedis defaultStandaloneConfig
     runDefault `seq` (pure () :: IO ())
 
+  it "exports validated configuration defaults and failures" $ do
+    let seed = NodeAddress "localhost" 6379
+        clusterConfig = defaultClusterConfig seed
+        standaloneFailure = InvalidStandaloneMultiplexerCount 0
+        poolFailure = InvalidMaxConnectionsPerNode 0
+        clusterFailure = InvalidClusterMultiplexerCount 0
+    maxConnectionsPerNode defaultPoolConfig `shouldBe` 10
+    clusterSeedNode clusterConfig `shouldBe` seed
+    show standaloneFailure `shouldContain` "InvalidStandaloneMultiplexerCount"
+    show poolFailure `shouldContain` "InvalidMaxConnectionsPerNode"
+    show clusterFailure `shouldContain` "InvalidClusterMultiplexerCount"
+
   it "exports the documented cluster lifecycle facade" $ do
     let withCluster
           :: ClusterConfig

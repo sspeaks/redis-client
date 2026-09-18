@@ -282,7 +282,9 @@ See [docs/AZURE_EXAMPLES.md](docs/AZURE_EXAMPLES.md) for detailed examples.
 
 ### Standalone Multiplexed Client
 
-The standalone multiplexed client gives you pipelined throughput for a single (non-cluster) Redis server. Multiplexing is enabled by default.
+The standalone client gives you pipelined throughput for a single
+(non-cluster) Redis server. `standaloneMultiplexerCount` creates that many
+physical multiplexed connections and routes commands round-robin.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -292,16 +294,19 @@ import Database.Redis
 
 main :: IO ()
 main = do
+  let config = defaultStandaloneConfig
+        { standaloneMultiplexerCount = 4 }
   result <-
-    withStandaloneClient defaultStandaloneConfig $ \client ->
+    withStandaloneClient config $ \client ->
       runStandaloneClient client $ do
         (_ :: Bool) <- set "mykey" "myvalue"
         get "mykey"
   print (result :: Either RedisClientError ByteString)
 ```
 
-Set `standaloneMultiplexerCount` to control how many multiplexed connections
-the client creates. For TLS connections, update `standaloneConnector` to
+Non-positive multiplexer counts fail before any connection is opened.
+
+For TLS connections, update `standaloneConnector` to
 `clusterTLSConnector "redis.example.com"`.
 Library callers that issue `AUTH` directly are responsible for choosing a TLS
 connector; the CLI enforces the credentialed-plaintext policy because it owns
@@ -309,7 +314,8 @@ both the credential and transport configuration.
 
 ### Cluster Client
 
-Cluster mode uses multiplexing for command routing and pipelining.
+Cluster mode uses multiplexing by default. `clusterMultiplexerCount` controls
+the number of multiplexed connections created lazily for each active node.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -320,24 +326,15 @@ import Database.Redis
 main :: IO ()
 main = do
   result <-
-    withClusterClient config clusterPlaintextConnector $ \client ->
+    withClusterClient exampleClusterConfig clusterPlaintextConnector $ \client ->
       runClusterCommandClient client $ do
         (_ :: Bool) <- set "{example}:key" "myvalue"
         get "{example}:key"
   print (result :: Either RedisClientError ByteString)
   where
-    config = ClusterConfig
-      { clusterSeedNode = NodeAddress "localhost" 7000
-      , clusterPoolConfig = PoolConfig
-          { maxConnectionsPerNode = 2
-          , connectionTimeout = 5
-          , maxRetries = 3
-          , useTLS = False
-          }
-      , clusterMaxRetries = 3
-      , clusterRetryDelay = 100000
-      , clusterTopologyRefreshInterval = 600
-        }
+    exampleClusterConfig =
+      (defaultClusterConfig $ NodeAddress "localhost" 7000)
+        { clusterMultiplexerCount = 4 }
 ```
 
 Public command runners return `Either RedisClientError a`. Match `Left` to
