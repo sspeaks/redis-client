@@ -36,6 +36,14 @@ Both commands install `redis-client` and the canonical
 `azure-redis-connect` helper. The older `redis-connect` name remains available
 as a compatibility alias.
 
+To build the same package without installing it into a profile:
+
+```sh
+nix-build
+./result/bin/azure-redis-connect --help
+./result/bin/redis-connect --help
+```
+
 **Using Cabal:**
 ```sh
 cabal install exe:redis-client

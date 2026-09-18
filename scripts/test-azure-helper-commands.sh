@@ -21,7 +21,29 @@ EOF
 chmod +x "$tmp_dir/bin/az"
 
 cd "$REPO_ROOT"
-package_path=${AZURE_HELPER_PACKAGE_PATH:-$(nix-build --no-out-link -A fullPackageWithScripts)}
+if [[ -n "${AZURE_HELPER_PACKAGE_PATH:-}" ]]; then
+  package_path=$AZURE_HELPER_PACKAGE_PATH
+else
+  (
+    cd "$tmp_dir"
+    nix-build "$REPO_ROOT" >/dev/null
+  )
+  shopt -s nullglob
+  result_links=("$tmp_dir"/result*)
+  shopt -u nullglob
+  if [[ ${#result_links[@]} -ne 1 || "${result_links[0]}" != "$tmp_dir/result" ]]; then
+    echo "Unqualified nix-build produced multiple outputs" >&2
+    exit 1
+  fi
+  package_path=$tmp_dir/result
+fi
+
+for binary in azure-redis-connect redis-connect; do
+  if [[ ! -x "$package_path/bin/$binary" ]]; then
+    echo "Unqualified nix-build did not expose $binary" >&2
+    exit 1
+  fi
+done
 
 check_help() {
   local name=$1

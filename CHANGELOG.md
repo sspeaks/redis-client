@@ -5,6 +5,8 @@
 *   **Aligned Azure helper installation**
     *   Nix and flake installs now provide the documented
         `azure-redis-connect` command.
+    *   An unqualified `nix-build` now selects that same package instead of
+        building every auxiliary derivation exposed by `default.nix`.
     *   The previously installed `redis-connect` name remains as a
         compatibility alias; Cabal users can run
         `python3 scripts/azure-redis-connect.py` from a source checkout.
