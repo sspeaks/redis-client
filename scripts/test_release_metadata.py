@@ -21,7 +21,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.write_package(
             self.root / "hask-redis-mux" / "hask-redis-mux.cabal",
             "hask-redis-mux",
-            "0.2.0.0",
+            "0.3.0.0",
         )
         self.write_changelog(
             self.root / "CHANGELOG.md",
@@ -33,7 +33,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.write_changelog(
             self.root / "hask-redis-mux" / "CHANGELOG.md",
             "hask-redis-mux",
-            "0.2.0.0",
+            "0.3.0.0",
             "Unreleased",
             "Library changes.",
         )
@@ -184,21 +184,21 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.assertIn("redis-client release declared duplicate Docker tags", failures)
 
     def test_library_release_accepts_cli_remaining_unreleased(self):
-        self.release("hask-redis-mux", "0.2.0.0")
+        self.release("hask-redis-mux", "0.3.0.0")
         self.assertEqual(
             MODULE.validate_release(
-                self.root, "hask-redis-mux-v0.2.0.0"
+                self.root, "hask-redis-mux-v0.3.0.0"
             ),
             [],
         )
 
     def test_library_release_rejects_docker_metadata(self):
-        self.release("hask-redis-mux", "0.2.0.0")
+        self.release("hask-redis-mux", "0.3.0.0")
         failures = MODULE.validate_release(
             self.root,
-            "hask-redis-mux-v0.2.0.0",
+            "hask-redis-mux-v0.3.0.0",
             commit_sha="abcdef1",
-            docker_tags=["0.2.0.0"],
+            docker_tags=["0.3.0.0"],
             allow_latest=True,
         )
         self.assertEqual(len(failures), 3)
@@ -207,12 +207,12 @@ class ReleaseMetadataTests(unittest.TestCase):
     def test_release_notes_include_only_the_tagged_top_entry(self):
         self.release(
             "hask-redis-mux",
-            "0.2.0.0",
+            "0.3.0.0",
             body="First change.\n\n* Second change.",
         )
         self.assertEqual(
-            MODULE.release_notes(self.root, "hask-redis-mux-v0.2.0.0"),
-            "## hask-redis-mux 0.2.0.0\n\nFirst change.\n\n* Second change.\n",
+            MODULE.release_notes(self.root, "hask-redis-mux-v0.3.0.0"),
+            "## hask-redis-mux 0.3.0.0\n\nFirst change.\n\n* Second change.\n",
         )
 
     def test_cli_release_notes_do_not_require_docker_publication_arguments(self):

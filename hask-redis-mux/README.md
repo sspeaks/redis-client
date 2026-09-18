@@ -169,9 +169,9 @@ main = do
   print result
 ```
 
-## Additional Core Commands (Unreleased 0.2.0.0)
+## Additional Core Commands (Unreleased 0.3.0.0)
 
-The unreleased 0.2.0.0 API adds typed wrappers for:
+The unreleased 0.3.0.0 API adds typed wrappers for:
 
 - Strings: `append`, `strlen`, `setex`, `incrby`, `decrby`, `incrbyfloat`,
   `getdel`, and `getex`.
@@ -191,7 +191,7 @@ lists and validate them against the bundled Redis 7.2 command metadata.
 
 Because `RedisCommands` is a public typeclass, adding methods requires
 downstream custom instances to implement them. This is a PVP breaking change
-and is therefore part of the planned 0.2.0.0 release.
+and is therefore part of the planned 0.3.0.0 release.
 
 ## Bracket Pattern (Recommended)
 
