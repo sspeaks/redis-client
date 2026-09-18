@@ -197,6 +197,50 @@ class AzureRedisCredentialTests(unittest.TestCase):
             f"Launching redis-client with command:\n  {MODULE.shlex.join(command)}",
             output,
         )
+        self.assertIn(
+            "One connection per primary keeps clusters with up to 32 primaries",
+            output,
+        )
+
+    def test_cluster_fill_preset_stays_within_worker_limit_at_high_primary_counts(self):
+        arguments = MODULE.fill_preset_arguments(clustered=True)
+        process_count = int(arguments[arguments.index("-P") + 1])
+        connections_per_primary = int(arguments[arguments.index("-n") + 1])
+
+        for primary_count in (16, 17, 24, 32):
+            with self.subTest(primary_count=primary_count):
+                self.assertLessEqual(
+                    process_count * primary_count * connections_per_primary,
+                    32,
+                )
+
+    def test_enterprise_fill_uses_the_bounded_cluster_preset_without_shard_metadata(self):
+        cache = self.cache.copy()
+        cache.update({"cache_type": "Enterprise", "resourceGroup": "test-rg"})
+        stdout = io.StringIO()
+        with mock.patch.object(
+            self.connector,
+            "get_enterprise_database",
+            return_value={"name": "default", "port": 10000},
+        ), mock.patch.object(
+            self.connector, "check_entra_auth", return_value=False
+        ), mock.patch.object(
+            self.connector, "get_access_key", return_value=SYNTHETIC_ACCESS_KEY
+        ), mock.patch(
+            "builtins.input", side_effect=["1", "n", "n"]
+        ), mock.patch.object(
+            MODULE.subprocess, "run"
+        ) as run, redirect_stdout(stdout):
+            self.connector.launch_redis_client(cache, "fill")
+
+        command = run.call_args.args[0]
+        self.assertIn("-c", command)
+        self.assertEqual(command[command.index("-P") + 1], "1")
+        self.assertEqual(command[command.index("-n") + 1], "1")
+        self.assertIn(
+            "One connection per primary keeps clusters with up to 32 primaries",
+            stdout.getvalue(),
+        )
 
 
 if __name__ == "__main__":

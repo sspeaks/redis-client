@@ -32,7 +32,7 @@ COMMON_FILL_PRESET_OPTIONS = (
 )
 CLUSTER_FILL_PRESET_OPTIONS = (
     ("Parallel processes", "-P", 1, ""),
-    ("Connections per primary", "-n", 2, ""),
+    ("Connections per primary", "-n", 1, ""),
 ) + COMMON_FILL_PRESET_OPTIONS
 
 
@@ -58,6 +58,9 @@ def print_fill_preset(clustered: bool) -> None:
         print(f"  - {label}: {value:,}{unit} ({flag} {value})")
     print("  - Increase one concurrency or pipeline setting at a time and observe")
     print("    the client's worker and estimated-memory report before proceeding.")
+    if clustered:
+        print("  - One connection per primary keeps clusters with up to 32 primaries")
+        print("    inside the client's normal 32-worker safety limit.")
     print("  - Optional RTS profile: scripts/run-with-rts-profile.sh fill-throughput -- redis-client ...")
 
 

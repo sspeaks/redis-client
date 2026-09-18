@@ -176,6 +176,25 @@ main = hspec $ do
           })
         `shouldSatisfy` either (const False) (\plan -> plannedWorkerCount plan == 36)
 
+    it "accepts the Azure cluster preset through the 32-primary boundary" $ do
+      let azurePreset = defaultRunState
+            { numProcesses = Just 1
+            , numConnections = Just 1
+            , pipelineBatchSize = 1024
+            , keySize = 512
+            , valueSize = 512
+            }
+      mapM_ (\primaryCount ->
+        clusterFillConcurrencyPlan primaryCount azurePreset
+          `shouldSatisfy` either
+            (const False)
+            (\plan -> plannedWorkerCount plan == toInteger primaryCount))
+        [16, 17, 24, 32]
+      clusterFillConcurrencyPlan 33 azurePreset
+        `shouldSatisfy` either
+          (isInfixOf "Total fill workers must not exceed 32")
+          (const False)
+
     it "reports one effective connection per primary in serial cluster mode" $ do
       let state = defaultRunState
             { serial = True

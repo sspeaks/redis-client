@@ -118,7 +118,7 @@ client's normal fill concurrency and memory guardrails:
 
 **For clustered caches:**
 - **1 process** (`-P 1`)
-- **2 connections per primary** (`-n 2`)
+- **1 connection per primary** (`-n 1`)
 - **Key size: 512 bytes**
 - **Value size: 512 bytes**
 - **Pipeline: 1,024 commands/batch**
@@ -139,16 +139,18 @@ Flush the cache before filling? (y/n): y
 
 ✓ Using conservative cluster fill starting parameters:
   - Parallel processes: 1 (-P 1)
-  - Connections per primary: 2 (-n 2)
+  - Connections per primary: 1 (-n 1)
   - Key size: 512 bytes (--key-size 512)
   - Value size: 512 bytes (--value-size 512)
   - Pipeline: 1,024 commands/batch (--pipeline 1024)
+  - One connection per primary keeps clusters with up to 32 primaries
+    inside the client's normal 32-worker safety limit.
   - Increase one concurrency or pipeline setting at a time and observe
     the client's worker and estimated-memory report before proceeding.
 
 Launching redis-client with command:
   redis-client fill -h my-cache.redis.cache.windows.net -p 10000 -t -c \
-    -d 10 -f -P 1 -n 2 \
+    -d 10 -f -P 1 -n 1 \
     --key-size 512 --value-size 512 --pipeline 1024
 ```
 
@@ -308,7 +310,7 @@ embed a universal Azure performance recommendation.
 
 The script automatically detects cluster mode and applies:
 - **Multi-process execution**: 1 process
-- **Concurrent connections**: 2 per primary
+- **Concurrent connections**: 1 per primary
 - **Key/value size**: 512 bytes each
 - **Pipeline batch**: 1,024 commands
 
@@ -318,6 +320,12 @@ pipeline batch. More processes multiply the 128 MiB baseline; more connections
 multiply sockets, TLS work, and in-flight pipeline memory. Larger pipelines can
 raise throughput while also increasing allocation, residency, and recovery
 cost after errors.
+
+The starting preset therefore produces one worker per primary and remains
+inside the normal 32-worker guardrail through 32-primary topologies, including
+24-primary Enterprise deployments. Larger topologies require an explicit
+`--allow-high-scale-fill` decision after reviewing the reported worker and
+memory estimates; the helper does not silently bypass the client safety limit.
 
 Pair large fill and benchmark runs with the explicit RTS profiles documented in
 [`docs/rts-profiles.md`](rts-profiles.md). The shared binary no longer bakes a
