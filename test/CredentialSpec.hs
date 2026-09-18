@@ -1,18 +1,22 @@
+{-# LANGUAGE CPP #-}
+
 module Main where
 
-import           AppConfig         (RunState (..), defaultRunState,
-                                    plaintextAuthenticationPolicy)
-import           Control.Exception (IOException, displayException, try)
-import           CredentialConfig  (rejectCredentialArguments,
-                                    resolveRedisPasswordFrom)
-import           Data.List         (isInfixOf)
-import           FillLimits        (FillConcurrencyPlan (..),
-                                    clusterFillConcurrencyPlan,
-                                    effectiveFillConnections,
-                                    fillConcurrencyPlan)
-import           FillProcess       (buildChildArgs)
-import           System.IO.Error   (doesNotExistErrorType, mkIOError,
-                                    permissionErrorType)
+import           AppConfig             (RunState (..), clientLibraryName,
+                                        clientLibraryVersion, defaultRunState,
+                                        plaintextAuthenticationPolicy)
+import           Control.Exception     (IOException, displayException, try)
+import           CredentialConfig      (rejectCredentialArguments,
+                                        resolveRedisPasswordFrom)
+import qualified Data.ByteString.Char8 as BS8
+import           Data.List             (isInfixOf)
+import           FillLimits            (FillConcurrencyPlan (..),
+                                        clusterFillConcurrencyPlan,
+                                        effectiveFillConnections,
+                                        fillConcurrencyPlan)
+import           FillProcess           (buildChildArgs)
+import           System.IO.Error       (doesNotExistErrorType, mkIOError,
+                                        permissionErrorType)
 import           Test.Hspec
 
 syntheticJwt :: String
@@ -20,6 +24,11 @@ syntheticJwt = "eyJhbGciOiJub25lIn0.eyJvaWQiOiJ0ZXN0LXVzZXJfMSJ9.c2lnbmF0dXJlLXN
 
 main :: IO ()
 main = hspec $ do
+  describe "Redis client metadata" $ do
+    it "uses the Cabal-generated hask-redis-mux package version" $ do
+      clientLibraryName `shouldBe` BS8.pack "hask-redis-mux"
+      clientLibraryVersion `shouldBe` BS8.pack VERSION_hask_redis_mux
+
   describe "credential argument rejection" $ do
     mapM_ rejectsWithoutEcho
       [ ["cli", "-a", syntheticJwt]

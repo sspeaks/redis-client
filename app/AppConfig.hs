@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP               #-}
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -8,6 +9,8 @@ module AppConfig
   , plaintextAuthenticationPolicy
   , enforcePlaintextAuthenticationPolicy
   , warnIfInsecurePlaintextAuthentication
+  , clientLibraryName
+  , clientLibraryVersion
   , authenticate
   , runCommandsAgainstTLSHost
   , runCommandsAgainstPlaintextHost
@@ -115,12 +118,18 @@ warnIfInsecurePlaintextAuthentication state =
     Right Nothing        -> pure ()
     Right (Just warning) -> hPutStrLn stderr warning
 
+clientLibraryName :: BS.ByteString
+clientLibraryName = "hask-redis-mux"
+
+clientLibraryVersion :: BS.ByteString
+clientLibraryVersion = BS8.pack VERSION_hask_redis_mux
+
 authenticate :: (Client client) => String -> String -> RedisCommandClient client RespData
 authenticate _ [] = return $ RespSimpleString "OK"
 authenticate uname pwd = do
   (_ :: RespData) <- auth (BS8.pack uname) (BS8.pack pwd)
-  (_ :: RespData) <- clientSetInfo ["LIB-NAME", "hask-redis-mux"]
-  clientSetInfo ["LIB-VER", "0.0.0"]
+  (_ :: RespData) <- clientSetInfo ["LIB-NAME", clientLibraryName]
+  clientSetInfo ["LIB-VER", clientLibraryVersion]
 
 runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost st action = do

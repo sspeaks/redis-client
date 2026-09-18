@@ -112,6 +112,21 @@ build-depends:
   text >= 2.1 && < 2.2
 ```
 
+## Versioning and releases
+
+`hask-redis-mux` follows the Haskell PVP independently of the `redis-client`
+executable. Breaking API changes bump the major component, additive API changes
+increment the minor component, and compatible fixes update the patch level. The
+package usually advances on its own; it only releases alongside the CLI when a
+single commit intentionally ships both packages.
+
+The release tag for this package is `hask-redis-mux-vX.Y.Z.W`. That tag must
+match the version in `hask-redis-mux.cabal` and the dated top version heading
+in `hask-redis-mux/CHANGELOG.md`. It creates a namespaced GitHub Release with
+the package source distribution; Hackage publication remains a manual step.
+The repository-wide release checklist lives in
+[`../docs/release-process.md`](../docs/release-process.md).
+
 ## Quick Start
 
 ```haskell
@@ -154,9 +169,9 @@ main = do
   print result
 ```
 
-## Additional Core Commands (Unreleased 0.2.0.0)
+## Additional Core Commands (Unreleased 0.3.0.0)
 
-The unreleased 0.2.0.0 API adds typed wrappers for:
+The unreleased 0.3.0.0 API adds typed wrappers for:
 
 - Strings: `append`, `strlen`, `setex`, `incrby`, `decrby`, `incrbyfloat`,
   `getdel`, and `getex`.
@@ -176,7 +191,7 @@ lists and validate them against the bundled Redis 7.2 command metadata.
 
 Because `RedisCommands` is a public typeclass, adding methods requires
 downstream custom instances to implement them. This is a PVP breaking change
-and is therefore part of the planned 0.2.0.0 release.
+and is therefore part of the planned 0.3.0.0 release.
 
 ## Bracket Pattern (Recommended)
 

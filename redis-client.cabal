@@ -2,6 +2,12 @@ cabal-version:      3.0
 name:               redis-client
 version:            0.6.0.0
 synopsis:           A RESP2-first Redis client for learning Redis and Haskell
+description:
+    redis-client is a command-line Redis client for interactive commands,
+    bounded data generation, cluster-aware benchmarking, and standalone or
+    cluster proxying. It uses the independently versioned hask-redis-mux
+    package for RESP2 command execution, connection multiplexing, TLS, and
+    Redis Cluster topology management.
 license:            MIT
 license-file:       LICENSE
 author:             Seth Speaks
@@ -9,7 +15,15 @@ maintainer:         sspeaks610@gmail.com
 category:           Network
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
+                  , README.md
 extra-source-files: scripts/test-public-haskell-examples.py
+homepage:           https://github.com/sspeaks/redis-client
+bug-reports:        https://github.com/sspeaks/redis-client/issues
+tested-with:        GHC == 9.10.3
+
+source-repository head
+    type:     git
+    location: https://github.com/sspeaks/redis-client.git
 
 -- ---------------------------------------------------------------------------
 -- Common stanzas
