@@ -32,10 +32,12 @@
           inherit system;
           overlays = [ overlay ];
         };
+        package = (import ./default.nix { inherit pkgs; }).fullPackageWithScripts;
       in
       {
-        defaultPackage = (import ./default.nix { inherit pkgs; }).fullPackageWithScripts;
+        packages.default = package;
         packages.dockerImage = (import ./default.nix { inherit pkgs; }).dockerImage;
+        defaultPackage = package;
         devShell = import ./shell.nix { inherit pkgs; };
         formatter = pkgs.nixpkgs-fmt;
       });

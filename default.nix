@@ -62,11 +62,9 @@ rec {
     };
   };
 
-  # Wrapper package that includes both redis-client and azure-redis-connect
+  # Wrapper package that includes redis-client and the Azure helper.
   fullPackageWithScripts = pkgs.stdenv.mkDerivation {
     name = "redis-client-full";
-
-    buildInputs = [ pkgs.makeWrapper ];
 
     unpackPhase = "true";
 
@@ -78,13 +76,20 @@ rec {
         cp -rL ${justClient}/bin/. $out/bin/
       fi
       
-      # Install the azure-redis-connect script
-      cp ${scriptSrc} $out/bin/redis-connect
-      chmod +x $out/bin/redis-connect
-      
-      # Wrap the script to ensure python3 is in PATH
-      wrapProgram $out/bin/redis-connect \
-        --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.python3 ]}
+      # Install the canonical Azure helper command.
+      cp ${scriptSrc} $out/bin/azure-redis-connect
+      chmod +x $out/bin/azure-redis-connect
+      substituteInPlace $out/bin/azure-redis-connect \
+        --replace-fail '#!/usr/bin/env python3' '#!${pkgs.python3}/bin/python3'
+
+      # Preserve the previously shipped short name as a compatibility alias.
+      ln -s azure-redis-connect $out/bin/redis-connect
+    '';
+
+    doInstallCheck = true;
+    installCheckPhase = ''
+      $out/bin/azure-redis-connect --help >/dev/null
+      $out/bin/redis-connect --help >/dev/null
     '';
   };
 }

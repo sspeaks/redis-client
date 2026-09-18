@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+*   **Aligned Azure helper installation**
+    *   Nix and flake installs now provide the documented
+        `azure-redis-connect` command.
+    *   The previously installed `redis-connect` name remains as a
+        compatibility alias; Cabal users can run
+        `python3 scripts/azure-redis-connect.py` from a source checkout.
 *   **Qualified RESP support**
     *   Command parsing and encoding are RESP2-first, with RESP3-shaped map
         and set aggregates only. RESP3 session and scalar types remain

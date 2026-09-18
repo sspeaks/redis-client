@@ -25,17 +25,23 @@ replies are re-encoded, so their original ordering is not preserved.
 
 **Using Nix (recommended):**
 ```sh
-# Install from current directory
+# Install the CLI and Azure helper from the current checkout
 nix profile install .#
 
-# Or install directly from GitHub
+# Or install the same commands directly from GitHub
 nix profile install github:sspeaks/redis-client
 ```
 
+Both commands install `redis-client` and the canonical
+`azure-redis-connect` helper. The older `redis-connect` name remains available
+as a compatibility alias.
+
 **Using Cabal:**
 ```sh
-cabal build
-cabal install
+cabal install exe:redis-client
+
+# The Python helper is run from a source checkout; Cabal does not install it.
+python3 scripts/azure-redis-connect.py --help
 ```
 
 ### Basic Usage
@@ -274,7 +280,12 @@ azure-redis-connect --subscription <subscription-id>
 azure-redis-connect --resource-group <rg-name>
 ```
 
-**Prerequisites:** Azure CLI (`az login`), Python 3.6+, and Azure permissions for Redis access.
+Nix installations also provide `redis-connect` as a compatibility alias. From
+a source checkout after a Cabal install, use
+`python3 scripts/azure-redis-connect.py` instead.
+
+**Prerequisites:** Azure CLI (`az login`), Python 3.6+, `redis-client` on
+`PATH`, and Azure permissions for Redis access.
 
 See [docs/AZURE_EXAMPLES.md](docs/AZURE_EXAMPLES.md) for detailed examples.
 

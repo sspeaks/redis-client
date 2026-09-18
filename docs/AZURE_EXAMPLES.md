@@ -1,6 +1,19 @@
 # Azure Redis Connection Examples
 
-This document provides examples of how to use the `azure-redis-connect.py` script to connect to Azure Redis caches.
+The canonical installed helper is `azure-redis-connect`. Nix installations
+also provide the previous `redis-connect` name as a compatibility alias.
+
+Install it from the current checkout or directly from GitHub:
+
+```bash
+nix profile install .#
+# or
+nix profile install github:sspeaks/redis-client
+```
+
+If you installed only the Haskell executable with Cabal, run the helper from a
+source checkout as `python3 scripts/azure-redis-connect.py`. Cabal does not
+install the Python helper.
 
 ## Prerequisites
 
@@ -15,9 +28,11 @@ This document provides examples of how to use the `azure-redis-connect.py` scrip
 
 2. **Python 3**: Version 3.6 or later
 
-3. **Redis Client**: The Haskell redis-client must be built
+3. **Redis Client**: `redis-client` must be installed and available on `PATH`
    ```bash
-   cabal build
+   nix profile install .#
+   # or
+   cabal install exe:redis-client
    ```
 
 4. **Permissions**: You need appropriate Azure permissions to:
@@ -32,7 +47,7 @@ This document provides examples of how to use the `azure-redis-connect.py` scrip
 If you have a subscription already selected with `az account set`, you can run the script without specifying a subscription:
 
 ```bash
-python3 azure-redis-connect.py
+azure-redis-connect
 ```
 
 The script will automatically use your currently selected Azure subscription.
@@ -40,31 +55,31 @@ The script will automatically use your currently selected Azure subscription.
 ### Connect to a cache in a specific subscription
 
 ```bash
-python3 azure-redis-connect.py --subscription "My Subscription Name"
+azure-redis-connect --subscription "My Subscription Name"
 ```
 
 or with subscription ID:
 
 ```bash
-python3 azure-redis-connect.py --subscription "12345678-1234-1234-1234-123456789012"
+azure-redis-connect --subscription "12345678-1234-1234-1234-123456789012"
 ```
 
 ### Filter by resource group
 
 ```bash
-python3 azure-redis-connect.py --subscription "My Subscription" --resource-group "my-redis-rg"
+azure-redis-connect --subscription "My Subscription" --resource-group "my-redis-rg"
 ```
 
 Or with the currently selected subscription:
 
 ```bash
-python3 azure-redis-connect.py --resource-group "my-redis-rg"
+azure-redis-connect --resource-group "my-redis-rg"
 ```
 
 ### Short flags
 
 ```bash
-python3 azure-redis-connect.py -s "My Subscription" -g "my-redis-rg"
+azure-redis-connect -s "My Subscription" -g "my-redis-rg"
 ```
 
 ## Interactive Workflow
@@ -258,9 +273,9 @@ Ensure:
 ### "Error running redis-client"
 
 Verify:
-- The redis-client is built: `cabal build`
-- You're running the script from the redis-client directory
-- Cabal is in your PATH
+- `redis-client` is installed and on `PATH`
+- For the source-tree form, you're running
+  `python3 scripts/azure-redis-connect.py` from the repository root
 
 ## Advanced Usage
 
@@ -271,7 +286,7 @@ Verify:
 az cloud set --name AzureUSGovernment
 
 # Then run the script
-python3 azure-redis-connect.py -s "My Subscription"
+azure-redis-connect -s "My Subscription"
 ```
 
 ### Batch operations

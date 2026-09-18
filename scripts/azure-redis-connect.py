@@ -6,7 +6,8 @@ This script wraps Azure CLI to list and connect to Azure Redis caches.
 It supports Entra (Azure AD) authentication and can launch redis-client in various modes.
 
 Usage:
-    python3 azure-redis-connect.py [--subscription <subscription-id>] [--resource-group <rg-name>]
+    azure-redis-connect [--subscription <subscription-id>] [--resource-group <rg-name>]
+    python3 scripts/azure-redis-connect.py [--subscription <subscription-id>] [--resource-group <rg-name>]
     
     If --subscription is not provided, the currently selected Azure subscription will be used.
 """
