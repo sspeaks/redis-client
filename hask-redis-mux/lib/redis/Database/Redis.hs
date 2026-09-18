@@ -12,12 +12,14 @@
 --
 -- @
 -- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
 -- import Database.Redis
 --
 -- main :: IO ()
 -- main = do
 --   result <- runRedis defaultStandaloneConfig $ do
---     set \"mykey\" \"myvalue\"
+--     (_ :: Bool) <- set \"mykey\" \"myvalue\"
 --     (val :: ByteString) <- get \"mykey\"
 --     return val
 --   print result
@@ -26,20 +28,50 @@
 -- __Typed returns via 'FromResp':__
 --
 -- @
--- runRedis defaultStandaloneConfig $ do
---   set \"counter\" \"42\"
---   (n :: Integer) <- get \"counter\"  -- automatically parsed
---   (bs :: ByteString) <- get \"counter\"  -- raw bytes
---   (mt :: Maybe Text) <- get \"missing\"  -- Nothing for missing keys
+-- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
+-- import Data.Text (Text)
+-- import Database.Redis
+--
+-- typedReturns :: IO (Integer, ByteString, Maybe Text)
+-- typedReturns =
+--   runRedis defaultStandaloneConfig $ do
+--     (_ :: Bool) <- set \"counter\" \"42\"
+--     (n :: Integer) <- get \"counter\"
+--     (bs :: ByteString) <- get \"counter\"
+--     (mt :: Maybe Text) <- get \"missing\"
+--     return (n, bs, mt)
 -- @
 --
 -- __Cluster usage with bracket pattern:__
 --
 -- @
--- withClusterClient clusterConfig connector $ \\client ->
---   runClusterCommandClient client $ do
---     set \"mykey\" \"myvalue\"
---     get \"mykey\"
+-- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
+-- import Database.Redis
+--
+-- clusterExample :: IO ByteString
+-- clusterExample =
+--   withClusterClient exampleClusterConfig clusterPlaintextConnector $ \\client ->
+--     runClusterCommandClient client $ do
+--       (_ :: Bool) <- set \"{example}:key\" \"myvalue\"
+--       get \"{example}:key\"
+--
+-- exampleClusterConfig :: ClusterConfig
+-- exampleClusterConfig = ClusterConfig
+--   { clusterSeedNode = NodeAddress \"localhost\" 7000
+--   , clusterPoolConfig = PoolConfig
+--       { maxConnectionsPerNode = 2
+--       , connectionTimeout = 5
+--       , maxRetries = 3
+--       , useTLS = False
+--       }
+--   , clusterMaxRetries = 3
+--   , clusterRetryDelay = 100000
+--   , clusterTopologyRefreshInterval = 600
+--   }
 -- @
 --
 -- @since 0.1.0.0

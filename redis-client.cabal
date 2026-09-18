@@ -9,6 +9,7 @@ maintainer:         sspeaks610@gmail.com
 category:           Network
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
+extra-source-files: scripts/test-public-haskell-examples.py
 
 -- ---------------------------------------------------------------------------
 -- Common stanzas

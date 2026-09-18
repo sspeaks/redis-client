@@ -9,20 +9,18 @@
 -- Use 'withStandaloneClient' for automatic resource management (recommended):
 --
 -- @
+-- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
 -- import Database.Redis
 --
 -- main :: IO ()
--- main = do
---   let config = StandaloneConfig
---         { standaloneNodeAddress     = NodeAddress \"localhost\" 6379
---         , standaloneConnector       = clusterPlaintextConnector
---         , standaloneMultiplexerCount = 1
---         }
---   withStandaloneClient config $ \\client ->
---     runStandaloneClient client $ do
---       set \"key\" \"value\"
---       result <- get \"key\"
---       ...
+-- main =
+--   withStandaloneClient defaultStandaloneConfig $ \\client -> do
+--     result <- runStandaloneClient client $ do
+--       (_ :: Bool) <- set \"key\" \"value\"
+--       get \"key\"
+--     print (result :: ByteString)
 -- @
 --
 -- @since 0.1.0.0
@@ -84,9 +82,16 @@ data StandaloneConfig client = StandaloneConfig
 -- | Default configuration connecting to @localhost:6379@ over plaintext with 1 multiplexer.
 --
 -- @
--- runRedis defaultStandaloneConfig $ do
---   set \"key\" \"value\"
---   get \"key\"
+-- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
+-- import Database.Redis
+--
+-- defaultExample :: IO ByteString
+-- defaultExample =
+--   runRedis defaultStandaloneConfig $ do
+--     (_ :: Bool) <- set \"key\" \"value\"
+--     get \"key\"
 -- @
 defaultStandaloneConfig :: StandaloneConfig PlainTextClient
 defaultStandaloneConfig = StandaloneConfig
@@ -149,10 +154,17 @@ closeStandaloneMux mux =
 -- transport are permanently closed.
 --
 -- @
--- withStandaloneClient config $ \\client ->
---   runStandaloneClient client $ do
---     set \"key\" \"value\"
---     get \"key\"
+-- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
+-- import Database.Redis
+--
+-- bracketExample :: IO ByteString
+-- bracketExample =
+--   withStandaloneClient defaultStandaloneConfig $ \\client ->
+--     runStandaloneClient client $ do
+--       (_ :: Bool) <- set \"key\" \"value\"
+--       get \"key\"
 -- @
 withStandaloneClient
   :: (Client client)
@@ -166,9 +178,16 @@ withStandaloneClient config =
 -- the client in one step.
 --
 -- @
--- result <- runRedis defaultStandaloneConfig $ do
---   set \"key\" \"value\"
---   get \"key\"
+-- {-# LANGUAGE OverloadedStrings #-}
+-- {-# LANGUAGE ScopedTypeVariables #-}
+--
+-- import Database.Redis
+--
+-- runRedisExample :: IO ByteString
+-- runRedisExample =
+--   runRedis defaultStandaloneConfig $ do
+--     (_ :: Bool) <- set \"key\" \"value\"
+--     get \"key\"
 -- @
 runRedis
   :: (Client client)

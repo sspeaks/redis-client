@@ -8,18 +8,33 @@
 -- 'ClusterCommandClient.createClusterClient' and related functions.
 --
 -- @
--- import Redis
+-- {-# LANGUAGE DataKinds #-}
 --
--- main :: IO ()
--- main = do
---   -- Standalone plaintext
---   conn <- connectPlaintext "localhost" 6379
---   ...
+-- import Database.Redis
 --
---   -- Cluster with TLS
---   let connector = clusterTLSConnector "redis.example.com"
---   client <- createClusterClient config connector
---   ...
+-- plaintextConnection :: IO (PlainTextClient 'Connected)
+-- plaintextConnection =
+--   connectPlaintext \"localhost\" 6379
+--
+-- tlsClusterExample :: IO ()
+-- tlsClusterExample =
+--   withClusterClient exampleClusterConfig
+--       (clusterTLSConnector \"redis.example.com\") $ \\_ ->
+--     return ()
+--
+-- exampleClusterConfig :: ClusterConfig
+-- exampleClusterConfig = ClusterConfig
+--   { clusterSeedNode = NodeAddress \"redis.example.com\" 6380
+--   , clusterPoolConfig = PoolConfig
+--       { maxConnectionsPerNode = 2
+--       , connectionTimeout = 5
+--       , maxRetries = 3
+--       , useTLS = True
+--       }
+--   , clusterMaxRetries = 3
+--   , clusterRetryDelay = 100000
+--   , clusterTopologyRefreshInterval = 600
+--   }
 -- @
 --
 -- @since 0.1.0.0
@@ -286,7 +301,13 @@ secondsToMicroseconds seconds =
 -- | Connect a plaintext client to a specific host and port.
 --
 -- @
--- conn <- connectPlaintext "localhost" 6379
+-- {-# LANGUAGE DataKinds #-}
+--
+-- import Database.Redis
+--
+-- plaintextConnection :: IO (PlainTextClient 'Connected)
+-- plaintextConnection =
+--   connectPlaintext \"localhost\" 6379
 -- @
 connectPlaintext :: String -> Int -> IO (PlainTextClient 'Connected)
 connectPlaintext host port =
@@ -312,7 +333,13 @@ connectPlaintextWithTimeout seconds host port =
 -- | Connect a TLS client to a specific host and port.
 --
 -- @
--- conn <- connectTLS "redis.example.com" 6380
+-- {-# LANGUAGE DataKinds #-}
+--
+-- import Database.Redis
+--
+-- tlsConnection :: IO (TLSClient 'Connected)
+-- tlsConnection =
+--   connectTLS \"redis.example.com\" 6380
 -- @
 connectTLS :: String -> Int -> IO (TLSClient 'Connected)
 connectTLS host port =
@@ -338,8 +365,26 @@ connectTLSWithTimeout seconds host port =
 -- Each cluster node will be connected to using its advertised address.
 --
 -- @
--- let connector = clusterPlaintextConnector
--- client <- createClusterClient config connector
+-- import Database.Redis
+--
+-- plaintextClusterExample :: IO ()
+-- plaintextClusterExample =
+--   withClusterClient exampleClusterConfig clusterPlaintextConnector $ \\_ ->
+--     return ()
+--
+-- exampleClusterConfig :: ClusterConfig
+-- exampleClusterConfig = ClusterConfig
+--   { clusterSeedNode = NodeAddress \"localhost\" 7000
+--   , clusterPoolConfig = PoolConfig
+--       { maxConnectionsPerNode = 2
+--       , connectionTimeout = 5
+--       , maxRetries = 3
+--       , useTLS = False
+--       }
+--   , clusterMaxRetries = 3
+--   , clusterRetryDelay = 100000
+--   , clusterTopologyRefreshInterval = 600
+--   }
 -- @
 clusterPlaintextConnector :: Connector PlainTextClient
 clusterPlaintextConnector addr =
@@ -363,8 +408,27 @@ clusterPlaintextConnectorWithTimeout seconds =
 -- match the TLS certificate's hostname.
 --
 -- @
--- let connector = clusterTLSConnector "redis.example.com"
--- client <- createClusterClient config connector
+-- import Database.Redis
+--
+-- tlsClusterExample :: IO ()
+-- tlsClusterExample =
+--   withClusterClient exampleClusterConfig
+--       (clusterTLSConnector \"redis.example.com\") $ \\_ ->
+--     return ()
+--
+-- exampleClusterConfig :: ClusterConfig
+-- exampleClusterConfig = ClusterConfig
+--   { clusterSeedNode = NodeAddress \"redis.example.com\" 6380
+--   , clusterPoolConfig = PoolConfig
+--       { maxConnectionsPerNode = 2
+--       , connectionTimeout = 5
+--       , maxRetries = 3
+--       , useTLS = True
+--       }
+--   , clusterMaxRetries = 3
+--   , clusterRetryDelay = 100000
+--   , clusterTopologyRefreshInterval = 600
+--   }
 -- @
 clusterTLSConnector :: String -> Connector TLSClient
 clusterTLSConnector certHostname addr =
