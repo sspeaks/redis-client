@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> { }, dockerTag ? "latest", ... }:
+{ pkgs ? import <nixpkgs> { }, ... }:
 let
   src = builtins.path { path = ./.; name = "source"; };
   scriptSrc = ./scripts/azure-redis-connect.py;
@@ -55,7 +55,7 @@ rec {
 
   dockerImage = pkgs.dockerTools.buildLayeredImage {
     name = "ghcr.io/sspeaks/redis-client";
-    tag = dockerTag;
+    tag = "latest";
     contents = [ justClient pkgs.cacert pkgs.jq pkgs.curl pkgs.bash pkgs.coreutils ];
     config = {
       Entrypoint = [ "/bin/redis-client" ];

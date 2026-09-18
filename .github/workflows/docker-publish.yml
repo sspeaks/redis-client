@@ -21,10 +21,6 @@ jobs:
     steps:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      with:
-        nix_path: nixpkgs=channel:nixos-25.05
-
     - id: release
       name: Parse release tag
       run: |
@@ -43,11 +39,10 @@ jobs:
             exit 1
             ;;
         esac
-        docker_sha_tag="sha-${GITHUB_SHA::12}"
         {
           echo "package_name=$package_name"
           echo "package_version=$package_version"
-          echo "docker_sha_tag=$docker_sha_tag"
+          echo "docker_sha_tag=sha-${GITHUB_SHA::12}"
         } >> "$GITHUB_OUTPUT"
 
     - name: Validate release metadata
@@ -68,6 +63,41 @@ jobs:
             ;;
         esac
 
+  publish-github-release:
+    needs: verify-release
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+
+    - name: Build package source distribution
+      env:
+        PACKAGE_NAME: ${{ needs.verify-release.outputs.package_name }}
+      run: |
+        mkdir release-artifacts
+        nix develop --no-update-lock-file --no-write-lock-file --command \
+          cabal sdist "pkg:$PACKAGE_NAME" --output-dir release-artifacts
+
+    - name: Prepare package release notes
+      run: |
+        python3 scripts/check-release-metadata.py \
+          --release-tag "$GITHUB_REF_NAME" \
+          --write-release-notes release-notes.md
+
+    - name: Create namespaced GitHub release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" \
+          release-artifacts/*.tar.gz \
+          --title "$GITHUB_REF_NAME" \
+          --notes-file release-notes.md
+
   publish-docker:
     needs: verify-release
     if: needs.verify-release.outputs.package_name == 'redis-client'
@@ -81,20 +111,21 @@ jobs:
     - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
     - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      with:
-        nix_path: nixpkgs=channel:nixos-25.05
 
-    - name: Build Docker image
-      run: nix-build default.nix -A dockerImage --argstr dockerTag "${{ needs.verify-release.outputs.package_version }}"
+    - name: Build locked Docker image
+      run: nix build --no-update-lock-file --no-write-lock-file .#dockerImage
 
     - name: Log in to GHCR
       run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-    - name: Load and push image
+    - name: Load and push immutable and stable image tags
       run: |
         docker load < result
-        docker tag ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.package_version }} ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.docker_sha_tag }}
-        docker tag ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.package_version }} ghcr.io/sspeaks/redis-client:latest
-        docker push ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.package_version }}
-        docker push ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.docker_sha_tag }}
-        docker push ghcr.io/sspeaks/redis-client:latest
+        source_image="ghcr.io/sspeaks/redis-client:latest"
+        version_image="ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.package_version }}"
+        sha_image="ghcr.io/sspeaks/redis-client:${{ needs.verify-release.outputs.docker_sha_tag }}"
+        docker tag "$source_image" "$version_image"
+        docker tag "$source_image" "$sha_image"
+        docker push "$version_image"
+        docker push "$sha_image"
+        docker push "$source_image"

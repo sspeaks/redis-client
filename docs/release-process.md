@@ -1,38 +1,63 @@
 # Release process
 
-This repository publishes two packages from one source tree:
+This repository publishes two independently versioned packages:
 
-| Package | Primary audience | Version source | Changelog | Release tag | Published artifacts |
-| --- | --- | --- | --- | --- | --- |
-| `redis-client` | CLI users and Docker consumers | `redis-client.cabal` | `CHANGELOG.md` | `redis-client-vX.Y.Z.W` | Git tag, source tree, `ghcr.io/sspeaks/redis-client` image |
-| `hask-redis-mux` | Library consumers | `hask-redis-mux/hask-redis-mux.cabal` | `hask-redis-mux/CHANGELOG.md` | `hask-redis-mux-vX.Y.Z.W` | Git tag, source tree, Hackage upload |
+| Package | Version source | Changelog | Release tag and GitHub Release | Published artifacts |
+| --- | --- | --- | --- | --- |
+| `redis-client` | `redis-client.cabal` | `CHANGELOG.md` | `redis-client-vX.Y.Z.W` | Cabal source distribution, Nix package, and `ghcr.io/sspeaks/redis-client` image |
+| `hask-redis-mux` | `hask-redis-mux/hask-redis-mux.cabal` | `hask-redis-mux/CHANGELOG.md` | `hask-redis-mux-vX.Y.Z.W` | Cabal source distribution and manual Hackage upload |
 
-## Version ownership
+## Version and changelog ownership
 
-The CLI and library are versioned independently.
-
-- Advance **only the package you changed** when the user-visible impact is
-  confined to that package.
-- Release **both packages from the same commit** only when one change set
-  intentionally ships both the CLI and the library together.
+- Advance only the package whose user-visible behavior changed.
+- Release both packages from one commit only when the change intentionally
+  ships both surfaces.
 - `hask-redis-mux` follows the Haskell PVP because it exposes a public API.
-- `redis-client` versions the executable and Docker image together; the Docker
-  image version is always the Cabal package version for that release.
+- During development, the first package changelog entry must be versioned as
+  `## X.Y.Z.W -- Unreleased`, and `X.Y.Z.W` must equal that package's Cabal
+  version. A generic `## Unreleased` heading is intentionally invalid because
+  it cannot prove which future package version owns the changes.
+- Before tagging, replace `Unreleased` with the release date in `YYYY-MM-DD`
+  form. The tagged version, Cabal version, and first changelog entry must then
+  agree exactly.
 
-## CI and release verification
+This prevents an old tag from publishing newer source content that is still
+marked unreleased.
 
-Before a release tag can publish artifacts, CI validates:
+## Automated release behavior
 
-1. each Cabal package name matches its expected manifest;
-2. each package's latest changelog version heading matches its Cabal version;
-3. the pushed release tag matches exactly one package and the same version; and
-4. `redis-client` release jobs publish immutable Docker tags for the version and
-   commit SHA.
+Both namespaced tag families create a namespaced GitHub Release. The workflow
+uses the tagged package's top changelog entry as release notes and attaches its
+Cabal source distribution.
 
-Run the same checks locally with:
+Only `redis-client-v...` tags publish Docker images. Docker builds use the
+repository's committed `flake.nix` and `flake.lock` through
+`nix build --no-update-lock-file --no-write-lock-file .#dockerImage`; release
+automation cannot refresh or rewrite the lock and does not use a moving Nix
+channel or the legacy `default.nix` entry point. Every CLI release pushes:
+
+- `ghcr.io/sspeaks/redis-client:X.Y.Z.W`
+- `ghcr.io/sspeaks/redis-client:sha-<12-hex-commit>`
+- `ghcr.io/sspeaks/redis-client:latest`
+
+The accepted tag grammar is a stable four-component version, so `latest` moves
+only for a validated stable CLI release. Library tags never publish or retag
+GHCR images.
+
+`hask-redis-mux` publication to Hackage remains a deliberate manual step after
+the namespaced GitHub Release succeeds.
+
+## Validation
+
+Run the repository and workflow-contract checks with:
 
 ```sh
-python3 scripts/check-release-metadata.py
+make test-release-metadata
+```
+
+To validate a prepared CLI release:
+
+```sh
 python3 scripts/check-release-metadata.py \
   --release-tag redis-client-vX.Y.Z.W \
   --commit-sha "$(git rev-parse HEAD)" \
@@ -42,36 +67,30 @@ python3 scripts/check-release-metadata.py \
   --allow-latest
 ```
 
+To validate a prepared library release:
+
+```sh
+python3 scripts/check-release-metadata.py \
+  --release-tag hask-redis-mux-vX.Y.Z.W
+```
+
+Release validation fails if the relevant top changelog entry is still
+`Unreleased`, lacks a date, is empty, or disagrees with the Cabal version or
+tag. The other package may remain independently unreleased.
+
 ## Release checklist
 
-### For every release
-
-1. Update the relevant package version in its `.cabal` file.
-2. Update the package-specific changelog so the newest version heading exactly
-   matches that version.
-3. Review Cabal metadata (`synopsis`, `description`, `homepage`,
-   `bug-reports`, `tested-with`, and `extra-doc-files`) for the package being
-   released.
-4. Review README and Haddock-facing examples for the released surface.
-5. Run `nix-build` and `make test-release-metadata`. Run broader `make` targets
-   as needed for the touched surface.
-
-### Additional checks for `hask-redis-mux`
-
-1. Review API compatibility against the previous release and choose the next
-   PVP version accordingly.
-2. Confirm public-module additions, removals, and typeclass changes are called
-   out in `hask-redis-mux/CHANGELOG.md`.
-3. Record whether the Hackage upload was completed, intentionally deferred, or
-   blocked, and from which `hask-redis-mux-v...` tag it should be published.
-
-### Additional checks for `redis-client`
-
-1. Confirm the Nix outputs still build the CLI and Docker image from the same
-   source commit.
-2. Push the release tag `redis-client-vX.Y.Z.W`.
-3. After CI completes, verify the image was published with:
-   - `ghcr.io/sspeaks/redis-client:X.Y.Z.W`
-   - `ghcr.io/sspeaks/redis-client:sha-<12-hex-commit>`
-   - `ghcr.io/sspeaks/redis-client:latest` (only for an intentional CLI release)
-4. Do not publish Docker artifacts from ordinary `main` pushes.
+1. Update the relevant Cabal package version.
+2. Add all user-visible changes to that package's versioned `Unreleased`
+   changelog entry.
+3. Run `nix-build`, `make test`, `cabal check`, and
+   `cabal sdist pkg:<package>`.
+4. Replace `Unreleased` with the release date.
+5. Run `make test-release-metadata` and the package-specific tagged validation
+   command above.
+6. Push the corresponding namespaced tag.
+7. Verify the namespaced GitHub Release contains the correct notes and source
+   distribution.
+8. For `redis-client`, verify all three GHCR tags. For `hask-redis-mux`, upload
+   the exact GitHub Release source distribution to Hackage or record why the
+   manual upload was deferred.

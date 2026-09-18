@@ -1,14 +1,19 @@
 # Revision history for redis-client
 
-## Unreleased
+## 0.6.0.0 -- Unreleased
 
 *   **Release pipeline now follows package-specific versioning**
     *   `redis-client` and `hask-redis-mux` now keep separate changelogs, tag
         namespaces, and release rules.
     *   CI validates Cabal versions, changelog headings, and release tags before
         a tagged release can publish artifacts.
+    *   Both package tag families create namespaced GitHub Releases with
+        package-specific notes and source distributions.
     *   CLI releases publish immutable Docker tags for the package version and
-        source commit SHA; `latest` advances only from an explicit CLI release tag.
+        source commit SHA from the locked flake; `latest` advances only from a
+        stable CLI release tag.
+    *   Redis client metadata now reports the Cabal-generated
+        `hask-redis-mux` version instead of the placeholder `0.0.0`.
 *   **Breaking unified public error model**
     *   Sequential, standalone, cluster, low-level command, and topology-refresh
         runners now return `Either RedisClientError`; the previous mixture of

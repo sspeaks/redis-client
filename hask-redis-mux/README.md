@@ -121,9 +121,10 @@ package usually advances on its own; it only releases alongside the CLI when a
 single commit intentionally ships both packages.
 
 The release tag for this package is `hask-redis-mux-vX.Y.Z.W`. That tag must
-match the version in `hask-redis-mux.cabal` and the latest version heading in
-`hask-redis-mux/CHANGELOG.md`. The repository-wide release checklist, including
-the manual Hackage publication step, lives in
+match the version in `hask-redis-mux.cabal` and the dated top version heading
+in `hask-redis-mux/CHANGELOG.md`. It creates a namespaced GitHub Release with
+the package source distribution; Hackage publication remains a manual step.
+The repository-wide release checklist lives in
 [`../docs/release-process.md`](../docs/release-process.md).
 
 ## Quick Start

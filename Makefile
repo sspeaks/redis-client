@@ -66,6 +66,7 @@ test-metadata:
 test-release-metadata:
 	python3 scripts/check-release-metadata.py
 	python3 -m unittest scripts/test_release_metadata.py
+	python3 -m unittest scripts/test_release_workflow.py
 
 test-credentials:
 	python3 -m unittest scripts/test_azure_redis_connect.py
