@@ -34,7 +34,7 @@
 -- import Data.Text (Text)
 -- import Database.Redis
 --
--- typedReturns :: IO (Integer, ByteString, Maybe Text)
+-- typedReturns :: IO (Either RedisClientError (Integer, ByteString, Maybe Text))
 -- typedReturns =
 --   runRedis defaultStandaloneConfig $ do
 --     (_ :: Bool) <- set \"counter\" \"42\"
@@ -52,7 +52,7 @@
 --
 -- import Database.Redis
 --
--- clusterExample :: IO ByteString
+-- clusterExample :: IO (Either RedisClientError ByteString)
 -- clusterExample =
 --   withClusterClient exampleClusterConfig clusterPlaintextConnector $ \\client ->
 --     runClusterCommandClient client $ do

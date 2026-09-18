@@ -23,7 +23,7 @@ COMPONENTS = {
     "library-docs": {
         "dependency_document": Path("hask-redis-mux/README.md"),
         "markdown": {
-            Path("hask-redis-mux/README.md"): 6,
+            Path("hask-redis-mux/README.md"): 8,
         },
         "haddock": {
             Path("hask-redis-mux/lib/redis/Database/Redis.hs"): 3,

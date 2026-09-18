@@ -293,10 +293,10 @@ import Database.Redis
 main :: IO ()
 main = do
   result <-
-  withStandaloneClient defaultStandaloneConfig $ \client -> do
-    runStandaloneClient client $ do
-      (_ :: Bool) <- set "mykey" "myvalue"
-      get "mykey"
+    withStandaloneClient defaultStandaloneConfig $ \client ->
+      runStandaloneClient client $ do
+        (_ :: Bool) <- set "mykey" "myvalue"
+        get "mykey"
   print (result :: Either RedisClientError ByteString)
 ```
 
@@ -322,8 +322,8 @@ main = do
   result <-
     withClusterClient config clusterPlaintextConnector $ \client ->
       runClusterCommandClient client $ do
-      (_ :: Bool) <- set "{example}:key" "myvalue"
-      get "{example}:key"
+        (_ :: Bool) <- set "{example}:key" "myvalue"
+        get "{example}:key"
   print (result :: Either RedisClientError ByteString)
   where
     config = ClusterConfig

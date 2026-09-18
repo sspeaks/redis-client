@@ -20,7 +20,7 @@
 --     result <- runStandaloneClient client $ do
 --       (_ :: Bool) <- set \"key\" \"value\"
 --       get \"key\"
---     print (result :: ByteString)
+--     print (result :: Either RedisClientError ByteString)
 -- @
 --
 -- @since 0.1.0.0
@@ -165,7 +165,7 @@ data StandaloneConfig client = StandaloneConfig
 --
 -- import Database.Redis
 --
--- defaultExample :: IO ByteString
+-- defaultExample :: IO (Either RedisClientError ByteString)
 -- defaultExample =
 --   runRedis defaultStandaloneConfig $ do
 --     (_ :: Bool) <- set \"key\" \"value\"
@@ -236,7 +236,7 @@ closeStandaloneMux = destroyMultiplexer
 --
 -- import Database.Redis
 --
--- bracketExample :: IO ByteString
+-- bracketExample :: IO (Either RedisClientError ByteString)
 -- bracketExample =
 --   withStandaloneClient defaultStandaloneConfig $ \\client ->
 --     runStandaloneClient client $ do
@@ -260,7 +260,7 @@ withStandaloneClient config =
 --
 -- import Database.Redis
 --
--- runRedisExample :: IO ByteString
+-- runRedisExample :: IO (Either RedisClientError ByteString)
 -- runRedisExample =
 --   runRedis defaultStandaloneConfig $ do
 --     (_ :: Bool) <- set \"key\" \"value\"

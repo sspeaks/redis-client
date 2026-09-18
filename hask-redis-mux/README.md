@@ -188,14 +188,14 @@ Use bracket-style functions for exception-safe resource management:
 
 import Database.Redis
 
-standaloneExample :: IO ByteString
+standaloneExample :: IO (Either RedisClientError ByteString)
 standaloneExample =
   withStandaloneClient defaultStandaloneConfig $ \client ->
     runStandaloneClient client $ do
       (_ :: Bool) <- set "key" "value"
       get "key"
 
-clusterExample :: IO ByteString
+clusterExample :: IO (Either RedisClientError ByteString)
 clusterExample =
   withClusterClient exampleClusterConfig clusterPlaintextConnector $ \client ->
     runClusterCommandClient client $ do
@@ -230,15 +230,24 @@ refresh runners return `Either RedisClientError`. Redis error replies are
 always `Left`, including commands decoded as `()` or raw `RespData`.
 
 ```haskell
-result <- runRedis defaultStandaloneConfig $ set "key" "value"
-case result of
-  Right value -> print value
-  Left (RedisServerError payload) -> print payload
-  Left (RedisProtocolError protocolFailure) -> print protocolFailure
-  Left (RedisTransportError cause) -> print (displayException cause)
-  Left (RedisClusterError clusterFailure) -> print clusterFailure
-  Left (RedisLifecycleError lifecycleFailure) -> print lifecycleFailure
-  Left (RedisConversionError response) -> print response
+{-# LANGUAGE OverloadedStrings #-}
+
+import Database.Redis
+
+setExample :: IO ()
+setExample = do
+  result <- runRedis defaultStandaloneConfig
+    (set "key" "value" :: StandaloneCommandClient Bool)
+  putStrLn $ classify result
+
+classify :: Either RedisClientError value -> String
+classify (Right _) = "success"
+classify (Left (RedisServerError _)) = "server"
+classify (Left (RedisProtocolError _)) = "protocol"
+classify (Left (RedisTransportError _)) = "transport"
+classify (Left (RedisClusterError _)) = "cluster"
+classify (Left (RedisLifecycleError _)) = "lifecycle"
+classify (Left (RedisConversionError _)) = "conversion"
 ```
 
 Transport, setup, cleanup, and retry failures retain structured
@@ -252,14 +261,17 @@ This is a breaking replacement for the former mix of thrown runner failures,
 runner result:
 
 ```haskell
--- Before: synchronous command failures escaped from the runner.
-value <- runStandaloneClient client action
+import Database.Redis
 
--- Now:
-result <- runStandaloneClient client action
-case result of
-  Left err -> handleRedisError err
-  Right value -> use value
+runAction
+  :: StandaloneClient
+  -> StandaloneCommandClient ByteString
+  -> IO ()
+runAction client action = do
+  result <- runStandaloneClient client action
+  case result of
+    Left err -> print err
+    Right value -> print value
 ```
 
 `ClusterError` remains as a deprecated alias for source migration, but new
@@ -316,7 +328,7 @@ topology discovery or application commands:
 
 import Database.Redis
 
-authenticatedExample :: IO ByteString
+authenticatedExample :: IO (Either RedisClientError ByteString)
 authenticatedExample =
   withClusterClientAuthentication
       exampleClusterConfig
@@ -406,7 +418,7 @@ tlsConnection :: IO (TLSClient 'Connected)
 tlsConnection =
   connectTLSWithTimeout 5 "redis.example.net" 6380
 
-standalonePing :: IO ByteString
+standalonePing :: IO (Either RedisClientError ByteString)
 standalonePing =
   withStandaloneClient standaloneConfig $ \client ->
     runStandaloneClient client ping
