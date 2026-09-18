@@ -48,19 +48,89 @@ import           Control.Exception                   (SomeException, bracket,
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
-import qualified Data.ByteString                     as BS
 import           Database.Redis.Client               (Client, PlainTextClient)
 import           Database.Redis.Cluster              (NodeAddress (..))
 import           Database.Redis.Command              (ClientReplyModeUnsupported (..),
                                                       ClientReplyValues (..),
+                                                      CommandDescriptor,
                                                       RedisCommands (..),
+                                                      commandDescriptorFrame,
                                                       convertResp,
+                                                      definedAppend,
+                                                      definedAuth,
+                                                      definedBulkSet,
+                                                      definedClientReplyOn,
+                                                      definedClientSetInfo,
+                                                      definedClusterSlots,
+                                                      definedDbsize,
+                                                      definedDecr,
+                                                      definedDecrby, definedDel,
+                                                      definedExists,
+                                                      definedExpire,
+                                                      definedFlushAll,
+                                                      definedGeoadd,
+                                                      definedGeodist,
+                                                      definedGeohash,
+                                                      definedGeopos,
+                                                      definedGeoradius,
+                                                      definedGeoradiusByMember,
+                                                      definedGeoradiusByMemberRo,
+                                                      definedGeoradiusRo,
+                                                      definedGeosearch,
+                                                      definedGeosearchstore,
+                                                      definedGet, definedGetdel,
+                                                      definedGetex, definedHdel,
+                                                      definedHexists,
+                                                      definedHget,
+                                                      definedHgetall,
+                                                      definedHincrby,
+                                                      definedHincrbyfloat,
+                                                      definedHkeys, definedHlen,
+                                                      definedHmget, definedHset,
+                                                      definedHsetnx,
+                                                      definedHvals, definedIncr,
+                                                      definedIncrby,
+                                                      definedIncrbyfloat,
+                                                      definedKeyType,
+                                                      definedLindex,
+                                                      definedLinsert,
+                                                      definedLlen, definedLpop,
+                                                      definedLpush,
+                                                      definedLrange,
+                                                      definedLrem, definedLset,
+                                                      definedLtrim, definedMget,
+                                                      definedPersist,
+                                                      definedPfadd,
+                                                      definedPfcount,
+                                                      definedPfmerge,
+                                                      definedPing,
+                                                      definedPsetex,
+                                                      definedRename,
+                                                      definedRenamenx,
+                                                      definedRpop, definedRpush,
+                                                      definedSadd, definedScard,
+                                                      definedSdiff, definedSet,
+                                                      definedSetex,
+                                                      definedSetnx,
+                                                      definedSinter,
+                                                      definedSismember,
+                                                      definedSmembers,
+                                                      definedSpop,
+                                                      definedSrandmember,
+                                                      definedSrem,
+                                                      definedStrlen,
+                                                      definedSunion, definedTtl,
+                                                      definedUnlink,
+                                                      definedZadd, definedZcard,
+                                                      definedZcount,
+                                                      definedZincrby,
+                                                      definedZrange,
+                                                      definedZrangestore,
+                                                      definedZrank, definedZrem,
+                                                      definedZrevrank,
+                                                      definedZscore,
                                                       encodeCommandBuilder,
-                                                      geoRadiusFlagToList,
-                                                      geoSearchByToList,
-                                                      geoSearchFromToList,
-                                                      geoSearchOptionToList,
-                                                      geoUnitKeyword, showBS)
+                                                      redisCommandDefinitions)
 import           Database.Redis.Connector            (Connector,
                                                       clusterPlaintextConnector)
 import           Database.Redis.FromResp             (FromResp (..))
@@ -233,139 +303,194 @@ submitMux args = do
 submitMuxAs :: (FromResp a) => [ByteString] -> StandaloneCommandClient a
 submitMuxAs args = submitMux args >>= convertResp
 
+submitMuxDescriptorAs :: (FromResp a) => CommandDescriptor -> StandaloneCommandClient a
+submitMuxDescriptorAs =
+  submitMuxAs . commandDescriptorFrame
+
 instance RedisCommands StandaloneCommandClient where
-  auth username password
-    | BS.null username || username == "default" =
-        submitMuxAs ["AUTH", password]
-    | otherwise =
-        submitMuxAs ["HELLO", "2", "AUTH", username, password]
-  ping = submitMuxAs ["PING"]
-  set k v = submitMuxAs ["SET", k, v]
-  get k = submitMuxAs ["GET", k]
-  mget keys = submitMuxAs ("MGET" : keys)
-  setnx k v = submitMuxAs ["SETNX", k, v]
-  decr k = submitMuxAs ["DECR", k]
-  append k v = submitMuxAs ["APPEND", k, v]
-  strlen k = submitMuxAs ["STRLEN", k]
-  setex k secs v = submitMuxAs ["SETEX", k, showBS secs, v]
-  incrby k amt = submitMuxAs ["INCRBY", k, showBS amt]
-  decrby k amt = submitMuxAs ["DECRBY", k, showBS amt]
-  incrbyfloat k amt = submitMuxAs ["INCRBYFLOAT", k, showBS amt]
-  getdel k = submitMuxAs ["GETDEL", k]
-  getex k opts = submitMuxAs (["GETEX", k] ++ opts)
-  psetex k ms v = submitMuxAs ["PSETEX", k, showBS ms, v]
-  bulkSet kvs = submitMuxAs (["MSET"] <> concatMap (\(k, v) -> [k, v]) kvs)
-  flushAll = submitMuxAs ["FLUSHALL"]
-  dbsize = submitMuxAs ["DBSIZE"]
-  del keys = submitMuxAs ("DEL" : keys)
-  exists keys = submitMuxAs ("EXISTS" : keys)
-  incr k = submitMuxAs ["INCR", k]
-  hset k f v = submitMuxAs ["HSET", k, f, v]
-  hget k f = submitMuxAs ["HGET", k, f]
-  hmget k fs = submitMuxAs ("HMGET" : k : fs)
-  hexists k f = submitMuxAs ["HEXISTS", k, f]
-  lpush k vs = submitMuxAs ("LPUSH" : k : vs)
-  lrange k start stop = submitMuxAs ["LRANGE", k, showBS start, showBS stop]
-  expire k secs = submitMuxAs ["EXPIRE", k, showBS secs]
-  ttl k = submitMuxAs ["TTL", k]
-  persist k = submitMuxAs ["PERSIST", k]
-  keyType k = submitMuxAs ["TYPE", k]
-  rename k newk = submitMuxAs ["RENAME", k, newk]
-  renamenx k newk = submitMuxAs ["RENAMENX", k, newk]
-  unlink keys = submitMuxAs ("UNLINK" : keys)
-  pfadd k elements = submitMuxAs ("PFADD" : k : elements)
-  pfcount keys = submitMuxAs ("PFCOUNT" : keys)
-  pfmerge destk srckeys = submitMuxAs ("PFMERGE" : destk : srckeys)
-  rpush k vs = submitMuxAs ("RPUSH" : k : vs)
-  lpop k = submitMuxAs ["LPOP", k]
-  rpop k = submitMuxAs ["RPOP", k]
-  sadd k vs = submitMuxAs ("SADD" : k : vs)
-  smembers k = submitMuxAs ["SMEMBERS", k]
-  scard k = submitMuxAs ["SCARD", k]
-  sismember k v = submitMuxAs ["SISMEMBER", k, v]
-  srem k members = submitMuxAs ("SREM" : k : members)
-  sdiff keys = submitMuxAs ("SDIFF" : keys)
-  sinter keys = submitMuxAs ("SINTER" : keys)
-  sunion keys = submitMuxAs ("SUNION" : keys)
-  spop k = submitMuxAs ["SPOP", k]
-  srandmember k = submitMuxAs ["SRANDMEMBER", k]
-  hdel k fs = submitMuxAs ("HDEL" : k : fs)
-  hkeys k = submitMuxAs ["HKEYS", k]
-  hvals k = submitMuxAs ["HVALS", k]
-  hgetall k = submitMuxAs ["HGETALL", k]
-  hlen k = submitMuxAs ["HLEN", k]
-  hsetnx k f v = submitMuxAs ["HSETNX", k, f, v]
-  hincrby k f amt = submitMuxAs ["HINCRBY", k, f, showBS amt]
-  hincrbyfloat k f amt = submitMuxAs ["HINCRBYFLOAT", k, f, showBS amt]
-  llen k = submitMuxAs ["LLEN", k]
-  lindex k idx = submitMuxAs ["LINDEX", k, showBS idx]
-  linsert k pos pivot element = submitMuxAs ["LINSERT", k, pos, pivot, element]
-  lset k idx element = submitMuxAs ["LSET", k, showBS idx, element]
-  ltrim k start stop = submitMuxAs ["LTRIM", k, showBS start, showBS stop]
-  lrem k cnt element = submitMuxAs ["LREM", k, showBS cnt, element]
-  clientSetInfo args = submitMuxAs (["CLIENT", "SETINFO"] ++ args)
-  clusterSlots = submitMuxAs ["CLUSTER", "SLOTS"]
+  auth username password =
+    submitMuxDescriptorAs (definedAuth redisCommandDefinitions username password)
+  ping =
+    submitMuxDescriptorAs (definedPing redisCommandDefinitions)
+  set key value =
+    submitMuxDescriptorAs (definedSet redisCommandDefinitions key value)
+  get key =
+    submitMuxDescriptorAs (definedGet redisCommandDefinitions key)
+  mget keys =
+    submitMuxDescriptorAs (definedMget redisCommandDefinitions keys)
+  setnx key value =
+    submitMuxDescriptorAs (definedSetnx redisCommandDefinitions key value)
+  decr key =
+    submitMuxDescriptorAs (definedDecr redisCommandDefinitions key)
+  append key value =
+    submitMuxDescriptorAs (definedAppend redisCommandDefinitions key value)
+  strlen key =
+    submitMuxDescriptorAs (definedStrlen redisCommandDefinitions key)
+  setex key seconds value =
+    submitMuxDescriptorAs (definedSetex redisCommandDefinitions key seconds value)
+  incrby key amount =
+    submitMuxDescriptorAs (definedIncrby redisCommandDefinitions key amount)
+  decrby key amount =
+    submitMuxDescriptorAs (definedDecrby redisCommandDefinitions key amount)
+  incrbyfloat key amount =
+    submitMuxDescriptorAs (definedIncrbyfloat redisCommandDefinitions key amount)
+  getdel key =
+    submitMuxDescriptorAs (definedGetdel redisCommandDefinitions key)
+  getex key opts =
+    submitMuxDescriptorAs (definedGetex redisCommandDefinitions key opts)
+  psetex key milliseconds value =
+    submitMuxDescriptorAs (definedPsetex redisCommandDefinitions key milliseconds value)
+  bulkSet pairs =
+    submitMuxDescriptorAs (definedBulkSet redisCommandDefinitions pairs)
+  flushAll =
+    submitMuxDescriptorAs (definedFlushAll redisCommandDefinitions)
+  dbsize =
+    submitMuxDescriptorAs (definedDbsize redisCommandDefinitions)
+  del keys =
+    submitMuxDescriptorAs (definedDel redisCommandDefinitions keys)
+  exists keys =
+    submitMuxDescriptorAs (definedExists redisCommandDefinitions keys)
+  incr key =
+    submitMuxDescriptorAs (definedIncr redisCommandDefinitions key)
+  hset key field value =
+    submitMuxDescriptorAs (definedHset redisCommandDefinitions key field value)
+  hget key field =
+    submitMuxDescriptorAs (definedHget redisCommandDefinitions key field)
+  hmget key fields =
+    submitMuxDescriptorAs (definedHmget redisCommandDefinitions key fields)
+  hexists key field =
+    submitMuxDescriptorAs (definedHexists redisCommandDefinitions key field)
+  lpush key values =
+    submitMuxDescriptorAs (definedLpush redisCommandDefinitions key values)
+  lrange key start stop =
+    submitMuxDescriptorAs (definedLrange redisCommandDefinitions key start stop)
+  expire key seconds =
+    submitMuxDescriptorAs (definedExpire redisCommandDefinitions key seconds)
+  ttl key =
+    submitMuxDescriptorAs (definedTtl redisCommandDefinitions key)
+  persist key =
+    submitMuxDescriptorAs (definedPersist redisCommandDefinitions key)
+  keyType key =
+    submitMuxDescriptorAs (definedKeyType redisCommandDefinitions key)
+  rename key newkey =
+    submitMuxDescriptorAs (definedRename redisCommandDefinitions key newkey)
+  renamenx key newkey =
+    submitMuxDescriptorAs (definedRenamenx redisCommandDefinitions key newkey)
+  unlink keys =
+    submitMuxDescriptorAs (definedUnlink redisCommandDefinitions keys)
+  pfadd key elements =
+    submitMuxDescriptorAs (definedPfadd redisCommandDefinitions key elements)
+  pfcount keys =
+    submitMuxDescriptorAs (definedPfcount redisCommandDefinitions keys)
+  pfmerge destkey sourcekeys =
+    submitMuxDescriptorAs (definedPfmerge redisCommandDefinitions destkey sourcekeys)
+  rpush key values =
+    submitMuxDescriptorAs (definedRpush redisCommandDefinitions key values)
+  lpop key =
+    submitMuxDescriptorAs (definedLpop redisCommandDefinitions key)
+  rpop key =
+    submitMuxDescriptorAs (definedRpop redisCommandDefinitions key)
+  sadd key members =
+    submitMuxDescriptorAs (definedSadd redisCommandDefinitions key members)
+  smembers key =
+    submitMuxDescriptorAs (definedSmembers redisCommandDefinitions key)
+  scard key =
+    submitMuxDescriptorAs (definedScard redisCommandDefinitions key)
+  sismember key member =
+    submitMuxDescriptorAs (definedSismember redisCommandDefinitions key member)
+  srem key members =
+    submitMuxDescriptorAs (definedSrem redisCommandDefinitions key members)
+  sdiff keys =
+    submitMuxDescriptorAs (definedSdiff redisCommandDefinitions keys)
+  sinter keys =
+    submitMuxDescriptorAs (definedSinter redisCommandDefinitions keys)
+  sunion keys =
+    submitMuxDescriptorAs (definedSunion redisCommandDefinitions keys)
+  spop key =
+    submitMuxDescriptorAs (definedSpop redisCommandDefinitions key)
+  srandmember key =
+    submitMuxDescriptorAs (definedSrandmember redisCommandDefinitions key)
+  hdel key fields =
+    submitMuxDescriptorAs (definedHdel redisCommandDefinitions key fields)
+  hkeys key =
+    submitMuxDescriptorAs (definedHkeys redisCommandDefinitions key)
+  hvals key =
+    submitMuxDescriptorAs (definedHvals redisCommandDefinitions key)
+  hgetall key =
+    submitMuxDescriptorAs (definedHgetall redisCommandDefinitions key)
+  hlen key =
+    submitMuxDescriptorAs (definedHlen redisCommandDefinitions key)
+  hsetnx key field value =
+    submitMuxDescriptorAs (definedHsetnx redisCommandDefinitions key field value)
+  hincrby key field amount =
+    submitMuxDescriptorAs (definedHincrby redisCommandDefinitions key field amount)
+  hincrbyfloat key field amount =
+    submitMuxDescriptorAs (definedHincrbyfloat redisCommandDefinitions key field amount)
+  llen key =
+    submitMuxDescriptorAs (definedLlen redisCommandDefinitions key)
+  lindex key index =
+    submitMuxDescriptorAs (definedLindex redisCommandDefinitions key index)
+  linsert key pos pivot element =
+    submitMuxDescriptorAs (definedLinsert redisCommandDefinitions key pos pivot element)
+  lset key index element =
+    submitMuxDescriptorAs (definedLset redisCommandDefinitions key index element)
+  ltrim key start stop =
+    submitMuxDescriptorAs (definedLtrim redisCommandDefinitions key start stop)
+  lrem key count element =
+    submitMuxDescriptorAs (definedLrem redisCommandDefinitions key count element)
+  clientSetInfo args =
+    submitMuxDescriptorAs (definedClientSetInfo redisCommandDefinitions args)
+  clusterSlots =
+    submitMuxDescriptorAs (definedClusterSlots redisCommandDefinitions)
 
   clientReply ON =
-    Just <$> submitMux ["CLIENT", "REPLY", "ON"]
+    Just <$> submitMux
+      (commandDescriptorFrame $ definedClientReplyOn redisCommandDefinitions)
   clientReply val =
     liftIO $ throwIO (ClientReplyModeUnsupported val)
-
-  zadd k members =
-    let payload = concatMap (\(score, member) -> [showBS score, member]) members
-    in submitMuxAs ("ZADD" : k : payload)
-
-  zrange k start stop withScores =
-    let base = ["ZRANGE", k, showBS start, showBS stop]
-        command = if withScores then base ++ ["WITHSCORES"] else base
-    in submitMuxAs command
-
-  zrem k members = submitMuxAs ("ZREM" : k : members)
-  zcard k = submitMuxAs ["ZCARD", k]
-  zscore k member = submitMuxAs ["ZSCORE", k, member]
-  zrank k member = submitMuxAs ["ZRANK", k, member]
-  zrevrank k member = submitMuxAs ["ZREVRANK", k, member]
-  zcount k minScore maxScore = submitMuxAs ["ZCOUNT", k, minScore, maxScore]
-  zincrby k increment member = submitMuxAs ["ZINCRBY", k, showBS increment, member]
-  zrangestore dst src minVal maxVal opts = submitMuxAs (["ZRANGESTORE", dst, src, minVal, maxVal] ++ opts)
-
-  geoadd k entries =
-    let payload = concatMap (\(lon, lat, member) -> [showBS lon, showBS lat, member]) entries
-    in submitMuxAs ("GEOADD" : k : payload)
-
-  geodist k m1 m2 unit =
-    let unitPart = maybe [] (\u -> [geoUnitKeyword u]) unit
-    in submitMuxAs (["GEODIST", k, m1, m2] ++ unitPart)
-
-  geohash k members = submitMuxAs ("GEOHASH" : k : members)
-  geopos k members = submitMuxAs ("GEOPOS" : k : members)
-
-  georadius k lon lat radius unit flags =
-    let base = ["GEORADIUS", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
-
-  georadiusRo k lon lat radius unit flags =
-    let base = ["GEORADIUS_RO", k, showBS lon, showBS lat, showBS radius, geoUnitKeyword unit]
-    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
-
-  georadiusByMember k member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER", k, member, showBS radius, geoUnitKeyword unit]
-    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
-
-  georadiusByMemberRo k member radius unit flags =
-    let base = ["GEORADIUSBYMEMBER_RO", k, member, showBS radius, geoUnitKeyword unit]
-    in submitMuxAs (base ++ concatMap geoRadiusFlagToList flags)
-
-  geosearch k fromSpec bySpec options =
-    submitMuxAs (["GEOSEARCH", k]
-      ++ geoSearchFromToList fromSpec
-      ++ geoSearchByToList bySpec
-      ++ concatMap geoSearchOptionToList options)
-
+  zadd key members =
+    submitMuxDescriptorAs (definedZadd redisCommandDefinitions key members)
+  zrange key start stop withScores =
+    submitMuxDescriptorAs (definedZrange redisCommandDefinitions key start stop withScores)
+  zrem key members =
+    submitMuxDescriptorAs (definedZrem redisCommandDefinitions key members)
+  zcard key =
+    submitMuxDescriptorAs (definedZcard redisCommandDefinitions key)
+  zscore key member =
+    submitMuxDescriptorAs (definedZscore redisCommandDefinitions key member)
+  zrank key member =
+    submitMuxDescriptorAs (definedZrank redisCommandDefinitions key member)
+  zrevrank key member =
+    submitMuxDescriptorAs (definedZrevrank redisCommandDefinitions key member)
+  zcount key minScore maxScore =
+    submitMuxDescriptorAs (definedZcount redisCommandDefinitions key minScore maxScore)
+  zincrby key increment member =
+    submitMuxDescriptorAs (definedZincrby redisCommandDefinitions key increment member)
+  zrangestore dst src minVal maxVal opts =
+    submitMuxDescriptorAs (definedZrangestore redisCommandDefinitions dst src minVal maxVal opts)
+  geoadd key entries =
+    submitMuxDescriptorAs (definedGeoadd redisCommandDefinitions key entries)
+  geodist key member1 member2 unit =
+    submitMuxDescriptorAs (definedGeodist redisCommandDefinitions key member1 member2 unit)
+  geohash key members =
+    submitMuxDescriptorAs (definedGeohash redisCommandDefinitions key members)
+  geopos key members =
+    submitMuxDescriptorAs (definedGeopos redisCommandDefinitions key members)
+  georadius key lon lat radius unit flags =
+    submitMuxDescriptorAs
+      (definedGeoradius redisCommandDefinitions key lon lat radius unit flags)
+  georadiusRo key lon lat radius unit flags =
+    submitMuxDescriptorAs
+      (definedGeoradiusRo redisCommandDefinitions key lon lat radius unit flags)
+  georadiusByMember key member radius unit flags =
+    submitMuxDescriptorAs
+      (definedGeoradiusByMember redisCommandDefinitions key member radius unit flags)
+  georadiusByMemberRo key member radius unit flags =
+    submitMuxDescriptorAs
+      (definedGeoradiusByMemberRo redisCommandDefinitions key member radius unit flags)
+  geosearch key fromSpec bySpec options =
+    submitMuxDescriptorAs
+      (definedGeosearch redisCommandDefinitions key fromSpec bySpec options)
   geosearchstore dest src fromSpec bySpec options storeDist =
-    let base = ["GEOSEARCHSTORE", dest, src]
-            ++ geoSearchFromToList fromSpec
-            ++ geoSearchByToList bySpec
-            ++ concatMap geoSearchOptionToList options
-        command = if storeDist then base ++ ["STOREDIST"] else base
-    in submitMuxAs command
+    submitMuxDescriptorAs
+      (definedGeosearchstore redisCommandDefinitions dest src fromSpec bySpec options storeDist)
