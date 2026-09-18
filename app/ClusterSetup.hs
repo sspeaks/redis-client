@@ -13,6 +13,8 @@ module ClusterSetup
 import           AppConfig                             (RunState (..),
                                                         enforcePlaintextAuthenticationPolicy)
 import           Control.Concurrent.STM                (readTVarIO)
+import qualified Control.Monad.State                   as State
+import qualified Data.ByteString                       as BS
 import qualified Data.ByteString.Char8                 as BS8
 import qualified Data.Map.Strict                       as Map
 import           Data.Maybe                            (fromMaybe)
@@ -29,7 +31,9 @@ import           Database.Redis.Cluster.Client         (ClusterAuthentication (.
                                                         createClusterClientWithAuthentication,
                                                         defaultClusterConfig)
 import qualified Database.Redis.Cluster.ConnectionPool as CP
-import           Database.Redis.Command                (RedisCommands (flushAll))
+import           Database.Redis.Command                (ClientState (ClientState),
+                                                        RedisCommands (flushAll))
+import qualified Database.Redis.Command                as RedisCommand
 import           Database.Redis.Connector              (Connector,
                                                         clusterPlaintextConnector,
                                                         clusterTLSConnector)

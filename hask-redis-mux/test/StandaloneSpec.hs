@@ -35,12 +35,11 @@ import           Database.Redis.Command    (ClientReplyModeUnsupported (..),
                                             sendClientReplySkipAndCommand,
                                             sendCommandWithoutReply)
 import           Database.Redis.Connector  (Connector)
-import           Database.Redis.Internal.Multiplexer (MultiplexerException (..))
 import           Database.Redis.RedisError (RedisClientError (..),
                                             RedisLifecycleFailure (..))
 import           Database.Redis.Resp       (RespData (..))
 import           Database.Redis.Standalone
-import           System.Timeout                      (timeout)
+import           System.Timeout            (timeout)
 import           Test.Hspec
 
 data MockClient (a :: ConnectionStatus) where
@@ -173,7 +172,7 @@ main = hspec $ do
       client <- createStandaloneClientFromConfig config
       forM_ [1 .. 6 :: Int] $ \_ ->
         runStandaloneClient client (ping :: StandaloneCommandClient ByteString)
-          `shouldReturn` "PONG"
+          `shouldReturn` Right "PONG"
       readIORef connectionCount `shouldReturn` 3
       mapM readIORef sentCounts `shouldReturn` [2, 2, 2]
       closeStandaloneClient client
@@ -325,9 +324,9 @@ main = hspec $ do
       closeStandaloneClient client
       readIORef closeCount `shouldReturn` 2
       tryTakeMVar closeStarted `shouldReturn` Nothing
-      result <- try $ runStandaloneClient client
+      result <- runStandaloneClient client
         (ping :: StandaloneCommandClient ByteString)
-      result `shouldSatisfy` isClosedFailure . Just
+      result `shouldBe` Left (RedisLifecycleError RedisClientClosed)
       mapM readIORef sentCounts `shouldReturn` [0, 0]
 
   describe "Standalone authentication protocol" $ do
@@ -621,9 +620,9 @@ isFailure :: Either SomeException a -> Bool
 isFailure (Left _)  = True
 isFailure (Right _) = False
 
-isClosedFailure :: Maybe (Either SomeException a) -> Bool
-isClosedFailure (Just (Left failure)) =
-  case fromException failure of
-    Just (MultiplexerDead message) -> message == "Standalone client closed"
-    _                              -> False
+isClosedFailure
+  :: Maybe (Either SomeException (Either RedisClientError a))
+  -> Bool
+isClosedFailure
+  (Just (Right (Left (RedisLifecycleError RedisClientClosed)))) = True
 isClosedFailure _ = False

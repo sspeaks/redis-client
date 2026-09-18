@@ -48,12 +48,11 @@ import           Control.Exception                   (Exception,
                                                       SomeAsyncException,
                                                       SomeException, bracket,
                                                       fromException, mask,
-                                                      mask_, onException, throwIO,
-                                                      toException, try)
+                                                      mask_, onException,
+                                                      throwIO, toException, try)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
-import qualified Data.ByteString                     as BS
 import           Data.IORef                          (IORef, atomicModifyIORef',
                                                       newIORef)
 import           Data.Typeable                       (Typeable)
@@ -256,7 +255,7 @@ createStandaloneClientFromConfig config
 -- | Close the standalone client, atomically disabling routing before
 -- destroying its multiplexers. Owned plaintext or TLS transports are closed
 -- exactly once. Closure is terminal and idempotent; later commands fail with
--- 'MultiplexerDead' instead of routing to a mux that has not yet been destroyed.
+-- 'RedisClientClosed' instead of routing to a mux that has not yet been destroyed.
 -- An interrupted close can be resumed by calling this function again.
 --
 -- Consider using 'withStandaloneClient' instead for automatic cleanup.
