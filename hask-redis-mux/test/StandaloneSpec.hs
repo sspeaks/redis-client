@@ -31,6 +31,8 @@ import           Database.Redis.Command    (ClientReplyModeUnsupported (..),
                                             encodeCommandBuilder,
                                             sendClientReplySkipAndCommand,
                                             sendCommandWithoutReply)
+import           Database.Redis.RedisError (RedisClientError (..),
+                                            RedisLifecycleFailure (..))
 import           Database.Redis.Resp       (RespData (..))
 import           Database.Redis.Standalone
 import           System.Timeout            (timeout)
@@ -120,9 +122,9 @@ main = hspec $ do
       closeStandaloneClient client
       closeStandaloneClient client
 
-      result <- try $ runStandaloneClient client (ping :: StandaloneCommandClient ByteString)
-        :: IO (Either SomeException ByteString)
-      result `shouldSatisfy` either (const True) (const False)
+      result <- runStandaloneClient client
+        (ping :: StandaloneCommandClient ByteString)
+      result `shouldBe` Left (RedisLifecycleError RedisClientClosed)
       readIORef connectionCount `shouldReturn` 1
       readIORef closeCount `shouldReturn` 1
 
@@ -147,10 +149,12 @@ main = hspec $ do
     it "rejects OFF and SKIP before sending, leaving later commands reply-safe" $ do
       (client, replies, sent, sentEvent) <- createCommandClient
       forM_ [OFF, SKIP, SKIP] $ \mode -> do
-        result <- try $ runStandaloneClient client
+        result <- runStandaloneClient client
           (clientReply mode :: StandaloneCommandClient (Maybe RespData))
-          :: IO (Either ClientReplyModeUnsupported (Maybe RespData))
-        result `shouldBe` Left (ClientReplyModeUnsupported mode)
+        case result of
+          Left (RedisLifecycleError (RedisUnsupportedOperation cause)) ->
+            fromException cause `shouldBe` Just (ClientReplyModeUnsupported mode)
+          _ -> expectationFailure "unsupported reply mode was not typed"
       tryTakeMVar sentEvent `shouldReturn` Nothing
       readIORef sent `shouldReturn` BS.empty
 
@@ -160,7 +164,7 @@ main = hspec $ do
       awaitSent sentEvent `shouldReturn` Just (commandBytes ["PING"])
       putMVar replies "+PONG\r\n"
       takeMVar pinged >>= \pingResult -> case pingResult of
-        Right (RespSimpleString "PONG") -> return ()
+        Right (Right (RespSimpleString "PONG")) -> return ()
         _                               -> expectationFailure "PING did not remain reply-safe after OFF rejection"
       closeStandaloneClient client
 
@@ -173,7 +177,7 @@ main = hspec $ do
       awaitSent sentEvent `shouldReturn` Just (commandBytes ["CLIENT", "REPLY", "ON"])
       putMVar replies "+OK\r\n"
       takeMVar restored >>= \result -> case result of
-        Right (Just (RespSimpleString "OK")) -> return ()
+        Right (Right (Just (RespSimpleString "OK"))) -> return ()
         _                                     -> expectationFailure "CLIENT REPLY ON did not consume its reply"
       closeStandaloneClient client
 
@@ -228,10 +232,12 @@ main = hspec $ do
       let connection = MockConnected closeCount replies sent sentEvent
       putMVar replies "-ERR following command failed\r\n"
 
-      response <- runSequential connection $ do
+      response <- try $ runSequential connection $ do
         sendClientReplySkipAndCommand ["NOT-A-REDIS-COMMAND"]
         ping
-      response `shouldBe` (RespError "ERR following command failed" :: RespData)
+      response `shouldBe`
+        (Left (RedisServerError "ERR following command failed")
+          :: Either RedisClientError RespData)
       readIORef sent `shouldReturn`
         commandBytes ["CLIENT", "REPLY", "SKIP"]
           <> commandBytes ["NOT-A-REDIS-COMMAND"]
@@ -353,7 +359,10 @@ expectAuthenticationExchange username password expectedBytes reply expectedRespo
           putMVar replies reply
           result <- timeout 1000000 (takeMVar completed)
           case result of
-            Just (Right response) -> response `shouldBe` expectedResponse
+            Just (Right (Right response)) -> response `shouldBe` expectedResponse
+            Just (Right (Left failure)) ->
+              expectationFailure $
+                "authentication returned typed failure: " <> show failure
             Just (Left failure) ->
               expectationFailure $
                 "authentication failed: " <> displayException failure
@@ -382,7 +391,7 @@ runSequential
   -> RedisCommandClient client a
   -> IO a
 runSequential client action =
-  State.evalStateT (runRedisCommandClient action) (ClientState client BS.empty)
+  State.evalStateT (unRedisCommandClient action) (ClientState client BS.empty)
 
 createPhaseClient
   :: SendPhase

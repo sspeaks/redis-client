@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 module LibraryE2E.ResilienceTests (spec) where
 
@@ -7,10 +8,10 @@ import           Control.Exception             (SomeException, displayException,
                                                 throwIO, try)
 import           Data.ByteString               (ByteString)
 import           Database.Redis.Client         (PlainTextClient)
-import           Database.Redis.Cluster.Client (ClusterClient,
-                                                ClusterError (..),
+import           Database.Redis.Cluster.Client (ClusterClient, ClusterError,
                                                 closeClusterClient,
                                                 executeKeyedClusterCommand,
+                                                pattern MaxRetriesExceeded,
                                                 refreshTopology)
 import           Database.Redis.Resp           (RespData (..))
 import           System.Timeout                (timeout)

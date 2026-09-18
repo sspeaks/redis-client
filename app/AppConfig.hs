@@ -126,7 +126,7 @@ runCommandsAgainstTLSHost :: RunState -> RedisCommandClient TLSClient a -> IO a
 runCommandsAgainstTLSHost st action = do
   bracket (connectTLSHost st) close $ \client -> do
     State.evalStateT
-      (runRedisCommandClient action)
+      (unRedisCommandClient action)
       (ClientState client BS.empty)
 
 runCommandsAgainstPlaintextHost :: RunState -> RedisCommandClient PlainTextClient a -> IO a
@@ -134,7 +134,7 @@ runCommandsAgainstPlaintextHost st action = do
   enforcePlaintextAuthenticationPolicy st
   bracket (connectPlaintextHost st) close
     $ \client -> State.evalStateT
-        (runRedisCommandClient action)
+        (unRedisCommandClient action)
         (ClientState client BS.empty)
 
 connectTLSHost :: RunState -> IO (TLSClient 'Connected)
@@ -177,7 +177,7 @@ authenticateConnected st supervisor client = do
   setConnectionPhase supervisor Authentication
   (do
       _ <- State.evalStateT
-        (runRedisCommandClient $
+        (unRedisCommandClient $
           authenticate (username st) (password st))
         (ClientState client BS.empty)
       return client)

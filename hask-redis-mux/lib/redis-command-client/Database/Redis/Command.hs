@@ -13,6 +13,7 @@ module Database.Redis.Command
   ( -- * Core types
     ClientState (..)
   , RedisCommandClient (..)
+  , runRedisCommandClient
   , RedisCommands (..)
   , CommandDescriptor (..)
   , CommandRoute (..)
@@ -26,7 +27,11 @@ module Database.Redis.Command
   , authenticatePassword
   , authenticateACL
     -- * Errors
-  , RedisError (..)
+  , RedisClientError (..)
+  , RedisProtocolFailure (..)
+  , RedisClusterFailure (..)
+  , RedisLifecycleFailure (..)
+  , tryRedisClient
     -- * Geo types
   , GeoUnit (..)
   , GeoRadiusFlag (..)
@@ -60,10 +65,11 @@ import           Control.Exception                (Exception,
                                                    SomeException,
                                                    displayException,
                                                    fromException, mask, throwIO,
-                                                   try, uninterruptibleMask_)
+                                                   toException, try,
+                                                   uninterruptibleMask_)
 import           Control.Monad.IO.Class           (MonadIO (..))
 import           Control.Monad.State              as State (MonadState (get, put),
-                                                            StateT)
+                                                            StateT, evalStateT)
 import qualified Data.Attoparsec.ByteString.Char8 as StrictParse
 import           Data.ByteString                  (ByteString)
 import qualified Data.ByteString.Builder          as Builder
@@ -74,7 +80,11 @@ import           Data.Typeable                    (Typeable)
 import           Database.Redis.Client            (Client (..),
                                                    ConnectionStatus (..))
 import           Database.Redis.FromResp          (FromResp (..))
-import           Database.Redis.RedisError        (RedisError (..))
+import           Database.Redis.RedisError        (RedisClientError (..),
+                                                   RedisClusterFailure (..),
+                                                   RedisLifecycleFailure (..),
+                                                   RedisProtocolFailure (..),
+                                                   tryRedisClient)
 import           Database.Redis.Resp              (Encodable (encode),
                                                    RespData (..), parseRespData)
 import           System.IO                        (hPutStrLn, stderr)
@@ -91,7 +101,32 @@ data ClientState client = ClientState
 -- Wraps 'StateT' over 'ClientState' to manage the connection handle and
 -- an incremental parse buffer, so callers never deal with raw bytes.
 data RedisCommandClient client (a :: Type) where
-  RedisCommandClient :: (Client client) => {runRedisCommandClient :: State.StateT (ClientState client) IO a} -> RedisCommandClient client a
+  RedisCommandClient :: (Client client) => {unRedisCommandClient :: State.StateT (ClientState client) IO a} -> RedisCommandClient client a
+
+-- | Run a sequential command program with typed synchronous failures.
+runRedisCommandClient
+  :: (Client client)
+  => ClientState client
+  -> RedisCommandClient client a
+  -> IO (Either RedisClientError a)
+runRedisCommandClient state (RedisCommandClient action) =
+  fmap classifyCommandRunnerError $
+    tryRedisClient $ State.evalStateT action state
+
+classifyCommandRunnerError
+  :: Either RedisClientError a
+  -> Either RedisClientError a
+classifyCommandRunnerError
+  (Left (RedisTransportError cause))
+    | Just unsupported <- fromException cause =
+        Left $ RedisLifecycleError $ RedisUnsupportedOperation $
+          toException (unsupported :: ClientReplyModeUnsupported)
+    | Just uncertain <- fromException cause =
+        Left $ RedisLifecycleError $
+          RedisUncertainWrite
+            (clientReplyPrimaryError uncertain)
+            (clientReplyCloseError uncertain)
+classifyCommandRunnerError result = result
 
 instance (Client client) => Functor (RedisCommandClient client) where
   fmap :: (a -> b) -> RedisCommandClient client a -> RedisCommandClient client b
@@ -668,7 +703,8 @@ reportClientReplyCloseFailure primary closeFailure = do
       ++ displayException closeFailure) :: IO (Either SomeException ()))
   return ()
 
--- | Convert a raw 'RespData' value using 'FromResp', throwing on failure.
+-- | Convert a raw 'RespData' value using 'FromResp', throwing internally so
+-- the public runner can return the unified typed error.
 convertResp :: (FromResp a, MonadIO m) => RespData -> m a
 convertResp rd = case fromResp rd of
   Right a  -> return a
@@ -1009,7 +1045,8 @@ parseWith recv = do
   result <- parseManyWith 1 recv
   case result of
     [x] -> return x
-    _ -> liftIO $ throwIO $ ParseError "parseWith: expected exactly one result"
+    _ -> liftIO $ throwIO $ RedisProtocolError $
+      RedisParseFailure "parseWith: expected exactly one result"
 
 -- | Receive exactly @cnt@ RESP values from the connection, performing incremental
 -- parsing against the internal buffer and fetching more bytes as needed.
@@ -1017,18 +1054,20 @@ parseManyWith :: (Client client, MonadIO m, MonadState (ClientState client) m) =
 parseManyWith cnt recv = do
   (ClientState !client !input) <- State.get
   case StrictParse.parse (StrictParse.count cnt parseRespData) input of
-    StrictParse.Fail _ _ err -> liftIO $ throwIO $ ParseError err
+    StrictParse.Fail _ _ err ->
+      liftIO $ throwIO $ RedisProtocolError $ RedisParseFailure err
     part@(StrictParse.Partial _) -> runUntilDone client part recv
     StrictParse.Done remainder !r -> do
       State.put (ClientState client remainder)
       return r
   where
     runUntilDone :: (Client client, MonadIO m, MonadState (ClientState client) m) => client 'Connected -> StrictParse.IResult BS8.ByteString r -> m BS8.ByteString -> m r
-    runUntilDone _client (StrictParse.Fail _ _ err) _ = liftIO $ throwIO $ ParseError err
+    runUntilDone _client (StrictParse.Fail _ _ err) _ =
+      liftIO $ throwIO $ RedisProtocolError $ RedisParseFailure err
     runUntilDone client (StrictParse.Partial f) getMore = do
       moreData <- getMore
       if BS8.null moreData
-        then liftIO $ throwIO ConnectionClosed
+        then liftIO $ throwIO $ RedisProtocolError RedisConnectionClosed
         else runUntilDone client (f moreData) getMore
     runUntilDone client (StrictParse.Done remainder !r) _ = do
       State.put (ClientState client remainder)

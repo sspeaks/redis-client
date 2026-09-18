@@ -1,4 +1,5 @@
-{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DataKinds       #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | Cluster-aware Redis command client with automatic slot routing and
 -- redirection handling. Protocol adapters that need raw RESP frames should
@@ -6,7 +7,23 @@
 module Database.Redis.Cluster.Client
   ( ClusterClient (..)
   , ClusterCommandClient
-  , ClusterError (..)
+  , RedisClientError (..)
+  , RedisClusterFailure (..)
+  , RedisLifecycleFailure (..)
+  , RedisProtocolFailure (..)
+  , ClusterError
+  , pattern MovedError
+  , pattern AskError
+  , pattern ClusterDownError
+  , pattern TryAgainError
+  , pattern CrossSlotError
+  , pattern RedisCommandError
+  , pattern MaxRetriesExceeded
+  , pattern TopologyError
+  , pattern ConnectionError
+  , pattern ConnectionTimeoutError
+  , pattern ClusterAuthenticationError
+  , pattern ClusterClientClosed
   , ClusterConfig (..)
   , ClusterAuthentication (..)
   , ClusterAuthenticationException (..)

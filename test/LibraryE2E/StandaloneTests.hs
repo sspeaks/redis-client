@@ -3,6 +3,7 @@
 
 module LibraryE2E.StandaloneTests (spec) where
 
+import           Control.Exception         (throwIO)
 import           Database.Redis.Cluster    (NodeAddress (..))
 import           Database.Redis.Command    (RedisCommands (..))
 import           Database.Redis.Connector  (clusterPlaintextConnector)
@@ -26,7 +27,8 @@ createTestStandaloneClient =
 
 -- | Run a command that returns RespData (resolves ambiguous FromResp)
 run :: StandaloneClient -> StandaloneCommandClient RespData -> IO RespData
-run = runStandaloneClient
+run client command =
+  runStandaloneClient client command >>= either throwIO pure
 
 spec :: Spec
 spec = describe "Standalone Multiplexed Client" $ do

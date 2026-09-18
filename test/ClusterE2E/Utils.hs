@@ -39,7 +39,7 @@ import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
 import           Control.Concurrent                    (threadDelay)
 import           Control.Concurrent.STM                (readTVarIO)
 import           Control.Exception                     (IOException, evaluate,
-                                                        finally, try)
+                                                        finally, throwIO, try)
 import           Control.Monad                         (void)
 import qualified Control.Monad.State                   as State
 import qualified Data.ByteString                       as BS
@@ -86,7 +86,8 @@ createTestClusterClient = do
 
 -- | Helper to run cluster commands using the RedisCommands instance
 runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
-runCmd client = runClusterCommandClient client
+runCmd client command =
+  runClusterCommandClient client command >>= either throwIO pure
 
 -- | Helper to run a RedisCommand against a plain connection
 runRedisCommand :: PlainTextClient 'Connected -> RedisCommandClient PlainTextClient a -> IO a

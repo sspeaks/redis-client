@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+*   **Breaking unified public error model**
+    *   Sequential, standalone, cluster, low-level command, and topology-refresh
+        runners now return `Either RedisClientError`; the previous mixture of
+        thrown exceptions, `MonadFail`, and `Either ClusterError` is removed.
+    *   `RedisClientError` layers server, conversion, protocol, transport,
+        cluster, and lifecycle failures. Retry, setup, action, and cleanup
+        failures retain structured nested causes rather than display strings.
+    *   Public exception boundaries rethrow asynchronous cancellation instead
+        of converting it to `Left`.
+    *   Redis error replies can no longer decode successfully as `()` or raw
+        `RespData`. `ClusterError` remains as a deprecated migration alias.
+    *   This API is released as `redis-client-0.6.0.0` and
+        `hask-redis-mux-0.3.0.0`.
 *   **Qualified RESP support**
     *   Command parsing and encoding are RESP2-first, with RESP3-shaped map
         and set aggregates only. RESP3 session and scalar types remain
@@ -24,8 +37,7 @@
         the former single pool-wide `MVar`; code that constructed or inspected this
         record must use `createPool`, `withConnection`, `getConnectionPoolStats`, and
         `closePool` instead. This intentional source-incompatible change is released
-        as `hask-redis-mux-0.2.0.0` under the Haskell PVP. The planned
-        `RedisClientError` API release is not included in this change.
+        as `hask-redis-mux-0.3.0.0` under the Haskell PVP.
     *   Pool closure is terminal at checkout linearization: idle checkouts,
         queued direct handoffs, reservations, and newly connecting checkouts
         reject once `closePool` has marked the pool closed. Leases acquired
@@ -41,12 +53,11 @@
     *   Direct, standalone multiplexed, and cluster clients implement the new
         methods. Downstream `RedisCommands` instances must also implement them;
         this source-incompatible typeclass expansion is included in the same
-        unpublished `hask-redis-mux-0.2.0.0` release as the pool representation
+        unpublished `hask-redis-mux-0.3.0.0` release as the pool representation
         change rather than introducing another breaking version.
     *   Cluster dispatch validates the new command grammar and all participating
         keys before sending. `ZCOUNT` score ranges match the pinned Redis 7.2
         `zslParseRange` boundary, including exclusive finite and infinite bounds.
-    *   The planned `RedisClientError` API remains excluded from this release.
 *   **Breaking credential handling**
     *   Removed `-a/--password`; use `REDIS_CLIENT_PASSWORD_FILE` (preferred) or `REDIS_CLIENT_PASSWORD`.
     *   Credential files take precedence over direct environment values.

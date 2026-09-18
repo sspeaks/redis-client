@@ -34,7 +34,7 @@
 -- import Data.Text (Text)
 -- import Database.Redis
 --
--- typedReturns :: IO (Integer, ByteString, Maybe Text)
+-- typedReturns :: IO (Either RedisClientError (Integer, ByteString, Maybe Text))
 -- typedReturns =
 --   runRedis defaultStandaloneConfig $ do
 --     (_ :: Bool) <- set \"counter\" \"42\"
@@ -52,7 +52,7 @@
 --
 -- import Database.Redis
 --
--- clusterExample :: IO ByteString
+-- clusterExample :: IO (Either RedisClientError ByteString)
 -- clusterExample =
 --   withClusterClient exampleClusterConfig clusterPlaintextConnector $ \\client ->
 --     runClusterCommandClient client $ do
@@ -111,7 +111,6 @@ import           Database.Redis.Cluster.Client         (ClusterAuthentication (.
                                                         ClusterClient (..),
                                                         ClusterCommandClient,
                                                         ClusterConfig (..),
-                                                        ClusterError (..),
                                                         ClusterRuntimeAuthenticationUnsupported (..),
                                                         closeClusterClient,
                                                         createClusterClient,
@@ -131,9 +130,12 @@ import           Database.Redis.Command                (ClientReplyModeUnsupport
                                                         ClientReplyUncertainWrite (..),
                                                         ClientReplyValues (..),
                                                         ClientState (..),
+                                                        RedisClientError (..),
+                                                        RedisClusterFailure (..),
                                                         RedisCommandClient (..),
                                                         RedisCommands (..),
-                                                        RedisError (..),
+                                                        RedisLifecycleFailure (..),
+                                                        RedisProtocolFailure (..),
                                                         convertResp,
                                                         encodeBulkArg,
                                                         encodeCommand,
@@ -141,7 +143,8 @@ import           Database.Redis.Command                (ClientReplyModeUnsupport
                                                         encodeGetBuilder,
                                                         encodeSetBuilder,
                                                         parseManyWith,
-                                                        parseWith, showBS)
+                                                        parseWith, showBS,
+                                                        tryRedisClient)
 import           Database.Redis.Connector              (ConnectionPhase (..),
                                                         ConnectionSetupException (..),
                                                         ConnectionSupervisor (..),

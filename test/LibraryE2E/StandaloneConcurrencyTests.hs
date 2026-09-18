@@ -4,7 +4,8 @@
 module LibraryE2E.StandaloneConcurrencyTests (spec) where
 
 import           Control.Concurrent.Async              (mapConcurrently)
-import           Control.Exception                     (SomeException, try)
+import           Control.Exception                     (SomeException, throwIO,
+                                                        try)
 import           Control.Monad                         (forM, forM_)
 import           Data.IORef                            (IORef,
                                                         atomicModifyIORef',
@@ -44,7 +45,8 @@ createTestStandaloneClient =
 
 -- | Run a command that returns RespData (resolves ambiguous FromResp)
 run :: StandaloneClient -> StandaloneCommandClient RespData -> IO RespData
-run = runStandaloneClient
+run client command =
+  runStandaloneClient client command >>= either throwIO pure
 
 runStormWorker
   :: StandaloneClient

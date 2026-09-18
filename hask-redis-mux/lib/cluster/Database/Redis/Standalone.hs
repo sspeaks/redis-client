@@ -20,7 +20,7 @@
 --     result <- runStandaloneClient client $ do
 --       (_ :: Bool) <- set \"key\" \"value\"
 --       get \"key\"
---     print (result :: ByteString)
+--     print (result :: Either RedisClientError ByteString)
 -- @
 --
 -- @since 0.1.0.0
@@ -42,9 +42,11 @@ module Database.Redis.Standalone
   , runStandaloneClient
   ) where
 
-import           Control.Exception                   (SomeException, bracket,
-                                                      catch, onException,
-                                                      throwIO)
+import           Control.Exception                   (SomeAsyncException,
+                                                      SomeException, bracket,
+                                                      fromException, mask,
+                                                      onException, throwIO,
+                                                      toException, try)
 import           Control.Monad.IO.Class              (MonadIO (..))
 import           Control.Monad.Reader                (ReaderT, ask, runReaderT)
 import           Data.ByteString                     (ByteString)
@@ -134,11 +136,17 @@ import           Database.Redis.Command              (ClientReplyModeUnsupported
 import           Database.Redis.Connector            (Connector,
                                                       clusterPlaintextConnector)
 import           Database.Redis.FromResp             (FromResp (..))
-import           Database.Redis.Internal.Multiplexer (Multiplexer, SlotPool,
+import           Database.Redis.Internal.Multiplexer (Multiplexer,
+                                                      MultiplexerException (..),
+                                                      SlotPool,
                                                       createMultiplexerFromConnector,
                                                       createSlotPool,
                                                       destroyMultiplexer,
                                                       submitCommandPooled)
+import           Database.Redis.RedisError           (RedisClientError (..),
+                                                      RedisLifecycleFailure (..),
+                                                      RedisProtocolFailure (..),
+                                                      tryRedisClient)
 import           Database.Redis.Resp                 (RespData)
 
 
@@ -157,7 +165,7 @@ data StandaloneConfig client = StandaloneConfig
 --
 -- import Database.Redis
 --
--- defaultExample :: IO ByteString
+-- defaultExample :: IO (Either RedisClientError ByteString)
 -- defaultExample =
 --   runRedis defaultStandaloneConfig $ do
 --     (_ :: Bool) <- set \"key\" \"value\"
@@ -213,8 +221,7 @@ closeStandaloneClient client =
   closeStandaloneMux (standaloneMux client)
 
 closeStandaloneMux :: Multiplexer -> IO ()
-closeStandaloneMux mux =
-  destroyMultiplexer mux `catch` \(_ :: SomeException) -> return ()
+closeStandaloneMux = destroyMultiplexer
 
 -- | Bracket-style resource management for standalone clients.
 --
@@ -229,7 +236,7 @@ closeStandaloneMux mux =
 --
 -- import Database.Redis
 --
--- bracketExample :: IO ByteString
+-- bracketExample :: IO (Either RedisClientError ByteString)
 -- bracketExample =
 --   withStandaloneClient defaultStandaloneConfig $ \\client ->
 --     runStandaloneClient client $ do
@@ -253,7 +260,7 @@ withStandaloneClient config =
 --
 -- import Database.Redis
 --
--- runRedisExample :: IO ByteString
+-- runRedisExample :: IO (Either RedisClientError ByteString)
 -- runRedisExample =
 --   runRedis defaultStandaloneConfig $ do
 --     (_ :: Bool) <- set \"key\" \"value\"
@@ -263,18 +270,73 @@ runRedis
   :: (Client client)
   => StandaloneConfig client
   -> StandaloneCommandClient a
-  -> IO a
-runRedis config action =
-  withStandaloneClient config (`runStandaloneClient` action)
+  -> IO (Either RedisClientError a)
+runRedis config action = mask $ \restore -> do
+  created <- try $ restore $ createStandaloneClientFromConfig config
+  case created of
+    Left (setupFailure :: SomeException) ->
+      rethrowAsyncOr $ RedisLifecycleError $ RedisSetupFailure setupFailure
+    Right client -> do
+      outcome <- try $ restore $ runReaderT
+        (unStandaloneCommandClient action) client
+      cleanup <- try $ closeStandaloneClient client
+      case outcome of
+        Left (failure :: SomeException) ->
+          case fromException failure of
+            Just async -> throwIO (async :: SomeAsyncException)
+            Nothing ->
+              let primary = exceptionToClientError failure
+              in case cleanup of
+                Right () -> pure $ Left primary
+                Left cleanupFailure ->
+                  rethrowAsyncOr $ RedisLifecycleError $
+                    RedisActionCleanupFailure primary cleanupFailure
+        Right value ->
+          case cleanup of
+            Right () -> pure $ Right value
+            Left cleanupFailure ->
+              rethrowAsyncOr $ RedisLifecycleError $
+                RedisCleanupFailure cleanupFailure
 
 -- | Monad for executing Redis commands on a standalone client.
 newtype StandaloneCommandClient a = StandaloneCommandClient
   { unStandaloneCommandClient :: ReaderT StandaloneClient IO a }
 
 -- | Run Redis commands against the standalone client.
-runStandaloneClient :: StandaloneClient -> StandaloneCommandClient a -> IO a
-runStandaloneClient client (StandaloneCommandClient action) =
-  runReaderT action client
+runStandaloneClient
+  :: StandaloneClient
+  -> StandaloneCommandClient a
+  -> IO (Either RedisClientError a)
+runStandaloneClient client (StandaloneCommandClient action) = do
+  result <- tryRedisClient $ runReaderT action client
+  pure $ case result of
+    Left (RedisTransportError cause)
+      | Just (MultiplexerDead _) <- fromException cause ->
+          Left $ RedisLifecycleError RedisClientClosed
+      | Just (MultiplexerParseError message) <- fromException cause ->
+          Left $ RedisProtocolError $ RedisParseFailure message
+      | Just MultiplexerConnectionClosed <- fromException cause ->
+          Left $ RedisProtocolError RedisConnectionClosed
+    _ -> result
+
+exceptionToClientError :: SomeException -> RedisClientError
+exceptionToClientError exception =
+  case fromException exception of
+    Just redisError -> redisError
+    Nothing         -> RedisTransportError exception
+
+rethrowAsyncOr :: RedisClientError -> IO (Either RedisClientError a)
+rethrowAsyncOr redisError =
+  case redisError of
+    RedisLifecycleError (RedisSetupFailure cause) -> check cause
+    RedisLifecycleError (RedisCleanupFailure cause) -> check cause
+    RedisLifecycleError (RedisActionCleanupFailure _ cause) -> check cause
+    _ -> pure $ Left redisError
+  where
+    check cause =
+      case fromException cause of
+        Just async -> throwIO (async :: SomeAsyncException)
+        Nothing    -> pure $ Left redisError
 
 instance Functor StandaloneCommandClient where
   fmap f (StandaloneCommandClient r) = StandaloneCommandClient (fmap f r)
@@ -447,7 +509,8 @@ instance RedisCommands StandaloneCommandClient where
     Just <$> submitMux
       (commandDescriptorFrame $ definedClientReplyOn redisCommandDefinitions)
   clientReply val =
-    liftIO $ throwIO (ClientReplyModeUnsupported val)
+    liftIO $ throwIO $ RedisLifecycleError $
+      RedisUnsupportedOperation $ toException $ ClientReplyModeUnsupported val
   zadd key members =
     submitMuxDescriptorAs (definedZadd redisCommandDefinitions key members)
   zrange key start stop withScores =

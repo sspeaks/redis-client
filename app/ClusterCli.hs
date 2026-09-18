@@ -11,12 +11,13 @@ import qualified Control.Monad.State.Strict      as State
 import qualified Data.ByteString.Builder         as Builder
 import qualified Data.ByteString.Char8           as BS8
 import           Database.Redis.Client           (Client (receive, send))
-import           Database.Redis.Cluster.Client   (ClusterError (..))
 import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
 import           Database.Redis.Cluster.Commands (CommandRouting (..),
                                                   classifyCommand)
 import           Database.Redis.Command          (ClientState (ClientState),
                                                   RedisCommandClient, parseWith)
+import           Database.Redis.RedisError       (RedisClientError (..),
+                                                  RedisClusterFailure (..))
 import           Database.Redis.Resp             (Encodable (encode),
                                                   RespData (RespArray, RespBulkString))
 
@@ -44,8 +45,9 @@ executeKeyedCommand key parts = do
   clusterClient <- State.get
   result <- liftIO $ ClusterCommandClient.executeKeyedClusterCommand clusterClient key parts
   return $ case result of
-    Left (CrossSlotError msg) -> Left $
-      msg ++ "\nHint: Use hash tags like {user}:key to ensure keys map to the same slot"
+    Left (RedisClusterError (RedisCrossSlot msg)) -> Left $
+      BS8.unpack msg
+        ++ "\nHint: Use hash tags like {user}:key to ensure keys map to the same slot"
     Left err -> Left (show err)
     Right resp -> Right resp
 

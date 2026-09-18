@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               hask-redis-mux
-version:            0.2.0.0
+version:            0.3.0.0
 synopsis:           A RESP2-first multiplexed Redis client library
 description:
     hask-redis-mux provides a RESP2-first Redis client with TLS support, CRC16

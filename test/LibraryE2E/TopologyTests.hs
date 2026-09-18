@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 module LibraryE2E.TopologyTests (spec) where
 
@@ -16,9 +17,10 @@ import           Database.Redis.Cluster        (ClusterNode (..),
                                                 ClusterTopology (..),
                                                 NodeRole (..))
 import           Database.Redis.Cluster.Client (ClusterClient (..),
-                                                ClusterError (..),
+                                                ClusterError,
                                                 closeClusterClient,
                                                 executeKeyedClusterCommand,
+                                                pattern MaxRetriesExceeded,
                                                 refreshTopology)
 import           Database.Redis.Resp           (RespData (..))
 import           System.Timeout                (timeout)
@@ -59,7 +61,7 @@ spec = describe "Topology Refresh" $ do
 
       -- Spawn 50 threads all calling refreshTopology at once
       results <- mapConcurrently (\_ ->
-        try (refreshTopology client) :: IO (Either SomeException ())
+        refreshTopology client
         ) [1..50 :: Int]
 
       -- All should succeed (no crashes)

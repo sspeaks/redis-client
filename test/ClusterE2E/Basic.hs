@@ -3,14 +3,13 @@
 module ClusterE2E.Basic (spec) where
 
 import           ClusterE2E.Utils
-import           Control.Exception             (IOException, bracket)
+import           Control.Exception             (bracket)
 import qualified Data.ByteString.Char8         as BS8
-import           Data.List                     (isInfixOf)
 import           Database.Redis.Cluster        (calculateSlot)
 import           Database.Redis.Cluster.Client (closeClusterClient)
-import           Database.Redis.Command        (RedisCommands (..))
+import           Database.Redis.Command        (RedisClientError (..),
+                                                RedisCommands (..))
 import           Database.Redis.Resp           (RespData (..))
-import           System.IO.Error               (ioeGetErrorString)
 import           Test.Hspec
 
 spec :: Spec
@@ -130,5 +129,6 @@ spec = describe "Basic cluster operations" $ do
         afterDel <- runCmd client $ get "cluster:deltest"
         afterDel `shouldBe` RespNullBulkString
 
-isWrongTypeError :: IOException -> Bool
-isWrongTypeError = isInfixOf "WRONGTYPE" . ioeGetErrorString
+isWrongTypeError :: RedisClientError -> Bool
+isWrongTypeError (RedisServerError err) = BS8.isInfixOf "WRONGTYPE" err
+isWrongTypeError _                      = False

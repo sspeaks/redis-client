@@ -54,13 +54,14 @@ import           Database.Redis.Cluster                     (ClusterNode (..),
                                                              ClusterTopology (..),
                                                              NodeAddress (..),
                                                              NodeRole (..))
-import           Database.Redis.Cluster.Client              (ClusterClient (..),
-                                                             ClusterError (..))
+import           Database.Redis.Cluster.Client              (ClusterClient (..))
 import           Database.Redis.Cluster.Commands            (CommandRouting (..),
                                                              classifyCommand)
 import           Database.Redis.Cluster.Internal.RawCommand (RawClusterRoute (..),
                                                              executeRawClusterCommand)
 import           Database.Redis.Connector                   (Connector)
+import           Database.Redis.RedisError                  (RedisClientError (..),
+                                                             RedisClusterFailure (..))
 import           Database.Redis.Resp                        (Encodable (encode),
                                                              RespData (..))
 import qualified Database.Redis.Resp                        as Resp
@@ -327,7 +328,7 @@ routeSmartProxyCommandWith dispatch respData =
 type SmartProxyDispatch =
   RawClusterRoute ->
   RespData ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 
 classifySmartProxyFrame :: RespData -> Either String RawClusterRoute
 classifySmartProxyFrame (RespArray (RespBulkString command : arguments)) = do
@@ -361,7 +362,8 @@ executeKeyedCommand ::
 executeKeyedCommand dispatch key respData = do
   result <- dispatch (RawRouteByKey key) respData
   return $ case result of
-    Left (CrossSlotError msg) -> Left $ "CROSSSLOT error: " ++ msg
+    Left (RedisClusterError (RedisCrossSlot msg)) ->
+      Left $ "CROSSSLOT error: " ++ BS8.unpack msg
     Left err                  -> Left (show err)
     Right resp                -> Right resp
 

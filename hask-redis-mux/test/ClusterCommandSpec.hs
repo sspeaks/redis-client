@@ -244,39 +244,39 @@ spec = do
   describe "ClusterError types" $ do
     it "creates MovedError correctly" $ do
       let err = MovedError 3999 (NodeAddress "127.0.0.1" 6381)
-      show err `shouldContain` "MovedError"
+      show err `shouldContain` "RedisMoved"
       show err `shouldContain` "3999"
 
     it "creates AskError correctly" $ do
       let err = AskError 3999 (NodeAddress "127.0.0.1" 6381)
-      show err `shouldContain` "AskError"
+      show err `shouldContain` "RedisAsk"
       show err `shouldContain` "3999"
 
     it "creates ClusterDownError correctly" $ do
       let err = ClusterDownError "Cluster is down"
-      show err `shouldContain` "ClusterDownError"
+      show err `shouldContain` "RedisClusterDown"
       show err `shouldContain` "Cluster is down"
 
     it "creates TryAgainError correctly" $ do
       let err = TryAgainError "Try again later"
-      show err `shouldContain` "TryAgainError"
+      show err `shouldContain` "RedisTryAgain"
 
     it "creates CrossSlotError correctly" $ do
       let err = CrossSlotError "Keys in request don't hash to the same slot"
-      show err `shouldContain` "CrossSlotError"
+      show err `shouldContain` "RedisCrossSlot"
 
     it "creates MaxRetriesExceeded correctly" $ do
       let err = MaxRetriesExceeded "Max retries (3) exceeded"
-      show err `shouldContain` "MaxRetriesExceeded"
+      show err `shouldContain` "RedisRetryExhausted"
       show err `shouldContain` "3"
 
     it "creates TopologyError correctly" $ do
       let err = TopologyError "No node found for slot 3999"
-      show err `shouldContain` "TopologyError"
+      show err `shouldContain` "RedisTopologyFailure"
 
     it "creates ConnectionError correctly" $ do
       let err = ConnectionError "Connection timeout"
-      show err `shouldContain` "ConnectionError"
+      show err `shouldContain` "Redis transport failure"
 
     it "creates ConnectionTimeoutError without credentials" $ do
       let timeoutError =
@@ -626,8 +626,7 @@ assertPublicValidatedCommand frame command = do
   client <- mkClusterClient connector topology
   completed <- newEmptyMVar
   _ <- forkIO $
-    (try (runClusterCommandClient client command) :: IO (Either SomeException RespData))
-      >>= putMVar completed
+    runClusterCommandClient client command >>= putMVar completed
   record <- awaitPublicCommand records
   case record of
     Nothing -> expectationFailure "typed command did not reach the mock transport"
@@ -639,7 +638,7 @@ assertPublicValidatedCommand frame command = do
   case result of
     Just (Right response) -> response `shouldBe` RespSimpleString "OK"
     Just (Left failure) ->
-      expectationFailure $ "typed command failed: " ++ Exception.displayException failure
+      expectationFailure $ "typed command failed: " ++ show failure
     Nothing -> expectationFailure "typed command did not receive its response"
   closeMultiplexPool $ clusterMultiplexPool client
 
@@ -651,10 +650,9 @@ assertPublicRejectedCommand expectedFailure command = do
   (connector, records) <- createPublicCommandConnector
   topology <- mkTopology node2
   client <- mkClusterClient connector topology
-  result <- try (runClusterCommandClient client command)
-    :: IO (Either SomeException RespData)
+  result <- runClusterCommandClient client command
   result `shouldSatisfy`
-    either (isInfixOf expectedFailure . Exception.displayException) (const False)
+    either (isInfixOf expectedFailure . show) (const False)
   recordCount <- length <$> readIORef records
   recordCount `shouldBe` 0
   closeMultiplexPool $ clusterMultiplexPool client
@@ -1557,10 +1555,13 @@ clusterAuthenticationSpec =
         testClusterConfig credentials connector
       recordsBefore <- getRecords
       sentBefore <- recordSentBytes $ findAuthRecord recordsBefore node1 0
-      result <- try $ runClusterCommandClient client
+      result <- runClusterCommandClient client
         (auth "ignored-user" "ignored-secret" :: ClusterCommandClient AuthMockClient RespData)
-        :: IO (Either ClusterRuntimeAuthenticationUnsupported RespData)
-      result `shouldBe` Left ClusterRuntimeAuthenticationUnsupported
+      case result of
+        Left (RedisLifecycleError (RedisUnsupportedOperation cause)) ->
+          fromException cause
+            `shouldBe` Just ClusterRuntimeAuthenticationUnsupported
+        _ -> expectationFailure "runtime AUTH was not a typed lifecycle error"
       recordsAfter <- getRecords
       sentAfter <- recordSentBytes $ findAuthRecord recordsAfter node1 0
       sentAfter `shouldBe` sentBefore
@@ -1572,10 +1573,12 @@ clusterAuthenticationSpec =
         (\_ -> error "CLIENT REPLY mode must not acquire a cluster connection")
         topology
       forM_ [OFF, SKIP] $ \mode -> do
-        result <- try $ runClusterCommandClient client
+        result <- runClusterCommandClient client
           (clientReply mode :: ClusterCommandClient MockClient (Maybe RespData))
-          :: IO (Either ClientReplyModeUnsupported (Maybe RespData))
-        result `shouldBe` Left (ClientReplyModeUnsupported mode)
+        case result of
+          Left (RedisLifecycleError (RedisUnsupportedOperation cause)) ->
+            fromException cause `shouldBe` Just (ClientReplyModeUnsupported mode)
+          _ -> expectationFailure "CLIENT REPLY rejection was not typed"
       closeClusterClient client
 
 movedRedirectSpec :: Spec
@@ -1855,6 +1858,18 @@ data ExpectedPathError
   = ImmediateError ClusterError
   | ExhaustedWith String
 
+data ProtocolFailure
+  = ParseFailure
+  | ConnectionClosed
+  deriving Show
+
+data ProtocolFailurePath
+  = NormalKeyedPath
+  | MovedTargetPath
+  | AskingTargetPath
+  | RawKeyedPath
+  deriving (Eq, Show)
+
 clusterErrorReplies :: [(String, RespData, ExpectedPathError)]
 clusterErrorReplies =
   [ ( "MOVED"
@@ -1956,9 +1971,77 @@ runRedirectTargetErrorPath useAsking reply = do
   closeClusterClient client
   return result
 
+protocolFailureActions :: ProtocolFailure -> [IO ByteString]
+protocolFailureActions ParseFailure =
+  [return "+OK\rX"]
+protocolFailureActions ConnectionClosed =
+  [return BS.empty]
+
+assertProtocolFailure
+  :: ProtocolFailure
+  -> Either RedisClientError RespData
+  -> Expectation
+assertProtocolFailure ParseFailure result =
+  case result of
+    Left (RedisProtocolError (RedisParseFailure message)) ->
+      message `shouldSatisfy` (not . null)
+    other ->
+      expectationFailure $
+        "Expected RedisParseFailure, got: " ++ show other
+assertProtocolFailure ConnectionClosed result =
+  result `shouldBe` Left (RedisProtocolError RedisConnectionClosed)
+
+runProtocolFailurePath
+  :: ProtocolFailurePath
+  -> ProtocolFailure
+  -> IO (Either RedisClientError RespData)
+runProtocolFailurePath path failure = do
+  let key = "protocol-failure-key"
+      redirect useAsking
+        | useAsking = RespError "ASK 3999 127.0.0.2:6380"
+        | otherwise = RespError "MOVED 3999 127.0.0.2:6380"
+      script address index
+        | address == node1 && index == 0 =
+            return [replyWith validClusterSlots]
+        | path == MovedTargetPath
+        , address == node1 =
+            return [replyWith $ redirect False]
+        | path == AskingTargetPath
+        , address == node1 =
+            return [replyWith $ redirect True]
+        | otherwise =
+            return $ protocolFailureActions failure
+  (connector, _) <- createAuthMockConnector script
+  client <- createClusterClient (retryTestConfig 2 1) connector
+  result <- case path of
+    RawKeyedPath ->
+      executeRawClusterCommand
+        client
+        (RawRouteByKey key)
+        (RespArray [RespBulkString "GET", RespBulkString key])
+    _ ->
+      executeKeyedClusterCommand client key ["GET", key]
+  closeClusterClient client
+  return result
+
 clusterErrorClassificationSpec :: Spec
 clusterErrorClassificationSpec =
   describe "cluster error execution and retry policy" $ do
+    describe "multiplexer protocol failures" $ do
+      forM_
+        [ NormalKeyedPath
+        , MovedTargetPath
+        , AskingTargetPath
+        , RawKeyedPath
+        ] $ \path ->
+          forM_ [ParseFailure, ConnectionClosed] $ \failure ->
+            it
+              ( "classifies " ++ show failure ++ " on "
+                  ++ show path
+              ) $ do
+                runProtocolFailurePath path failure
+                  >>= assertProtocolFailure failure
+
     describe "identical classification across execution paths" $ do
       forM_ clusterErrorReplies $ \(label, reply, expected) -> do
         it ("classifies " ++ label ++ " on the normal slot path") $ do
@@ -2531,12 +2614,12 @@ clusterErrorClassificationSpec =
                 else [replyWith $ RespError serverError]
       (connector, _) <- createAuthMockConnector script
       client <- createClusterClient (retryTestConfig 3 1) connector
-      result <- try $ runClusterCommandClient client
+      result <- runClusterCommandClient client
         (get "typed-error-key"
           :: ClusterCommandClient AuthMockClient ByteString)
-        :: IO (Either SomeException ByteString)
       case result of
-        Left err -> show err `shouldContain` BS8.unpack serverError
+        Left (RedisServerError message) -> message `shouldBe` serverError
+        Left err -> expectationFailure $ "Unexpected typed error: " ++ show err
         Right _  -> expectationFailure "Typed cluster error returned success"
       closeClusterClient client
 

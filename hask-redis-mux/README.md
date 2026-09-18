@@ -108,7 +108,7 @@ Add to your `.cabal` file:
 
 ```cabal
 build-depends:
-  hask-redis-mux >= 0.1 && < 0.3,
+  hask-redis-mux >= 0.3 && < 0.4,
   text >= 2.1 && < 2.2
 ```
 
@@ -127,7 +127,7 @@ main = do
     (_ :: Bool) <- set "greeting" "hello"
     (val :: ByteString) <- get "greeting"
     return val
-  print result  -- "hello"
+  print result  -- Right "hello"
 ```
 
 ## Typed Returns with FromResp
@@ -188,14 +188,14 @@ Use bracket-style functions for exception-safe resource management:
 
 import Database.Redis
 
-standaloneExample :: IO ByteString
+standaloneExample :: IO (Either RedisClientError ByteString)
 standaloneExample =
   withStandaloneClient defaultStandaloneConfig $ \client ->
     runStandaloneClient client $ do
       (_ :: Bool) <- set "key" "value"
       get "key"
 
-clusterExample :: IO ByteString
+clusterExample :: IO (Either RedisClientError ByteString)
 clusterExample =
   withClusterClient exampleClusterConfig clusterPlaintextConnector $ \client ->
     runClusterCommandClient client $ do
@@ -223,12 +223,59 @@ that client. Teardown is idempotent and each transport finalizer runs exactly
 once. A client or pool must not be reused after bracket exit or explicit close:
 later submissions return a typed closed-client/pool failure and never reconnect.
 
-## Cluster Error Contract
+## Unified Error Contract
 
-The low-level `executeKeyedClusterCommand` and
-`executeKeylessClusterCommand` APIs return `Either ClusterError RespData`.
-Every Redis `RespError` is classified centrally and is returned on the `Left`;
-error replies are never success-shaped:
+All public sequential, standalone, cluster, low-level command, and topology
+refresh runners return `Either RedisClientError`. Redis error replies are
+always `Left`, including commands decoded as `()` or raw `RespData`.
+
+```haskell
+{-# LANGUAGE OverloadedStrings #-}
+
+import Database.Redis
+
+setExample :: IO ()
+setExample = do
+  result <- runRedis defaultStandaloneConfig
+    (set "key" "value" :: StandaloneCommandClient Bool)
+  putStrLn $ classify result
+
+classify :: Either RedisClientError value -> String
+classify (Right _) = "success"
+classify (Left (RedisServerError _)) = "server"
+classify (Left (RedisProtocolError _)) = "protocol"
+classify (Left (RedisTransportError _)) = "transport"
+classify (Left (RedisClusterError _)) = "cluster"
+classify (Left (RedisLifecycleError _)) = "lifecycle"
+classify (Left (RedisConversionError _)) = "conversion"
+```
+
+Transport, setup, cleanup, and retry failures retain structured
+`SomeException` or nested `RedisClientError` causes. Callers can inspect a
+transport cause using `fromException`; the library does not replace it with
+`displayException`. Asynchronous exceptions such as thread cancellation are
+re-thrown and never converted to `Left`.
+
+This is a breaking replacement for the former mix of thrown runner failures,
+`Either ClusterError`, and `MonadFail`. Migration consists of matching the
+runner result:
+
+```haskell
+import Database.Redis
+
+runAction
+  :: StandaloneClient
+  -> StandaloneCommandClient ByteString
+  -> IO ()
+runAction client action = do
+  result <- runStandaloneClient client action
+  case result of
+    Left err -> print err
+    Right value -> print value
+```
+
+`ClusterError` remains as a deprecated alias for source migration, but new
+code should use `RedisClientError`. Cluster failures retain these semantics:
 
 - Keyed `MOVED` and `ASK` replies preserve their existing direct-target routing
   behavior. Keyless commands return those typed redirects immediately because
@@ -249,13 +296,6 @@ attempt. Backoff occurs only when another attempt remains, starts at
 `clusterRetryDelay`, doubles between attempts, and saturates at `maxBound`
 instead of overflowing. The delay remains interruptible, so asynchronous
 cancellation is rethrown rather than converted into a cluster error.
-
-The existing typed `ClusterCommandClient` runner still unwraps `ClusterError`
-through its historical `MonadFail` behavior. Ordinary Redis errors therefore
-fail the typed command instead of appearing as values. The planned breaking
-`Either RedisClientError` runner migration will replace that unwrap while
-nesting these same structured cluster/server causes; this change does not add a
-second compatibility runner.
 
 ## Custom Configuration
 
@@ -288,7 +328,7 @@ topology discovery or application commands:
 
 import Database.Redis
 
-authenticatedExample :: IO ByteString
+authenticatedExample :: IO (Either RedisClientError ByteString)
 authenticatedExample =
   withClusterClientAuthentication
       exampleClusterConfig
@@ -378,7 +418,7 @@ tlsConnection :: IO (TLSClient 'Connected)
 tlsConnection =
   connectTLSWithTimeout 5 "redis.example.net" 6380
 
-standalonePing :: IO ByteString
+standalonePing :: IO (Either RedisClientError ByteString)
 standalonePing =
   withStandaloneClient standaloneConfig $ \client ->
     runStandaloneClient client ping

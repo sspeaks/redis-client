@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms   #-}
 
 module LibraryE2E.ConcurrencyTests (spec) where
 
@@ -14,9 +15,10 @@ import           Data.IORef                            (IORef, newIORef,
 import qualified Data.Map.Strict                       as Map
 import           Database.Redis.Client                 (PlainTextClient)
 import           Database.Redis.Cluster.Client         (ClusterClient,
-                                                        ClusterError (..),
+                                                        ClusterError,
                                                         closeClusterClient,
                                                         executeKeyedClusterCommand,
+                                                        pattern MaxRetriesExceeded,
                                                         refreshTopology)
 import           Database.Redis.Cluster.ConnectionPool (PoolConfig (..))
 import           Database.Redis.Command                (showBS)
@@ -91,8 +93,7 @@ spec = describe "Concurrent Cluster Operations" $ do
       -- Run topology refreshes concurrently with SET/GET operations
       let refreshAction =
             mapM (\_ -> do
-              result <- try (refreshTopology client)
-                :: IO (Either SomeException ())
+              result <- refreshTopology client
               threadDelay 50000  -- 50ms between refreshes
               return result
             ) [1..10 :: Int]

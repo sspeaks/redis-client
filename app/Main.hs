@@ -19,7 +19,7 @@ import           ClusterSetup                          (createClusterClientFromS
 import           ClusterTunnel                         (PinnedProxyLogMode (..),
                                                         servePinnedProxyWith,
                                                         serveSmartProxy)
-import           Control.Exception                     (bracket, mask)
+import           Control.Exception                     (bracket, mask, throwIO)
 
 import           AppConfig                             (RunState (..),
                                                         defaultRunState,
@@ -499,13 +499,15 @@ cliCluster state = do
     then do
       clusterClient <- createClusterClientFromState state (createTLSConnector state)
       putStrLn $ "Connected to cluster seed node: " ++ host state
-      runClusterCommandClient clusterClient (replCluster isTTY)
+      result <- runClusterCommandClient clusterClient (replCluster isTTY)
       closeClusterClient clusterClient
+      either throwIO pure result
     else do
       clusterClient <- createClusterClientFromState state (createPlaintextConnector state)
       putStrLn $ "Connected to cluster seed node: " ++ host state
-      runClusterCommandClient clusterClient (replCluster isTTY)
+      result <- runClusterCommandClient clusterClient (replCluster isTTY)
       closeClusterClient clusterClient
+      either throwIO pure result
 
 repl :: (Client client) => Bool -> RedisCommandClient client ()
 repl isTTY = do

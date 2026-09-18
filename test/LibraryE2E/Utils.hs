@@ -50,7 +50,7 @@ import           Database.Redis.Command                (ClientState (..),
                                                         RedisCommands (..),
                                                         encodeCommand,
                                                         parseWith,
-                                                        runRedisCommandClient)
+                                                        unRedisCommandClient)
 import           Database.Redis.Connector              (Connector,
                                                         clusterPlaintextConnector)
 import           Database.Redis.Resp                   (RespData (..))
@@ -106,7 +106,8 @@ createOutageTestClient = createTestClientWith $ \config -> config
 
 -- | Run a cluster command using the test connector
 runCmd :: ClusterClient PlainTextClient -> ClusterCommandClient PlainTextClient a -> IO a
-runCmd client = runClusterCommandClient client
+runCmd client command =
+  runClusterCommandClient client command >>= either throwIO pure
 
 -- | Flush all keys on all master nodes
 flushAllNodes :: ClusterClient PlainTextClient -> IO ()
@@ -117,7 +118,8 @@ flushAllNodes client = do
     let addr = nodeAddress node
     result <- try $ do
       conn <- connect (NotConnectedPlainTextClient (nodeHost addr) (Just (nodePort addr)))
-      _ <- State.evalStateT (runRedisCommandClient flushAll) (ClientState conn BS.empty) :: IO RespData
+      _ <- State.evalStateT (unRedisCommandClient flushAll)
+        (ClientState conn BS.empty) :: IO RespData
       close conn
     case result of
       Left (_ :: SomeException) -> return ()
@@ -196,7 +198,7 @@ runDirect
   -> IO a
 runDirect connection command =
   State.evalStateT
-    (runRedisCommandClient command)
+    (unRedisCommandClient command)
     (ClientState connection BS.empty)
 
 runRaw

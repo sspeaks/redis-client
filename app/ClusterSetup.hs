@@ -130,7 +130,7 @@ createAuthenticatedClusterClientWithMuxCount clusterCfg authentication connector
     authenticatedConnector addr = do
       conn <- connector addr
       let clientState = ClientState conn BS.empty
-      _ <- State.evalStateT (RedisCommand.runRedisCommandClient authenticationAction) clientState
+      _ <- State.evalStateT (RedisCommand.unRedisCommandClient authenticationAction) clientState
       return conn
     authenticationAction =
       case authentication of
@@ -168,7 +168,8 @@ flushAllClusterNodes clusterClient _connector = do
         addr
         (clusterConnector clusterClient) $ \conn -> do
         let clientState = ClientState conn BS.empty
-        (_ :: RespData) <- State.evalStateT (RedisCommand.runRedisCommandClient flushAll) clientState
+        (_ :: RespData) <- State.evalStateT
+          (RedisCommand.unRedisCommandClient flushAll) clientState
         return ()
     ) masterNodes
 

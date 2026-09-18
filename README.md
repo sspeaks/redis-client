@@ -291,12 +291,13 @@ The standalone multiplexed client gives you pipelined throughput for a single (n
 import Database.Redis
 
 main :: IO ()
-main =
-  withStandaloneClient defaultStandaloneConfig $ \client -> do
-    result <- runStandaloneClient client $ do
-      (_ :: Bool) <- set "mykey" "myvalue"
-      get "mykey"
-    print (result :: ByteString)
+main = do
+  result <-
+    withStandaloneClient defaultStandaloneConfig $ \client ->
+      runStandaloneClient client $ do
+        (_ :: Bool) <- set "mykey" "myvalue"
+        get "mykey"
+  print (result :: Either RedisClientError ByteString)
 ```
 
 Set `standaloneMultiplexerCount` to control how many multiplexed connections
@@ -317,12 +318,13 @@ Cluster mode uses multiplexing for command routing and pipelining.
 import Database.Redis
 
 main :: IO ()
-main =
-  withClusterClient config clusterPlaintextConnector $ \client -> do
-    result <- runClusterCommandClient client $ do
-      (_ :: Bool) <- set "{example}:key" "myvalue"
-      get "{example}:key"
-    print (result :: ByteString)
+main = do
+  result <-
+    withClusterClient config clusterPlaintextConnector $ \client ->
+      runClusterCommandClient client $ do
+        (_ :: Bool) <- set "{example}:key" "myvalue"
+        get "{example}:key"
+  print (result :: Either RedisClientError ByteString)
   where
     config = ClusterConfig
       { clusterSeedNode = NodeAddress "localhost" 7000
@@ -337,6 +339,15 @@ main =
       , clusterTopologyRefreshInterval = 600
         }
 ```
+
+Public command runners return `Either RedisClientError a`. Match `Left` to
+handle Redis server replies, conversion/protocol failures, transport causes,
+cluster routing/retry failures, and lifecycle failures. Transport and nested
+retry causes remain structured rather than being converted to strings.
+Asynchronous cancellation is rethrown rather than returned as `Left`. This
+replaces the previous throwing/`MonadFail` runner behavior and the separate
+`Either ClusterError` contract; `ClusterError` remains only as a deprecated
+migration alias.
 
 ## Using as a Nix Overlay
 
