@@ -1,11 +1,14 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
 import           Control.Concurrent        (forkFinally, forkIO, killThread,
                                             threadDelay)
+import           Control.Concurrent.Async  (AsyncCancelled, async, cancel,
+                                            waitCatch)
 import           Control.Concurrent.MVar   (MVar, newEmptyMVar, putMVar,
                                             takeMVar, tryPutMVar, tryTakeMVar)
 import           Control.Exception         (SomeException, bracket,
@@ -32,6 +35,7 @@ import           Database.Redis.Command    (ClientReplyModeUnsupported (..),
                                             sendClientReplySkipAndCommand,
                                             sendCommandWithoutReply)
 import           Database.Redis.Connector  (Connector)
+import           Database.Redis.Internal.Multiplexer (MultiplexerException (..))
 import           Database.Redis.RedisError (RedisClientError (..),
                                             RedisLifecycleFailure (..))
 import           Database.Redis.Resp       (RespData (..))
@@ -285,7 +289,7 @@ main = hspec $ do
           expectationFailure "aggregate close did not complete"
       readIORef closeCount `shouldReturn` 2
 
-    it "resumes aggregate cleanup after a close caller is cancelled" $ do
+    it "propagates AsyncCancelled and resumes aggregate cleanup exactly once" $ do
       connectionCount <- newIORef (0 :: Int)
       closeCount <- newIORef (0 :: Int)
       sentCounts <- mapM (const $ newIORef 0) [1 .. 2 :: Int]
@@ -304,20 +308,23 @@ main = hspec $ do
             }
 
       client <- createStandaloneClientFromConfig config
-      firstCloseResult <- newEmptyMVar
-      firstCloseThread <- forkFinally
-        (closeStandaloneClient client)
-        (putMVar firstCloseResult)
+      firstClose <- async $ closeStandaloneClient client
       timeout 1000000 (takeMVar closeStarted) `shouldReturn` Just ()
-      killThread firstCloseThread
-      cancelledClose <- timeout 1000000 (takeMVar firstCloseResult)
-      cancelledClose `shouldSatisfy` maybe False isFailure
+      cancel firstClose
+      cancelledClose <- waitCatch firstClose
+      cancelledClose `shouldSatisfy` \case
+        Left failure ->
+          case fromException failure :: Maybe AsyncCancelled of
+            Just _  -> True
+            Nothing -> False
+        Right () -> False
       readIORef closeCount `shouldReturn` 2
 
       putMVar releaseClose ()
       closeStandaloneClient client
       closeStandaloneClient client
       readIORef closeCount `shouldReturn` 2
+      tryTakeMVar closeStarted `shouldReturn` Nothing
       result <- try $ runStandaloneClient client
         (ping :: StandaloneCommandClient ByteString)
       result `shouldSatisfy` isClosedFailure . Just
