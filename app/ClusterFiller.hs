@@ -36,8 +36,8 @@ import           Database.Redis.Cluster.Client      (ClusterClient (..),
 import           Database.Redis.Cluster.SlotMapping (slotMappings)
 import           Database.Redis.Command             (ClientReplyValues (..),
                                                      ClientState (..),
-                                                     RedisCommands (..),
-                                                     runRedisCommandClient)
+                                                     RedisCommandClient (unRedisCommandClient),
+                                                     RedisCommands (..))
 import           Database.Redis.Connector           (Connector)
 import           Database.Redis.Resp                (RespData)
 import           Filler                             (sendChunkedFill)
@@ -223,7 +223,7 @@ fillNodeWithDataWithTimeout timeoutSeconds conn slots mbToFill baseSeed threadId
           return ()
 
     result <- timeout (timeoutSeconds * 1000000) $
-      State.evalStateT (runRedisCommandClient fillAction) clientState
+      State.evalStateT (unRedisCommandClient fillAction) clientState
     case result of
       Just _  -> pure ()
       Nothing -> throwIO $ userError $

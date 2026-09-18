@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               redis-client
-version:            0.5.0.0
+version:            0.6.0.0
 synopsis:           A RESP2-first Redis client for learning Redis and Haskell
 license:            MIT
 license-file:       LICENSE

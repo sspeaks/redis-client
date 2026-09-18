@@ -1,7 +1,9 @@
 {-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE GADTs             #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms   #-}
 {-# LANGUAGE RankNTypes        #-}
+{-# LANGUAGE ViewPatterns      #-}
 
 -- | Cluster-aware Redis command client with automatic slot routing, MOVED\/ASK
 -- redirection handling, and connection pooling.
@@ -41,7 +43,23 @@ module Database.Redis.Cluster.Internal.ClientImplementation
   ( -- * Client Types
     ClusterClient (..),
     ClusterCommandClient,
-    ClusterError (..),
+    RedisClientError (..),
+    RedisClusterFailure (..),
+    RedisLifecycleFailure (..),
+    RedisProtocolFailure (..),
+    ClusterError,
+    pattern MovedError,
+    pattern AskError,
+    pattern ClusterDownError,
+    pattern TryAgainError,
+    pattern CrossSlotError,
+    pattern RedisCommandError,
+    pattern MaxRetriesExceeded,
+    pattern TopologyError,
+    pattern ConnectionError,
+    pattern ConnectionTimeoutError,
+    pattern ClusterAuthenticationError,
+    pattern ClusterClientClosed,
     ClusterConfig (..),
     ClusterAuthentication (..),
     ClusterAuthenticationException (..),
@@ -95,7 +113,9 @@ import           Control.Exception                              (Exception,
                                                                  finally,
                                                                  fromException,
                                                                  onException,
-                                                                 throwIO, try)
+                                                                 throwIO,
+                                                                 toException,
+                                                                 try)
 import           Control.Monad                                  (void, when)
 import           Control.Monad.IO.Class                         (MonadIO (..))
 import qualified Control.Monad.State                            as State
@@ -156,24 +176,142 @@ import           Database.Redis.Internal.MultiplexPool          (MultiplexPool,
                                                                  createMultiplexPool,
                                                                  submitToNode,
                                                                  submitToNodeWithAsking)
+import           Database.Redis.RedisError                      (RedisClientError (..),
+                                                                 RedisClusterFailure (..),
+                                                                 RedisLifecycleFailure (..),
+                                                                 RedisProtocolFailure (..),
+                                                                 tryRedisClient)
 import           Database.Redis.Resp                            (Encodable (..),
                                                                  RespData (..))
 
--- | Error types specific to cluster operations.
-data ClusterError
-  = MovedError Word16 NodeAddress -- ^ Permanent redirect: the slot has migrated to a different node.
-  | AskError Word16 NodeAddress -- ^ Temporary redirect during slot migration; retry at the given node.
-  | ClusterDownError String -- ^ The cluster is in a down or error state.
-  | TryAgainError String -- ^ Transient failure; the operation should be retried.
-  | CrossSlotError String -- ^ Multi-key command spans multiple hash slots.
-  | RedisCommandError ByteString -- ^ An ordinary Redis server error reply, preserved verbatim.
-  | MaxRetriesExceeded String -- ^ All retry attempts exhausted.
-  | TopologyError String -- ^ Slot or node lookup failed (e.g., empty topology).
-  | ConnectionError String -- ^ Network-level failure connecting to a node.
-  | ConnectionTimeoutError ConnectionSetupException -- ^ A bounded connection setup attempt timed out.
-  | ClusterAuthenticationError ClusterAuthenticationException -- ^ A physical connection could not authenticate.
-  | ClusterClientClosed -- ^ The client has been terminally closed.
-  deriving (Show, Eq)
+-- | Deprecated compatibility name. All cluster operations now return the
+-- unified 'RedisClientError' root.
+type ClusterError = RedisClientError
+
+pattern MovedError :: Word16 -> NodeAddress -> RedisClientError
+pattern MovedError slot address <-
+  (matchMoved -> Just (slot, address))
+  where
+    MovedError slot (NodeAddress host port) =
+      RedisClusterError $ RedisMoved slot host port
+
+pattern AskError :: Word16 -> NodeAddress -> RedisClientError
+pattern AskError slot address <-
+  (matchAsk -> Just (slot, address))
+  where
+    AskError slot (NodeAddress host port) =
+      RedisClusterError $ RedisAsk slot host port
+
+pattern ClusterDownError :: String -> RedisClientError
+pattern ClusterDownError message <-
+  (matchClusterDown -> Just message)
+  where
+    ClusterDownError message =
+      RedisClusterError $ RedisClusterDown $ BS8.pack message
+
+pattern TryAgainError :: String -> RedisClientError
+pattern TryAgainError message <-
+  (matchTryAgain -> Just message)
+  where
+    TryAgainError message =
+      RedisClusterError $ RedisTryAgain $ BS8.pack message
+
+pattern CrossSlotError :: String -> RedisClientError
+pattern CrossSlotError message <-
+  (matchCrossSlot -> Just message)
+  where
+    CrossSlotError message =
+      RedisClusterError $ RedisCrossSlot $ BS8.pack message
+
+pattern RedisCommandError :: ByteString -> RedisClientError
+pattern RedisCommandError message = RedisServerError message
+
+pattern MaxRetriesExceeded :: String -> RedisClientError
+pattern MaxRetriesExceeded message <-
+  (matchRetryExhausted -> Just message)
+  where
+    MaxRetriesExceeded message =
+      RedisClusterError $
+        RedisRetryExhausted 0
+          (RedisClusterError $ RedisTopologyFailure message)
+
+pattern TopologyError :: String -> RedisClientError
+pattern TopologyError message =
+  RedisClusterError (RedisTopologyFailure message)
+
+pattern ConnectionError :: String -> RedisClientError
+pattern ConnectionError message <-
+  (matchTransportFailure -> Just message)
+  where
+    ConnectionError message =
+      RedisTransportError $ toException $ userError message
+
+pattern ConnectionTimeoutError
+  :: ConnectionSetupException -> RedisClientError
+pattern ConnectionTimeoutError exception <-
+  RedisTransportError (fromException -> Just exception)
+  where
+    ConnectionTimeoutError exception =
+      RedisTransportError $ toException exception
+
+pattern ClusterAuthenticationError
+  :: ClusterAuthenticationException -> RedisClientError
+pattern ClusterAuthenticationError exception <-
+  RedisTransportError (fromException -> Just exception)
+  where
+    ClusterAuthenticationError exception =
+      RedisTransportError $ toException exception
+
+pattern ClusterClientClosed :: RedisClientError
+pattern ClusterClientClosed = RedisLifecycleError RedisClientClosed
+
+matchMoved :: RedisClientError -> Maybe (Word16, NodeAddress)
+matchMoved (RedisClusterError (RedisMoved slot host port)) =
+  Just (slot, NodeAddress host port)
+matchMoved _ = Nothing
+
+matchAsk :: RedisClientError -> Maybe (Word16, NodeAddress)
+matchAsk (RedisClusterError (RedisAsk slot host port)) =
+  Just (slot, NodeAddress host port)
+matchAsk _ = Nothing
+
+matchClusterDown :: RedisClientError -> Maybe String
+matchClusterDown (RedisClusterError (RedisClusterDown message)) =
+  Just $ BS8.unpack message
+matchClusterDown _ = Nothing
+
+matchTryAgain :: RedisClientError -> Maybe String
+matchTryAgain (RedisClusterError (RedisTryAgain message)) =
+  Just $ BS8.unpack message
+matchTryAgain _ = Nothing
+
+matchCrossSlot :: RedisClientError -> Maybe String
+matchCrossSlot (RedisClusterError (RedisCrossSlot message)) =
+  Just $ BS8.unpack message
+matchCrossSlot _ = Nothing
+
+matchRetryExhausted :: RedisClientError -> Maybe String
+matchRetryExhausted
+  (RedisClusterError (RedisRetryExhausted retries lastError)) =
+    Just $ "Max retries (" ++ show retries
+      ++ ") exceeded; last error: " ++ legacyClusterErrorName lastError
+matchRetryExhausted _ = Nothing
+
+legacyClusterErrorName :: RedisClientError -> String
+legacyClusterErrorName (RedisClusterError (RedisMoved slot host port)) =
+  "MovedError " ++ show slot ++ " " ++ show (NodeAddress host port)
+legacyClusterErrorName (RedisClusterError (RedisAsk slot host port)) =
+  "AskError " ++ show slot ++ " " ++ show (NodeAddress host port)
+legacyClusterErrorName (RedisClusterError (RedisTryAgain message)) =
+  "TryAgainError " ++ show (BS8.unpack message)
+legacyClusterErrorName (RedisClusterError (RedisClusterDown message)) =
+  "ClusterDownError " ++ show (BS8.unpack message)
+legacyClusterErrorName errorValue = show errorValue
+
+matchTransportFailure :: RedisClientError -> Maybe String
+matchTransportFailure (RedisTransportError exception) =
+  Just $ show exception
+matchTransportFailure _ = Nothing
 
 newtype TopologyValidationException = TopologyValidationException String
   deriving (Show)
@@ -283,9 +421,9 @@ runClusterCommandClient ::
   (Client client) =>
   ClusterClient client ->
   ClusterCommandClient client a ->
-  IO a
+  IO (Either RedisClientError a)
 runClusterCommandClient client (ClusterCommandClient action) =
-  State.evalStateT action client
+  tryRedisClient $ State.evalStateT action client
 
 instance (Client client) => Functor (ClusterCommandClient client) where
   fmap :: (a -> b) -> ClusterCommandClient client a -> ClusterCommandClient client b
@@ -359,7 +497,7 @@ authenticateClusterConnection
   -> IO (client 'Connected)
 authenticateClusterConnection authentication addr conn = do
   outcome <- try $ State.evalStateT
-    (runRedisCommandClient authenticationAction)
+    (unRedisCommandClient authenticationAction)
     (ClientState conn BS8.empty)
   case outcome of
     Right response ->
@@ -423,7 +561,7 @@ createClusterClientWithFactoriesUsing connectorIsBounded
               else withConnection
       response <- connectFromPool pool seedNode connector $ \conn -> do
         let clientState = ClientState conn BS8.empty
-        State.evalStateT (runRedisCommandClient clusterSlots) clientState
+        State.evalStateT (unRedisCommandClient clusterSlots) clientState
 
       currentTime <- getCurrentTime
       case parseClusterSlots response currentTime of
@@ -497,26 +635,16 @@ withClusterClientAuthentication config authentication connector =
 refreshTopology ::
   (Client client) =>
   ClusterClient client ->
-  IO ()
-refreshTopology client = do
-  result <- refreshTopologyFromCandidates client [] []
-  case result of
-    Right () -> return ()
-    Left err -> throwRefreshError err
-  where
-    throwRefreshError (TopologyError err) =
-      throwIO $ TopologyValidationException err
-    throwRefreshError (ConnectionTimeoutError err) = throwIO err
-    throwRefreshError (ClusterAuthenticationError err) = throwIO err
-    throwRefreshError ClusterClientClosed = throwIO ConnectionPoolClosed
-    throwRefreshError err = throwIO $ userError $ show err
+  IO (Either RedisClientError ())
+refreshTopology client =
+  refreshTopologyFromCandidates client [] []
 
 refreshTopologyFromCandidates
   :: (Client client)
   => ClusterClient client
   -> [NodeAddress]
   -> [(Word16, NodeAddress)]
-  -> IO (Either ClusterError ())
+  -> IO (Either RedisClientError ())
 refreshTopologyFromCandidates client preferred protectedPatches = do
   acquired <- tryTakeMVar (clusterRefreshLock client)
   case acquired of
@@ -551,7 +679,8 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
       []
 
     tryCandidates _ [] =
-      return $ Left $ ConnectionError "No topology refresh candidates available"
+      return $ Left $ RedisClusterError $
+        RedisTopologyFailure "No topology refresh candidates available"
     tryCandidates baseline (candidate : candidates) = do
       result <- fetchTopology candidate
       case result of
@@ -573,7 +702,8 @@ refreshTopologyFromCandidates client preferred protectedPatches = do
           currentTime <- getCurrentTime
           return $
             case parseClusterSlots payload currentTime of
-              Left err       -> Left $ TopologyError err
+              Left err       -> Left $ RedisClusterError $
+                RedisTopologyFailure err
               Right topology -> Right topology
 
 -- | Check if topology is stale and refresh if needed
@@ -590,7 +720,8 @@ refreshTopologyIfStale client = do
   let timeSinceUpdate = diffUTCTime currentTime (topologyUpdateTime topology)
       refreshInterval = fromIntegral (clusterTopologyRefreshInterval (clusterConfig client)) :: NominalDiffTime
   when (timeSinceUpdate >= refreshInterval) $ do
-    refreshTopology client
+    refreshResult <- refreshTopology client
+    either throwIO pure refreshResult
 
 -- | Classify every Redis error reply returned by a cluster command.
 --
@@ -598,21 +729,21 @@ refreshTopologyIfStale client = do
 -- Malformed redirections and unrecognized server errors remain ordinary
 -- 'RedisCommandError' values with their full payload preserved.
 {-# INLINE classifyClusterReply #-}
-classifyClusterReply :: RespData -> Either ClusterError RespData
+classifyClusterReply :: RespData -> Either RedisClientError RespData
 classifyClusterReply (RespError msg)
   | Just redirection <- classifyRedirection msg =
       case redirection of
         Left (RedirectionInfo slot host port) ->
-          Left $ MovedError slot $ NodeAddress host port
+          Left $ RedisClusterError $ RedisMoved slot host port
         Right (RedirectionInfo slot host port) ->
-          Left $ AskError slot $ NodeAddress host port
+          Left $ RedisClusterError $ RedisAsk slot host port
   | hasErrorPrefix "TRYAGAIN" msg =
-      Left $ TryAgainError $ BS8.unpack msg
+      Left $ RedisClusterError $ RedisTryAgain msg
   | hasErrorPrefix "CLUSTERDOWN" msg =
-      Left $ ClusterDownError $ BS8.unpack msg
+      Left $ RedisClusterError $ RedisClusterDown msg
   | hasErrorPrefix "CROSSSLOT" msg =
-      Left $ CrossSlotError $ BS8.unpack msg
-  | otherwise = Left $ RedisCommandError msg
+      Left $ RedisClusterError $ RedisCrossSlot msg
+  | otherwise = Left $ RedisServerError msg
 classifyClusterReply respData = Right respData
 
 {-# INLINE hasErrorPrefix #-}
@@ -647,15 +778,39 @@ executeOnNode ::
   NodeAddress ->
   RedisCommandClient client RespData ->
   Connector client ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeOnNode client nodeAddr action connector = do
   result <- tryClusterAction $
     withConnectionBounded
       (clusterConnectionPool client) nodeAddr connector $ \conn -> do
-    let clientState = ClientState conn BS8.empty
-    State.evalStateT (runRedisCommandClient action) clientState
+        let clientState = ClientState conn BS8.empty
+        runPooledCommand $
+          State.evalStateT (unRedisCommandClient action) clientState
 
-  return $ result >>= classifyClusterReply
+  return $ classifyExecutedResult $ result >>= id
+
+classifyExecutedResult
+  :: Either RedisClientError RespData
+  -> Either RedisClientError RespData
+classifyExecutedResult (Left (RedisServerError message)) =
+  classifyClusterReply $ RespError message
+classifyExecutedResult (Left errorValue) = Left errorValue
+classifyExecutedResult (Right response) = classifyClusterReply response
+
+runPooledCommand :: IO a -> IO (Either RedisClientError a)
+runPooledCommand action = do
+  result <- try action
+  case result of
+    Right value -> pure $ Right value
+    Left (exception :: SomeException) ->
+      case fromException exception of
+        Just async -> throwIO (async :: SomeAsyncException)
+        Nothing ->
+          case fromException exception of
+            Just serverError@(RedisServerError _) ->
+              pure $ Left serverError
+            Just redisError -> throwIO (redisError :: RedisClientError)
+            Nothing         -> throwIO exception
 
 -- | Execute a command that does not target a specific key (e.g., PING, AUTH, FLUSHALL).
 -- Routed to an arbitrary master node.
@@ -663,7 +818,7 @@ executeKeylessClusterCommand ::
   (Client client) =>
   ClusterClient client ->
   RedisCommandClient client RespData ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeKeylessClusterCommand =
   executeKeylessClusterCommandUsingDelay threadDelay
 
@@ -673,7 +828,7 @@ executeKeylessClusterCommandUsingDelay ::
   (Int -> IO ()) ->
   ClusterClient client ->
   RedisCommandClient client RespData ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeKeylessClusterCommandUsingDelay delayAction client action =
   withRetryAndRefreshPolicyUsing
     KeylessRetryPolicy
@@ -687,13 +842,14 @@ executeKeylessAttempt ::
   (Client client) =>
   ClusterClient client ->
   RedisCommandClient client RespData ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeKeylessAttempt client action = do
   let connector = clusterConnector client
   topology <- readTVarIO (clusterTopology client)
   let masterNodes = [node | node <- Map.elems (topologyNodes topology), nodeRole node == Master]
   case masterNodes of
-    []       -> return $ Left $ TopologyError "No master nodes available"
+    []       -> return $ Left $ RedisClusterError $
+      RedisTopologyFailure "No master nodes available"
     (node:_) -> executeOnNode client (nodeAddress node) action connector
 
 -- | Retry logic for transient failures and Redis redirections.
@@ -718,8 +874,8 @@ withRetryAndRefreshUsing ::
   ClusterClient client ->
   Int ->
   Int ->
-  (RetryRoute -> IO (Either ClusterError a)) ->
-  IO (Either ClusterError a)
+  (RetryRoute -> IO (Either RedisClientError a)) ->
+  IO (Either RedisClientError a)
 withRetryAndRefreshUsing delayAction client maxRetries initialDelay action =
   withRetryAndRefreshPolicyUsing
     KeyedRetryPolicy delayAction client maxRetries initialDelay action
@@ -736,16 +892,18 @@ withRetryAndRefreshPolicyUsing ::
   ClusterClient client ->
   Int ->
   Int ->
-  (RetryRoute -> IO (Either ClusterError a)) ->
-  IO (Either ClusterError a)
+  (RetryRoute -> IO (Either RedisClientError a)) ->
+  IO (Either RedisClientError a)
 withRetryAndRefreshPolicyUsing retryPolicy delayAction
     client maxRetries initialDelay action =
   go 0 initialDelay RouteBySlot
   where
     go attempt delay route
       | attempt >= maxRetries =
-          return $ Left $ MaxRetriesExceeded $
-            "Max retries (" ++ show maxRetries ++ ") exceeded"
+          return $ Left $ RedisClusterError $
+            RedisRetryExhausted maxRetries
+              (RedisClusterError $
+                RedisTopologyFailure "retry budget exhausted before an attempt")
       | otherwise = do
           result <- action route
           case result of
@@ -756,42 +914,47 @@ withRetryAndRefreshPolicyUsing retryPolicy delayAction
                     client [address] [(slot, address)]
                 _ -> return ()
               return $ Right value
-            Left err@(TryAgainError _) ->
+            Left err@(RedisClusterError (RedisTryAgain _)) ->
               retryAfterDelay err route delay
-            Left err@(ClusterDownError _) -> do
+            Left err@(RedisClusterError (RedisClusterDown _)) -> do
               if attempt + 1 >= maxRetries
                 then return $ retryExhausted maxRetries err
                 else do
                   refreshResult <- refreshForRoute route
                   case refreshResult of
-                    Left ClusterClientClosed ->
-                      return $ Left ClusterClientClosed
+                    Left closed@(RedisLifecycleError RedisClientClosed) ->
+                      return $ Left closed
                     _ -> retryAfterDelay err RouteBySlot delay
-            Left err@(MovedError slot address)
+            Left err@(RedisClusterError (RedisMoved slot host port))
               | retryPolicy == KeyedRetryPolicy -> do
+                  let address = NodeAddress host port
                   atomically $ patchMovedSlot (clusterTopology client) slot address
                   retryImmediately err $ RouteMoved slot address
-            Left err@(AskError _ address)
+            Left err@(RedisClusterError (RedisAsk _ host port))
               | retryPolicy == KeyedRetryPolicy ->
-                  retryImmediately err $ RouteAsk address
-            Left err@(ConnectionError _)
-              | retryPolicy == KeyedRetryPolicy -> do
-                  refreshResult <- refreshForRoute route
-                  case refreshResult of
-                    Left ClusterClientClosed ->
-                      return $ Left ClusterClientClosed
-                    Left refreshErr@(TopologyError _) ->
-                      return $ Left refreshErr
-                    _ -> retryAfterDelay err RouteBySlot delay
-            Left err@(ConnectionTimeoutError _)
-              | retryPolicy == KeyedRetryPolicy -> do
+                  retryImmediately err $ RouteAsk $ NodeAddress host port
+            Left err@(RedisTransportError cause)
+              | Just (_ :: ConnectionSetupException) <- fromException cause
+              , retryPolicy == KeyedRetryPolicy -> do
                   refreshResult <- case route of
                     RouteMoved _ _ -> refreshForRoute route
                     _              -> return $ Right ()
                   case refreshResult of
-                    Left ClusterClientClosed ->
-                      return $ Left ClusterClientClosed
-                    Left refreshErr@(TopologyError _) ->
+                    Left closed@(RedisLifecycleError RedisClientClosed) ->
+                      return $ Left closed
+                    Left refreshErr@(RedisClusterError (RedisTopologyFailure _)) ->
+                      return $ Left refreshErr
+                    _ -> retryAfterDelay err RouteBySlot delay
+            Left err@(RedisTransportError cause)
+              | Just (_ :: ClusterAuthenticationException) <-
+                  fromException cause ->
+                  return $ Left err
+              | retryPolicy == KeyedRetryPolicy -> do
+                  refreshResult <- refreshForRoute route
+                  case refreshResult of
+                    Left closed@(RedisLifecycleError RedisClientClosed) ->
+                      return $ Left closed
+                    Left refreshErr@(RedisClusterError (RedisTopologyFailure _)) ->
                       return $ Left refreshErr
                     _ -> retryAfterDelay err RouteBySlot delay
             Left err -> return $ Left err
@@ -815,11 +978,9 @@ withRetryAndRefreshPolicyUsing retryPolicy delayAction
     refreshForRoute _ =
       refreshTopologyFromCandidates client [] []
 
-retryExhausted :: Int -> ClusterError -> Either ClusterError a
+retryExhausted :: Int -> RedisClientError -> Either RedisClientError a
 retryExhausted maxRetries lastError =
-  Left $ MaxRetriesExceeded $
-    "Max retries (" ++ show maxRetries
-      ++ ") exceeded; last error: " ++ show lastError
+  Left $ RedisClusterError $ RedisRetryExhausted maxRetries lastError
 
 normalizeDelay :: Int -> Int
 normalizeDelay = max 0
@@ -831,7 +992,7 @@ nextRetryDelay delay
   where
     normalized = normalizeDelay delay
 
-tryClusterAction :: IO a -> IO (Either ClusterError a)
+tryClusterAction :: IO a -> IO (Either RedisClientError a)
 tryClusterAction action = do
   result <- try action
   case result of
@@ -840,18 +1001,22 @@ tryClusterAction action = do
       case fromException e of
         Just async -> throwIO (async :: SomeAsyncException)
         Nothing
+          | Just redisError <- fromException e ->
+              return $ Left (redisError :: RedisClientError)
           | Just ConnectionPoolClosed <- fromException e ->
-              return $ Left ClusterClientClosed
+              return $ Left $ RedisLifecycleError RedisClientClosed
           | Just MultiplexPoolClosed <- fromException e ->
-              return $ Left ClusterClientClosed
-          | Just timeoutError <- fromException e ->
-              return $ Left $ ConnectionTimeoutError timeoutError
-          | Just authenticationError <- fromException e ->
-              return $ Left $ ClusterAuthenticationError authenticationError
+              return $ Left $ RedisLifecycleError RedisClientClosed
+          | Just (timeoutError :: ConnectionSetupException) <- fromException e ->
+              return $ Left $ RedisTransportError $ toException timeoutError
+          | Just (authenticationError :: ClusterAuthenticationException) <-
+              fromException e ->
+              return $ Left $ RedisTransportError $
+                toException authenticationError
           | Just (TopologyValidationException err) <- fromException e ->
-              return $ Left $ TopologyError err
+              return $ Left $ RedisClusterError $ RedisTopologyFailure err
           | otherwise ->
-              return $ Left $ ConnectionError $ show e
+              return $ Left $ RedisTransportError e
 
 -- | Parse the payload after "MOVED " or "ASK " prefix.
 -- Input format: "3999 127.0.0.1:6381" (slot, space, host:port)
@@ -894,16 +1059,15 @@ parseRedirectionError errorType msg
 executeKeylessCommand ::
   (Client client) =>
   RedisCommandClient client RespData ->
-  ClusterCommandClient client (Either ClusterError RespData)
+  ClusterCommandClient client (Either RedisClientError RespData)
 executeKeylessCommand action = do
   client <- State.get
   liftIO $ executeKeylessClusterCommand client action
 
--- | Helper to unwrap Either ClusterError or fail
-unwrapClusterResult :: (Client client) => Either ClusterError a -> ClusterCommandClient client a
+-- | Re-throw an internal typed result for the public runner boundary.
+unwrapClusterResult :: (Client client) => Either RedisClientError a -> ClusterCommandClient client a
 unwrapClusterResult (Right a)  = pure a
-unwrapClusterResult (Left (CrossSlotError message)) = Prelude.fail message
-unwrapClusterResult (Left err) = Prelude.fail $ "Cluster error: " ++ show err
+unwrapClusterResult (Left err) = liftIO $ throwIO err
 
 -- | Execute a keyed command and unwrap the result.
 -- Routes through the multiplexer pool for pipelined execution.
@@ -943,7 +1107,7 @@ executeKeylessMaybeAttempt
   :: (Client client)
   => ClusterClient client
   -> RedisCommandClient client (Maybe RespData)
-  -> IO (Either ClusterError (Maybe RespData))
+  -> IO (Either RedisClientError (Maybe RespData))
 executeKeylessMaybeAttempt client action = do
   topology <- readTVarIO $ clusterTopology client
   let masters =
@@ -952,7 +1116,8 @@ executeKeylessMaybeAttempt client action = do
         , nodeRole node == Master
         ]
   case masters of
-    [] -> return $ Left $ TopologyError "No master nodes available"
+    [] -> return $ Left $ RedisClusterError $
+      RedisTopologyFailure "No master nodes available"
     node : _ -> do
       result <- tryClusterAction $
         withConnectionBounded
@@ -960,10 +1125,11 @@ executeKeylessMaybeAttempt client action = do
           (nodeAddress node)
           (clusterConnector client) $ \conn -> do
             let clientState = ClientState conn BS8.empty
-            State.evalStateT
-              (runRedisCommandClient action)
-              clientState
-      return $ result >>= traverse classifyClusterReply
+            runPooledCommand $
+              State.evalStateT
+                (unRedisCommandClient action)
+                clientState
+      return $ (result >>= id) >>= traverse classifyClusterReply
 
 crossSlotMessage :: String
 crossSlotMessage = "CROSSSLOT Keys in request don't hash to the same slot"
@@ -1014,7 +1180,8 @@ executeCommandDescriptorCluster descriptor =
         Right (FrameCrossSlot _) ->
           unwrapClusterResult (Left $ CrossSlotError crossSlotMessage)
         Left errorValue ->
-          Prelude.fail $ renderCommandGrammarError errorValue
+          liftIO $ throwIO $ RedisProtocolError $
+            RedisCommandValidationFailure $ renderCommandGrammarError errorValue
 
 executeCommandDescriptorClusterAs
   :: (Client client, FromResp a)
@@ -1035,7 +1202,7 @@ executeKeyedClusterCommand ::
   ClusterClient client ->
   ByteString ->           -- key for routing
   [ByteString] ->         -- command args
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeKeyedClusterCommand =
   executeKeyedClusterCommandUsingDelay threadDelay
 
@@ -1046,7 +1213,7 @@ executeKeyedClusterCommandUsingDelay ::
   ClusterClient client ->
   ByteString ->
   [ByteString] ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeKeyedClusterCommandUsingDelay delayAction client key cmdArgs = do
   let muxPool = clusterMultiplexPool client
       cmdBuilder = encodeCommandBuilder cmdArgs
@@ -1077,7 +1244,7 @@ executeRawClusterCommand ::
   ClusterClient client ->
   RawClusterRoute ->
   RespData ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeRawClusterCommand =
   executeRawClusterCommandUsingDelay threadDelay
 
@@ -1088,7 +1255,7 @@ executeRawClusterCommandUsingDelay ::
   ClusterClient client ->
   RawClusterRoute ->
   RespData ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeRawClusterCommandUsingDelay delayAction client rawRoute frame =
   case rawRoute of
     RawRouteByKey key ->
@@ -1111,7 +1278,7 @@ executeRawKeyed ::
   ClusterClient client ->
   Word16 ->
   Builder.Builder ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeRawKeyed delayAction client slot frameBuilder =
   withRetryAndRefreshUsing
     delayAction
@@ -1134,7 +1301,7 @@ executeKeylessFrameAttempt ::
   (Client client) =>
   ClusterClient client ->
   Builder.Builder ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeKeylessFrameAttempt client frameBuilder = do
   topology <- readTVarIO $ clusterTopology client
   let masterNodes =
@@ -1143,7 +1310,8 @@ executeKeylessFrameAttempt client frameBuilder = do
         , nodeRole node == Master
         ]
   case masterNodes of
-    []       -> return $ Left $ TopologyError "No master nodes available"
+    []       -> return $ Left $ RedisClusterError $
+      RedisTopologyFailure "No master nodes available"
     (node:_) ->
       executeOnNode
         client
@@ -1165,11 +1333,12 @@ executeOnSlotMux ::
   MultiplexPool client ->
   Word16 ->
   Builder.Builder ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeOnSlotMux client muxPool slot cmdBuilder = do
   topology <- readTVarIO (clusterTopology client)
   case findNodeAddressForSlot topology slot of
-    Nothing -> return $ Left $ TopologyError $ "No node found for slot " ++ show slot
+    Nothing -> return $ Left $ RedisClusterError $
+      RedisTopologyFailure $ "No node found for slot " ++ show slot
     Just addr -> do
       result <- tryClusterAction $ submitToNode muxPool addr cmdBuilder
       return $ result >>= classifyClusterReply
@@ -1179,7 +1348,7 @@ executeOnNodeDirect
   => MultiplexPool client
   -> NodeAddress
   -> Builder.Builder
-  -> IO (Either ClusterError RespData)
+  -> IO (Either RedisClientError RespData)
 executeOnNodeDirect muxPool address cmdBuilder = do
   result <- tryClusterAction $ submitToNode muxPool address cmdBuilder
   return $ result >>= classifyClusterReply
@@ -1194,7 +1363,7 @@ executeOnNodeWithAsking ::
   MultiplexPool client ->
   NodeAddress ->
   Builder.Builder ->
-  IO (Either ClusterError RespData)
+  IO (Either RedisClientError RespData)
 executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
   let askingBuilder = encodeCommandBuilder ["ASKING"]
   result <- tryClusterAction $
@@ -1202,7 +1371,9 @@ executeOnNodeWithAsking _client muxPool addr cmdBuilder = do
   return $ result >>= classifyClusterReply
 
 instance (Client client) => RedisCommands (ClusterCommandClient client) where
-  auth _ _ = liftIO $ throwIO ClusterRuntimeAuthenticationUnsupported
+  auth _ _ = liftIO $ throwIO $ RedisLifecycleError $
+    RedisUnsupportedOperation $
+      toException ClusterRuntimeAuthenticationUnsupported
   ping =
     executeKeylessDescriptor (RedisCommandClient.definedPing RedisCommandClient.redisCommandDefinitions)
   set key value =
@@ -1400,7 +1571,8 @@ instance (Client client) => RedisCommands (ClusterCommandClient client) where
   clientReply ON =
     executeKeylessMaybeDescriptor
       (RedisCommandClient.definedClientReplyOn RedisCommandClient.redisCommandDefinitions)
-  clientReply val = liftIO $ throwIO (ClientReplyModeUnsupported val)
+  clientReply val = liftIO $ throwIO $ RedisLifecycleError $
+    RedisUnsupportedOperation $ toException $ ClientReplyModeUnsupported val
   zadd key members =
     executeCommandDescriptorClusterAs
       (RedisCommandClient.definedZadd RedisCommandClient.redisCommandDefinitions key members)

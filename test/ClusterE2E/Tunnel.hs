@@ -9,7 +9,7 @@ import           Control.Concurrent            (forkIO, threadDelay)
 import           Control.Concurrent.MVar       (newEmptyMVar, putMVar, readMVar,
                                                 takeMVar)
 import           Control.Concurrent.STM        (readTVarIO)
-import           Control.Exception             (bracket, finally)
+import           Control.Exception             (bracket, finally, try)
 import           Control.Monad                 (forM_, when)
 import qualified Control.Monad.State           as State
 import qualified Data.Attoparsec.ByteString    as StrictParse
@@ -40,6 +40,7 @@ import           Database.Redis.Cluster.Client (ClusterClient,
                                                 clusterTopology,
                                                 refreshTopology)
 import           Database.Redis.Command        (ClientState (..),
+                                                RedisClientError (..),
                                                 RedisCommandClient (..),
                                                 RedisCommands (..), parseWith)
 import           Database.Redis.Resp           (Encodable (encode),
@@ -548,9 +549,11 @@ spec = describe "Cluster Tunnel Mode" $ do
 
               conn1 <- connect (NotConnectedPlainTextClient "localhost" (Just port1))
 
-              result <- runRedisCommand conn1 (get wrongKey)
+              result <- try (runRedisCommand conn1 (get wrongKey))
+                :: IO (Either RedisClientError RespData)
               case result of
-                RespError err -> BS8.isInfixOf "MOVED" err `shouldBe` True
+                Left (RedisServerError err) ->
+                  BS8.isInfixOf "MOVED" err `shouldBe` True
                 _ -> expectationFailure $ "Expected MOVED error, got: " ++ show result
 
               close conn1

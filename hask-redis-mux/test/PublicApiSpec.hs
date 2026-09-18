@@ -4,8 +4,10 @@
 
 module Main (main) where
 
-import           Control.Exception               (displayException, toException,
-                                                  try)
+import           Control.Exception               (AsyncException (ThreadKilled),
+                                                  IOException, displayException,
+                                                  fromException, throwIO,
+                                                  toException, try)
 import           Control.Monad                   (filterM)
 import           Database.Redis
 import qualified Database.Redis.Cluster.Client   as ClusterClient
@@ -105,7 +107,7 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
   it "exports the documented standalone lifecycle facade" $ do
     let runDefault
           :: StandaloneCommandClient RespData
-          -> IO RespData
+          -> IO (Either RedisClientError RespData)
         runDefault = runRedis defaultStandaloneConfig
     runDefault `seq` (pure () :: IO ())
 
@@ -119,7 +121,7 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
         runCommand
           :: ClusterClient PlainTextClient
           -> ClusterCommandClient PlainTextClient RespData
-          -> IO RespData
+          -> IO (Either RedisClientError RespData)
         runCommand = runClusterCommandClient
     withCluster `seq` runCommand `seq` (pure () :: IO ())
 
@@ -132,7 +134,7 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
         runCommand
           :: ClusterClient PlainTextClient
           -> ClusterCommandClient PlainTextClient value
-          -> IO value
+          -> IO (Either RedisClientError value)
         runCommand = runClusterCommandClient
     createClient `seq` runCommand `seq` (pure () :: IO ())
 
@@ -145,18 +147,18 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
         runCommand
           :: ClusterClient PlainTextClient
           -> ClusterCommandClient PlainTextClient value
-          -> IO value
+          -> IO (Either RedisClientError value)
         runCommand = ClusterClient.runClusterCommandClient
         runKeyed
           :: ClusterClient PlainTextClient
           -> ByteString
           -> [ByteString]
-          -> IO (Either ClusterError RespData)
+          -> IO (Either RedisClientError RespData)
         runKeyed = ClusterClient.executeKeyedClusterCommand
         runKeyless
           :: ClusterClient PlainTextClient
           -> RedisCommandClient PlainTextClient RespData
-          -> IO (Either ClusterError RespData)
+          -> IO (Either RedisClientError RespData)
         runKeyless = ClusterClient.executeKeylessClusterCommand
     createClient `seq` runCommand `seq` runKeyed `seq` runKeyless
       `seq` (pure () :: IO ())
@@ -172,9 +174,23 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
       (ClusterCommands.keylessCommands <> ClusterCommands.requiresKeyCommands)
       `shouldBe` 392
 
-  it "exports the migration-compatible ordinary cluster error" $ do
-    RedisCommandError "ERR full server cause"
-      `shouldBe` RedisCommandError "ERR full server cause"
+  it "exports the unified server error" $ do
+    RedisServerError "ERR full server cause"
+      `shouldBe` RedisServerError "ERR full server cause"
+
+  it "preserves synchronous transport exceptions as structured causes" $ do
+    result <- tryRedisClient $ ioError $ userError "transport failed"
+    case result of
+      Left (RedisTransportError cause) ->
+        fromException cause
+          `shouldSatisfy` maybe False
+            (\(_ :: IOException) -> True)
+      _ -> expectationFailure "transport cause was not preserved"
+
+  it "rethrows asynchronous cancellation instead of returning Left" $ do
+    result <- try (tryRedisClient $ throwIO ThreadKilled)
+      :: IO (Either AsyncException (Either RedisClientError ()))
+    result `shouldBe` Left ThreadKilled
 
   it "exports the explicit unsafe CLIENT REPLY mode error" $ do
     ClientReplyModeUnsupported SKIP

@@ -6,7 +6,7 @@ module Main where
 
 import           Control.Concurrent     (threadDelay)
 import           Control.Concurrent.STM (readTVarIO)
-import           Control.Exception      (SomeException, bracket, try)
+import           Control.Exception      (SomeException, bracket, throwIO, try)
 import           Control.Monad.IO.Class (liftIO)
 import qualified Control.Monad.State    as State
 import qualified Data.ByteString        as BS
@@ -66,19 +66,19 @@ main = hspec $ describe "authenticated Redis Cluster interoperability" $ do
         (firstAddress, firstKey, secondAddress, secondKey) <-
           keysOnTwoMasters client
 
-        runClusterCommandClient client (set firstKey "password-first")
+        runCluster client (set firstKey "password-first")
           `shouldReturn` RespSimpleString "OK"
-        runClusterCommandClient client (set secondKey "password-second")
+        runCluster client (set secondKey "password-second")
           `shouldReturn` RespSimpleString "OK"
-        runClusterCommandClient client (get firstKey)
+        runCluster client (get firstKey)
           `shouldReturn` RespBulkString "password-first"
-        runClusterCommandClient client ping
+        runCluster client ping
           `shouldReturn` RespSimpleString "PONG"
         firstConnections <- connectionCount counts firstAddress
         secondConnections <- connectionCount counts secondAddress
         firstConnections `shouldSatisfy` (> 0)
         secondConnections `shouldSatisfy` (> 0)
-        refreshTopology client
+        refreshTopology client >>= either throwIO pure
 
         replacementAddress <-
           if firstAddress /= seedNode
@@ -98,7 +98,7 @@ main = hspec $ describe "authenticated Redis Cluster interoperability" $ do
         killed `shouldSatisfy` (> 0)
         threadDelay 250000
 
-        runClusterCommandClient client (get replacementKey)
+        runCluster client (get replacementKey)
           `shouldReturn`
             if replacementKey == firstKey
               then RespBulkString "password-first"
@@ -114,18 +114,18 @@ main = hspec $ describe "authenticated Redis Cluster interoperability" $ do
       closeClusterClient $ \client -> do
         (_, firstKey, _, secondKey) <- keysOnTwoMasters client
 
-        slots <- runClusterCommandClient client clusterSlots
+        slots <- runCluster client clusterSlots
         slots `shouldSatisfy` \case
           RespArray ranges -> not $ null ranges
           _                -> False
 
-        runClusterCommandClient client (set firstKey "acl-first")
+        runCluster client (set firstKey "acl-first")
           `shouldReturn` RespSimpleString "OK"
-        runClusterCommandClient client (set secondKey "acl-second")
+        runCluster client (set secondKey "acl-second")
           `shouldReturn` RespSimpleString "OK"
-        runClusterCommandClient client (get firstKey)
+        runCluster client (get firstKey)
           `shouldReturn` RespBulkString "acl-first"
-        runClusterCommandClient client (get secondKey)
+        runCluster client (get secondKey)
           `shouldReturn` RespBulkString "acl-second"
 
 trackingConnector
@@ -201,7 +201,7 @@ runDirect
   -> IO a
 runDirect client command =
   State.evalStateT
-    (runRedisCommandClient command)
+    (unRedisCommandClient command)
     (ClientState client BS.empty)
 
 runRaw
@@ -213,3 +213,10 @@ runRaw client arguments = runDirect client $ RedisCommandClient $ do
   liftIO $ send connected $
     LBS.fromStrict $ encodeCommand arguments
   parseWith $ liftIO $ receive connected
+
+runCluster
+  :: ClusterClient PlainTextClient
+  -> ClusterCommandClient PlainTextClient a
+  -> IO a
+runCluster client command =
+  runClusterCommandClient client command >>= either throwIO pure

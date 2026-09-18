@@ -7,7 +7,8 @@ import           Control.Concurrent                    (threadDelay)
 import           Control.Concurrent.Async              (mapConcurrently)
 import           Control.Concurrent.STM                (readTVarIO)
 import           Control.Exception                     (SomeException, bracket,
-                                                        bracketOnError, try)
+                                                        bracketOnError, throwIO,
+                                                        try)
 import           Control.Monad                         (forM_)
 import           Control.Monad.IO.Class                (liftIO)
 import qualified Control.Monad.State                   as State
@@ -36,9 +37,8 @@ import           Database.Redis.Command                (ClientState (..),
                                                         RedisCommandClient (..),
                                                         RedisCommands (..),
                                                         encodeCommand,
-                                                        parseWith,
-                                                        runRedisCommandClient,
-                                                        showBS)
+                                                        parseWith, showBS,
+                                                        unRedisCommandClient)
 import           Database.Redis.Connector              (clusterTLSConnector,
                                                         connectPlaintext,
                                                         connectTLS)
@@ -172,7 +172,7 @@ runDirect
   -> IO a
 runDirect connection command =
   State.evalStateT
-    (runRedisCommandClient command)
+    (unRedisCommandClient command)
     (ClientState connection BS.empty)
 
 standaloneNode :: NodeAddress
@@ -198,7 +198,8 @@ runStandalone
   :: StandaloneClient
   -> StandaloneCommandClient RespData
   -> IO RespData
-runStandalone = runStandaloneClient
+runStandalone client command =
+  runStandaloneClient client command >>= either throwIO pure
 
 createTLSCluster :: IO (ClusterClient TLSClient)
 createTLSCluster =
@@ -221,7 +222,8 @@ runCluster
   :: ClusterClient TLSClient
   -> ClusterCommandClient TLSClient RespData
   -> IO RespData
-runCluster = runClusterCommandClient
+runCluster client command =
+  runClusterCommandClient client command >>= either throwIO pure
 
 withPlaintextControls
   :: [NodeAddress]
@@ -315,7 +317,7 @@ runPlaintextRaw
   -> IO RespData
 runPlaintextRaw connection arguments =
   State.evalStateT
-    (runRedisCommandClient $ RedisCommandClient $ do
+    (unRedisCommandClient $ RedisCommandClient $ do
       ClientState connected _ <- State.get
       liftIO $ send connected $ LBS.fromStrict $ encodeCommand arguments
       parseWith $ liftIO $ receive connected)

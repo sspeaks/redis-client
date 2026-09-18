@@ -55,7 +55,7 @@ import           Database.Redis.Cluster.Client         (ClusterClient (..),
 import           Database.Redis.Command                (ClientState (..),
                                                         encodeGetBuilder,
                                                         encodeSetBuilder,
-                                                        runRedisCommandClient)
+                                                        unRedisCommandClient)
 import           Database.Redis.Connector              (Connector)
 import           Database.Redis.Internal.Multiplexer   (Multiplexer,
                                                         MultiplexerStats (..),
@@ -600,7 +600,7 @@ authenticatedConnector runState connector address = do
   when (not $ null $ App.password runState) $ do
     let clientState = ClientState connection BS.empty
     _ <- State.evalStateT
-      (runRedisCommandClient $
+      (unRedisCommandClient $
         App.authenticate (App.username runState) (App.password runState))
       clientState
     pure ()

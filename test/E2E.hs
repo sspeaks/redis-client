@@ -21,6 +21,7 @@ import           Database.Redis.Command     (ClientReplyValues (..),
                                              GeoSearchBy (..),
                                              GeoSearchFrom (..),
                                              GeoSearchOption (..), GeoUnit (..),
+                                             RedisClientError (..),
                                              RedisCommandClient,
                                              RedisCommands (..), parseManyWith,
                                              sendClientReplySkipAndCommand,
@@ -331,10 +332,12 @@ main = do
 
         it "returns error when using wrong command for key type" $ do
           runRedisAction (set "string:key" "value") `shouldReturn` RespSimpleString "OK"
-          resp <- runRedisAction (lpush "string:key" ["item"])
-          case resp of
-            RespError err -> BS8.isInfixOf "WRONGTYPE" err `shouldBe` True
-            _ -> expectationFailure $ "Expected WRONGTYPE error, got: " <> show resp
+          result <- try (runRedisAction (lpush "string:key" ["item"]))
+            :: IO (Either RedisClientError RespData)
+          case result of
+            Left (RedisServerError err) ->
+              BS8.isInfixOf "WRONGTYPE" err `shouldBe` True
+            _ -> expectationFailure $ "Expected WRONGTYPE error, got: " <> show result
 
         it "returns error for GET on non-existent key" $ do
           runRedisAction (get "nonexistent:key") `shouldReturn` RespNullBulkString
