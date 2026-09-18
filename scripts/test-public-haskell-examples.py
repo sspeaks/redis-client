@@ -9,20 +9,54 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-MARKDOWN_EXAMPLES = {
-    Path("README.md"): 2,
-    Path("hask-redis-mux/README.md"): 6,
-}
-
-HADDOCK_EXAMPLES = {
-    Path("hask-redis-mux/lib/redis/Database/Redis.hs"): 3,
-    Path("hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs"): 4,
-    Path("hask-redis-mux/lib/cluster/Database/Redis/Connector.hs"): 5,
+COMPONENTS = {
+    "root-readme": {
+        "dependencies": [
+            "base >= 4.19 && < 5",
+            "hask-redis-mux",
+        ],
+        "markdown": {
+            Path("README.md"): 2,
+        },
+        "haddock": {},
+    },
+    "library-docs": {
+        "dependency_document": Path("hask-redis-mux/README.md"),
+        "markdown": {
+            Path("hask-redis-mux/README.md"): 6,
+        },
+        "haddock": {
+            Path("hask-redis-mux/lib/redis/Database/Redis.hs"): 3,
+            Path("hask-redis-mux/lib/cluster/Database/Redis/Standalone.hs"): 4,
+            Path("hask-redis-mux/lib/cluster/Database/Redis/Connector.hs"): 5,
+        },
+    },
 }
 
 
 def markdown_blocks(text):
     return re.findall(r"```haskell[ \t]*\n(.*?)```", text, re.DOTALL)
+
+
+def documented_dependencies(relative_path):
+    text = (ROOT / relative_path).read_text()
+    blocks = re.findall(r"```cabal[ \t]*\n(.*?)```", text, re.DOTALL)
+    if len(blocks) != 1:
+        raise ValueError(
+            f"{relative_path}: expected one Cabal dependency block, "
+            f"found {len(blocks)}"
+        )
+
+    lines = [line.strip() for line in blocks[0].splitlines()]
+    if not lines or lines[0] != "build-depends:":
+        raise ValueError(
+            f"{relative_path}: Cabal block must start with build-depends:"
+        )
+
+    dependencies = [line.rstrip(",") for line in lines[1:] if line]
+    if not dependencies:
+        raise ValueError(f"{relative_path}: build-depends is empty")
+    return ["base >= 4.19 && < 5", *dependencies]
 
 
 def haddock_blocks(text):
@@ -63,9 +97,9 @@ def add_module_name(source, module_name):
     return "\n".join(lines) + "\n"
 
 
-def collect_examples():
+def collect_examples(component):
     examples = []
-    for relative_path, expected_count in MARKDOWN_EXAMPLES.items():
+    for relative_path, expected_count in component["markdown"].items():
         blocks = markdown_blocks((ROOT / relative_path).read_text())
         if len(blocks) != expected_count:
             raise ValueError(
@@ -77,7 +111,7 @@ def collect_examples():
             for index, block in enumerate(blocks, 1)
         )
 
-    for relative_path, expected_count in HADDOCK_EXAMPLES.items():
+    for relative_path, expected_count in component["haddock"].items():
         blocks = haddock_blocks((ROOT / relative_path).read_text())
         if len(blocks) != expected_count:
             raise ValueError(
@@ -91,42 +125,97 @@ def collect_examples():
     return examples
 
 
+def component_dependencies(component):
+    dependency_document = component.get("dependency_document")
+    if dependency_document is not None:
+        return documented_dependencies(dependency_document)
+    return component["dependencies"]
+
+
+def cabal_component(name, dependencies, modules):
+    dependency_lines = ",\n      ".join(dependencies)
+    module_lines = "\n      ".join(modules)
+    return f"""
+library {name}
+    exposed-modules:
+      {module_lines}
+    hs-source-dirs: {name}
+    build-depends:
+      {dependency_lines}
+    default-language: GHC2021
+"""
+
+
 def main():
     try:
-        examples = collect_examples()
+        component_examples = {
+            name: collect_examples(component)
+            for name, component in COMPONENTS.items()
+        }
     except ValueError as error:
         print(f"public example discovery failed: {error}", file=sys.stderr)
         return 1
 
     with tempfile.TemporaryDirectory(prefix="redis-public-examples-") as temp_dir:
-        generated = []
-        for sequence, (source_path, block_index, source) in enumerate(examples, 1):
-            module_name = f"PublicExample{sequence}"
-            source_name = re.sub(r"[^A-Za-z0-9]+", "-", str(source_path)).strip("-")
-            output_path = Path(temp_dir) / f"{source_name}-example-{block_index}.hs"
-            output_path.write_text(
-                f"-- Source: {source_path} example {block_index}\n"
-                + add_module_name(source, module_name)
-            )
-            generated.append(str(output_path))
+        temp_root = Path(temp_dir)
+        cabal_components = []
+        example_count = 0
 
-        command = [
-            "cabal",
-            "exec",
-            "--",
-            "ghc",
-            "-fno-code",
-            "-fforce-recomp",
-            "-XGHC2021",
-            "-package",
-            "hask-redis-mux",
-            *generated,
-        ]
-        result = subprocess.run(command, cwd=ROOT)
+        for component_name, examples in component_examples.items():
+            source_dir = temp_root / component_name
+            source_dir.mkdir()
+            modules = []
+
+            for source_path, block_index, source in examples:
+                example_count += 1
+                module_name = f"PublicExample{example_count}"
+                modules.append(module_name)
+                output_path = source_dir / f"{module_name}.hs"
+                output_path.write_text(
+                    f"-- Source: {source_path} example {block_index}\n"
+                    + add_module_name(source, module_name)
+                )
+
+            cabal_components.append(
+                cabal_component(
+                    component_name,
+                    component_dependencies(COMPONENTS[component_name]),
+                    modules,
+                )
+            )
+
+        (temp_root / "public-haskell-examples.cabal").write_text(
+            """cabal-version: 3.0
+name: public-haskell-examples
+version: 0.0.0
+build-type: Simple
+"""
+            + "".join(cabal_components)
+        )
+        (temp_root / "cabal.project").write_text(
+            f"""packages:
+  {ROOT / "hask-redis-mux"}
+  .
+"""
+        )
+
+        result = subprocess.run(
+            [
+                "cabal",
+                "build",
+                "--offline",
+                "--project-file=cabal.project",
+                "all",
+            ],
+            cwd=temp_root,
+        )
         if result.returncode != 0:
             return result.returncode
 
-    print(f"Compiled {len(examples)} public Haskell examples.")
+    print(
+        f"Compiled {example_count} public Haskell examples "
+        f"in {len(COMPONENTS)} isolated consumer components."
+    )
     return 0
 
 
