@@ -3,14 +3,15 @@
 Issue lifecycle automation treats `status:ready`, `status:in-progress`, and
 `status:needs-review` as active workflow statuses.
 
-- Closing an issue removes every active workflow status. This applies whether
-  the issue is closed directly or automatically when a linked pull request is
-  merged.
-- Reopening an issue with a `squad:<member>` owner removes stale active statuses
-  and assigns `status:ready`.
-- Reopening an issue without a member owner removes stale active statuses and
-  ensures the `squad` triage-inbox label is present.
-- Other labels, including ownership, priority, type, wave, retrospective, and
+- Closing an issue removes every active workflow status and `needs-triage`. This
+  applies whether the issue is closed directly or automatically when a linked
+  pull request is merged. Closed-issue reconciliation does the same.
+- Reopening an issue removes stale active statuses and every other triage state
+  (`needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), and ensures
+  `needs-triage` is present. A triage state added after the reopen event is kept
+  instead, without adding `needs-triage`. An issue that is closed again before
+  the job runs is left unchanged.
+- Other labels, including priority, type, wave, retrospective, and
   `status:blocked`, are not changed by closed-issue reconciliation.
 
 The `Issue status state` workflow exposes closed-issue reconciliation through

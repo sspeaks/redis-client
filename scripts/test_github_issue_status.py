@@ -73,7 +73,7 @@ class IssueStatusTransitionTests(unittest.TestCase):
                     "status:ready",
                     "status:in-progress",
                     "status:needs-review",
-                    "squad:lead",
+                    "type:maintenance",
                     "priority:p2",
                 ],
             ),
@@ -102,36 +102,42 @@ class IssueStatusTransitionTests(unittest.TestCase):
             {"add": [], "remove": ["status:needs-review"]},
         )
 
-    def test_reopen_with_owner_restores_ready(self):
+    def test_reopen_replaces_active_statuses_with_needs_triage(self):
         plan = MODULE.plan_transition(
-            issue(12, ["squad:tester", "priority:p1", "status:needs-review"]),
+            issue(12, ["priority:p1", "status:needs-review", "status:ready"]),
             "reopened",
         )
         self.assertEqual(
             plan,
-            {"add": ["status:ready"], "remove": ["status:needs-review"]},
+            {
+                "add": ["needs-triage"],
+                "remove": ["status:needs-review", "status:ready"],
+            },
         )
 
-    def test_reopen_without_owner_is_clearly_untriaged(self):
-        plan = MODULE.plan_transition(
-            issue(13, ["squad", "priority:p2", "status:in-progress"]),
-            "reopened",
-        )
-        self.assertEqual(
-            plan,
-            {"add": [], "remove": ["status:in-progress"]},
-        )
+    def test_reopen_leaves_exactly_one_triage_state(self):
+        for label in (
+            "needs-info",
+            "ready-for-agent",
+            "ready-for-human",
+            "wontfix",
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(
+                    MODULE.plan_transition(issue(13, [label]), "reopened"),
+                    {"add": ["needs-triage"], "remove": [label]},
+                )
 
-    def test_reopen_without_owner_enters_the_triage_inbox(self):
+    def test_reopen_without_state_enters_the_triage_inbox(self):
         plan = MODULE.plan_transition(
             issue(14, ["priority:p2", "type:maintenance"]),
             "reopened",
         )
-        self.assertEqual(plan, {"add": ["squad"], "remove": []})
+        self.assertEqual(plan, {"add": ["needs-triage"], "remove": []})
 
     def test_transition_is_idempotent(self):
-        closed = issue(15, ["squad:lead", "priority:p2"])
-        reopened = issue(15, ["squad:lead", "priority:p2", "status:ready"])
+        closed = issue(15, ["type:maintenance", "priority:p2"])
+        reopened = issue(15, ["needs-triage", "priority:p2"])
         self.assertEqual(
             MODULE.plan_transition(closed, "closed"),
             {"add": [], "remove": []},
@@ -147,7 +153,6 @@ class IssueStatusTransitionTests(unittest.TestCase):
             [
                 "status:in-progress",
                 "status:blocked",
-                "squad:lead",
                 "priority:p2",
                 "type:maintenance",
                 "wave:2",
@@ -166,7 +171,7 @@ class IssueStatusTransitionTests(unittest.TestCase):
     def test_replaying_stale_event_plan_does_not_repeat_deletion(self):
         source_issue = issue(
             19,
-            ["status:in-progress", "squad:protocol", "priority:p2"],
+            ["status:in-progress", "type:maintenance", "priority:p2"],
         )
         client = FakeClient([source_issue])
         stale_plan = MODULE.plan_transition(source_issue, "closed")
@@ -183,13 +188,59 @@ class IssueStatusTransitionTests(unittest.TestCase):
         self.assertEqual(client.removed, [(19, "status:in-progress")])
         self.assertEqual(
             MODULE.label_names(client.get_issue(19)),
-            {"squad:protocol", "priority:p2"},
+            {"type:maintenance", "priority:p2"},
         )
+
+    def apply_reopen(self, event_labels, current_labels, state="open"):
+        event_issue = issue(20, event_labels, state="open")
+        client = FakeClient([issue(20, current_labels, state=state)])
+        plan = MODULE.plan_transition(event_issue, "reopened")
+        with redirect_stdout(io.StringIO()):
+            MODULE.apply_plan(
+                client, event_issue, "reopened", plan, dry_run=False
+            )
+        return MODULE.label_names(client.get_issue(20))
+
+    def test_reopen_replaces_stale_triage_states(self):
+        labels = ["wontfix", "needs-info", "status:ready", "status:blocked"]
+        self.assertEqual(
+            self.apply_reopen(labels, labels),
+            {"needs-triage", "status:blocked"},
+        )
+
+    def test_reopen_keeps_triage_state_set_after_the_event(self):
+        for event_labels, current_labels in (
+            ([], ["ready-for-agent"]),
+            (["wontfix"], ["wontfix", "ready-for-agent"]),
+            (["needs-triage"], ["needs-triage", "ready-for-agent"]),
+        ):
+            with self.subTest(event=event_labels):
+                self.assertEqual(
+                    self.apply_reopen(event_labels, current_labels),
+                    {"ready-for-agent"},
+                )
+
+    def test_reopen_skips_issue_that_is_closed_again(self):
+        self.assertEqual(
+            self.apply_reopen(["wontfix"], ["wontfix"], state="closed"),
+            {"wontfix"},
+        )
+
+    def test_close_and_reconciliation_clear_the_triage_inbox(self):
+        labels = ["needs-triage", "wontfix", "priority:p2"]
+        self.assertEqual(
+            MODULE.plan_transition(issue(21, labels), "closed"),
+            {"add": [], "remove": ["needs-triage"]},
+        )
+        client = FakeClient([issue(21, labels, state="closed")])
+        with redirect_stdout(io.StringIO()):
+            MODULE.reconcile(client, dry_run=False)
+        self.assertEqual(client.removed, [(21, "needs-triage")])
 
     def test_reconciliation_dry_run_makes_no_mutations(self):
         client = FakeClient(
             [
-                issue(17, ["status:ready", "squad:lead", "priority:p2"]),
+                issue(17, ["status:ready", "type:maintenance", "priority:p2"]),
                 issue(18, ["priority:p1", "type:bug"]),
             ]
         )

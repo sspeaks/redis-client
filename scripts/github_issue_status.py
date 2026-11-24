@@ -13,6 +13,11 @@ ACTIVE_STATUS_LABELS = frozenset(
     {"status:ready", "status:in-progress", "status:needs-review"}
 )
 
+TRIAGE_STATE_LABELS = frozenset(
+    {"needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"}
+)
+TRIAGE_INBOX_LABEL = "needs-triage"
+
 
 def label_names(issue):
     return {
@@ -21,25 +26,37 @@ def label_names(issue):
     }
 
 
-def plan_transition(issue, action):
+def plan_transition(issue, action, event_labels=None):
+    """Plan label changes for an issue.
+
+    event_labels are the labels the issue had when the event fired. On reopen,
+    a triage state missing from them was set afterwards, so it is kept.
+    """
     labels = label_names(issue)
-    remove = sorted(labels & ACTIVE_STATUS_LABELS)
+    remove = labels & ACTIVE_STATUS_LABELS
     add = []
 
     if action == "reopened":
-        has_owner = any(
-            label.startswith("squad:") and label != "squad:"
-            for label in labels
-        )
-        if has_owner and "status:ready" not in labels:
-            add.append("status:ready")
-        elif not has_owner and "squad" not in labels:
-            add.append("squad")
-        remove = [label for label in remove if label != "status:ready"]
-    elif action != "closed":
+        # Closed again before this job ran: leave its labels alone.
+        if issue.get("state") == "closed":
+            return {"add": [], "remove": []}
+        if event_labels is None:
+            event_labels = labels
+        triage = labels & TRIAGE_STATE_LABELS
+        stale = triage & event_labels
+        newer = triage - event_labels - {TRIAGE_INBOX_LABEL}
+        if newer:
+            remove |= stale
+        else:
+            remove |= stale - {TRIAGE_INBOX_LABEL}
+            if TRIAGE_INBOX_LABEL not in labels:
+                add.append(TRIAGE_INBOX_LABEL)
+    elif action == "closed":
+        remove |= labels & {TRIAGE_INBOX_LABEL}
+    else:
         raise ValueError(f"unsupported issue action: {action}")
 
-    return {"add": add, "remove": remove}
+    return {"add": add, "remove": sorted(remove)}
 
 
 class GitHubClient:
@@ -119,7 +136,7 @@ def apply_plan(client, issue, action, plan, dry_run):
         return
 
     current_issue = client.get_issue(issue["number"])
-    current_plan = plan_transition(current_issue, action)
+    current_plan = plan_transition(current_issue, action, label_names(issue))
     print_plan(current_issue, action, current_plan, "apply")
     if current_plan["add"]:
         client.add_labels(issue["number"], current_plan["add"])
