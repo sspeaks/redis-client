@@ -191,6 +191,52 @@ class IssueStatusTransitionTests(unittest.TestCase):
             {"type:maintenance", "priority:p2"},
         )
 
+    def apply_reopen(self, event_labels, current_labels, state="open"):
+        event_issue = issue(20, event_labels, state="open")
+        client = FakeClient([issue(20, current_labels, state=state)])
+        plan = MODULE.plan_transition(event_issue, "reopened")
+        with redirect_stdout(io.StringIO()):
+            MODULE.apply_plan(
+                client, event_issue, "reopened", plan, dry_run=False
+            )
+        return MODULE.label_names(client.get_issue(20))
+
+    def test_reopen_replaces_stale_triage_states(self):
+        labels = ["wontfix", "needs-info", "status:ready", "status:blocked"]
+        self.assertEqual(
+            self.apply_reopen(labels, labels),
+            {"needs-triage", "status:blocked"},
+        )
+
+    def test_reopen_keeps_triage_state_set_after_the_event(self):
+        for event_labels, current_labels in (
+            ([], ["ready-for-agent"]),
+            (["wontfix"], ["wontfix", "ready-for-agent"]),
+            (["needs-triage"], ["needs-triage", "ready-for-agent"]),
+        ):
+            with self.subTest(event=event_labels):
+                self.assertEqual(
+                    self.apply_reopen(event_labels, current_labels),
+                    {"ready-for-agent"},
+                )
+
+    def test_reopen_skips_issue_that_is_closed_again(self):
+        self.assertEqual(
+            self.apply_reopen(["wontfix"], ["wontfix"], state="closed"),
+            {"wontfix"},
+        )
+
+    def test_close_and_reconciliation_clear_the_triage_inbox(self):
+        labels = ["needs-triage", "wontfix", "priority:p2"]
+        self.assertEqual(
+            MODULE.plan_transition(issue(21, labels), "closed"),
+            {"add": [], "remove": ["needs-triage"]},
+        )
+        client = FakeClient([issue(21, labels, state="closed")])
+        with redirect_stdout(io.StringIO()):
+            MODULE.reconcile(client, dry_run=False)
+        self.assertEqual(client.removed, [(21, "needs-triage")])
+
     def test_reconciliation_dry_run_makes_no_mutations(self):
         client = FakeClient(
             [
