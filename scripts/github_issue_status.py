@@ -13,6 +13,11 @@ ACTIVE_STATUS_LABELS = frozenset(
     {"status:ready", "status:in-progress", "status:needs-review"}
 )
 
+TRIAGE_STATE_LABELS = frozenset(
+    {"needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"}
+)
+TRIAGE_INBOX_LABEL = "needs-triage"
+
 
 def label_names(issue):
     return {
@@ -27,15 +32,12 @@ def plan_transition(issue, action):
     add = []
 
     if action == "reopened":
-        has_owner = any(
-            label.startswith("squad:") and label != "squad:"
-            for label in labels
+        if TRIAGE_INBOX_LABEL not in labels:
+            add.append(TRIAGE_INBOX_LABEL)
+        remove = sorted(
+            (labels & (ACTIVE_STATUS_LABELS | TRIAGE_STATE_LABELS))
+            - {TRIAGE_INBOX_LABEL}
         )
-        if has_owner and "status:ready" not in labels:
-            add.append("status:ready")
-        elif not has_owner and "squad" not in labels:
-            add.append("squad")
-        remove = [label for label in remove if label != "status:ready"]
     elif action != "closed":
         raise ValueError(f"unsupported issue action: {action}")
 
