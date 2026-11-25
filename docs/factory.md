@@ -58,7 +58,8 @@ Merges in the maintainer class, resuming after a pause, and publishing a release
 
 - Agents run on ephemeral GitHub-hosted runners, in a container with no GitHub token and no host Docker socket.
 - A proxy outside the container holds the Claude subscription token. If this cannot work, launch stops and returns to the maintainer; the token is not exposed instead.
-- Network access is limited to the model proxy, package mirrors, the Nix cache, and read-only GitHub content.
+- The token is stored only in the `factory-model` environment: `main` only, the maintainer as required reviewer, no admin bypass. A repository or organization secret with the same name must not exist, because any workflow on any branch could read it. A workflow changed on another branch is stopped by that environment and nothing else, so every job that uses the token needs an ungated job that verifies the environment first.
+- Network access is limited to the model proxy, package mirrors, the Nix cache, and read-only GitHub content. Tunnels must be TLS and name the allowed host, but are not decrypted, so a request inside one can still reach other sites on the same CDN. Agents therefore get no secret that would be worth sending out.
 - Docker E2E runs only in separate jobs without secrets.
 - Agents output one patch and structured issue or PR text. The publisher rejects symlinks, binaries, workflow changes, secret-like strings, and more than 800 changed lines excluding generated files. Oversized work is split.
 - Publishing uses a fine-grained token for this repository only, without Administration, Workflows, or Deployments permission.
@@ -67,7 +68,7 @@ Merges in the maintainer class, resuming after a pause, and publishing a release
 
 - **Red `main` after a merge:** rerun once. If still red, open a revert PR, which merges on green CI only if it exactly inverts a factory merge. Then pause.
 - **Pause** also on 2 reverts in 7 days or 3 consecutive ticket failures. A `factory-paused` issue blocks work, and only an environment approval resumes it.
-- **Kill switch:** the `FACTORY_ENABLED` repository variable, off by default and set only by the maintainer, is checked before every job and again immediately before every publish or merge.
+- **Kill switch:** the `FACTORY_ENABLED` repository variable, off by default and set only by the maintainer, is checked before every job and again immediately before every publish or merge. One exemption: the sandbox proof (`factory-proof.yml`) runs before launch, so it does not check the switch. It starts only by hand, publishes nothing, waits for the maintainer's approval of the `factory-model` environment, and counts as an agent run.
 - **Invented work:** the weekly retro reports self-filed tickets closed unmerged, reverted, or re-fixed within 30 days. Above 25%, with at least 8 tickets, audits stop and only maintainer tickets are worked until the maintainer re-enables them.
 - Rejected ideas are recorded in `.out-of-scope/` through a normal PR.
 

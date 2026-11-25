@@ -5,7 +5,7 @@
 # Detect if nix-shell is available
 HAS_NIX := $(shell command -v nix-shell >/dev/null 2>&1 && echo yes || echo no)
 
-.PHONY: help build test test-unit test-public-examples test-metadata test-release-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e benchmark-smoke clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts setup
+.PHONY: help build test test-unit test-public-examples test-metadata test-release-metadata test-credentials test-workflow-status test-pinned-references test-factory test-e2e-runner test-cluster-e2e-runner test-cli-help-parity test-tls-fixtures test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e benchmark-smoke clean redis-start redis-stop redis-cluster-start redis-cluster-stop profile benchmark-rts setup
 
 # Default target
 help:
@@ -46,7 +46,7 @@ endif
 test: test-unit test-e2e test-direct-tls-e2e test-cluster-e2e test-authenticated-cluster-e2e test-library-e2e
 
 # Run unit tests (hask-redis-mux tests run via nix dependency build; redis-client specs via cabal)
-test-unit: test-metadata test-release-metadata test-credentials test-workflow-status test-pinned-references test-e2e-runner test-cluster-e2e-runner test-cli-help-parity
+test-unit: test-metadata test-release-metadata test-credentials test-workflow-status test-pinned-references test-factory test-e2e-runner test-cluster-e2e-runner test-cli-help-parity
 ifeq ($(HAS_NIX),yes)
 	nix-shell --run "cabal build all && cabal test all && python3 scripts/test-public-haskell-examples.py"
 else
@@ -67,6 +67,7 @@ test-release-metadata:
 	python3 scripts/check-release-metadata.py
 	python3 -m unittest scripts/test_release_metadata.py
 	python3 -m unittest scripts/test_release_workflow.py
+	python3 -m unittest scripts/test_release_environment.py
 
 test-credentials:
 	python3 -m unittest scripts/test_azure_redis_connect.py
@@ -81,6 +82,9 @@ test-workflow-status:
 
 test-pinned-references:
 	python3 -m unittest scripts/test_pinned_references.py
+
+test-factory:
+	python3 -m unittest discover -s scripts/factory -p 'test_*.py'
 
 test-e2e-runner:
 	./scripts/test-run-e2e-tests.sh
