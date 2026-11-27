@@ -31,7 +31,10 @@ Work that touches a protected path (the list in `.github/workflows/agent-auto-me
 
 1. Branch `claude/issue-<n>-<short-slug>` from current `main`.
 2. Work test-first: a failing test for each behaviour, then the code that makes it pass.
-3. Follow `.github/instructions/changes.instructions.md`: build with `nix-build`, profile before and after when Haskell runtime code changes, and finish with `make test`. If a check cannot run here, say which and why in the pull request; never claim a check you did not run.
+3. Follow `.github/instructions/changes.instructions.md`: profile before and after when Haskell runtime code changes, and run the checks below. Report each check you ran with its result, and name each one you could not run and why; never claim a check you did not run.
+   - **Required:** `make build` and `make test-unit` pass.
+   - **Docker:** if `docker info` fails, start the daemon with `(dockerd > /tmp/dockerd.log 2>&1 &)` and wait until `docker info` succeeds.
+   - **End to end:** run `make test-e2e`. In scheduled cloud runs it can fail with `Failed to load private key ... Permission denied` from the Redis container, an environment problem rather than a code one; when that is the only failure, say so in the pull request and leave end-to-end coverage to CI.
 4. A decision worth keeping goes in a new ADR under `docs/adr/` only when the issue asks for one; that path waits for the maintainer.
 
 Done when the change is committed and every check you could run passes.
