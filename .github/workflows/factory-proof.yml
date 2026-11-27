@@ -1,0 +1,141 @@
+name: Factory sandbox proof
+
+# One manual run that proves the agent sandbox before the factory is enabled. It
+# is exempt from FACTORY_ENABLED for that reason only: see docs/factory.md.
+# It starts by hand, publishes nothing, and waits for approval.
+#
+# Set-up: the `factory-model` environment (main only, sspeaks as the required
+# reviewer, no administrator bypass) holds CLAUDE_CODE_OAUTH_TOKEN, made by
+# `claude setup-token`. That secret must not also exist at repository or
+# organization level. A copy of this workflow on another branch is stopped only
+# by the environment, so the environment is verified here before each use.
+
+on:
+  workflow_dispatch:
+    inputs:
+      usage_credits:
+        description: "Open claude.ai Settings > Usage now. Are usage credits off?"
+        type: choice
+        options:
+          - not checked
+          - checked and off
+        default: not checked
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: factory-agent
+  cancel-in-progress: false
+
+jobs:
+  # GitHub silently creates a missing environment without protection, so prove
+  # the protection exists before any job uses it. No environment here: secrets
+  # visible to this job are exactly those that must not exist.
+  verify:
+    if: github.actor == 'sspeaks' && github.triggering_actor == 'sspeaks' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Refuse unless billing is confined to the subscription
+        env:
+          USAGE_CREDITS: ${{ inputs.usage_credits }}
+          UNGATED_TOKEN_EXISTS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          API_KEY_EXISTS: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$USAGE_CREDITS" = "checked and off"
+          test "$UNGATED_TOKEN_EXISTS" = false
+          test "$API_KEY_EXISTS" = false
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Require a protected factory-model environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="repos/$GITHUB_REPOSITORY/environments/factory-model"
+          gh api "$root" > environment.json
+          gh api "$root/deployment-branch-policies" > branch-policies.json
+          python3 scripts/check-release-environment.py environment.json --reviewer sspeaks \
+            --branch main --branch-policies branch-policies.json
+
+  proof:
+    name: factory-agent-proof
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: factory-model
+    permissions:
+      contents: read
+    steps:
+      # "Re-run failed jobs" would skip verify and could reuse the approval.
+      - name: Refuse a re-run
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - name: Refuse an API key
+        env:
+          API_KEY_EXISTS: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: test "$API_KEY_EXISTS" = false && test -z "${ANTHROPIC_API_KEY+set}"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Test the sandbox code
+        run: python3 -m unittest discover -s scripts/factory -p 'test_*.py'
+
+      - name: Build the sandbox image
+        run: |
+          docker build --build-arg AGENT_UID="$(id -u)" --tag factory-agent \
+            --file docker/factory-agent/Dockerfile scripts/factory/container
+
+      - name: Export the sources without git metadata
+        run: |
+          set -euo pipefail
+          for copy in workspace clean; do
+            mkdir "$RUNNER_TEMP/$copy"
+            git archive HEAD | tar -x -C "$RUNNER_TEMP/$copy"
+          done
+
+      # The token is in this step only. run_agent.py gets it on stdin, so no
+      # process it starts inherits it.
+      - name: factory-agent-run
+        id: agent
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TOKEN" | env -u TOKEN python3 scripts/factory/run_agent.py \
+            --image factory-agent \
+            --workspace "$RUNNER_TEMP/workspace" \
+            --prompt scripts/factory/proof-prompt.md \
+            --output "$RUNNER_TEMP/factory-output" \
+            --model claude-sonnet-5-5 \
+            --usage-credits-confirmed-off
+
+      # The daily run limit is found by this step name.
+      - name: factory-usage-limit
+        if: always() && steps.agent.outputs.usage_limit == 'true'
+        run: echo "The subscription's usage limit was reached."
+
+      - name: Check the task against an independent build
+        run: |
+          python3 scripts/factory/check_proof.py --image factory-agent \
+            --output "$RUNNER_TEMP/factory-output" --sources "$RUNNER_TEMP/clean"
+
+      # Only what was searched for the token, also after a cancel or a timeout.
+      - name: Upload the evidence
+        if: always() && steps.agent.outputs.searched == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-proof
+          path: ${{ runner.temp }}/factory-output
+          if-no-files-found: ignore
