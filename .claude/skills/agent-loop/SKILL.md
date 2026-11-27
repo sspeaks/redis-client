@@ -23,7 +23,7 @@ Nothing applies: stop without writing anything. A quiet run is a success.
 
 Read the issue body and comments by `sspeaks`, then `CLAUDE.md`, `docs/agents/`, `docs/adr/` and `.out-of-scope/`.
 
-Route the issue to the maintainer when the work needs a protected path (the list in `.github/workflows/agent-auto-merge.yml`), contradicts an ADR, matches an idea in `.out-of-scope/`, or is unclear enough that you would be guessing. Route it by commenting `<!-- agent-loop: needs human -->` with the reason, removing `ready-for-agent` and adding `ready-for-human`. Then stop.
+Route the issue to the maintainer when it contradicts an ADR, matches an idea in `.out-of-scope/`, or is unclear enough that you would be guessing. Work that touches a protected path (the list in `.github/workflows/agent-auto-merge.yml`) still gets built; its pull request simply waits for the maintainer to merge, so say which protected paths it touches in the pull request. Route it by commenting `<!-- agent-loop: needs human -->` with the reason, removing `ready-for-agent` and adding `ready-for-human`. Then stop.
 
 ## 3. Build it
 
