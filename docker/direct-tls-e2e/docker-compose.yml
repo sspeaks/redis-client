@@ -3,6 +3,9 @@ services:
     image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: standalone-target.local
     user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    # Run redis-server directly as the certificate owner. Started as root, the
+    # image entrypoint switches to the redis user, which cannot read the key.
+    entrypoint: []
     volumes:
       - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
     command:
@@ -41,6 +44,7 @@ services:
     image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: cluster-node1.local
     user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    entrypoint: []
     volumes:
       - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
     tmpfs:
@@ -92,6 +96,7 @@ services:
     image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: cluster-node2.local
     user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    entrypoint: []
     volumes:
       - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
     tmpfs:
@@ -138,6 +143,7 @@ services:
     image: redis:7.2.12@sha256:16623900b6ddd58e8bac04ccb6b611b9a5d1aed165453e28bcaed251d549d62c
     hostname: cluster-node3.local
     user: "${REDIS_TLS_CERT_UID:?Set REDIS_TLS_CERT_UID}:${REDIS_TLS_CERT_GID:?Set REDIS_TLS_CERT_GID}"
+    entrypoint: []
     volumes:
       - ${REDIS_TLS_CERT_DIR:?Set REDIS_TLS_CERT_DIR}:/certs:ro
     tmpfs:
