@@ -124,11 +124,14 @@ supports every request size accepted by Redis itself. Clients that need larger
 requests should connect directly to the cluster nodes (or use pinned mode) and
 remain within the applicable Redis deployment limits.
 
-Pinned cluster tunnels forward traffic in both directions. Replies represented
-by `RespData`, including RESP3-shaped maps and sets, are parsed and re-encoded
-while applicable topology values are rewritten. The opaque fallback forwards
-complete RESP3 frames outside that subset, including streamed values,
-byte-for-byte. Malformed or incomplete streamed RESP3 framing fails closed by
+Pinned cluster tunnels forward traffic in both directions. Each reply is
+matched with the request it answers: replies to `CLUSTER SLOTS`, `NODES` and
+`SHARDS` have their node endpoints rewritten to `127.0.0.1`, and MOVED/ASK
+errors have their host rewritten. Every other reply, including RESP3 maps,
+sets and streamed values, is forwarded byte-for-byte. After a Pub/Sub
+subscription, `MONITOR`, `CLIENT REPLY` or an inline command, replies can no
+longer be matched with requests, so that connection rewrites only MOVED/ASK
+errors from then on. Malformed or incomplete streamed RESP3 framing fails closed by
 closing the connection rather than attempting to resynchronize inside a
 possible binary payload. This narrow framing compatibility is not a claim of
 general RESP3 command support. Incomplete pinned replies retain at most a

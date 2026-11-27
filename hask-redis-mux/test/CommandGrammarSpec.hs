@@ -2,15 +2,14 @@
 
 module Main (main) where
 
-import           Control.Exception               (evaluate)
-import           Control.Monad                   (forM_)
-import qualified Data.ByteString                 as BS
-import           Database.Redis.Cluster          (calculateSlot)
-import           Database.Redis.Cluster.Commands (CommandRouting (..),
-                                                  classifyCommand,
-                                                  keylessCommands,
-                                                  requiresKeyCommands)
-import           System.Timeout                  (timeout)
+import           Control.Exception                              (evaluate)
+import           Control.Monad                                  (forM_)
+import qualified Data.ByteString                                as BS
+import           Database.Redis.Cluster                         (calculateSlot)
+import           Database.Redis.Cluster.Internal.CommandGrammar (CommandFrameRouting (..),
+                                                                 classifyCommandFrame,
+                                                                 renderCommandGrammarError)
+import           System.Timeout                                 (timeout)
 import           Test.Hspec
 
 main :: IO ()
@@ -430,8 +429,20 @@ spec =
             shouldRouteKeyless "PING" ["payload"]
             shouldReject "DOESNOTEXIST" ["key"] "unknown command"
 
-        it "covers every generated command without exposing internal metadata" $ do
-            length (keylessCommands ++ requiresKeyCommands) `shouldBe` 392
+-- | Test-local view of the generated grammar's routing decision.
+data CommandRouting
+    = KeylessRoute
+    | KeyedRoute BS.ByteString
+    | CommandError String
+
+classifyCommand :: BS.ByteString -> [BS.ByteString] -> CommandRouting
+classifyCommand command arguments =
+    case classifyCommandFrame (command : arguments) of
+        Right FrameKeyless -> KeylessRoute
+        Right (FrameSingleSlot key _) -> KeyedRoute key
+        Right (FrameCrossSlot _) ->
+            CommandError "CROSSSLOT Keys in request don't hash to the same slot"
+        Left errorValue -> CommandError (renderCommandGrammarError errorValue)
 
 shouldRouteBy :: BS.ByteString -> [BS.ByteString] -> BS.ByteString -> Expectation
 shouldRouteBy command arguments expected =

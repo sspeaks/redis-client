@@ -5,69 +5,79 @@
 
 module Main (main) where
 
-import           Control.Concurrent                         (forkFinally,
-                                                             forkIO, killThread,
-                                                             threadDelay)
-import           Control.Concurrent.MVar                    (newEmptyMVar,
-                                                             newMVar, putMVar,
-                                                             takeMVar,
-                                                             tryTakeMVar)
-import           Control.Concurrent.STM                     (TVar, atomically,
-                                                             check, modifyTVar',
-                                                             newTVarIO,
-                                                             readTVar,
-                                                             readTVarIO)
-import           Control.Exception                          (SomeAsyncException,
-                                                             SomeException,
-                                                             finally,
-                                                             fromException,
-                                                             throwIO, try)
-import qualified Control.Exception                          as Exception
-import           Control.Monad                              (forM_, replicateM_)
-import           Control.Monad.IO.Class                     (liftIO)
-import           Data.ByteString                            (ByteString)
-import qualified Data.ByteString                            as BS
-import qualified Data.ByteString.Builder                    as Builder
-import qualified Data.ByteString.Char8                      as BS8
-import qualified Data.ByteString.Lazy                       as LBS
-import           Data.IORef                                 (IORef,
-                                                             atomicModifyIORef',
-                                                             newIORef,
-                                                             readIORef)
-import           Data.List                                  (isInfixOf)
-import qualified Data.Map.Strict                            as Map
-import           Data.Time.Clock                            (getCurrentTime)
-import qualified Data.Vector                                as V
-import           Data.Word                                  (Word16)
-import           Database.Redis.Client                      (Client (..),
-                                                             ConnectionStatus (..))
-import           Database.Redis.Cluster                     (ClusterNode (..),
-                                                             ClusterTopology (..),
-                                                             NodeAddress (..),
-                                                             NodeRole (..),
-                                                             SlotRange (..),
-                                                             calculateSlot,
-                                                             findNodeAddressForSlot)
+import           Control.Concurrent                                   (forkFinally,
+                                                                       forkIO,
+                                                                       killThread,
+                                                                       threadDelay)
+import           Control.Concurrent.MVar                              (newEmptyMVar,
+                                                                       newMVar,
+                                                                       putMVar,
+                                                                       takeMVar,
+                                                                       tryTakeMVar)
+import           Control.Concurrent.STM                               (TVar,
+                                                                       atomically,
+                                                                       check,
+                                                                       modifyTVar',
+                                                                       newTVarIO,
+                                                                       readTVar,
+                                                                       readTVarIO)
+import           Control.Exception                                    (SomeAsyncException,
+                                                                       SomeException,
+                                                                       finally,
+                                                                       fromException,
+                                                                       throwIO,
+                                                                       try)
+import qualified Control.Exception                                    as Exception
+import           Control.Monad                                        (forM_,
+                                                                       replicateM_)
+import           Control.Monad.IO.Class                               (liftIO)
+import           Data.ByteString                                      (ByteString)
+import qualified Data.ByteString                                      as BS
+import qualified Data.ByteString.Builder                              as Builder
+import qualified Data.ByteString.Char8                                as BS8
+import qualified Data.ByteString.Lazy                                 as LBS
+import           Data.IORef                                           (IORef,
+                                                                       atomicModifyIORef',
+                                                                       modifyIORef',
+                                                                       newIORef,
+                                                                       readIORef)
+import           Data.List                                            (isInfixOf)
+import qualified Data.Map.Strict                                      as Map
+import           Data.Time.Clock                                      (getCurrentTime)
+import qualified Data.Vector                                          as V
+import           Data.Word                                            (Word16)
+import           Database.Redis.Client                                (Client (..),
+                                                                       ConnectionStatus (..))
+import           Database.Redis.Cluster                               (ClusterNode (..),
+                                                                       ClusterTopology (..),
+                                                                       NodeAddress (..),
+                                                                       NodeRole (..),
+                                                                       SlotRange (..),
+                                                                       calculateSlot,
+                                                                       findNodeAddressForSlot)
 import           Database.Redis.Cluster.Client
-import           Database.Redis.Cluster.ConnectionPool      (PoolConfig (..),
-                                                             createPool)
-import           Database.Redis.Cluster.Internal.RawCommand
-import           Database.Redis.Cluster.Internal.Topology   (commitRefreshedTopology,
-                                                             mergeRefreshedTopology,
-                                                             patchMovedSlot,
-                                                             provisionalMovedPatches)
-import           Database.Redis.Command                     (ClientReplyValues (..),
-                                                             GeoRadiusFlag (..),
-                                                             GeoUnit (..))
-import           Database.Redis.Connector                   (ConnectionPhase (..),
-                                                             ConnectionSetupException (..),
-                                                             withConnectionTimeout)
-import           Database.Redis.Internal.MultiplexPool      (closeMultiplexPool,
-                                                             createMultiplexPool)
-import           Database.Redis.Resp                        (Encodable (..),
-                                                             RespData (..))
-import           GHC.Clock                                  (getMonotonicTimeNSec)
-import           System.Timeout                             (timeout)
+import           Database.Redis.Cluster.ConnectionPool                (PoolConfig (..),
+                                                                       createPool)
+import           Database.Redis.Cluster.Internal.ClientImplementation (RawClusterRoute (..),
+                                                                       executeRawClusterCommand,
+                                                                       executeRawClusterCommandUsingDelay,
+                                                                       forwardClusterFrameWith)
+import           Database.Redis.Cluster.Internal.Topology             (commitRefreshedTopology,
+                                                                       mergeRefreshedTopology,
+                                                                       patchMovedSlot,
+                                                                       provisionalMovedPatches)
+import           Database.Redis.Command                               (ClientReplyValues (..),
+                                                                       GeoRadiusFlag (..),
+                                                                       GeoUnit (..))
+import           Database.Redis.Connector                             (ConnectionPhase (..),
+                                                                       ConnectionSetupException (..),
+                                                                       withConnectionTimeout)
+import           Database.Redis.Internal.MultiplexPool                (closeMultiplexPool,
+                                                                       createMultiplexPool)
+import           Database.Redis.Resp                                  (Encodable (..),
+                                                                       RespData (..))
+import           GHC.Clock                                            (getMonotonicTimeNSec)
+import           System.Timeout                                       (timeout)
 import           Test.Hspec
 
 main :: IO ()
@@ -335,6 +345,7 @@ spec = do
   clusterAuthenticationSpec
   clusterErrorClassificationSpec
   rawFrameIdentitySpec
+  frameForwardingSpec
   rawDispatchReliabilitySpec
   publicValidatedDispatchSpec
 
@@ -3206,6 +3217,133 @@ assertRawFrameCopies :: [AuthConnectionRecord] -> RespData -> Int -> Expectation
 assertRawFrameCopies records frame expected = do
   sent <- BS.concat <$> mapM recordSentBytes records
   countOccurrences (encodeResp frame) sent `shouldBe` expected
+
+frameForwardingSpec :: Spec
+frameForwardingSpec =
+  describe "forwardClusterFrame" $ do
+    it "returns a Redis error reply from the owning node byte-for-byte" $ do
+      let wrongType =
+            "WRONGTYPE Operation against a key holding the wrong kind of value"
+          frame = forwardedCommand ["LPUSH", "raw-key", "value"]
+          script address index sendCount =
+            return $
+              if address == node1 && index == 0
+                then [replyAfterSendCount sendCount 1 validClusterSlots]
+                else [replyAfterSendCount sendCount 1 $ RespError wrongType]
+      (connector, getRecords) <- createAuthMockConnectorWithSendCount script
+      client <- createClusterClient (retryTestConfig 1 1) connector
+      reply <- forwardClusterFrame client frame
+      encodeResp reply `shouldBe` "-" <> wrongType <> "\r\n"
+      records <- getRecords
+      recordSentBytes (findAuthRecord records node1 1)
+        `shouldReturn` encodeResp frame
+      closeClusterClient client
+
+    it "returns keyless server error replies verbatim" $ do
+      let frame = forwardedCommand ["PING", "payload"]
+      reply <- forwardClusterFrameWith
+        (\route original -> do
+          route `shouldBe` RawRouteKeyless
+          original `shouldBe` frame
+          pure $ Left $ RedisServerError "NOPERM this user has no permissions")
+        frame
+      reply `shouldBe` RespError "NOPERM this user has no permissions"
+
+    it "passes successful replies through unchanged" $ do
+      let frame = forwardedCommand ["GET", "profile:key"]
+      reply <- forwardClusterFrameWith
+        (\route _ -> do
+          route `shouldBe` RawRouteByKey "profile:key"
+          pure $ Right $ RespBulkString "v1.2 host:6379")
+        frame
+      reply `shouldBe` RespBulkString "v1.2 host:6379"
+
+    it "renders server cluster errors in Redis' own format" $ do
+      let frame = forwardedCommand ["GET", "profile:key"]
+          renderedFor errorValue =
+            forwardClusterFrameWith (\_ _ -> pure $ Left errorValue) frame
+      renderedFor (RedisClusterError $ RedisMoved 3999 "10.0.0.5" 6381)
+        `shouldReturn` RespError "MOVED 3999 10.0.0.5:6381"
+      renderedFor (RedisClusterError $ RedisAsk 3999 "10.0.0.5" 6381)
+        `shouldReturn` RespError "ASK 3999 10.0.0.5:6381"
+      renderedFor (RedisClusterError $ RedisTryAgain "TRYAGAIN Multiple keys")
+        `shouldReturn` RespError "TRYAGAIN Multiple keys"
+      renderedFor (RedisClusterError $ RedisClusterDown "CLUSTERDOWN The cluster is down")
+        `shouldReturn` RespError "CLUSTERDOWN The cluster is down"
+      renderedFor
+        (RedisClusterError $ RedisRetryExhausted 3 $
+          RedisClusterError $ RedisTryAgain "TRYAGAIN Multiple keys")
+        `shouldReturn` RespError "TRYAGAIN Multiple keys"
+
+    it "renders local failures as single-line ERR replies" $ do
+      let frame = forwardedCommand ["GET", "profile:key"]
+          renderedFor errorValue =
+            forwardClusterFrameWith (\_ _ -> pure $ Left errorValue) frame
+      renderedFor (RedisClusterError $ RedisTopologyFailure "No master nodes available")
+        `shouldReturn` RespError "ERR No master nodes available"
+      renderedFor (RedisClusterError $ RedisTopologyFailure "first\r\nsecond")
+        `shouldReturn` RespError "ERR first  second"
+      renderedFor (RedisLifecycleError RedisClientClosed)
+        `shouldReturn` RespError "ERR Redis client is closed"
+      renderedFor (RedisProtocolError $ RedisParseFailure "bad\r\nframe")
+        `shouldReturn` RespError "ERR RedisParseFailure \"bad\\r\\nframe\""
+
+    it "answers cross-slot, grammar, and non-bulk frames locally without dispatch" $ do
+      let rejected =
+            [ ( forwardedCommand ["MGET", "first", "second"]
+              , "CROSSSLOT Keys in request don't hash to the same slot"
+              )
+            , ( forwardedCommand ["GET"]
+              , "ERR GET has invalid arity: expected 2 argument(s), got 1"
+              )
+            , ( forwardedCommand ["DOESNOTEXIST", "key"]
+              , "ERR unknown command"
+              )
+            , ( forwardedCommand ["MSET", "one", "value", "two"]
+              , "ERR MSET has malformed arguments"
+              )
+            , ( RespArray [RespBulkString "GET", RespInteger 1]
+              , "ERR Expected array command with bulk string arguments"
+              )
+            , ( RespArray []
+              , "ERR Expected array command with bulk string arguments"
+              )
+            , ( RespSimpleString "GET"
+              , "ERR Expected array command with bulk string arguments"
+              )
+            ]
+      forM_ rejected $ \(frame, expected) -> do
+        dispatches <- newIORef (0 :: Int)
+        reply <- forwardClusterFrameWith
+          (\_ _ -> do
+            modifyIORef' dispatches (+ 1)
+            pure $ Right $ RespSimpleString "unexpected")
+          frame
+        reply `shouldBe` RespError expected
+        readIORef dispatches `shouldReturn` 0
+
+    it "routes keyed, multi-key, and keyless frames with the generated grammar" $ do
+      let expectRoute frame expected = do
+            observed <- newIORef []
+            _ <- forwardClusterFrameWith
+              (\route original -> do
+                modifyIORef' observed (<> [(route, original)])
+                pure $ Right $ RespSimpleString "OK")
+              frame
+            readIORef observed `shouldReturn` [(expected, frame)]
+      expectRoute
+        (forwardedCommand ["sEt", "\NUL{binary}\255", "value", "NX"])
+        (RawRouteByKey "\NUL{binary}\255")
+      expectRoute
+        (forwardedCommand ["EVAL", "return 1", "2", "{slot}:one", "{slot}:two"])
+        (RawRouteByKey "{slot}:one")
+      expectRoute
+        (forwardedCommand ["MGET", "{slot}:one", "{slot}:two"])
+        (RawRouteByKey "{slot}:one")
+      expectRoute (forwardedCommand ["PING"]) RawRouteKeyless
+
+forwardedCommand :: [ByteString] -> RespData
+forwardedCommand = RespArray . map RespBulkString
 
 rawFrame :: RespData
 rawFrame =

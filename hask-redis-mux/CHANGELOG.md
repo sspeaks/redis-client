@@ -2,6 +2,18 @@
 
 ## 0.3.0.0 -- Unreleased
 
+*   **Breaking: RESP frame forwarding replaces command classification**
+    *   Added `forwardClusterFrame`, which validates, routes and sends one
+        client RESP frame through a `ClusterClient` and returns the reply a
+        single Redis server would send. Redis error replies, such as
+        `WRONGTYPE`, are returned verbatim; a cross-slot request gets
+        `-CROSSSLOT …`; grammar, transport and topology failures become
+        `-ERR` replies.
+    *   Added `clusterMasterAddresses` and `connectClusterNode` so protocol
+        adapters no longer read `ClusterClient` record fields.
+    *   Removed `Database.Redis.Cluster.Commands` (`classifyCommand`,
+        `CommandRouting`, `keylessCommands`, `requiresKeyCommands`) and the
+        internal `Database.Redis.Cluster.Internal.RawCommand` module.
 *   **Breaking unified public error model**
     *   Sequential, standalone, cluster, low-level command, and topology-refresh
         runners now return `Either RedisClientError`; the previous mixture of

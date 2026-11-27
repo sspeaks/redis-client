@@ -22,8 +22,8 @@ RESP2 with `HELLO 2`.
 
 The pinned cluster tunnel has a separate opaque fallback that forwards complete
 RESP3 frames outside `RespData`, including streamed values, byte-for-byte.
-RESP3-shaped maps and sets take the `RespData` path and are re-encoded, so their
-original ordering is not preserved. Opaque forwarding is transport framing
+Replies that are not topology replies, including RESP3-shaped maps and sets,
+keep their original bytes. Opaque forwarding is transport framing
 compatibility only and does not make those RESP3 types available to command
 APIs.
 

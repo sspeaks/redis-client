@@ -2,8 +2,8 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 -- | Cluster-aware Redis command client with automatic slot routing and
--- redirection handling. Protocol adapters that need raw RESP frames should
--- depend on the cluster sublibrary's internal raw-command module instead.
+-- redirection handling. Protocol adapters that forward client RESP frames use
+-- 'forwardClusterFrame'.
 module Database.Redis.Cluster.Client
   ( ClusterClient (..)
   , ClusterCommandClient
@@ -41,6 +41,9 @@ module Database.Redis.Cluster.Client
   , executeKeyedClusterCommandUsingDelay
   , executeKeylessClusterCommand
   , executeKeylessClusterCommandUsingDelay
+  , forwardClusterFrame
+  , clusterMasterAddresses
+  , connectClusterNode
   , module RedisCommandClient
   , RedirectionInfo (..)
   , RetryRoute (..)

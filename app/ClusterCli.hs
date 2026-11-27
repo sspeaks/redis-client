@@ -1,4 +1,3 @@
-{-# LANGUAGE DataKinds         #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module ClusterCli (
@@ -6,57 +5,25 @@ module ClusterCli (
 )
 where
 
-import           Control.Monad.IO.Class          (liftIO)
-import qualified Control.Monad.State.Strict      as State
-import qualified Data.ByteString.Builder         as Builder
-import qualified Data.ByteString.Char8           as BS8
-import           Database.Redis.Client           (Client (receive, send))
-import qualified Database.Redis.Cluster.Client   as ClusterCommandClient
-import           Database.Redis.Cluster.Commands (CommandRouting (..),
-                                                  classifyCommand)
-import           Database.Redis.Command          (ClientState (ClientState),
-                                                  RedisCommandClient, parseWith)
-import           Database.Redis.RedisError       (RedisClientError (..),
-                                                  RedisClusterFailure (..))
-import           Database.Redis.Resp             (Encodable (encode),
-                                                  RespData (RespArray, RespBulkString))
+import           Control.Monad.IO.Class        (liftIO)
+import qualified Control.Monad.State.Strict    as State
+import qualified Data.ByteString.Char8         as BS8
+import           Database.Redis.Client         (Client)
+import qualified Database.Redis.Cluster.Client as ClusterCommandClient
+import           Database.Redis.Resp           (RespData (RespArray, RespBulkString, RespError))
 
--- | Route and execute command parts via ClusterCommandClient
+-- | Forward command parts through the cluster client. Error replies, whether
+-- from Redis or rejected locally, are returned as 'Left' with their RESP text.
 routeAndExecuteCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
 routeAndExecuteCommand [] = return $ Left "Empty command"
-routeAndExecuteCommand (cmd:args) = do
-  case classifyCommand cmd args of
-    KeylessRoute   -> executeKeylessCommand (cmd:args)
-    KeyedRoute key -> executeKeyedCommand key (cmd:args)
-    CommandError e -> return $ Left e
-
--- | Execute a keyless command (routing to any master node)
-executeKeylessCommand :: (Client client) => [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
-executeKeylessCommand parts = do
+routeAndExecuteCommand parts = do
   clusterClient <- State.get
-  result <- liftIO $ ClusterCommandClient.executeKeylessClusterCommand clusterClient (sendRespCommand parts)
-  return $ case result of
-    Left err   -> Left (show err)
-    Right resp -> Right resp
-
--- | Execute a keyed command (routing by key's slot)
-executeKeyedCommand :: (Client client) => BS8.ByteString -> [BS8.ByteString] -> ClusterCommandClient.ClusterCommandClient client (Either String RespData)
-executeKeyedCommand key parts = do
-  clusterClient <- State.get
-  result <- liftIO $ ClusterCommandClient.executeKeyedClusterCommand clusterClient key parts
-  return $ case result of
-    Left (RedisClusterError (RedisCrossSlot msg)) -> Left $
-      BS8.unpack msg
-        ++ "\nHint: Use hash tags like {user}:key to ensure keys map to the same slot"
-    Left err -> Left (show err)
-    Right resp -> Right resp
-
--- | Send RESP command and receive response
--- This function operates within RedisCommandClient monad to send raw commands
-sendRespCommand :: (Client client) => [BS8.ByteString] -> RedisCommandClient client RespData
-sendRespCommand parts = do
-  ClientState client _ <- State.get
-  let respArray = RespArray $ map RespBulkString parts
-      encoded = Builder.toLazyByteString $ encode respArray
-  send client encoded
-  parseWith (receive client)
+  reply <- liftIO $
+    ClusterCommandClient.forwardClusterFrame clusterClient (RespArray $ map RespBulkString parts)
+  return $ case reply of
+    RespError message
+      | "CROSSSLOT " `BS8.isPrefixOf` message -> Left $
+          BS8.unpack message
+            ++ "\nHint: Use hash tags like {user}:key to ensure keys map to the same slot"
+      | otherwise -> Left (BS8.unpack message)
+    response -> Right response
