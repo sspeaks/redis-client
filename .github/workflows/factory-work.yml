@@ -1,0 +1,571 @@
+name: Factory work
+
+# Works one ticket: choose, assess, implement in the sandbox, test, publish a pull
+# request. The decisions, and the job and step names GitHub's records are read by,
+# are in scripts/factory/work.py.
+#
+# Agents run in the factory-agent environment, which waits for no one: main only,
+# no administrator bypass, its own CLAUDE_CODE_OAUTH_TOKEN. Each agent job is
+# preceded by a job without an environment that proves that protection, because
+# GitHub silently creates a missing environment. factory-model, which waits for
+# the maintainer, is for the sandbox proof only.
+#
+# Usage credits: a dispatch asks the person starting it. A call relies on the
+# repository variable FACTORY_USAGE_CREDITS, set by the maintainer to exactly
+# `checked and off`; anything else refuses.
+#
+# Nothing in a ticket or from an agent reaches an expression, a command, or a step
+# output: it stays in files. The subscription token is in the two agent steps only.
+# Agent work runs outside the sandbox only in the checks job, which has no secrets.
+#
+# It starts by hand, or is called once per run (or with distinct `instance` values,
+# one after another). A caller grants actions, contents, issues and pull-requests
+# read, passes FACTORY_GATE_TOKEN, and passes UNGATED_CLAUDE_TOKEN as
+# `${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}` from its own context, where only a
+# repository or organization copy, which must not exist, can be seen. It must not
+# use the concurrency group below.
+on:
+  workflow_dispatch:
+    inputs:
+      usage_credits:
+        description: "Open claude.ai Settings > Usage now. Are usage credits off?"
+        type: choice
+        options:
+          - not checked
+          - checked and off
+        default: not checked
+        required: true
+  workflow_call:
+    inputs:
+      instance:
+        description: A number that differs between calls in one run
+        type: string
+        default: "1"
+    secrets:
+      FACTORY_GATE_TOKEN:
+        required: true
+      UNGATED_CLAUDE_TOKEN:
+        required: false
+    outputs:
+      verdict:
+        description: published, neutral or failed. Empty when no ticket was chosen
+        value: ${{ jobs.settle.outputs.verdict }}
+      pause:
+        description: Another ticket may be worked only if this is false
+        value: ${{ jobs.settle.outputs.pause }}
+
+permissions: {}
+
+concurrency:
+  group: factory-work
+  cancel-in-progress: false
+
+jobs:
+  # No environment here: the secrets visible to this job are exactly those that
+  # must not include the subscription token.
+  select:
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name != 'workflow_dispatch'
+      || (github.actor == 'sspeaks' && github.triggering_actor == 'sspeaks'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      ticket: ${{ steps.select.outputs.ticket }}
+      digest: ${{ steps.select.outputs.digest }}
+      routes: ${{ steps.select.outputs.routes }}
+    steps:
+      - name: Refuse a re-run, or billing beyond the subscription
+        env:
+          USAGE_CREDITS: ${{ inputs.usage_credits || vars.FACTORY_USAGE_CREDITS }}
+          UNGATED_TOKEN_EXISTS: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' || secrets.UNGATED_CLAUDE_TOKEN != '' }}
+          API_KEY_EXISTS: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$USAGE_CREDITS" = "checked and off"
+          test "$UNGATED_TOKEN_EXISTS" = false
+          test "$API_KEY_EXISTS" = false
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Gate
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py job
+
+      - name: Require a protected factory-agent environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="repos/$GITHUB_REPOSITORY/environments/factory-agent"
+          gh api "$root" > "$RUNNER_TEMP/environment.json"
+          gh api "$root/deployment-branch-policies" > "$RUNNER_TEMP/policies.json"
+          python3 scripts/check-release-environment.py "$RUNNER_TEMP/environment.json" \
+            --no-reviewer --branch main --branch-policies "$RUNNER_TEMP/policies.json"
+
+      - name: Select a ticket
+        id: select
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/factory/work.py select --output "$RUNNER_TEMP/selection"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-selection-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/selection/step.json
+          if-no-files-found: error
+
+  assess:
+    name: factory-agent-assessment
+    needs: select
+    if: github.ref == 'refs/heads/main' && needs.select.outputs.ticket != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: factory-agent
+    permissions:
+      contents: read
+    outputs:
+      gate: ${{ steps.gate.outcome }}
+      gate_again: ${{ steps.gate-again.outcome }}
+      usage_limit: ${{ steps.agent.outputs.usage_limit }}
+    steps:
+      - name: Refuse a re-run or an API key
+        env:
+          API_KEY_EXISTS: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$API_KEY_EXISTS" = false
+          test -z "${ANTHROPIC_API_KEY+set}"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py agent
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: factory-selection-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/input
+
+      - name: Prepare the sandbox
+        run: |
+          set -euo pipefail
+          docker build --build-arg AGENT_UID="$(id -u)" --tag factory-agent \
+            --file docker/factory-agent/Dockerfile scripts/factory/container
+          mkdir "$RUNNER_TEMP/workspace"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/workspace"
+          python3 -I scripts/factory/work.py prompt --stage assessment \
+            --step "$RUNNER_TEMP/input/step.json" --output "$RUNNER_TEMP/prompt.md"
+
+      - name: Gate again
+        id: gate-again
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py agent
+
+      - name: factory-agent-run
+        id: agent
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TOKEN" | env -u TOKEN python3 scripts/factory/run_agent.py \
+            --image factory-agent \
+            --workspace "$RUNNER_TEMP/workspace" \
+            --prompt "$RUNNER_TEMP/prompt.md" \
+            --output "$RUNNER_TEMP/agent" \
+            --model claude-sonnet-5-5 \
+            --usage-credits-confirmed-off
+
+      # The daily run limit is found by this step name.
+      - name: factory-usage-limit
+        if: always() && steps.agent.outputs.usage_limit == 'true'
+        run: echo "The subscription's usage limit was reached."
+
+      - name: Upload the evidence
+        if: always() && steps.agent.outputs.searched == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-assessment-evidence-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/agent
+          if-no-files-found: ignore
+
+      - name: Require the token search
+        env:
+          SEARCHED: ${{ steps.agent.outputs.searched }}
+        run: test "$SEARCHED" = true
+
+      - name: Collect the assessment
+        run: |
+          python3 -I scripts/factory/work.py collect --stage assessment \
+            --step "$RUNNER_TEMP/input/step.json" --agent "$RUNNER_TEMP/agent" \
+            --output "$RUNNER_TEMP/assessment"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-assessment-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/assessment/assessments.json
+          if-no-files-found: error
+
+  plan:
+    needs: [select, assess]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      gate: ${{ steps.gate.outcome }}
+      work: ${{ steps.plan.outputs.work }}
+      work_digest: ${{ steps.plan.outputs.work_digest }}
+      routes: ${{ steps.plan.outputs.routes }}
+    steps:
+      - name: Refuse a re-run
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py job
+
+      - name: Require a protected factory-agent environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="repos/$GITHUB_REPOSITORY/environments/factory-agent"
+          gh api "$root" > "$RUNNER_TEMP/environment.json"
+          gh api "$root/deployment-branch-policies" > "$RUNNER_TEMP/policies.json"
+          python3 scripts/check-release-environment.py "$RUNNER_TEMP/environment.json" \
+            --no-reviewer --branch main --branch-policies "$RUNNER_TEMP/policies.json"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: factory-assessment-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/input
+
+      - name: Confirm the ticket
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TICKET: ${{ needs.select.outputs.ticket }}
+          DIGEST: ${{ needs.select.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/factory/work.py plan --ticket "$TICKET" --digest "$DIGEST" \
+            --assessments "$RUNNER_TEMP/input/assessments.json" --output "$RUNNER_TEMP/plan"
+          cp "$RUNNER_TEMP/input/assessments.json" "$RUNNER_TEMP/plan/assessments.json"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-plan-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/plan
+          if-no-files-found: error
+
+  # Tickets intake sends to a human. No other job depends on this.
+  route:
+    needs: [select, plan]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.run_attempt == 1
+      && needs.select.result == 'success'
+      && (needs.plan.outputs.routes || needs.select.outputs.routes || '[]') != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        ticket: ${{ fromJSON(needs.plan.outputs.routes || needs.select.outputs.routes || '[0]') }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/factory-publish.yml
+    with:
+      operation: route
+      ticket: ${{ format('{0}', matrix.ticket) }}
+
+  implement:
+    name: factory-agent-implementation
+    needs: [select, plan]
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.work == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: factory-agent
+    permissions:
+      contents: read
+    concurrency:
+      group: factory-agent-implementation
+      cancel-in-progress: false
+    outputs:
+      gate: ${{ steps.gate.outcome }}
+      gate_again: ${{ steps.gate-again.outcome }}
+      usage_limit: ${{ steps.agent.outputs.usage_limit }}
+      digest: ${{ steps.collect.outputs.digest }}
+    steps:
+      - name: Refuse a re-run or an API key
+        env:
+          API_KEY_EXISTS: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$API_KEY_EXISTS" = false
+          test -z "${ANTHROPIC_API_KEY+set}"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py implementation
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: factory-plan-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/input
+
+      - name: Prepare the sandbox
+        run: |
+          set -euo pipefail
+          docker build --build-arg AGENT_UID="$(id -u)" --tag factory-agent \
+            --file docker/factory-agent/Dockerfile scripts/factory/container
+          mkdir "$RUNNER_TEMP/workspace"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/workspace"
+          python3 -I scripts/factory/work.py prompt --stage implementation \
+            --step "$RUNNER_TEMP/input/step.json" --output "$RUNNER_TEMP/prompt.md"
+
+      - name: Gate again
+        id: gate-again
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py implementation
+
+      - name: factory-agent-run
+        id: agent
+        env:
+          TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TOKEN" | env -u TOKEN python3 scripts/factory/run_agent.py \
+            --image factory-agent \
+            --workspace "$RUNNER_TEMP/workspace" \
+            --prompt "$RUNNER_TEMP/prompt.md" \
+            --output "$RUNNER_TEMP/agent" \
+            --model claude-opus-5-5 \
+            --usage-credits-confirmed-off
+
+      # The daily run limit is found by this step name.
+      - name: factory-usage-limit
+        if: always() && steps.agent.outputs.usage_limit == 'true'
+        run: echo "The subscription's usage limit was reached."
+
+      - name: Upload the evidence
+        if: always() && steps.agent.outputs.searched == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-implementation-evidence-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/agent
+          if-no-files-found: ignore
+
+      - name: Require the token search
+        env:
+          SEARCHED: ${{ steps.agent.outputs.searched }}
+        run: test "$SEARCHED" = true
+
+      - name: Collect the change
+        id: collect
+        run: |
+          python3 -I scripts/factory/work.py collect --stage implementation \
+            --step "$RUNNER_TEMP/input/step.json" --agent "$RUNNER_TEMP/agent" \
+            --assessments "$RUNNER_TEMP/input/assessments.json" \
+            --output "$RUNNER_TEMP/change"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: factory-change-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/change
+          if-no-files-found: error
+
+  # The checks job has no secrets, so it cannot call the gate itself.
+  permit:
+    needs: implement
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      gate: ${{ steps.gate.outcome }}
+    steps:
+      - name: Refuse a re-run
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py publish
+
+  # Runs the agent's code outside the sandbox, with Docker. No secrets, no
+  # environment, no outputs, a read-only token, and nothing cached. Its result can
+  # only stop a change; Tests CI repeats the same commands on the pull request.
+  checks:
+    needs: [implement, permit]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse a re-run
+        run: test "$GITHUB_RUN_ATTEMPT" = 1
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          nix_path: nixpkgs=channel:nixos-25.05
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: factory-change-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/change
+
+      - name: Apply the change
+        run: |
+          set -euo pipefail
+          python3 -I scripts/factory/work.py apply --patch "$RUNNER_TEMP/change/agent.patch" --root .
+          git add -A
+          git -c user.name=factory -c user.email=factory@localhost commit -q --no-verify -m change
+
+      - name: Validate pull request template
+        run: python3 .github/tests/test_pull_request_template.py
+
+      - name: Test
+        run: make test
+
+      - name: Benchmark smoke
+        run: make benchmark-smoke
+
+  # The failure count reads this job as `publish-pull-request / publish`.
+  publish-pull-request:
+    needs: [select, plan, implement, checks]
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/factory-publish.yml
+    with:
+      operation: pull-request
+      artifact: factory-change-${{ inputs.instance || '1' }}
+      artifact-digest: ${{ needs.implement.outputs.digest }}
+      ticket: ${{ needs.select.outputs.ticket }}
+      work-digest: ${{ needs.plan.outputs.work_digest }}
+
+  # Runs after anything that happened to a chosen ticket, also a cancellation or a
+  # refused gate, because a failure must be counted even then. It writes nothing.
+  settle:
+    name: factory-ticket-verdict
+    needs: [select, assess, plan, implement, permit, checks, publish-pull-request]
+    if: always() && github.ref == 'refs/heads/main' && needs.select.outputs.ticket != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      verdict: ${{ steps.settle.outputs.verdict }}
+      comment: ${{ steps.settle.outputs.comment }}
+      comment_digest: ${{ steps.settle.outputs.comment_digest }}
+      pause: ${{ steps.pause.outputs.pause }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Settle
+        id: settle
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 -I scripts/factory/work.py settle --output "$RUNNER_TEMP/comment"
+
+      # The failure count reads this step's name.
+      - name: factory-ticket-neutral
+        if: steps.settle.outputs.verdict == 'neutral'
+        run: echo "This run does not count as a ticket failure."
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.settle.outputs.comment == 'true'
+        with:
+          name: factory-comment-${{ inputs.instance || '1' }}
+          path: ${{ runner.temp }}/comment/output.json
+          overwrite: true
+          if-no-files-found: error
+
+      # Last, so that it decides only if everything above worked.
+      - name: Decide whether to pause
+        id: pause
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+          VERDICT: ${{ steps.settle.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          case "$VERDICT" in
+            published | neutral) echo "pause=false" >> "$GITHUB_OUTPUT" ;;
+            failed) python3 -I scripts/factory/work.py failures ;;
+            *) exit 1 ;;
+          esac
+
+  # Before the pause, which makes the gate refuse a comment.
+  comment:
+    needs: [select, settle]
+    if: always() && needs.settle.outputs.comment == 'true' && github.run_attempt == 1
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/factory-publish.yml
+    with:
+      operation: comment
+      artifact: factory-comment-${{ inputs.instance || '1' }}
+      artifact-digest: ${{ needs.settle.outputs.comment_digest }}
+      ticket: ${{ needs.select.outputs.ticket }}
+
+  # Also when the verdict job failed, was cancelled, or could not read the records.
+  pause:
+    needs: [select, settle, comment]
+    if: >-
+      always() && github.ref == 'refs/heads/main' && needs.select.outputs.ticket != ''
+      && needs.settle.outputs.pause != 'false'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/factory-pause.yml
+    with:
+      reason: repeated-failures

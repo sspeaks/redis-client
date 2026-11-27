@@ -1,0 +1,56 @@
+name: Factory setup test
+
+# Run by the setup wizard (scripts/factory/setup-wizard.sh) to see how GitHub names
+# and reports the jobs and steps that gate.py reads. It writes nothing: the
+# reason below is not one publish.py accepts, so the pause it calls fails before
+# any request. Once the publish token is stored, a rerun puts it in the environment
+# of that failing step, unused. The gate then refuses all factory work until an
+# approved Factory resume. That is the point of the test.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  observe:
+    if: github.actor == 'sspeaks' && github.triggering_actor == 'sspeaks' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+
+    steps:
+      # gate.py would refuse its own run if a waiting pause were listed, or if a
+      # step that has not been reached looked started.
+      - name: Check what the gate would see during a run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" > jobs.json
+          jq '[.jobs[] | {name, status, conclusion, steps: [.steps[]? | {name, status, conclusion}]}]' jobs.json
+          jq -e '[.jobs[].name | select(test("(^| / )factory-pause$"))] == []' jobs.json
+          jq -e '[.jobs[].steps[]? | select(.name == "factory-pause-failed")
+            | select(.conclusion != null or (.status != "queued" and .status != "pending"))] == []' jobs.json
+
+      # Never reached, as in an ordinary publish. gate.py reads this name.
+      - name: factory-pause-failed
+        if: github.event_name == 'never'
+        run: exit 1
+
+  call-skipped:
+    needs: observe
+    if: github.event_name == 'never'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/factory-pause.yml
+    with:
+      reason: setup-test
+
+  call-failed:
+    needs: observe
+    permissions:
+      contents: read
+    uses: ./.github/workflows/factory-pause.yml
+    with:
+      reason: setup-test

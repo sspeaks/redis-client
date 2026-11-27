@@ -1,0 +1,47 @@
+name: Performance calibration
+
+# Measures main against itself, to learn how much this runner varies. It decides
+# nothing and publishes nothing, but it is a factory job, so it asks the gate first:
+# the kill switch, a pause or a usage limit stops it.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Runs of five interleaved samples per side
+        required: true
+        default: "10"
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: main
+        persist-credentials: false
+    - name: Ask the factory gate
+      env:
+        FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+      run: python3 -I scripts/factory/gate.py job
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      with:
+        nix_path: nixpkgs=channel:nixos-25.05
+
+    - name: Build and measure
+      env:
+        RUNS: ${{ inputs.runs }}
+      run: |
+        export BINARY="$RUNNER_TEMP/binary/benchmark" OUTPUT="$RUNNER_TEMP/performance/calibration.json"
+        docker pull "$(python3 -c 'import sys; sys.path.insert(0, "scripts/factory"); import performance_gate; print(performance_gate.IMAGE)')"
+        python3 scripts/factory/performance_gate.py build . --output "$BINARY"
+        python3 scripts/factory/performance_gate.py calibrate "$BINARY" --runs "$RUNS" --output "$OUTPUT"
+
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: performance-calibration
+        path: ${{ runner.temp }}/performance/calibration.json
+        if-no-files-found: error

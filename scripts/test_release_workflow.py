@@ -65,6 +65,44 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("--docker-tag", library_case)
         self.assertNotIn("--commit-sha", library_case)
 
+    def job(self, name):
+        match = re.search(
+            rf"^  {re.escape(name)}:\n(.*?)(?=^  \S|\Z)",
+            self.workflow,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(match, f"missing job {name}")
+        return match.group(1)
+
+    def test_only_the_known_jobs_exist(self):
+        jobs = self.workflow.split("\njobs:\n", 1)[1]
+        self.assertEqual(
+            re.findall(r"^  ([\w-]+):", jobs, re.MULTILINE),
+            ["verify-release", "publish-github-release", "publish-docker"],
+        )
+
+    def test_publishing_jobs_wait_for_release_approval(self):
+        for name in ("publish-github-release", "publish-docker"):
+            with self.subTest(job=name):
+                self.assertRegex(
+                    self.job(name),
+                    re.compile(r"^    environment: release$", re.MULTILINE),
+                )
+                self.assertIn("    needs: verify-release\n", self.job(name))
+
+    def test_metadata_verification_is_ungated_and_cannot_write(self):
+        job = self.job("verify-release")
+        self.assertNotIn("environment:", job)
+        self.assertNotIn(": write", job)
+
+    def test_verification_rejects_an_unprotected_release_environment(self):
+        job = self.job("verify-release")
+        self.assertIn('"repos/$GITHUB_REPOSITORY/environments/release" > ', job)
+        self.assertIn("scripts/check-release-environment.py", job)
+        self.assertIn("      actions: read\n", job)
+        self.assertNotIn("continue-on-error", self.workflow)
+        self.assertNotIn("always()", self.workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

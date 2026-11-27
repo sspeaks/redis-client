@@ -1,8 +1,12 @@
 import importlib.util
 import io
+import os
+import threading
 import unittest
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).with_name("github_issue_status.py")
@@ -65,54 +69,35 @@ class FakeClient:
 
 
 class IssueStatusTransitionTests(unittest.TestCase):
-    def test_direct_close_removes_all_active_statuses(self):
-        plan = MODULE.plan_transition(
-            issue(
-                10,
-                [
-                    "status:ready",
-                    "status:in-progress",
-                    "status:needs-review",
-                    "type:maintenance",
-                    "priority:p2",
-                ],
-            ),
-            "closed",
-        )
+    def test_direct_close_clears_only_needs_triage(self):
         self.assertEqual(
-            plan,
-            {
-                "add": [],
-                "remove": [
-                    "status:in-progress",
-                    "status:needs-review",
-                    "status:ready",
-                ],
-            },
+            MODULE.plan_transition(
+                issue(10, ["needs-triage", "type:maintenance", "priority:p2"]),
+                "closed",
+            ),
+            {"add": [], "remove": ["needs-triage"]},
         )
 
     def test_merge_driven_close_uses_the_same_terminal_transition(self):
         merged_pr_close = issue(
             11,
-            ["status:needs-review", "type:maintenance", "wave:2"],
+            ["needs-triage", "type:maintenance", "wave:2"],
             closed_by={"login": "merge-bot"},
         )
         self.assertEqual(
             MODULE.plan_transition(merged_pr_close, "closed"),
-            {"add": [], "remove": ["status:needs-review"]},
+            {"add": [], "remove": ["needs-triage"]},
         )
 
-    def test_reopen_replaces_active_statuses_with_needs_triage(self):
-        plan = MODULE.plan_transition(
-            issue(12, ["priority:p1", "status:needs-review", "status:ready"]),
-            "reopened",
+    def test_labels_outside_the_triage_vocabulary_are_untouched(self):
+        labels = ["status:ready", "status:in-progress", "status:needs-review"]
+        self.assertEqual(
+            MODULE.plan_transition(issue(12, labels), "closed"),
+            {"add": [], "remove": []},
         )
         self.assertEqual(
-            plan,
-            {
-                "add": ["needs-triage"],
-                "remove": ["status:needs-review", "status:ready"],
-            },
+            MODULE.plan_transition(issue(12, labels), "reopened"),
+            {"add": ["needs-triage"], "remove": []},
         )
 
     def test_reopen_leaves_exactly_one_triage_state(self):
@@ -147,12 +132,11 @@ class IssueStatusTransitionTests(unittest.TestCase):
             {"add": [], "remove": []},
         )
 
-    def test_apply_preserves_non_status_labels(self):
+    def test_apply_preserves_non_triage_labels(self):
         source_issue = issue(
             16,
             [
-                "status:in-progress",
-                "status:blocked",
+                "needs-triage",
                 "priority:p2",
                 "type:maintenance",
                 "wave:2",
@@ -166,12 +150,12 @@ class IssueStatusTransitionTests(unittest.TestCase):
                 client, source_issue, "closed", plan, dry_run=False
             )
         self.assertEqual(client.added, [])
-        self.assertEqual(client.removed, [(16, "status:in-progress")])
+        self.assertEqual(client.removed, [(16, "needs-triage")])
 
     def test_replaying_stale_event_plan_does_not_repeat_deletion(self):
         source_issue = issue(
             19,
-            ["status:in-progress", "type:maintenance", "priority:p2"],
+            ["needs-triage", "type:maintenance", "priority:p2"],
         )
         client = FakeClient([source_issue])
         stale_plan = MODULE.plan_transition(source_issue, "closed")
@@ -185,7 +169,7 @@ class IssueStatusTransitionTests(unittest.TestCase):
             )
 
         self.assertEqual(client.added, [])
-        self.assertEqual(client.removed, [(19, "status:in-progress")])
+        self.assertEqual(client.removed, [(19, "needs-triage")])
         self.assertEqual(
             MODULE.label_names(client.get_issue(19)),
             {"type:maintenance", "priority:p2"},
@@ -202,10 +186,10 @@ class IssueStatusTransitionTests(unittest.TestCase):
         return MODULE.label_names(client.get_issue(20))
 
     def test_reopen_replaces_stale_triage_states(self):
-        labels = ["wontfix", "needs-info", "status:ready", "status:blocked"]
+        labels = ["wontfix", "needs-info", "priority:p2"]
         self.assertEqual(
             self.apply_reopen(labels, labels),
-            {"needs-triage", "status:blocked"},
+            {"needs-triage", "priority:p2"},
         )
 
     def test_reopen_keeps_triage_state_set_after_the_event(self):
@@ -240,7 +224,7 @@ class IssueStatusTransitionTests(unittest.TestCase):
     def test_reconciliation_dry_run_makes_no_mutations(self):
         client = FakeClient(
             [
-                issue(17, ["status:ready", "type:maintenance", "priority:p2"]),
+                issue(17, ["needs-triage", "type:maintenance", "priority:p2"]),
                 issue(18, ["priority:p1", "type:bug"]),
             ]
         )
@@ -252,8 +236,71 @@ class IssueStatusTransitionTests(unittest.TestCase):
         self.assertEqual(
             output.getvalue().strip(),
             '{"action": "closed", "add": [], "issue": 17, '
-            '"mode": "dry-run", "remove": ["status:ready"]}',
+            '"mode": "dry-run", "remove": ["needs-triage"]}',
         )
+
+
+
+class Server:
+    """A local HTTP server that records the requests it receives."""
+
+    def __init__(self, test, status=200, location=None):
+        self.requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler):
+                self.requests.append((handler.path, handler.headers.get("Authorization")))
+                handler.send_response(status)
+                if location:
+                    handler.send_header("Location", location)
+                handler.send_header("Content-Length", "2")
+                handler.end_headers()
+                handler.wfile.write(b"[]")
+
+            def log_message(handler, *arguments):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{server.server_port}"
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        thread.start()
+        test.addCleanup(server.server_close)
+        test.addCleanup(thread.join)
+        test.addCleanup(server.shutdown)
+
+
+class GitHubClientTests(unittest.TestCase):
+    """The token never leaves the API host: no redirects, no proxies."""
+
+    def use_api(self, server):
+        patcher = mock.patch.object(MODULE.github_http, "API", server.url)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_requests_go_to_the_repository_with_the_token(self):
+        api = Server(self)
+        self.use_api(api)
+        self.assertEqual(MODULE.GitHubClient("o/r", "secret").request("GET", "/issues/1"), [])
+        self.assertEqual(api.requests, [("/repos/o/r/issues/1", "Bearer secret")])
+
+    def test_redirects_are_refused_and_never_followed(self):
+        for status in (301, 302, 307, 308):
+            with self.subTest(status=status):
+                other = Server(self)
+                api = Server(self, status, other.url + "/steal")
+                self.use_api(api)
+                with self.assertRaises(RuntimeError):
+                    MODULE.GitHubClient("o/r", "secret").request("GET", "/issues/1")
+                self.assertEqual(other.requests, [])
+
+    def test_environment_proxies_are_ignored(self):
+        api, proxy = Server(self), Server(self)
+        self.use_api(api)
+        with mock.patch.dict(os.environ, {"http_proxy": proxy.url, "https_proxy": proxy.url,
+                                          "all_proxy": proxy.url, "no_proxy": ""}):
+            MODULE.GitHubClient("o/r", "secret").request("GET", "/issues/1")
+        self.assertEqual(proxy.requests, [])
+        self.assertEqual(len(api.requests), 1)
 
 
 if __name__ == "__main__":

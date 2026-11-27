@@ -19,7 +19,6 @@ Closes #
 | Reconnect behavior | _Impact/evidence, or **N/A**_ |
 | Redirect behavior | _Impact/evidence, or **N/A**_ |
 | Live-fixture needs | _Fixture/evidence, or **N/A**_ |
-| Required specialist reviewers | _Lead, Protocol, Performance, Tester, Docs, Fact Checker, Rai, or **N/A**_ |
 | Intentionally untested paths | _List with rationale, or **N/A**_ |
 | Nix-first build | _Command/result, or **N/A**_ |
 | Targeted tests | _Command/result, or **N/A**_ |

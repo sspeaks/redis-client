@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       apply_reconciliation:
-        description: Remove active statuses from all closed issues
+        description: Remove needs-triage from all closed issues
         required: true
         type: boolean
         default: false

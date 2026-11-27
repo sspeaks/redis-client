@@ -11,3 +11,11 @@
 - `test-compose-networking.sh` renders Compose JSON without starting containers and enforces loopback-only client publications, bridge networks, unpublished cluster-bus ports, and the host-network profile gate.
 - `test-redis-loopback-connectivity.sh` owns the cluster Compose project for its duration. It refuses to run over existing project containers and verifies loopback/internal access plus rejection through a non-loopback host address.
 - `docker/cluster-host/make_cluster.sh` is an explicit compatibility-only path. It requires `REDIS_CLIENT_ALLOW_HOST_NETWORK=1`; its Redis configs must remain bound to `127.0.0.1`.
+
+## Software Factory
+
+- `factory/setup-wizard.sh` is for the maintainer only; agents never run it. Everything above its `STAGES` marker is the wizard template, not hand-edited. Its steps are in `factory/setup_steps.py`, tested with a fake `gh`.
+- Every factory job calls `factory/gate.py` first and again immediately before each publish or merge. Its module docstring defines the interface and the job and step names it counts; renaming one silently disables a limit. Run `make test-factory`.
+- `factory/intake.py` decides which ticket may be worked; its module docstring defines the interface for publishing and ticket jobs and what a label event can prove. `factory/intake_github.py` is its read-only GitHub adapter and command line. Every label write by a factory job goes through `check_label_change` or `check_new_ticket_labels`, every comment through `render_factory_comment`, and ticket work calls `verify` immediately before publishing.
+- Every script that calls GitHub with a token builds the request with `factory/github_http.api_request` and opens it with `open_api`, never `urlopen`: no redirects, no proxies, API host only.
+- `factory/work.py` holds the decisions of `factory-work.yml`, the only workflow that works a ticket. Its docstring names the jobs and steps its failure count reads; renaming one changes what counts as a failure.

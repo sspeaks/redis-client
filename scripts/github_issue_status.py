@@ -6,12 +6,12 @@ import os
 import sys
 import urllib.error
 import urllib.parse
-import urllib.request
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "factory"))
 
-ACTIVE_STATUS_LABELS = frozenset(
-    {"status:ready", "status:in-progress", "status:needs-review"}
-)
+import github_http  # noqa: E402
+
 
 TRIAGE_STATE_LABELS = frozenset(
     {"needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix"}
@@ -33,7 +33,7 @@ def plan_transition(issue, action, event_labels=None):
     a triage state missing from them was set afterwards, so it is kept.
     """
     labels = label_names(issue)
-    remove = labels & ACTIVE_STATUS_LABELS
+    remove = set()
     add = []
 
     if action == "reopened":
@@ -63,26 +63,21 @@ class GitHubClient:
     def __init__(self, repository, token):
         self.repository = repository
         self.token = token
-        self.api_root = f"https://api.github.com/repos/{repository}"
+        self.api_root = f"/repos/{repository}"
 
     def request(self, method, path, body=None):
         data = None if body is None else json.dumps(body).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.api_root}{path}",
-            data=data,
-            method=method,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self.token}",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "redis-client-issue-status-workflow",
-            },
+        request = github_http.api_request(
+            f"{self.api_root}{path}", self.token, "redis-client-issue-status-workflow",
+            method=method, data=data,
         )
         try:
-            with urllib.request.urlopen(request) as response:
+            # Refuses redirects and ignores proxies, so the token stays with GitHub.
+            with github_http.open_api(request) as response:
                 contents = response.read()
         except urllib.error.HTTPError as error:
-            details = error.read().decode("utf-8", errors="replace")
+            with error:
+                details = error.read().decode("utf-8", errors="replace")
             raise RuntimeError(
                 f"GitHub API {method} {path} failed: {error.code} {details}"
             ) from error
@@ -153,7 +148,7 @@ def reconcile(client, dry_run):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Keep GitHub issue workflow status labels consistent."
+        description="Keep GitHub issue triage labels consistent."
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--event-file")

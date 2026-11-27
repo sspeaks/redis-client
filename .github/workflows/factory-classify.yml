@@ -1,0 +1,48 @@
+name: Factory merge class
+
+# pull_request_target takes this file and the checkout from the base branch. The
+# head is fetched as git objects only and is never checked out or executed.
+# This run only informs. A check name can be imitated and its base can be stale, so
+# the merge job (#193) must run scripts/factory/classify.py itself, from a fresh
+# checkout of main, on the exact commits it merges, and read `class` from its JSON.
+# It only reads, for human and factory PRs alike, so it does not call the factory gate.
+on:
+  pull_request_target:
+    branches: [ "main" ]
+    # edited covers a pull request retargeted to main.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-classify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Classify
+      id: classify
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        git fetch --no-tags origin "refs/pull/${NUMBER}/head"
+        python3 scripts/factory/classify.py --base "$BASE_SHA" --head "$HEAD_SHA" > "$RUNNER_TEMP/class.json"
+        class="$(jq -er .class "$RUNNER_TEMP/class.json")"
+        echo "class=$class" >> "$GITHUB_OUTPUT"
+        { echo "Merge class: **$class**"; echo; sed 's/^/    /' "$RUNNER_TEMP/class.json"; } >> "$GITHUB_STEP_SUMMARY"

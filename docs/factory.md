@@ -17,8 +17,9 @@ Keep this repository an actively maintained Haskell Redis library with a good AP
 - One implementation at a time. At most 3 new tickets a day, 3 open factory PRs, and 5 merges a day.
 - No audit while 10 or more eligible tickets are open. Audits rotate through API, performance, correctness, tests, and docs.
 - Order: maintainer tickets, then priority, then age.
-- At most 12 agent runs a day, 100 turns and 60 minutes each. The first usage-limit error stops work until the next day.
-- Usage credits stay off. `ANTHROPIC_API_KEY` must not be set in factory jobs.
+- At most 12 agent runs a day, 100 turns and 60 minutes each. The first usage-limit error stops agent work until the next day.
+- Run limits and the usage-limit stop block agent work, not publishing or merging finished work. The kill switch and a pause block everything.
+- Usage credits stay off. Unattended runs proceed only while the maintainer's repository variable `FACTORY_USAGE_CREDITS` is exactly `checked and off`. `ANTHROPIC_API_KEY` must not be set in factory jobs.
 
 ## Intake
 
@@ -34,9 +35,11 @@ A script decides from changed paths and an API diff. Mixed or unrecognized chang
 
 | Class | Evidence | Merge |
 | --- | --- | --- |
-| Tests, docs, internal code | Green CI, one independent review | Automatic |
-| Backward-compatible API, protocol, cluster, lockfiles | Above, plus full E2E, API diff, and a second review that tries to break the change | Automatic |
-| Breaking API; authentication, TLS, credentials; new dependencies; factory controls; releases | Same as the row above | Maintainer |
+| Added tests, docs, internal code | Green CI, one independent review | Automatic |
+| Backward-compatible API, protocol, cluster, lockfiles; deleting or weakening tests | Above, plus full E2E, API diff, and a second review that tries to break the change | Automatic |
+| Breaking API; authentication, TLS, credentials; new dependencies; factory controls; removing a test suite; releases | Same as the row above | Maintainer |
+
+Changing or removing existing test code, or adding a skip, pending, or focus marker, counts as weakening. Removing a test suite covers its package stanza, entry point, modules, and runner or CI wiring.
 
 Factory controls are workflows, scripts, the Makefile, hooks, agent instructions, this policy, and ADRs.
 
@@ -50,6 +53,8 @@ Reviewers are fresh agents that see the ticket, diff, and repository, never the 
 
 Performance claims and regression checks run base and head interleaved on one runner, five times each. A throughput, p99, or allocation regression over 10% that repeats on a second run blocks the merge. A ticket claiming a gain must show it the same way.
 
+Measuring a pull request (`performance.yml`) is a required check for everyone, not a factory job, so the kill switch and pause do not stop it. The factory's own performance workflows ask the gate first: the baseline workflow before it measures and again before it stores, and calibration before it measures. Only a passed measurement becomes the baseline.
+
 ## Human checkpoints
 
 Merges in the maintainer class, resuming after a pause, and publishing a release each wait on a GitHub Environment with the maintainer as required reviewer and admin bypass disabled. Unanswered approvals are repeated weekly and never approved by default.
@@ -58,7 +63,7 @@ Merges in the maintainer class, resuming after a pause, and publishing a release
 
 - Agents run on ephemeral GitHub-hosted runners, in a container with no GitHub token and no host Docker socket.
 - A proxy outside the container holds the Claude subscription token. If this cannot work, launch stops and returns to the maintainer; the token is not exposed instead.
-- The token is stored only in the `factory-model` environment: `main` only, the maintainer as required reviewer, no admin bypass. A repository or organization secret with the same name must not exist, because any workflow on any branch could read it. A workflow changed on another branch is stopped by that environment and nothing else, so every job that uses the token needs an ungated job that verifies the environment first.
+- The token is stored only in environments limited to `main`, with no admin bypass: `factory-model`, with the maintainer as required reviewer, for the sandbox proof, and `factory-agent`, with no reviewer, for unattended agent jobs. A repository or organization secret with the same name must not exist, because any workflow on any branch could read it. A workflow changed on another branch is stopped by that environment and nothing else, so every job that uses the token needs an ungated job that verifies the environment first.
 - Network access is limited to the model proxy, package mirrors, the Nix cache, and read-only GitHub content. Tunnels must be TLS and name the allowed host, but are not decrypted, so a request inside one can still reach other sites on the same CDN. Agents therefore get no secret that would be worth sending out.
 - Docker E2E runs only in separate jobs without secrets.
 - Agents output one patch and structured issue or PR text. The publisher rejects symlinks, binaries, workflow changes, secret-like strings, and more than 800 changed lines excluding generated files. Oversized work is split.
@@ -89,10 +94,11 @@ The maintainer approves the release PR, then approves publishing. Hackage upload
 
 ## Launch checks
 
-These verify the boundary itself; they are not a rollout stage.
+These verify the boundary itself; they are not a rollout stage. `scripts/factory/setup-wizard.sh` guides the maintainer through the settings and tokens and proves the first three; it never sets `FACTORY_ENABLED`. Its `rotate` and `revoke` commands replace a token. The subscription token lasts one year; rotate it and the GitHub tokens before they expire.
 
 - [ ] The factory token cannot approve an environment, change workflows, or bypass the ruleset.
 - [ ] The always-on admin ruleset bypass is removed.
+- [ ] The ruleset on all tags blocks creation, update, and deletion, with no bypass.
 - [ ] Publishing jobs require approval, so a pushed tag alone publishes nothing.
 - [ ] How long an approval can wait is known, and expiry leaves the change unmerged.
 - [ ] The proxy works with the subscription token, which is unreachable from the agent container.

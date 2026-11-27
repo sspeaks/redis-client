@@ -1,0 +1,51 @@
+name: Factory pause
+
+# Opens a fixed factory-paused issue and nothing else. It deliberately does not
+# call the factory gate, because pausing must work when the gate refuses, and it
+# does not queue behind publishers. Only factory-resume.yml clears a pause.
+on:
+  workflow_call:
+    inputs:
+      reason:
+        description: main-broken, repeated-reverts, or repeated-failures
+        required: true
+        type: string
+    outputs:
+      outcome:
+        description: paused. Treat anything else, and any result but success, as a stop
+        value: ${{ jobs.factory-pause.outputs.outcome }}
+
+# The caller must grant contents: read.
+permissions: {}
+
+jobs:
+  # Nothing may skip or delay this job: no needs, no condition, no environment
+  # check. The token still comes only from the factory-publish environment, whose
+  # branch policy rejects other refs; the job then fails. gate.py refuses all work
+  # after a job of this name that did not succeed, until the next resume.
+  factory-pause:
+    name: factory-pause
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: factory-publish
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.pause.outputs.outcome }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Pause
+        id: pause
+        env:
+          FACTORY_PUBLISH_TOKEN: ${{ secrets.FACTORY_PUBLISH_TOKEN }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/factory/publish.py pause --reason "$REASON" \
+            --result "$RUNNER_TEMP/factory-result.json"
+          echo "outcome=paused" >> "$GITHUB_OUTPUT"

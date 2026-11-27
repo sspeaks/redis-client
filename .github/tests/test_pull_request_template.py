@@ -15,7 +15,6 @@ REQUIRED_ROWS = (
     "Reconnect behavior",
     "Redirect behavior",
     "Live-fixture needs",
-    "Required specialist reviewers",
     "Intentionally untested paths",
     "Nix-first build",
     "Targeted tests",

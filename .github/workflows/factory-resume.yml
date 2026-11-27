@@ -1,0 +1,57 @@
+name: Factory resume
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  # GitHub silently creates a missing environment without protection, so prove
+  # the approval exists before any job uses it.
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Require a protected factory-resume environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/environments/factory-resume" > factory-resume-environment.json
+          python3 -I scripts/check-release-environment.py \
+            factory-resume-environment.json --reviewer sspeaks
+
+  resume:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: factory-resume
+    permissions:
+      actions: read
+      issues: write
+
+    steps:
+      # scripts/factory/gate.py reads this run's approval record. A pause raised
+      # after this run was requested stays in force, so its issue stays open.
+      - name: Close the pauses covered by this approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          requested=$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID" --jq .created_at)
+          gh issue list --label factory-paused --state open --limit 1000 \
+            --json number,createdAt > pauses.json
+          jq -r --arg requested "$requested" \
+            '.[] | select(.createdAt < $requested) | .number' pauses.json > covered.txt
+          while read -r number; do
+            gh issue close "$number" --comment "Resumed by an approved factory-resume run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+          done < covered.txt

@@ -36,10 +36,7 @@ cleanup() {
     fi
   fi
   if [[ "$CLUSTER_STARTED" -eq 1 ]]; then
-    for port in 7000 7001 7002; do
-      redis-cli -h 127.0.0.1 -p "$port" shutdown nosave >/dev/null 2>&1 || true
-    done
-    rm -rf "$CLUSTER_ROOT"
+    "$SCRIPT_DIR/benchmark-cluster.sh" stop "$CLUSTER_ROOT"
   fi
   exit "$status"
 }
@@ -103,47 +100,8 @@ run_benchmark \
   --output "$ARTIFACT_DIR/slow-server.json" \
   +RTS -T -RTS
 
-mkdir -p "$CLUSTER_ROOT"
-for port in 7000 7001 7002; do
-  mkdir -p "$CLUSTER_ROOT/$port"
-  cat >"$CLUSTER_ROOT/$port/redis.conf" <<EOF
-bind 127.0.0.1
-protected-mode no
-port $port
-save ""
-appendonly no
-cluster-enabled yes
-cluster-config-file nodes.conf
-cluster-node-timeout 5000
-cluster-announce-ip 127.0.0.1
-cluster-announce-port $port
-dir $CLUSTER_ROOT/$port
-daemonize yes
-pidfile $CLUSTER_ROOT/$port/redis.pid
-logfile $CLUSTER_ROOT/$port/redis.log
-EOF
-  redis-server "$CLUSTER_ROOT/$port/redis.conf"
-done
 CLUSTER_STARTED=1
-
-for port in 7000 7001 7002; do
-  for attempt in $(seq 1 20); do
-    if redis-cli -h 127.0.0.1 -p "$port" ping 2>/dev/null | grep -qx PONG; then
-      break
-    fi
-    if [[ "$attempt" -eq 20 ]]; then
-      echo "Error: Redis cluster node on port $port did not become ready." >&2
-      exit 1
-    fi
-    sleep 0.5
-  done
-done
-
-redis-cli --cluster create \
-  127.0.0.1:7000 \
-  127.0.0.1:7001 \
-  127.0.0.1:7002 \
-  --cluster-yes >/dev/null
+"$SCRIPT_DIR/benchmark-cluster.sh" start "$CLUSTER_ROOT"
 
 run_benchmark \
   --scenario cluster \

@@ -1,0 +1,191 @@
+name: Factory publish
+
+# The only workflow that may use the factory-publish environment, which holds the
+# factory GitHub token. Callers pass an artifact of agent output; nothing in it is
+# executed or interpolated. See scripts/factory/publish.py.
+on:
+  workflow_call:
+    inputs:
+      operation:
+        description: pull-request, ticket, comment, or route
+        required: true
+        type: string
+      artifact:
+        description: From this run. Holds output.json; also agent.patch and assessments.json for pull-request
+        type: string
+        default: ""
+      artifact-digest:
+        description: Required for pull-request and comment. work.py's artifact_digest, from a trusted job output
+        type: string
+        default: ""
+      ticket:
+        description: The issue number, or for comment the issue or pull request, from a trusted job output
+        type: string
+        default: "0"
+      work-digest:
+        description: intake.py's work_digest, from a trusted job output
+        type: string
+        default: ""
+    outputs:
+      outcome:
+        description: published, refused, or split. Anything else is not published
+        value: ${{ jobs.publish.outputs.outcome }}
+      code:
+        value: ${{ jobs.publish.outputs.code }}
+      number:
+        value: ${{ jobs.publish.outputs.number }}
+      branch:
+        value: ${{ jobs.publish.outputs.branch }}
+      commit:
+        value: ${{ jobs.publish.outputs.commit }}
+      branch-left:
+        description: A branch a failed publish could not remove
+        value: ${{ jobs.publish.outputs.branch-left }}
+
+# The caller must grant actions: read and contents: read.
+permissions: {}
+
+jobs:
+  # No environment here: GitHub silently creates a missing one without protection,
+  # so prove the protection exists before the job that uses it. This cannot stop a
+  # workflow on another ref; only the environment's branch policy can, and only if
+  # the token is not also a repository secret (#189 checks both).
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      # Set only where a caller passes `secrets: inherit` or the secret itself.
+      - name: Refuse a token that needs no environment
+        env:
+          UNGATED_TOKEN_EXISTS: ${{ secrets.FACTORY_PUBLISH_TOKEN != '' }}
+        run: test "$UNGATED_TOKEN_EXISTS" = false
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Require a protected factory-publish environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="repos/$GITHUB_REPOSITORY/environments/factory-publish"
+          gh api "$root" > "$RUNNER_TEMP/environment.json"
+          gh api "$root/deployment-branch-policies" > "$RUNNER_TEMP/policies.json"
+          python3 -I scripts/check-release-environment.py "$RUNNER_TEMP/environment.json" \
+            --name factory-publish --no-reviewer \
+            --branch main --branch-policies "$RUNNER_TEMP/policies.json"
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: factory-publish
+    permissions:
+      contents: read
+    # The limits are counted and then written, so one publisher runs at a time.
+    concurrency:
+      group: factory-publish
+      cancel-in-progress: false
+    outputs:
+      outcome: ${{ steps.result.outputs.outcome }}
+      code: ${{ steps.result.outputs.code }}
+      number: ${{ steps.result.outputs.number }}
+      branch: ${{ steps.result.outputs.branch }}
+      commit: ${{ steps.result.outputs.commit }}
+      branch-left: ${{ steps.result.outputs.branch_left }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Gate
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        run: python3 -I scripts/factory/gate.py publish
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.operation != 'route'
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/factory-input
+
+      # Agent code may have run in this run since, and could replace artifacts.
+      - name: Require the collected artifact
+        if: inputs.operation == 'pull-request' || inputs.operation == 'comment'
+        env:
+          DIGEST: ${{ inputs.artifact-digest }}
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/factory-input"
+          files=(output.json)
+          if [ "$OPERATION" = pull-request ]; then
+            files=(agent.patch assessments.json output.json)
+          fi
+          for name in "${files[@]}"; do
+            test -f "$name"
+            test ! -L "$name"
+          done
+          actual="$(sha256sum "${files[@]}" | sha256sum | cut -d ' ' -f 1)"
+          test -n "$DIGEST"
+          test "$actual" = "$DIGEST"
+
+      - name: Publish
+        id: publish
+        env:
+          FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+          FACTORY_PUBLISH_TOKEN: ${{ secrets.FACTORY_PUBLISH_TOKEN }}
+          OPERATION: ${{ inputs.operation }}
+          TICKET: ${{ inputs.ticket }}
+          WORK_DIGEST: ${{ inputs.work-digest }}
+        run: |
+          set -euo pipefail
+          input="$RUNNER_TEMP/factory-input"
+          result="$RUNNER_TEMP/factory-result.json"
+          case "$OPERATION" in
+            pull-request)
+              python3 -I scripts/factory/publish.py pull-request --result "$result" \
+                --ticket "$TICKET" --work-digest "$WORK_DIGEST" \
+                --assessments "$input/assessments.json" \
+                --patch "$input/agent.patch" --text "$input/output.json" ;;
+            ticket)
+              python3 -I scripts/factory/publish.py ticket --result "$result" \
+                --text "$input/output.json" ;;
+            comment)
+              python3 -I scripts/factory/publish.py comment --result "$result" \
+                --number "$TICKET" --text "$input/output.json" ;;
+            route)
+              python3 -I scripts/factory/publish.py route --result "$result" --ticket "$TICKET" ;;
+            *)
+              exit 2 ;;
+          esac
+
+      # The result holds only fixed codes, numbers, and names made here.
+      - name: Report
+        id: result
+        if: always() && steps.publish.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | select(.value != null) | "\(.key)=\(.value)"' \
+            "$RUNNER_TEMP/factory-result.json" >> "$GITHUB_OUTPUT"
+
+      # gate.py reads this step's name and refuses all work once it has run, until
+      # the next resume. It runs when a ticket may exist that looks like the
+      # maintainer's and no pause is known to have been opened.
+      - name: factory-pause-failed
+        if: >-
+          always() && inputs.operation == 'ticket' && steps.publish.outcome != 'skipped'
+          && steps.result.outputs.pause != 'unneeded' && steps.result.outputs.pause != 'done'
+        run: |
+          echo "A ticket was not confirmed and the factory could not be paused."
+          exit 1

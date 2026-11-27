@@ -1,0 +1,103 @@
+name: Performance baseline
+
+# Separate from the gate, so that calling the gate never involves a write token.
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-baseline
+  cancel-in-progress: false
+
+jobs:
+  # Every factory job asks the gate first. Storing a baseline is a publish, so this
+  # asks as a publish: the switch and pause stop it, run limits do not. A refusal
+  # skips the measurement and ends this run green with a notice.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      allowed: ${{ steps.gate.outputs.allowed }}
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: main
+        persist-credentials: false
+
+    - id: gate
+      name: Ask the factory gate
+      env:
+        FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+      run: |
+        if python3 -I scripts/factory/gate.py publish; then
+          echo "allowed=true" >>"$GITHUB_OUTPUT"
+        else
+          echo "::notice::Nothing measured; the factory gate refused."
+        fi
+
+  # Gets no secrets, so the measured code never sees the gate token.
+  measure:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    permissions:
+      contents: read
+      issues: read
+    uses: ./.github/workflows/performance.yml
+    with:
+      base: ${{ github.event.before }}
+      head: ${{ github.sha }}
+      baseline_only: true
+
+  # The first passed result on main is the baseline. A blocked or unmeasured result
+  # is never stored, and not-needed measured nothing, so there is nothing to store.
+  # This job holds the write token, so it builds and runs no measured code, and
+  # only its last step sees the token. GitHub has no narrower permission for it.
+  baseline:
+    needs: measure
+    if: >-
+      always() &&
+      needs.measure.outputs.verdict == 'passed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Current main, even when an old run is repeated.
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: main
+        persist-credentials: false
+
+    # Storing the baseline is a publish. A refusal skips the write; it does not
+    # fail this run, whose performance check has already reported.
+    - id: gate
+      name: Ask the factory gate
+      env:
+        FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+      run: |
+        if python3 -I scripts/factory/gate.py publish; then
+          echo "allowed=true" >>"$GITHUB_OUTPUT"
+        else
+          echo "::notice::Baseline not stored; the factory gate refused."
+        fi
+
+    - name: Download results
+      if: steps.gate.outputs.allowed == 'true'
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: performance-results
+        path: ${{ runner.temp }}/performance
+
+    # Asks the gate again immediately before each write.
+    - name: Store the baseline
+      if: steps.gate.outputs.allowed == 'true'
+      env:
+        FACTORY_GATE_TOKEN: ${{ secrets.FACTORY_GATE_TOKEN }}
+        GH_TOKEN: ${{ github.token }}
+      run: >-
+        python3 -I scripts/factory/performance_gate.py baseline
+        "$RUNNER_TEMP/performance/result.json" --commit "$GITHUB_SHA"

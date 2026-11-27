@@ -47,6 +47,28 @@ GHCR images.
 `hask-redis-mux` publication to Hackage remains a deliberate manual step after
 the namespaced GitHub Release succeeds.
 
+## Publishing approval
+
+A pushed tag publishes nothing by itself. Metadata verification runs at once;
+the GitHub Release and Docker jobs then wait on the `release` GitHub
+Environment until the maintainer reviews the run.
+
+- Approving lets every waiting job publish. Rejecting fails the run and
+  publishes nothing.
+- The environment must have `sspeaks` as its only required reviewer, self-review
+  allowed (the maintainer pushes the tag), and "Allow administrators to bypass
+  configured protection rules" off. Verification fails before any publishing
+  job starts unless all three hold, because GitHub creates a missing
+  environment with no protection.
+- An approval can wait 30 days; GitHub then fails the job and nothing is
+  published. This is
+  [GitHub's limit](https://docs.github.com/en/actions/reference/limits), not a
+  repository setting. After expiry, delete and push the tag again to start a
+  new run.
+
+The gate comes from the workflow at the tagged commit, so it does not apply to
+tags on commits that predate it.
+
 ## Validation
 
 Run the repository and workflow-contract checks with:
@@ -89,8 +111,10 @@ tag. The other package may remain independently unreleased.
 5. Run `make test-release-metadata` and the package-specific tagged validation
    command above.
 6. Push the corresponding namespaced tag.
-7. Verify the namespaced GitHub Release contains the correct notes and source
+7. Review the tag, its commit, and the verification result, then approve the
+   waiting jobs in the workflow run. Reject them to abandon the release.
+8. Verify the namespaced GitHub Release contains the correct notes and source
    distribution.
-8. For `redis-client`, verify all three GHCR tags. For `hask-redis-mux`, upload
+9. For `redis-client`, verify all three GHCR tags. For `hask-redis-mux`, upload
    the exact GitHub Release source distribution to Hackage or record why the
    manual upload was deferred.

@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
+      actions: read
       contents: read
 
     outputs:
@@ -63,8 +64,17 @@ jobs:
             ;;
         esac
 
+    - name: Require a protected release environment
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh api "repos/$GITHUB_REPOSITORY/environments/release" > release-environment.json
+        python3 scripts/check-release-environment.py \
+          release-environment.json --reviewer sspeaks
+
   publish-github-release:
     needs: verify-release
+    environment: release
     runs-on: ubuntu-latest
 
     permissions:
@@ -101,6 +111,7 @@ jobs:
   publish-docker:
     needs: verify-release
     if: needs.verify-release.outputs.package_name == 'redis-client'
+    environment: release
     runs-on: ubuntu-latest
 
     permissions:

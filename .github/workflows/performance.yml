@@ -1,0 +1,223 @@
+name: Performance gate
+
+# Outsiders' pull requests start this, so it is not one of the factory's own
+# workflows, whose run records the factory gate trusts.
+#
+# No paths filter: a required check that never starts would hold the merge forever.
+# The scope job decides whether anything is measured.
+#
+# A pull request could add its own workflow with a job of this name, so the merge
+# gate must call this one from main and use its verdict. The caller passes a head
+# that contains the base.
+on:
+  pull_request:
+    branches: [ "main" ]
+    # "edited" so that adding or removing a performance claim is rechecked.
+    types: [ opened, synchronize, reopened, edited, ready_for_review ]
+  workflow_call:
+    inputs:
+      base:
+        description: Exact base commit, whose gate and bench/ are used
+        required: true
+        type: string
+      head:
+        description: Exact head commit to judge
+        required: true
+        type: string
+      claim_text:
+        description: Pull request body
+        required: false
+        type: string
+        default: ""
+      baseline_only:
+        description: Measure only if a baseline still has to be stored
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      verdict:
+        description: passed, not-needed, blocked, or unmeasured
+        value: ${{ jobs.performance.outputs.verdict }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ inputs.head || github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Deliberately not behind the factory kill switch or pause: measuring publishes
+# nothing, protects every pull request, and a skipped check counts as passing.
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+      claims: ${{ steps.scope.outputs.claims }}
+      base: ${{ steps.commits.outputs.base }}
+      head: ${{ steps.commits.outputs.head }}
+    steps:
+    # On a pull request this is the merge commit, so the base is its first
+    # parent and a branch behind main is not blamed for main's changes.
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ inputs.head || github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - id: commits
+      name: Check out the base
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+      run: |
+        base="HEAD^1"
+        if [[ -n "$INPUT_BASE" ]]; then
+          base="$INPUT_BASE"
+        fi
+        base="$(git rev-parse --verify --end-of-options "$base^{commit}")"
+        git merge-base --is-ancestor "$base" HEAD
+        git worktree add --detach "$RUNNER_TEMP/base" "$base"
+        echo "base=$base" >>"$GITHUB_OUTPUT"
+        echo "head=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+
+    # The gate always runs from the base, so a pull request cannot edit it.
+    - id: scope
+      name: Decide whether to measure
+      env:
+        BASE: ${{ steps.commits.outputs.base }}
+        BASELINE_ONLY: ${{ inputs.baseline_only }}
+        CLAIM_TEXT: ${{ inputs.claim_text || github.event.pull_request.body }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gate="$RUNNER_TEMP/base/scripts/factory/performance_gate.py"
+        if [[ ! -f "$gate" ]]; then
+          echo "::error::The base does not have the performance gate, so nothing can be measured."
+          echo "run=unmeasured" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+        arguments=()
+        if [[ "$BASELINE_ONLY" == "true" ]]; then
+          arguments+=(--baseline-only)
+        fi
+        python3 -I "$gate" scope "${arguments[@]}" "$BASE" HEAD >>"$GITHUB_OUTPUT"
+
+  # Head's build can run any code, so it gets its own runner. Only the binary
+  # leaves, and only the measuring job's container runs it.
+  build-head:
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ needs.scope.outputs.base }}
+        path: base
+        persist-credentials: false
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ needs.scope.outputs.head }}
+        path: head
+        persist-credentials: false
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      with:
+        nix_path: nixpkgs=channel:nixos-25.05
+
+    - name: Build head with the base's benchmark
+      run: >-
+        python3 base/scripts/factory/performance_gate.py build head
+        --harness base --output "$RUNNER_TEMP/binary/head-benchmark"
+
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: head-benchmark
+        path: ${{ runner.temp }}/binary/head-benchmark
+        if-no-files-found: error
+
+  measure:
+    needs: [ scope, build-head ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      verdict: ${{ steps.measure.outputs.verdict }}
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      with:
+        ref: ${{ needs.scope.outputs.base }}
+        persist-credentials: false
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+      with:
+        nix_path: nixpkgs=channel:nixos-25.05
+
+    # Everything trusted is fetched and built before head's binary arrives.
+    - id: build
+      name: Build base
+      run: |
+        docker pull "$(python3 -c 'import sys; sys.path.insert(0, "scripts/factory"); import performance_gate; print(performance_gate.IMAGE)')"
+        python3 scripts/factory/performance_gate.py build . \
+          --output "$RUNNER_TEMP/binary/base-benchmark" >>"$GITHUB_OUTPUT"
+
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: head-benchmark
+        path: ${{ runner.temp }}/head
+
+    - id: measure
+      name: Measure base and head
+      env:
+        BASE_SHA256: ${{ steps.build.outputs.sha256 }}
+        CLAIMS: ${{ needs.scope.outputs.claims }}
+      run: |
+        export BINARIES="$RUNNER_TEMP/binary" HEAD_DIR="$RUNNER_TEMP/head"
+        export OUTPUT="$RUNNER_TEMP/performance/result.json"
+        code=0
+        python3 scripts/factory/performance_gate.py run --base "$BINARIES/base-benchmark" --base-sha256 "$BASE_SHA256" --head "$HEAD_DIR/head-benchmark" --claims "$CLAIMS" --output "$OUTPUT" || code=$?
+        verdict=unmeasured
+        if [[ "$code" -eq 0 ]]; then
+          verdict=passed
+        elif [[ "$code" -eq 1 && -f "$OUTPUT" ]]; then
+          verdict=blocked
+        fi
+        echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
+        exit "$code"
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: performance-results
+        path: ${{ runner.temp }}/performance/result.json
+        if-no-files-found: warn
+
+  # The required check. Anything but a measured pass, or nothing to measure, fails.
+  performance:
+    needs: [ scope, build-head, measure ]
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+    - id: verdict
+      name: Report the verdict
+      env:
+        SCOPE: ${{ needs.scope.result }}
+        RUN: ${{ needs.scope.outputs.run }}
+        MEASURE: ${{ needs.measure.result }}
+        REPORTED: ${{ needs.measure.outputs.verdict }}
+      run: |
+        verdict=unmeasured
+        if [[ "$SCOPE" == "success" && "$RUN" == "false" ]]; then
+          verdict=not-needed
+        elif [[ "$SCOPE" == "success" && "$RUN" == "true" ]]; then
+          if [[ "$MEASURE" == "success" && "$REPORTED" == "passed" ]]; then
+            verdict=passed
+          elif [[ "$REPORTED" == "blocked" ]]; then
+            verdict=blocked
+          fi
+        fi
+        echo "verdict=$verdict" >>"$GITHUB_OUTPUT"
+        echo "Performance: $verdict"
+        [[ "$verdict" == "passed" || "$verdict" == "not-needed" ]]
