@@ -1,5 +1,7 @@
 # Separate factory agents from publishing
 
+Superseded by [0006](0006-run-the-agent-loop-as-scheduled-routines.md).
+
 The factory acts under the maintainer's GitHub identity, so GitHub cannot tell the maintainer's actions from the factory's. Agents therefore never hold a GitHub token: they run in a sandbox and emit a patch plus structured text, which non-agent jobs validate and publish with a restricted token. Human approval happens through GitHub Environments that the factory token cannot approve.
 
 ## Considered Options

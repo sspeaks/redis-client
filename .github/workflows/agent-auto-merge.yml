@@ -1,0 +1,73 @@
+# Turns on GitHub auto-merge for an agent pull request once the review
+# routine has approved its current commit. GitHub then merges only after the
+# checks the main ruleset requires have passed. Policy: docs/factory.md.
+#
+# pull_request_target runs this file from main, so a pull request cannot
+# change the rules it is judged by. Nothing from the pull request is checked
+# out or run here.
+name: Agent auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+
+permissions: {}
+
+concurrency:
+  group: agent-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  # A new commit was not reviewed, so its approval is withdrawn.
+  withdraw-approval:
+    if: >-
+      github.event.action == 'synchronize' &&
+      contains(github.event.pull_request.labels.*.name, 'agent-approved')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove agent-approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr merge "$PR" --repo "$REPO" --disable-auto || true
+          gh api --method DELETE "repos/$REPO/issues/$PR/labels/agent-approved"
+
+  enable-auto-merge:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'agent-approved' &&
+      github.event.pull_request.user.login == 'sspeaks' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'claude/') &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Refuse protected paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Current and previous names of every changed file.
+          gh api --paginate "repos/$REPO/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          protected='^(\.github/|\.claude/|CLAUDE\.md$|(.*/)?AGENTS\.md$|docs/adr/|docs/factory\.md$|docs/agents/|scripts/|docker/|Makefile$|flake\.|.*\.nix$|cabal\.project|.*\.cabal$|.*CHANGELOG\.md$)'
+          if grep -Ei "$protected" files.txt; then
+            echo "These paths wait for the maintainer; auto-merge stays off."
+            exit 1
+          fi
+      - name: Enable auto-merge for the approved commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$SHA"
