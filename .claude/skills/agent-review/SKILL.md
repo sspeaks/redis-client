@@ -25,7 +25,7 @@ Find every **defect** on two axes:
 - **Spec**: each requirement in the issue is met, nothing the issue did not ask for was added, and the behaviour is right.
 - **Standards**: the repository's documented rules, tests that prove the behaviour, and no weakened or deleted tests.
 
-Run `make build` and `make test-unit` yourself, starting the Docker daemon first if `docker info` fails (`(dockerd > /tmp/dockerd.log 2>&1 &)`). A failing check, or one the pull request claims but you could not reproduce, is a defect. An end-to-end failure that is only the Redis container's `Failed to load private key ... Permission denied` is an environment problem in scheduled runs; CI covers end to end.
+Run `make build`, `make test-unit` and `make test-e2e` yourself, starting the Docker daemon first if `docker info` fails (`(dockerd > /tmp/dockerd.log 2>&1 &)`). A failing check, or one the pull request claims but you could not reproduce, is a defect.
 
 Done when both axes are covered for the whole diff, with each defect tied to a file and line.
 
