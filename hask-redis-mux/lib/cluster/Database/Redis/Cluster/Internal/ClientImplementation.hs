@@ -86,6 +86,12 @@ module Database.Redis.Cluster.Internal.ClientImplementation
     executeRawClusterCommand,
     executeRawClusterCommandUsingDelay,
     RawClusterRoute (..),
+    -- * Forwarding RESP frames (protocol adapters)
+    forwardClusterFrame,
+    forwardClusterFrameWith,
+    renderClusterErrorReply,
+    clusterMasterAddresses,
+    connectClusterNode,
     -- * Re-export RedisCommands for convenience
     module RedisCommandClient,
     -- * Internal (exported for testing)
@@ -1330,6 +1336,111 @@ rawFrameAction frameBuilder = RedisCommandClient $ do
   ClientState conn _ <- State.get
   liftIO $ send conn (Builder.toLazyByteString frameBuilder)
   parseWith (receive conn)
+
+-- | Forward one client request frame through the cluster and return the reply
+-- a single Redis server would send for it.
+--
+-- The frame must be an array of bulk strings.  It is validated and routed with
+-- the generated command grammar, then sent unchanged, so retries, redirects
+-- and reconnects reuse the original bytes.
+--
+-- Replies from Redis are returned verbatim, including error replies such as
+-- @WRONGTYPE@.  Requests rejected before any I\/O are answered the way Redis
+-- would answer them: a cross-slot request gets
+-- @-CROSSSLOT Keys in request don't hash to the same slot@ and a grammar
+-- failure gets an @-ERR@ reply.  Transport, topology and lifecycle failures
+-- become @-ERR@ replies.  Asynchronous exceptions are rethrown.
+forwardClusterFrame ::
+  (Client client) =>
+  ClusterClient client ->
+  RespData ->
+  IO RespData
+forwardClusterFrame client =
+  forwardClusterFrameWith (executeRawClusterCommand client)
+
+-- | 'forwardClusterFrame' with an injected dispatcher.  Frames rejected
+-- locally never reach the dispatcher.
+forwardClusterFrameWith ::
+  (Monad m) =>
+  (RawClusterRoute -> RespData -> m (Either RedisClientError RespData)) ->
+  RespData ->
+  m RespData
+forwardClusterFrameWith dispatch frame =
+  case routeForwardedFrame frame of
+    Left localReply -> pure localReply
+    Right route ->
+      either renderClusterErrorReply id <$> dispatch route frame
+
+routeForwardedFrame :: RespData -> Either RespData RawClusterRoute
+routeForwardedFrame (RespArray (RespBulkString command : arguments)) =
+  case traverse bulkArgument arguments of
+    Nothing -> Left nonBulkFrameReply
+    Just commandArguments ->
+      case classifyCommandFrame (command : commandArguments) of
+        Right FrameKeyless -> Right RawRouteKeyless
+        Right (FrameSingleSlot key _) -> Right $ RawRouteByKey key
+        Right (FrameCrossSlot _) -> Left $ RespError $ BS8.pack crossSlotMessage
+        Left errorValue ->
+          Left $ RespError $ "ERR " <> BS8.pack (renderCommandGrammarError errorValue)
+  where
+    bulkArgument (RespBulkString argument) = Just argument
+    bulkArgument _                         = Nothing
+routeForwardedFrame _ = Left nonBulkFrameReply
+
+nonBulkFrameReply :: RespData
+nonBulkFrameReply =
+  RespError "ERR Expected array command with bulk string arguments"
+
+-- | Render a typed cluster failure as the RESP error reply a proxy client
+-- should see.  Server error replies keep their original text; MOVED and ASK
+-- are rebuilt in Redis' own format; local failures are prefixed with @ERR@.
+renderClusterErrorReply :: RedisClientError -> RespData
+renderClusterErrorReply = RespError . renderMessage
+  where
+    renderMessage errorValue =
+      case errorValue of
+        RedisServerError message  -> message
+        RedisClusterError failure -> renderClusterFailure failure
+        other                     -> localError (show other)
+
+    renderClusterFailure failure =
+      case failure of
+        RedisMoved slot host port       -> redirection "MOVED" slot host port
+        RedisAsk slot host port         -> redirection "ASK" slot host port
+        RedisClusterDown message        -> message
+        RedisTryAgain message           -> message
+        RedisCrossSlot message          -> message
+        RedisRetryExhausted _ lastError -> renderMessage lastError
+        RedisTopologyFailure message    -> localError message
+
+    redirection kind slot host port =
+      kind <> " " <> BS8.pack (show slot) <> " "
+        <> BS8.pack host <> ":" <> BS8.pack (show port)
+
+    localError message = "ERR " <> BS8.map singleLine (BS8.pack message)
+
+    singleLine character
+      | character == '\r' || character == '\n' = ' '
+      | otherwise = character
+
+-- | Addresses of the master nodes in the client's current topology.
+clusterMasterAddresses :: ClusterClient client -> IO [NodeAddress]
+clusterMasterAddresses client = do
+  topology <- readTVarIO (clusterTopology client)
+  pure
+    [ nodeAddress node
+    | node <- Map.elems (topologyNodes topology)
+    , nodeRole node == Master
+    ]
+
+-- | Open a dedicated connection to one cluster node, using the same connector
+-- and authentication as the client's pooled connections.  The caller owns the
+-- connection and must close it.
+connectClusterNode ::
+  ClusterClient client ->
+  NodeAddress ->
+  IO (client 'Connected)
+connectClusterNode = clusterConnector
 
 -- | Execute a pre-encoded command via multiplexer on the node for a given slot.
 -- Uses findNodeAddressForSlot for O(1) direct address lookup (no Map needed).

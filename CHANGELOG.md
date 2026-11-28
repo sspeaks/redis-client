@@ -2,6 +2,16 @@
 
 ## 0.6.0.0 -- Unreleased
 
+*   **Tunnel replies are no longer mangled**
+    *   Smart proxy mode forwards Redis error replies byte-for-byte, so
+        `WRONGTYPE …` no longer arrives as `-ERR Redis server error: …`, and a
+        local cross-slot rejection is returned as `-CROSSSLOT …`.
+    *   Pinned proxy mode rewrites only replies to `CLUSTER SLOTS`, `NODES`
+        and `SHARDS`, plus MOVED/ASK errors. Values such as `v1.2`, IP
+        addresses or text containing a space and a colon pass through
+        unchanged. After Pub/Sub, `MONITOR`, `CLIENT REPLY` or an inline
+        command, a connection stops rewriting topology replies.
+    *   CLI mode prints Redis error replies as Redis sent them.
 *   **Release pipeline now follows package-specific versioning**
     *   `redis-client` and `hask-redis-mux` now keep separate changelogs, tag
         namespaces, and release rules.

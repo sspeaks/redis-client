@@ -4,15 +4,14 @@
 
 module Main (main) where
 
-import           Control.Exception               (AsyncException (ThreadKilled),
-                                                  IOException, displayException,
-                                                  fromException, throwIO,
-                                                  toException, try)
-import           Control.Monad                   (filterM)
+import           Control.Exception             (AsyncException (ThreadKilled),
+                                                IOException, displayException,
+                                                fromException, throwIO,
+                                                toException, try)
+import           Control.Monad                 (filterM)
 import           Database.Redis
-import qualified Database.Redis.Cluster.Client   as ClusterClient
-import qualified Database.Redis.Cluster.Commands as ClusterCommands
-import           System.Directory                (doesFileExist)
+import qualified Database.Redis.Cluster.Client as ClusterClient
+import           System.Directory              (doesFileExist)
 import           Test.Hspec
 
 main :: IO ()
@@ -163,16 +162,22 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     createClient `seq` runCommand `seq` runKeyed `seq` runKeyless
       `seq` (pure () :: IO ())
 
-  it "keeps Database.Redis.Cluster.Commands routing call sites source compatible" $ do
-    isKeylessRoute (ClusterCommands.classifyCommand "PING" [])
-      `shouldBe` True
-    isKeyedRoute
-      "{api}:key"
-      (ClusterCommands.classifyCommand "GET" ["{api}:key"])
-      `shouldBe` True
-    length
-      (ClusterCommands.keylessCommands <> ClusterCommands.requiresKeyCommands)
-      `shouldBe` 392
+  it "exports one RESP frame forwarding operation from Database.Redis.Cluster.Client" $ do
+    let forward
+          :: ClusterClient PlainTextClient
+          -> RespData
+          -> IO RespData
+        forward = ClusterClient.forwardClusterFrame
+        masters
+          :: ClusterClient PlainTextClient
+          -> IO [NodeAddress]
+        masters = ClusterClient.clusterMasterAddresses
+        connectNode
+          :: ClusterClient PlainTextClient
+          -> NodeAddress
+          -> IO (PlainTextClient 'Connected)
+        connectNode = ClusterClient.connectClusterNode
+    forward `seq` masters `seq` connectNode `seq` (pure () :: IO ())
 
   it "exports the unified server error" $ do
     RedisServerError "ERR full server cause"
@@ -249,10 +254,6 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
       [ "hask-redis-mux.cabal"
       , "hask-redis-mux/hask-redis-mux.cabal"
       ]
-    commandsSource <- findSource
-      [ "lib/cluster/Database/Redis/Cluster/Commands.hs"
-      , "hask-redis-mux/lib/cluster/Database/Redis/Cluster/Commands.hs"
-      ]
     publicExports <- takeWhile (/= ") where") . lines <$> readFile clientSource
     unlines publicExports `shouldNotContain` "executeRawClusterCommand"
     unlines publicExports `shouldNotContain` "RawClusterRoute"
@@ -272,9 +273,7 @@ main = hspec $ describe "Database.Redis timeout-aware public API" $ do
     rootFacade `shouldNotContain` "sendClientReplySkipAndCommand"
     topLevelReexports <- takeWhile (/= "library resp") . lines <$> readFile cabalSource
     unlines topLevelReexports `shouldNotContain`
-      "Database.Redis.Cluster.Internal.RawCommand"
-    commandsFacade <- readFile commandsSource
-    commandsFacade `shouldNotContain` "deriving (Eq, Show)"
+      "Database.Redis.Cluster.Internal"
 
   it "exports redaction-safe cluster authentication policies" $ do
     let createAuthenticated
@@ -325,11 +324,3 @@ findSource candidates = do
   case matches of
     path : _ -> return path
     [] -> expectationFailure "Could not locate public API source" >> fail "unreachable"
-
-isKeylessRoute :: ClusterCommands.CommandRouting -> Bool
-isKeylessRoute ClusterCommands.KeylessRoute = True
-isKeylessRoute _                            = False
-
-isKeyedRoute :: ByteString -> ClusterCommands.CommandRouting -> Bool
-isKeyedRoute expected (ClusterCommands.KeyedRoute actual) = actual == expected
-isKeyedRoute _ _                                          = False

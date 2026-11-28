@@ -2,28 +2,26 @@
 
 module Main (main) where
 
-import           ClusterTunnel                              (PinnedProxyLogEntry (..),
-                                                             PinnedProxyLogMode (..),
-                                                             PinnedResponseResult (..),
-                                                             SmartProxyFrameResult (..),
-                                                             emitPinnedProxyTrafficLog,
-                                                             parsePinnedResponses,
-                                                             parsePinnedResponsesWithLimit,
-                                                             parseSmartProxyFrames,
-                                                             rewriteClusterResponse,
-                                                             routeSmartProxyCommandWith,
-                                                             smartProxyFrameLimit)
-import           Control.Monad                              (foldM)
-import qualified Data.ByteString                            as BS
-import qualified Data.ByteString.Builder                    as Builder
-import qualified Data.ByteString.Char8                      as BS8
-import qualified Data.ByteString.Lazy                       as LBS
-import           Data.IORef                                 (modifyIORef',
-                                                             newIORef,
-                                                             readIORef)
-import           Data.List                                  (isInfixOf)
-import           Database.Redis.Cluster                     (NodeAddress (..))
-import           Database.Redis.Cluster.Internal.RawCommand (RawClusterRoute (..))
+import           ClusterTunnel           (PinnedProxyLogEntry (..),
+                                          PinnedProxyLogMode (..),
+                                          PinnedRequest (..),
+                                          PinnedResponseResult (..),
+                                          SmartProxyFrameResult (..),
+                                          emitPinnedProxyTrafficLog,
+                                          initialPinnedRequestScanner,
+                                          parsePinnedResponses,
+                                          parsePinnedResponsesWithLimit,
+                                          parseSmartProxyFrames,
+                                          scanPinnedRequests,
+                                          smartProxyFrameLimit)
+import           Control.Monad           (foldM, forM_)
+import qualified Data.ByteString         as BS
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Char8   as BS8
+import qualified Data.ByteString.Lazy    as LBS
+import           Data.IORef              (modifyIORef', newIORef, readIORef)
+import           Data.List               (isInfixOf)
+import           Database.Redis.Cluster  (NodeAddress (..))
 import           Database.Redis.Resp
 import           Test.Hspec
 
@@ -59,147 +57,186 @@ main = hspec $ do
         SmartProxyFrameError [] _ -> pure ()
         _                        -> expectationFailure "oversized partial frame was accepted"
 
-  describe "smart proxy command routing" $ do
-    it "hands the original keyed GET frame to raw dispatch" $ do
-      let frame = commandFrame ["GET", "profile:key"]
-      assertDispatch frame (RawRouteByKey "profile:key")
-
-    it "preserves binary keys, values, command case, and option order" $ do
-      let binaryKey = "\NUL{binary}\255"
-          frame = commandFrame ["sEt", binaryKey, "\255value", "NX", "PX", "10"]
-      assertDispatch frame (RawRouteByKey binaryKey)
-
-    it "routes a keyless command with arguments through raw keyless dispatch" $ do
-      let frame = commandFrame ["PING", "payload"]
-      assertDispatch frame RawRouteKeyless
-
-    it "uses metadata keys for subcommands and key-count commands" $ do
-      assertDispatch
-        (commandFrame ["CLIENT", "NO-EVICT", "ON"])
-        RawRouteKeyless
-      assertDispatch
-        (commandFrame ["EVAL", "return 1", "2", "{slot}:one", "{slot}:two"])
-        (RawRouteByKey "{slot}:one")
-
-    it "uses metadata keys for stream, store, and multi-key commands" $ do
-      assertDispatch
-        (commandFrame ["XREAD", "COUNT", "1", "STREAMS", "{slot}:one", "{slot}:two", "0-0", "0-0"])
-        (RawRouteByKey "{slot}:one")
-      assertDispatch
-        (commandFrame ["XREADGROUP", "GROUP", "group", "consumer", "STREAMS", "{slot}:one", ">"])
-        (RawRouteByKey "{slot}:one")
-      assertDispatch
-        (commandFrame ["ZUNIONSTORE", "{slot}:destination", "2", "{slot}:one", "{slot}:two"])
-        (RawRouteByKey "{slot}:destination")
-      assertDispatch
-        (commandFrame ["MGET", "{slot}:one", "{slot}:two"])
-        (RawRouteByKey "{slot}:one")
-
-    it "does not dispatch cross-slot, malformed, dynamic, unknown, or non-bulk frames" $ do
-      assertNoDispatch
-        (commandFrame ["MGET", "first", "second"])
-        "CROSSSLOT Keys in request don't hash to the same slot"
-      assertNoDispatch
-        (commandFrame ["GET"])
-        "GET has invalid arity: expected 2 argument(s), got 1"
-      assertNoDispatch
-        (commandFrame ["SORT", "key", "BY", "pattern"])
-        "SORT uses an unsupported dynamic key specification"
-      assertNoDispatch
-        (commandFrame ["NOTACOMMAND", "key"])
-        "unknown command"
-      assertNoDispatch
-        (RespArray [RespBulkString "GET", RespInteger 1])
-        "Expected array command with bulk string arguments"
-
-    it "acquires no transport for every rejected smart-proxy frame shape" $ do
-      let rejectedFrames =
-            [ ( RespArray []
-              , "Expected array command with bulk string arguments"
-              )
-            , ( RespSimpleString "GET"
-              , "Expected array command with bulk string arguments"
-              )
-            , ( RespArray [RespSimpleString "GET", RespBulkString "key"]
-              , "Expected array command with bulk string arguments"
-              )
-            , ( commandFrame ["GET"]
-              , "GET has invalid arity: expected 2 argument(s), got 1"
-              )
-            , ( commandFrame ["DOESNOTEXIST", "key"]
-              , "unknown command"
-              )
-            , ( commandFrame ["SORT", "key", "STORE", "destination"]
-              , "SORT uses an unsupported dynamic key specification"
-              )
-            , ( commandFrame ["MSET", "one", "value", "two"]
-              , "MSET has malformed arguments"
-              )
-            , ( commandFrame ["MGET", "one", "two"]
-              , "CROSSSLOT Keys in request don't hash to the same slot"
-              )
+  describe "pinned request-aware rewriting" $ do
+    it "does not modify GET values that look like hosts, addresses, or CLUSTER NODES text" $ do
+      let values =
+            [ "$4\r\nv1.2\r\n"
+            , "$9\r\n10.0.0.12\r\n"
+            , "$20\r\nredis1.example.local\r\n"
+            , "$25\r\nnode-a 10.0.0.1:6379@1637\r\n"
+            , "*2\r\n$8\r\n10.0.0.1\r\n$6\r\nk v:co\r\n"
             ]
-      mapM_ (uncurry assertNoDispatch) rejectedFrames
+      forM_ values $ \reply ->
+        parsePinnedResponses [PinnedOtherRequest] BS.empty reply
+          `shouldBe` (PinnedResponses reply BS.empty, 1)
 
-  describe "rewriteClusterResponse" $ do
-    it "rewrites exactly one complete RESP response" $ do
-      rewriteClusterResponse "-MOVED 3999 redis.example:6381\r\n"
-        `shouldBe` "-MOVED 3999 127.0.0.1:6381\r\n"
+    it "does not modify unanswered replies such as Pub/Sub messages" $ do
+      let message = "*3\r\n$7\r\nmessage\r\n$2\r\nch\r\n$8\r\n10.0.0.1\r\n"
+      parsePinnedResponses [] BS.empty message
+        `shouldBe` (PinnedResponses message BS.empty, 0)
+      parsePinnedResponses [PinnedStopTracking] BS.empty message
+        `shouldBe` (PinnedResponses message BS.empty, 1)
 
-    it "does not drop a concatenated response" $ do
-      let responses = "-MOVED 3999 redis.example:6381\r\n+OK\r\n"
-      rewriteClusterResponse responses `shouldBe` responses
+    it "forwards non-topology RESP3 maps and sets byte-for-byte" $ do
+      let respMap = "%2\r\n+z\r\n:1\r\n+a\r\n:2\r\n"
+          respSet = "~2\r\n+z\r\n+a\r\n"
+      parsePinnedResponses [PinnedOtherRequest, PinnedOtherRequest] BS.empty (respMap <> respSet)
+        `shouldBe` (PinnedResponses (respMap <> respSet) BS.empty, 2)
 
-    it "leaves malformed framing unchanged" $ do
-      let malformed = "-MOVED 3999 redis.example:6381\rX"
-      rewriteClusterResponse malformed `shouldBe` malformed
+    it "rewrites CLUSTER SLOTS node endpoints only" $ do
+      let reply = encodeFrame $ RespArray
+            [ RespArray
+                [ RespInteger 0
+                , RespInteger 5460
+                , RespArray [RespBulkString "10.0.0.1", RespInteger 6379, RespBulkString "id-1"]
+                , RespArray [RespBulkString "redis2.example", RespInteger 6380, RespBulkString "10.0.0.9"]
+                , RespArray [RespBulkString "?", RespInteger 6381, RespBulkString "id-3"]
+                ]
+            ]
+          expected = encodeFrame $ RespArray
+            [ RespArray
+                [ RespInteger 0
+                , RespInteger 5460
+                , RespArray [RespBulkString "127.0.0.1", RespInteger 6379, RespBulkString "id-1"]
+                , RespArray [RespBulkString "127.0.0.1", RespInteger 6380, RespBulkString "10.0.0.9"]
+                , RespArray [RespBulkString "?", RespInteger 6381, RespBulkString "id-3"]
+                ]
+            ]
+      parsePinnedResponses [PinnedClusterSlots] BS.empty reply
+        `shouldBe` (PinnedResponses expected BS.empty, 1)
+
+    it "rewrites CLUSTER NODES text" $ do
+      let text = "abc 10.0.0.1:6379@16379 myself,master - 0 0 1 connected 0-5460\n"
+          rewritten = "abc 127.0.0.1:6379@16379 myself,master - 0 0 1 connected 0-5460\n"
+      parsePinnedResponses [PinnedClusterNodes] BS.empty (encodeFrame $ RespBulkString text)
+        `shouldBe` (PinnedResponses (encodeFrame $ RespBulkString rewritten) BS.empty, 1)
+
+    it "rewrites CLUSTER SHARDS endpoint fields only" $ do
+      let shard endpoint ip hostname = RespArray
+            [ RespBulkString "slots"
+            , RespArray [RespInteger 0, RespInteger 5460]
+            , RespBulkString "nodes"
+            , RespArray
+                [ RespArray
+                    [ RespBulkString "id", RespBulkString "10.0.0.7"
+                    , RespBulkString "port", RespInteger 6379
+                    , RespBulkString "ip", RespBulkString ip
+                    , RespBulkString "endpoint", RespBulkString endpoint
+                    , RespBulkString "hostname", RespBulkString hostname
+                    ]
+                ]
+            ]
+      parsePinnedResponses
+        [PinnedClusterShards]
+        BS.empty
+        (encodeFrame $ RespArray [shard "10.0.0.1" "10.0.0.1" "redis1.example"])
+        `shouldBe`
+          ( PinnedResponses
+              (encodeFrame $ RespArray [shard "127.0.0.1" "127.0.0.1" "127.0.0.1"])
+              BS.empty
+          , 1
+          )
+
+    it "matches pipelined replies with their requests in order" $ do
+      let value = "$8\r\n10.0.0.1\r\n"
+          nodes = encodeFrame $ RespBulkString "abc 10.0.0.1:6379@16379 master\n"
+          rewrittenNodes = encodeFrame $ RespBulkString "abc 127.0.0.1:6379@16379 master\n"
+      parsePinnedResponses
+        [PinnedOtherRequest, PinnedClusterNodes, PinnedOtherRequest]
+        BS.empty
+        (value <> nodes <> value)
+        `shouldBe` (PinnedResponses (value <> rewrittenNodes <> value) BS.empty, 3)
+
+    it "rewrites MOVED and ASK for any request" $ do
+      parsePinnedResponses [PinnedOtherRequest] BS.empty "-MOVED 3999 redis.example:6381\r\n"
+        `shouldBe` (PinnedResponses "-MOVED 3999 127.0.0.1:6381\r\n" BS.empty, 1)
+      parsePinnedResponses [] BS.empty "-ASK 10 10.0.0.2:6382\r\n"
+        `shouldBe` (PinnedResponses "-ASK 10 127.0.0.1:6382\r\n" BS.empty, 0)
+
+    it "forwards other error replies byte-for-byte" $ do
+      let wrongType = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+      parsePinnedResponses [PinnedOtherRequest] BS.empty wrongType
+        `shouldBe` (PinnedResponses wrongType BS.empty, 1)
+
+  describe "pinned request scanning" $ do
+    it "classifies topology requests case-insensitively and other requests as other" $ do
+      let wire = encodeFrame (commandFrame ["cluster", "slots"])
+            <> encodeFrame (commandFrame ["CLUSTER", "Nodes"])
+            <> encodeFrame (commandFrame ["CLUSTER", "SHARDS"])
+            <> encodeFrame (commandFrame ["GET", "CLUSTER"])
+            <> encodeFrame (commandFrame ["CLUSTER", "INFO"])
+      fst (scanPinnedRequests initialPinnedRequestScanner wire)
+        `shouldBe`
+          [ PinnedClusterSlots
+          , PinnedClusterNodes
+          , PinnedClusterShards
+          , PinnedOtherRequest
+          , PinnedOtherRequest
+          ]
+
+    it "classifies requests split at every byte boundary exactly once" $ do
+      let wire = encodeFrame (commandFrame ["SET", "key", BS.replicate 300 120])
+            <> encodeFrame (commandFrame ["CLUSTER", "SLOTS"])
+      forM_ [1 .. BS.length wire - 1] $ \splitAt -> do
+        let (first, scanner) = scanPinnedRequests initialPinnedRequestScanner (BS.take splitAt wire)
+        case scanner of
+          Nothing -> expectationFailure $ "tracking stopped at split " <> show splitAt
+          Just continued ->
+            (first <> fst (scanPinnedRequests continued (BS.drop splitAt wire)))
+              `shouldBe` [PinnedOtherRequest, PinnedClusterSlots]
+
+    it "stops tracking for Pub/Sub, MONITOR, CLIENT REPLY, and inline commands" $ do
+      forM_
+        [ encodeFrame (commandFrame ["SUBSCRIBE", "channel"])
+        , encodeFrame (commandFrame ["monitor"])
+        , encodeFrame (commandFrame ["CLIENT", "REPLY", "OFF"])
+        , "PING\r\n"
+        ] $ \wire -> do
+          let (requests, scanner) =
+                scanPinnedRequests initialPinnedRequestScanner
+                  (encodeFrame (commandFrame ["PING"]) <> wire <> encodeFrame (commandFrame ["CLUSTER", "SLOTS"]))
+          requests `shouldBe` [PinnedOtherRequest, PinnedStopTracking]
+          maybe True (const False) scanner `shouldBe` True
 
   describe "pinned response TCP framing" $ do
     it "retains fragmented topology frames and rewrites only after completion" $ do
       let response = "-MOVED 3999 redis.example:6381\r\n"
           (firstChunk, secondChunk) = BS.splitAt 12 response
-      parsePinnedResponses BS.empty firstChunk
+      framing BS.empty firstChunk
         `shouldBe` PinnedResponses BS.empty firstChunk
-      parsePinnedResponses firstChunk secondChunk
+      framing firstChunk secondChunk
         `shouldBe` PinnedResponses "-MOVED 3999 127.0.0.1:6381\r\n" BS.empty
 
     it "drains coalesced replies in order and preserves untouched binary bytes" $ do
       let binary = "$5\r\n\NUL\255\r\n*\r\n"
           responses = "-ASK 10 redis.example:6382\r\n" <> binary <> "+OK\r\n"
-      parsePinnedResponses BS.empty responses
+      framing BS.empty responses
         `shouldBe` PinnedResponses
           ("-ASK 10 127.0.0.1:6382\r\n" <> binary <> "+OK\r\n")
           BS.empty
 
     it "passes unsupported RESP3 push bytes through without blocking" $ do
       let push = ">2\r\n+message\r\n+payload\r\n"
-      parsePinnedResponses BS.empty push
+      framing BS.empty push
         `shouldBe` PinnedResponses push BS.empty
 
     it "preserves fragmented RESP3 pushes while rewriting later coalesced topology frames" $ do
       let push = ">2\r\n+message\r\n+payload\r\n"
           moved = "-MOVED 3999 redis.example:6381\r\n"
           (firstChunk, secondChunk) = BS.splitAt 11 (push <> moved)
-      parsePinnedResponses BS.empty firstChunk
+      framing BS.empty firstChunk
         `shouldBe` PinnedResponses BS.empty firstChunk
-      parsePinnedResponses firstChunk secondChunk
+      framing firstChunk secondChunk
         `shouldBe` PinnedResponses
           (push <> "-MOVED 3999 127.0.0.1:6381\r\n")
           BS.empty
-
-    it "parses and re-encodes RESP3 maps and sets instead of forwarding them opaquely" $ do
-      let respMap = "%2\r\n+z\r\n:1\r\n+a\r\n:2\r\n"
-          respSet = "~2\r\n+z\r\n+a\r\n"
-          expected = "%2\r\n+a\r\n:2\r\n+z\r\n:1\r\n~2\r\n+a\r\n+z\r\n"
-      parsePinnedResponses BS.empty (respMap <> respSet)
-        `shouldBe` PinnedResponses expected BS.empty
 
     it "preserves a streamed blob payload exactly before rewriting a later response" $ do
       let payload = "x\n-MOVED 3999 redis.example:6381\r\n\NUL\255\n-ASK 10 redis.example:6382\r\n"
           stream = streamedBlob [payload]
           moved = "-MOVED 3999 redis.example:6381\r\n"
           expected = stream <> "-MOVED 3999 127.0.0.1:6381\r\n"
-      parsePinnedResponses BS.empty (stream <> moved)
+      framing BS.empty (stream <> moved)
         `shouldBe` PinnedResponses expected BS.empty
       assertPinnedResponseAcrossSplits (stream <> moved) expected
 
@@ -208,21 +245,21 @@ main = hspec $ do
           nested = "*?\r\n" <> blob <> ">?\r\n+message\r\n" <> streamedBlob ["payload"] <> ".\r\n.\r\n"
           ask = "-ASK 10 redis.example:6382\r\n"
           expected = nested <> "-ASK 10 127.0.0.1:6382\r\n"
-      parsePinnedResponses BS.empty (nested <> ask)
+      framing BS.empty (nested <> ask)
         `shouldBe` PinnedResponses expected BS.empty
       assertPinnedResponseAcrossSplits (nested <> ask) expected
 
     it "resumes framing after an opaque malformed record without swallowing later rewrites" $ do
       let malformed = "?bad\r\n"
           ask = "-ASK 10 redis.example:6382\r\n"
-      parsePinnedResponses BS.empty (malformed <> ask)
+      framing BS.empty (malformed <> ask)
         `shouldBe` PinnedResponses
           (malformed <> "-ASK 10 127.0.0.1:6382\r\n")
           BS.empty
 
     it "fails closed for a malformed streamed value rather than resynchronizing in its payload" $ do
       let malformed = "$?\r\n;not-a-length\r\n-MOVED 3999 redis.example:6381\r\n"
-      parsePinnedResponses BS.empty malformed
+      framing BS.empty malformed
         `shouldBe` PinnedResponseMalformed BS.empty
 
     it "allows framing overhead for an exact bulk payload limit and rejects the next payload byte" $ do
@@ -230,11 +267,11 @@ main = hspec $ do
           acceptedPrefix = "$5\r\nabcde\r"
           acceptedSuffix = "\n"
           rejected = "$6\r\nabcdef\r"
-      parsePinnedResponsesWithLimit limit BS.empty acceptedPrefix
+      framingWithLimit limit BS.empty acceptedPrefix
         `shouldBe` PinnedResponses BS.empty acceptedPrefix
-      parsePinnedResponsesWithLimit limit acceptedPrefix acceptedSuffix
+      framingWithLimit limit acceptedPrefix acceptedSuffix
         `shouldBe` PinnedResponses "$5\r\nabcde\r\n" BS.empty
-      parsePinnedResponsesWithLimit limit BS.empty rejected
+      framingWithLimit limit BS.empty rejected
         `shouldBe` PinnedResponseLimitExceeded BS.empty
 
   describe "pinned proxy traffic logging" $ do
@@ -300,35 +337,18 @@ assertPinnedResponseAcrossSplits wire expected =
   mapM_ assertSplit [1 .. BS.length wire - 1]
   where
     assertSplit splitAt =
-      case parsePinnedResponses BS.empty (BS.take splitAt wire) of
+      case framing BS.empty (BS.take splitAt wire) of
         PinnedResponses firstOutput pending ->
-          case parsePinnedResponses pending (BS.drop splitAt wire) of
+          case framing pending (BS.drop splitAt wire) of
             PinnedResponses secondOutput remainder -> do
               (firstOutput <> secondOutput) `shouldBe` expected
               remainder `shouldBe` BS.empty
             result -> expectationFailure $ "response framing failed after split " <> show splitAt <> ": " <> show result
         result -> expectationFailure $ "response framing failed at split " <> show splitAt <> ": " <> show result
 
-assertDispatch :: RespData -> RawClusterRoute -> Expectation
-assertDispatch frame expectedRoute = do
-  dispatched <- newIORef []
-  result <- routeSmartProxyCommandWith
-    (\route originalFrame -> do
-      modifyIORef' dispatched (<> [(route, originalFrame)])
-      pure $ Right (RespSimpleString "OK"))
-    frame
-  result `shouldBe` Right (RespSimpleString "OK")
-  observed <- readIORef dispatched
-  observed `shouldBe` [(expectedRoute, frame)]
+-- | Framing with no tracked requests: only MOVED/ASK are rewritten.
+framing :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
+framing pending chunk = fst (parsePinnedResponses [] pending chunk)
 
-assertNoDispatch :: RespData -> String -> Expectation
-assertNoDispatch frame expectedError = do
-  dispatchCount <- newIORef (0 :: Int)
-  result <- routeSmartProxyCommandWith
-    (\_ _ -> do
-      modifyIORef' dispatchCount (+ 1)
-      pure $ Right (RespSimpleString "unexpected"))
-    frame
-  result `shouldBe` Left expectedError
-  observedDispatches <- readIORef dispatchCount
-  observedDispatches `shouldBe` 0
+framingWithLimit :: Int -> BS.ByteString -> BS.ByteString -> PinnedResponseResult
+framingWithLimit limit pending chunk = fst (parsePinnedResponsesWithLimit limit [] pending chunk)

@@ -6,84 +6,69 @@ module ClusterTunnel
   ( serveSmartProxy
   , servePinnedProxy
   , servePinnedProxyWith
-  , routeSmartProxyCommandWith
-  , rewriteClusterResponse
   , SmartProxyFrameResult (..)
   , smartProxyFrameLimit
   , parseSmartProxyFrames
   , PinnedProxyLogMode (..)
   , PinnedProxyLogEntry (..)
   , emitPinnedProxyTrafficLog
+  , PinnedRequest (..)
+  , PinnedRequestScanner
+  , initialPinnedRequestScanner
+  , scanPinnedRequests
   , PinnedResponseResult (..)
   , pinnedResponseFrameLimit
   , parsePinnedResponses
   , parsePinnedResponsesWithLimit
   ) where
 
-import           Control.Concurrent                         (MVar, forkIO,
-                                                             newEmptyMVar,
-                                                             putMVar, takeMVar)
-import           Control.Concurrent.Async                   (cancel, waitCatch,
-                                                             waitEitherCatch,
-                                                             withAsync)
-import           Control.Concurrent.STM                     (readTVarIO)
-import           Control.Exception                          (SomeException,
-                                                             bracket, finally,
-                                                             throwIO, try)
-import           Control.Monad                              (forever,
-                                                             replicateM_, void,
-                                                             when)
-import qualified Data.Attoparsec.ByteString                 as StrictParse
-import qualified Data.Attoparsec.ByteString.Char8           as Char8
-import qualified Data.ByteString                            as BS
-import qualified Data.ByteString.Builder                    as Builder
-import qualified Data.ByteString.Char8                      as BS8
-import qualified Data.ByteString.Lazy                       as LBS
-import           Data.Char                                  (isAlphaNum)
-import           Data.IORef                                 (IORef,
-                                                             atomicModifyIORef',
-                                                             newIORef,
-                                                             readIORef)
-import           Data.List                                  (intercalate,
-                                                             isPrefixOf)
-import qualified Data.Map.Strict                            as Map
-import           Data.Word                                  (Word8)
-import           Database.Redis.Client                      (Client (..),
-                                                             ConnectionStatus (..))
-import           Database.Redis.Cluster                     (ClusterNode (..),
-                                                             ClusterTopology (..),
-                                                             NodeAddress (..),
-                                                             NodeRole (..))
-import           Database.Redis.Cluster.Client              (ClusterClient (..))
-import           Database.Redis.Cluster.Commands            (CommandRouting (..),
-                                                             classifyCommand)
-import           Database.Redis.Cluster.Internal.RawCommand (RawClusterRoute (..),
-                                                             executeRawClusterCommand)
-import           Database.Redis.Connector                   (Connector)
-import           Database.Redis.RedisError                  (RedisClientError (..),
-                                                             RedisClusterFailure (..))
-import           Database.Redis.Resp                        (Encodable (encode),
-                                                             RespData (..))
-import qualified Database.Redis.Resp                        as Resp
-import           Network.Socket                             (Family (..),
-                                                             SockAddr (..),
-                                                             Socket,
-                                                             SocketOption (..),
-                                                             SocketType (..),
-                                                             bind,
-                                                             defaultProtocol,
-                                                             listen,
-                                                             setSocketOption,
-                                                             socket,
-                                                             tupleToHostAddress)
-import qualified Network.Socket                             as S
-import           Network.Socket.ByteString                  (recv, sendAll)
-import           System.IO                                  (BufferMode (LineBuffering),
-                                                             hFlush,
-                                                             hSetBuffering,
-                                                             stdout)
-import           System.Timeout                             (timeout)
-import           Text.Printf                                (printf)
+import           Control.Concurrent               (MVar, forkIO, newEmptyMVar,
+                                                   putMVar, takeMVar)
+import           Control.Concurrent.Async         (cancel, waitCatch,
+                                                   waitEitherCatch, withAsync)
+import           Control.Exception                (SomeException, bracket,
+                                                   finally, throwIO, try)
+import           Control.Monad                    (forever, replicateM_, void,
+                                                   when)
+import qualified Data.Attoparsec.ByteString       as StrictParse
+import qualified Data.Attoparsec.ByteString.Char8 as Char8
+import qualified Data.ByteString                  as BS
+import qualified Data.ByteString.Builder          as Builder
+import qualified Data.ByteString.Char8            as BS8
+import qualified Data.ByteString.Lazy             as LBS
+import           Data.Char                        (toUpper)
+import           Data.Foldable                    (toList)
+import           Data.IORef                       (IORef, atomicModifyIORef',
+                                                   newIORef, readIORef)
+import           Data.List                        (intercalate)
+import qualified Data.Map.Strict                  as Map
+import           Data.Sequence                    ((|>))
+import qualified Data.Sequence                    as Seq
+import           Database.Redis.Client            (Client (..),
+                                                   ConnectionStatus (..))
+import           Database.Redis.Cluster           (NodeAddress (..))
+import           Database.Redis.Cluster.Client    (ClusterClient,
+                                                   RedirectionInfo (..),
+                                                   clusterMasterAddresses,
+                                                   connectClusterNode,
+                                                   forwardClusterFrame,
+                                                   parseRedirectionError)
+import           Database.Redis.Resp              (Encodable (encode),
+                                                   RespData (..))
+import qualified Database.Redis.Resp              as Resp
+import           Network.Socket                   (Family (..), SockAddr (..),
+                                                   Socket, SocketOption (..),
+                                                   SocketType (..), bind,
+                                                   defaultProtocol, listen,
+                                                   setSocketOption, socket,
+                                                   tupleToHostAddress)
+import qualified Network.Socket                   as S
+import           Network.Socket.ByteString        (recv, sendAll)
+import           System.IO                        (BufferMode (LineBuffering),
+                                                   hFlush, hSetBuffering,
+                                                   stdout)
+import           System.Timeout                   (timeout)
+import           Text.Printf                      (printf)
 
 data PinnedProxyLogMode
   = PinnedProxyLifecycleOnly
@@ -244,11 +229,8 @@ handleSmartProxyClient clusterClient clientSock = do
               printf "Failed to parse RESP: %s\n" err
               sendError $ "ERR Failed to parse command: " ++ err
 
-    executeCommand respData = do
-      result <- routeSmartProxyCommand clusterClient respData
-      case result of
-        Left err       -> sendError $ "ERR " ++ err
-        Right response -> sendResponse response
+    executeCommand respData =
+      forwardClusterFrame clusterClient respData >>= sendResponse
 
     sendError message =
       sendResponse $ RespError (BS8.pack message)
@@ -305,68 +287,6 @@ parseSmartProxyFrames pending chunk = drain [] (pending <> chunk)
 
     validRespPrefixes = [43, 45, 58, 36, 42, 126, 37]
 
--- | Route and execute a command in smart proxy mode
-routeSmartProxyCommand :: (Client client) =>
-  ClusterClient client ->
-  RespData ->
-  IO (Either String RespData)
-routeSmartProxyCommand clusterClient =
-  routeSmartProxyCommandWith (executeRawClusterCommand clusterClient)
-
--- | Route a parsed client frame after validating it with the generated command
--- grammar.  The dispatch seam keeps grammar failures before any cluster I/O.
-routeSmartProxyCommandWith ::
-  SmartProxyDispatch ->
-  RespData ->
-  IO (Either String RespData)
-routeSmartProxyCommandWith dispatch respData =
-  case classifySmartProxyFrame respData of
-    Left errorMessage         -> pure $ Left errorMessage
-    Right RawRouteKeyless     -> executeKeylessCommand dispatch respData
-    Right (RawRouteByKey key) -> executeKeyedCommand dispatch key respData
-
-type SmartProxyDispatch =
-  RawClusterRoute ->
-  RespData ->
-  IO (Either RedisClientError RespData)
-
-classifySmartProxyFrame :: RespData -> Either String RawClusterRoute
-classifySmartProxyFrame (RespArray (RespBulkString command : arguments)) = do
-  commandArguments <- traverse bulkString arguments
-  case classifyCommand command commandArguments of
-    KeylessRoute              -> Right RawRouteKeyless
-    KeyedRoute key            -> Right $ RawRouteByKey key
-    CommandError errorMessage -> Left errorMessage
-  where
-    bulkString (RespBulkString argument) = Right argument
-    bulkString _ = Left "Expected array command with bulk string arguments"
-classifySmartProxyFrame _ = Left "Expected array command with bulk string arguments"
-
--- | Execute a keyless command (route to any master)
-executeKeylessCommand ::
-  SmartProxyDispatch ->
-  RespData ->
-  IO (Either String RespData)
-executeKeylessCommand dispatch respData = do
-  result <- dispatch RawRouteKeyless respData
-  return $ case result of
-    Left err   -> Left (show err)
-    Right resp -> Right resp
-
--- | Execute a keyed command (route by slot via multiplexer)
-executeKeyedCommand ::
-  SmartProxyDispatch ->
-  BS.ByteString ->
-  RespData ->
-  IO (Either String RespData)
-executeKeyedCommand dispatch key respData = do
-  result <- dispatch (RawRouteByKey key) respData
-  return $ case result of
-    Left (RedisClusterError (RedisCrossSlot msg)) ->
-      Left $ "CROSSSLOT error: " ++ BS8.unpack msg
-    Left err                  -> Left (show err)
-    Right resp                -> Right resp
-
 -- | Pinned proxy mode: One listener per cluster node
 -- Each listener forwards to its corresponding cluster node
 servePinnedProxy :: (Client client) =>
@@ -381,10 +301,7 @@ servePinnedProxyWith :: (Client client) =>
 servePinnedProxyWith logMode clusterClient = do
   hSetBuffering stdout LineBuffering
 
-  -- Get cluster topology
-  topology <- readTVarIO (clusterTopology clusterClient)
-  let masters = filter ((== Master) . nodeRole) (Map.elems $ topologyNodes topology)
-      connector = clusterConnector clusterClient
+  masters <- clusterMasterAddresses clusterClient
 
   when (null masters) $ do
     putStrLn "ERROR: No master nodes found in cluster topology"
@@ -396,7 +313,7 @@ servePinnedProxyWith logMode clusterClient = do
     (printf "Pinned proxy mode: Creating %d listeners for cluster nodes" (length masters))
 
   -- Create a listener for each master node
-  mvars <- mapM (createPinnedListener logMode stdoutPinnedProxyLogSink connector) masters
+  mvars <- mapM (createPinnedListener logMode stdoutPinnedProxyLogSink clusterClient) masters
 
   emitPinnedProxyLog
     stdoutPinnedProxyLogSink
@@ -410,13 +327,12 @@ servePinnedProxyWith logMode clusterClient = do
 createPinnedListener :: (Client client) =>
   PinnedProxyLogMode ->
   PinnedProxyLogSink ->
-  Connector client ->
-  ClusterNode ->
+  ClusterClient client ->
+  NodeAddress ->
   IO (MVar ())
-createPinnedListener logMode logSink connector node = do
+createPinnedListener logMode logSink clusterClient addr = do
   mvar <- newEmptyMVar
-  let addr = nodeAddress node
-      localPort = nodePort addr
+  let localPort = nodePort addr
 
   void $ forkIO $ do
     result <- try $ bracket (socket AF_INET Stream defaultProtocol) S.close $ \sock -> do
@@ -442,7 +358,7 @@ createPinnedListener logMode logSink connector node = do
         -- 1. Pinned listeners maintain long-lived, persistent connections
         -- 2. Each listener needs its own connection tied to its lifecycle
         -- 3. Connection lifetime matches listener lifetime (closed when listener stops)
-        redisConn <- connector addr
+        redisConn <- connectClusterNode clusterClient addr
         statsRef <- newIORef emptyPinnedProxyTransferStats
 
         -- Handle forwarding in a separate thread
@@ -483,7 +399,10 @@ createPinnedListener logMode logSink connector node = do
   return mvar
 
 -- | Forward traffic bidirectionally between client and cluster node.
--- Completed Redis responses are rewritten independently of TCP or TLS chunking.
+-- Client bytes are forwarded unchanged; a copy is scanned to learn which
+-- request each reply answers, so only topology replies and MOVED/ASK errors
+-- are rewritten.  Completed replies are rewritten independently of TCP or TLS
+-- chunking.
 forwardPinnedConnection :: (Client client) =>
   PinnedProxyLogMode ->
   PinnedProxyLogSink ->
@@ -497,8 +416,9 @@ forwardPinnedConnection logMode logSink statsRef clientSock redisConn addr = do
     logSink
     True
     (printf "[Pinned %s:%d] Starting forwarding loop" (nodeHost addr) (nodePort addr))
-  withAsync copyClientToRedis $ \toRedis ->
-    withAsync (copyRedisToClient BS.empty) $ \toClient -> do
+  expectedReplies <- newIORef Seq.empty
+  withAsync (copyClientToRedis expectedReplies (Just initialPinnedRequestScanner)) $ \toRedis ->
+    withAsync (copyRedisToClient expectedReplies BS.empty) $ \toClient -> do
       result <- waitEitherCatch toRedis toClient
       case result of
         Left (Left err)  -> cancel toClient >> throwIO err
@@ -513,27 +433,41 @@ forwardPinnedConnection logMode logSink statsRef clientSock redisConn addr = do
             _               -> cancel toClient
         Right (Right ()) -> cancel toRedis
   where
-    copyClientToRedis = do
+    copyClientToRedis expectedReplies scanner = do
       dat <- recv clientSock 4096
       if BS.null dat
         then pure ()
         else do
           recordPinnedProxyClientChunk statsRef dat
           emitPinnedProxyTrafficLog logMode logSink addr "client->redis" dat
+          -- Requests are queued before their bytes reach Redis, so a reply
+          -- can never be read before the request it answers is known.
+          nextScanner <- case scanner of
+            Nothing -> pure Nothing
+            Just current -> do
+              let (requests, continued) = scanPinnedRequests current dat
+              atomicModifyIORef' expectedReplies $ \queue ->
+                (foldl (|>) queue requests, ())
+              pure continued
           send redisConn (LBS.fromStrict dat)
-          copyClientToRedis
+          copyClientToRedis expectedReplies nextScanner
 
-    copyRedisToClient pending = do
+    copyRedisToClient expectedReplies pending = do
       response <- receive redisConn
       if BS.null response
         then pure ()
         else do
           recordPinnedProxyRedisChunk statsRef response
           emitPinnedProxyTrafficLog logMode logSink addr "redis->client" response
-          case parsePinnedResponses pending response of
+          queued <- readIORef expectedReplies
+          let (result, answered) = parsePinnedResponses (toList queued) pending response
+          -- Only this thread removes entries, so dropping the answered prefix
+          -- is safe while the client thread appends.
+          atomicModifyIORef' expectedReplies $ \queue -> (Seq.drop answered queue, ())
+          case result of
             PinnedResponses output nextPending -> do
               sendAll clientSock output
-              copyRedisToClient nextPending
+              copyRedisToClient expectedReplies nextPending
             PinnedResponseLimitExceeded output -> do
               sendAll clientSock output
               throwIO $ userError "pinned response exceeds 512 MiB compatibility limit"
@@ -555,58 +489,79 @@ data PinnedResponseResult
   | PinnedResponseMalformed !BS.ByteString
   deriving (Eq, Show)
 
--- | Drain complete response frames, rewriting only completed topology frames.
--- Responses representable as 'RespData', including maps and sets, are
--- re-encoded; opaque fallback frames are forwarded unchanged.
+-- | Drain complete response frames.  Each reply is matched with the request
+-- it answers, taken in order from the given expected replies; the second
+-- result is how many of them were answered.  Only replies to CLUSTER SLOTS,
+-- NODES and SHARDS and MOVED/ASK errors are rewritten; every other frame,
+-- including RESP3 pushes and opaque RESP3 values, is forwarded byte-for-byte.
 -- A malformed streamed value terminates the connection rather than allowing
 -- line resynchronization to reinterpret bytes that might be chunk payload.
-parsePinnedResponses :: BS.ByteString -> BS.ByteString -> PinnedResponseResult
+parsePinnedResponses ::
+  [PinnedRequest] ->
+  BS.ByteString ->
+  BS.ByteString ->
+  (PinnedResponseResult, Int)
 parsePinnedResponses = parsePinnedResponsesWithLimit pinnedResponseFrameLimit
 
 -- | Variant with an injected payload limit for boundary tests.
 parsePinnedResponsesWithLimit ::
   Int ->
+  [PinnedRequest] ->
   BS.ByteString ->
   BS.ByteString ->
-  PinnedResponseResult
-parsePinnedResponsesWithLimit payloadLimit pending chunk = drain BS.empty (pending <> chunk)
+  (PinnedResponseResult, Int)
+parsePinnedResponsesWithLimit payloadLimit expected pending chunk =
+  drain 0 expected BS.empty (pending <> chunk)
   where
-    drain output input =
+    drain answered requests output input =
       case BS.uncons input of
         Just (prefix, _)
           | prefix `notElem` responseParserPrefixes ->
-              drainOpaque output input
+              drainOpaque answered requests output input
         _ -> case StrictParse.parse Resp.parseRespData input of
-          StrictParse.Done remaining _ ->
+          StrictParse.Done remaining reply ->
             let consumed = BS.length input - BS.length remaining
                 original = BS.take consumed input
-             in drain (output <> rewriteClusterResponse original) remaining
+                (request, laterRequests, nextAnswered) = answer answered requests
+             in drain nextAnswered laterRequests
+                  (output <> rewritePinnedReply request original reply)
+                  remaining
           StrictParse.Partial _
             | responseExceedsLimit payloadLimit input ->
-                PinnedResponseLimitExceeded output
-            | otherwise -> PinnedResponses output input
-          StrictParse.Fail {} -> drainOpaque output input
+                (PinnedResponseLimitExceeded output, answered)
+            | otherwise -> (PinnedResponses output input, answered)
+          StrictParse.Fail {} -> drainOpaque answered requests output input
 
-    drainOpaque output input =
+    drainOpaque answered requests output input =
       case StrictParse.parse opaqueResp3Frame input of
         StrictParse.Done remaining _ ->
           let consumed = BS.length input - BS.length remaining
-           in drain (output <> BS.take consumed input) remaining
+              (_, laterRequests, nextAnswered)
+                | BS.take 1 input == ">" = (PinnedOtherRequest, requests, answered)
+                | otherwise = answer answered requests
+           in drain nextAnswered laterRequests (output <> BS.take consumed input) remaining
         StrictParse.Partial _
           | responseExceedsLimit payloadLimit input ->
-              PinnedResponseLimitExceeded output
-          | otherwise -> PinnedResponses output input
+              (PinnedResponseLimitExceeded output, answered)
+          | otherwise -> (PinnedResponses output input, answered)
         StrictParse.Fail {} ->
           if isStreamedResp3Start input
-            then PinnedResponseMalformed output
+            then (PinnedResponseMalformed output, answered)
             else case BS.elemIndex 10 input of
           Just newline ->
             let consumed = newline + 1
-             in drain (output <> BS.take consumed input) (BS.drop consumed input)
+             in drain answered requests (output <> BS.take consumed input) (BS.drop consumed input)
           Nothing
             | responseExceedsLimit payloadLimit input ->
-                PinnedResponseLimitExceeded output
-            | otherwise -> PinnedResponses output input
+                (PinnedResponseLimitExceeded output, answered)
+            | otherwise -> (PinnedResponses output input, answered)
+
+    -- A reply with no queued request (a RESP2 Pub/Sub message, or anything
+    -- after tracking stopped) is never treated as a topology reply.
+    answer answered requests =
+      case requests of
+        request : laterRequests -> (request, laterRequests, answered + 1)
+        []                      -> (PinnedOtherRequest, [], answered)
 
     responseParserPrefixes = [43, 45, 58, 36, 42, 126, 37]
 
@@ -705,98 +660,193 @@ opaqueResp3Frame = do
         then StrictParse.word8 46 >> opaqueCRLF
         else opaqueResp3Frame >> opaqueStreamedValues
 
--- | Rewrite cluster responses to replace remote hosts with 127.0.0.1
--- Handles CLUSTER NODES, CLUSTER SLOTS, MOVED, and ASK responses
-rewriteClusterResponse :: BS.ByteString -> BS.ByteString
-rewriteClusterResponse dat =
-  case Resp.parseStrict dat of
-    Left _ -> dat  -- Can't parse, return as-is
-    Right respData ->
-      let rewritten = rewriteRespData respData
-      in LBS.toStrict $ Builder.toLazyByteString $ encode rewritten
+-- | What the pinned proxy needs to know about one client request.
+data PinnedRequest
+  = PinnedClusterSlots
+  | PinnedClusterNodes
+  | PinnedClusterShards
+  | PinnedOtherRequest
+  | PinnedStopTracking
+    -- ^ The request breaks the one-reply-per-request order (Pub/Sub, MONITOR,
+    -- CLIENT REPLY) or could not be framed.  Later replies are not matched
+    -- with requests, so none of them is treated as a topology reply.
+  deriving (Eq, Show)
 
--- | Rewrite RespData to replace hosts with localhost
--- Handles three types of responses:
--- 1. MOVED/ASK errors: "MOVED slot host:port" -> "MOVED slot 127.0.0.1:port"
--- 2. CLUSTER NODES bulk strings: multi-line text with "node-id host:port@cport ..."
--- 3. CLUSTER SLOTS bulk strings: plain IPv4 addresses like "9.169.243.75"
-rewriteRespData :: RespData -> RespData
-rewriteRespData (RespError msg) =
-  -- Handle MOVED and ASK errors: rewrite "host:port" to "127.0.0.1:port"
-  let msgStr = BS8.unpack msg
-  in if "MOVED" `isPrefixOf` msgStr || "ASK" `isPrefixOf` msgStr
-    then RespError (BS8.pack $ rewriteRedirectionError msgStr)
-    else RespError msg
-rewriteRespData (RespBulkString bs) =
-  let text = BS8.unpack bs
-  in if isClusterNodesFormat text
-       -- CLUSTER NODES format: multi-line text with node info
-       then RespBulkString (rewriteClusterNodesText bs)
-       -- Plain IPv4 address from CLUSTER SLOTS: replace with 127.0.0.1
-       else if isIPv4Address text || isHostname text
-              then RespBulkString "127.0.0.1"
-              else RespBulkString bs
+-- | Streaming scanner for client request frames.  It keeps only the first two
+-- arguments of the current request, truncated, so large values are skipped
+-- without being buffered.
+data PinnedRequestScanner = PinnedRequestScanner
+  { scannerPhase     :: !ScanPhase
+  , scannerArgsLeft  :: !Int
+  , scannerArguments :: ![BS.ByteString]
+  }
 
-rewriteRespData (RespArray items) =
-  -- Recursively rewrite array items (handles nested structures in CLUSTER SLOTS)
-  RespArray (map rewriteRespData items)
-rewriteRespData other = other
+data ScanPhase
+  = AwaitArrayHeader !BS.ByteString
+  | AwaitBulkHeader !BS.ByteString
+  | InBulkPayload !Int !BS.ByteString
 
--- | Check if a bulk string is in CLUSTER NODES format
--- CLUSTER NODES format contains spaces and colons, e.g.:
--- "node-id host:port@cport flags master..."
-isClusterNodesFormat :: String -> Bool
-isClusterNodesFormat text = ' ' `elem` text && ':' `elem` text
+initialPinnedRequestScanner :: PinnedRequestScanner
+initialPinnedRequestScanner = PinnedRequestScanner (AwaitArrayHeader BS.empty) 0 []
 
--- | Check if a string is a valid IPv4 address
--- Uses the same parsing logic as Client.parseIPv4
--- Redis CLUSTER SLOTS responses contain IPv4 addresses, not hostnames
-isIPv4Address :: String -> Bool
-isIPv4Address str = case parseIPv4 str of
-  Just _  -> True
-  Nothing -> False
+-- | Classify every request completed by a chunk of client bytes.  The scanner
+-- is 'Nothing' once tracking has stopped; the last request is then
+-- 'PinnedStopTracking'.  Inline commands and malformed frames stop tracking.
+scanPinnedRequests ::
+  PinnedRequestScanner ->
+  BS.ByteString ->
+  ([PinnedRequest], Maybe PinnedRequestScanner)
+scanPinnedRequests initial = go [] initial
   where
-    -- Parse IPv4 address string (e.g., "127.0.0.1")
-    -- Copied from Client.hs to avoid circular dependencies
-    parseIPv4 :: String -> Maybe ()
-    parseIPv4 s = case words $ map (\c -> if c == '.' then ' ' else c) s of
-      [a, b, c, d] -> do
-        _ <- readMaybe a :: Maybe Word8
-        _ <- readMaybe b :: Maybe Word8
-        _ <- readMaybe c :: Maybe Word8
-        _ <- readMaybe d :: Maybe Word8
-        return ()
-      _ -> Nothing
+    go requests scanner input
+      | BS.null input = (reverse requests, Just scanner)
+      | otherwise =
+          case scannerPhase scanner of
+            AwaitArrayHeader partial ->
+              readHeader requests partial input (\line -> scanner { scannerPhase = AwaitArrayHeader line }) $
+                \line rest -> case parseHeader '*' line of
+                  Just count
+                    | count <= 0 -> go requests (scanner { scannerPhase = AwaitArrayHeader BS.empty }) rest
+                    | otherwise ->
+                        go requests (PinnedRequestScanner (AwaitBulkHeader BS.empty) count []) rest
+                  Nothing -> stop requests
+            AwaitBulkHeader partial ->
+              readHeader requests partial input (\line -> scanner { scannerPhase = AwaitBulkHeader line }) $
+                \line rest -> case parseHeader '$' line of
+                  Just size
+                    | size >= 0 && size <= pinnedResponseFrameLimit ->
+                        go requests (scanner { scannerPhase = InBulkPayload (size + 2) BS.empty }) rest
+                  _ -> stop requests
+            InBulkPayload remaining captured ->
+              let (taken, rest) = BS.splitAt remaining input
+                  stillNeeded = remaining - BS.length taken
+                  captured'
+                    | length (scannerArguments scanner) < 2 =
+                        BS.take capturedArgumentLimit
+                          (captured <> BS.take capturedArgumentLimit taken)
+                    | otherwise = captured
+               in if stillNeeded > 0
+                    then go requests (scanner { scannerPhase = InBulkPayload stillNeeded captured' }) rest
+                    else
+                      let argument = BS.take (BS.length captured' - trailingCRLF captured') captured'
+                          arguments = scannerArguments scanner ++ [argument | length (scannerArguments scanner) < 2]
+                          argsLeft = scannerArgsLeft scanner - 1
+                       in if argsLeft > 0
+                            then go requests (PinnedRequestScanner (AwaitBulkHeader BS.empty) argsLeft arguments) rest
+                            else
+                              let request = classifyPinnedRequest arguments
+                               in if request == PinnedStopTracking
+                                    then (reverse (request : requests), Nothing)
+                                    else go (request : requests) initialPinnedRequestScanner rest
 
-    readMaybe :: Read a => String -> Maybe a
-    readMaybe s = case reads s of
-      [(x, "")] -> Just x
-      _         -> Nothing
+    stop requests = (reverse (PinnedStopTracking : requests), Nothing)
 
--- | Check if a string is a hostname
--- A hostname must contain at least one dot and be alphanumeric with dots/hyphens
--- Examples: "redis1.local", "node1.cluster.local", "192.168.1.1" (but filtered by isIPv4Address)
-isHostname :: String -> Bool
-isHostname str =
-  not (null str) &&
-  not (isIPv4Address str) &&
-  elem '.' str &&  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname  -- Must contain at least one dot to be a hostname
-  all isAlphaNumOrDash str
+    readHeader requests partial input waiting continue =
+      case BS.elemIndex 10 input of
+        Just newline ->
+          continue (partial <> BS.take (newline + 1) input) (BS.drop (newline + 1) input)
+        Nothing
+          | BS.length partial + BS.length input > headerLimit -> stop requests
+          | otherwise -> (reverse requests, Just (waiting (partial <> input)))
+
+    -- An argument of up to 16 bytes is captured with its CRLF.  A longer one
+    -- is truncated; it is never compared in full, so a coincidental trailing
+    -- CRLF does not matter.
+    trailingCRLF bytes
+      | "\r\n" `BS.isSuffixOf` bytes = 2
+      | otherwise = 0
+
+    parseHeader marker line = do
+      body <- BS.stripPrefix (BS8.singleton marker) line
+      digits <- BS.stripSuffix "\r\n" body
+      (value, trailing) <- BS8.readInt digits
+      if BS.null trailing then Just value else Nothing
+
+    headerLimit = 32
+    capturedArgumentLimit = 18
+
+classifyPinnedRequest :: [BS.ByteString] -> PinnedRequest
+classifyPinnedRequest arguments =
+  case map (BS8.map toUpper) arguments of
+    ["CLUSTER", "SLOTS"]  -> PinnedClusterSlots
+    ["CLUSTER", "NODES"]  -> PinnedClusterNodes
+    ["CLUSTER", "SHARDS"] -> PinnedClusterShards
+    ["CLIENT", "REPLY"]   -> PinnedStopTracking
+    command : _
+      | command `elem` orderBreakingCommands -> PinnedStopTracking
+    _ -> PinnedOtherRequest
   where
-    isAlphaNumOrDash c = isAlphaNum c || c == '-' || c == '.'
+    orderBreakingCommands =
+      [ "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE"
+      , "UNSUBSCRIBE", "PUNSUBSCRIBE", "SUNSUBSCRIBE"
+      , "MONITOR"
+      ]
 
--- | Rewrite MOVED/ASK error messages
-rewriteRedirectionError :: String -> String
-rewriteRedirectionError msg =
-  -- MOVED 3999 host:port -> MOVED 3999 127.0.0.1:port
-  -- ASK 3999 host:port -> ASK 3999 127.0.0.1:port
-  let parts = words msg
-  in case parts of
-       [errType, slot, hostPort] ->
-         case break (== ':') hostPort of
-           (_, ':':port) -> errType ++ " " ++ slot ++ " 127.0.0.1:" ++ port
-           _             -> msg
-       _ -> msg
+-- | Rewrite one complete reply for the request it answers.  Untouched replies
+-- are returned as their original bytes.
+rewritePinnedReply :: PinnedRequest -> BS.ByteString -> RespData -> BS.ByteString
+rewritePinnedReply request original reply =
+  case (request, reply) of
+    (_, RespError message) ->
+      maybe original (encodeReply . RespError) (rewriteRedirection message)
+    (PinnedClusterSlots, RespArray ranges) ->
+      encodeReply $ RespArray (map rewriteSlotRange ranges)
+    (PinnedClusterNodes, RespBulkString text) ->
+      encodeReply $ RespBulkString (rewriteClusterNodesText text)
+    (PinnedClusterShards, _) ->
+      encodeReply $ rewriteShardEndpoints reply
+    _ -> original
+  where
+    encodeReply = LBS.toStrict . Builder.toLazyByteString . encode
+
+-- | MOVED/ASK errors keep their slot and port, with the host replaced by the
+-- local listener address.
+rewriteRedirection :: BS.ByteString -> Maybe BS.ByteString
+rewriteRedirection message =
+  case (parseRedirectionError "MOVED" message, parseRedirectionError "ASK" message) of
+    (Just redirection, _) -> Just $ redirect "MOVED" redirection
+    (_, Just redirection) -> Just $ redirect "ASK" redirection
+    _                     -> Nothing
+  where
+    redirect kind redirection =
+      kind <> " " <> BS8.pack (show $ redirSlot redirection)
+        <> " 127.0.0.1:" <> BS8.pack (show $ redirPort redirection)
+
+-- | CLUSTER SLOTS: @[start, end, node, node...]@ where each node starts with
+-- its endpoint.  An unknown endpoint (empty or @?@) is left as is.
+rewriteSlotRange :: RespData -> RespData
+rewriteSlotRange (RespArray (start : end : nodes)) =
+  RespArray (start : end : map rewriteNode nodes)
+  where
+    rewriteNode (RespArray (RespBulkString endpoint : details))
+      | knownEndpoint endpoint = RespArray (RespBulkString "127.0.0.1" : details)
+    rewriteNode node = node
+rewriteSlotRange other = other
+
+-- | CLUSTER SHARDS: rewrite the values of endpoint fields in every key/value
+-- list or map.
+rewriteShardEndpoints :: RespData -> RespData
+rewriteShardEndpoints reply =
+  case reply of
+    RespArray items -> RespArray (rewritePairs (map rewriteShardEndpoints items))
+    RespMap fields ->
+      RespMap $ Map.mapWithKey rewriteField (Map.map rewriteShardEndpoints fields)
+    other -> other
+  where
+    rewritePairs (RespBulkString key : RespBulkString value : rest)
+      | isEndpointField key && knownEndpoint value =
+          RespBulkString key : RespBulkString "127.0.0.1" : rewritePairs rest
+    rewritePairs (key : value : rest) = key : value : rewritePairs rest
+    rewritePairs rest = rest
+
+    rewriteField (RespBulkString key) (RespBulkString value)
+      | isEndpointField key && knownEndpoint value = RespBulkString "127.0.0.1"
+    rewriteField _ value = value
+
+    isEndpointField key = key `elem` ["endpoint", "ip", "hostname"]
+
+knownEndpoint :: BS.ByteString -> Bool
+knownEndpoint endpoint = not (BS.null endpoint) && endpoint /= "?"
 
 -- | Rewrite CLUSTER NODES response text
 rewriteClusterNodesText :: BS.ByteString -> BS.ByteString

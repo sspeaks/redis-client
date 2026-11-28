@@ -62,7 +62,6 @@ library
       , Database.Redis.Command
       , Database.Redis.Cluster
       , Database.Redis.Cluster.Client
-      , Database.Redis.Cluster.Commands
       , Database.Redis.Cluster.SlotMapping
       , Database.Redis.Cluster.ConnectionPool
       , Database.Redis.Connector
@@ -126,8 +125,8 @@ library cluster
     hs-source-dirs:   lib/cluster
     exposed-modules:  Database.Redis.Cluster
                     , Database.Redis.Cluster.Client
-                    , Database.Redis.Cluster.Internal.RawCommand
-                    , Database.Redis.Cluster.Commands
+                    , Database.Redis.Cluster.Internal.ClientImplementation
+                    , Database.Redis.Cluster.Internal.CommandGrammar
                     , Database.Redis.Cluster.SlotMapping
                     , Database.Redis.Cluster.ConnectionPool
                     , Database.Redis.Connector
@@ -135,9 +134,7 @@ library cluster
                     , Database.Redis.Internal.Multiplexer
                     , Database.Redis.Cluster.Internal.Topology
                     , Database.Redis.Standalone
-    other-modules:    Database.Redis.Cluster.Internal.ClientImplementation
-                    , Database.Redis.Cluster.Internal.CommandGrammar
-                    , Database.Redis.Cluster.Internal.CommandMetadata
+    other-modules:    Database.Redis.Cluster.Internal.CommandMetadata
     build-depends:    attoparsec >=0.14 && <0.15
                     , bytestring >=0.12 && <0.13
                     , client

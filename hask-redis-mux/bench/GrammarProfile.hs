@@ -2,12 +2,28 @@
 
 module Main (main) where
 
-import qualified Data.ByteString                 as BS
-import           Database.Redis.Cluster.Commands (CommandRouting (..),
-                                                  classifyCommand)
-import           GHC.Clock                       (getMonotonicTimeNSec)
-import           System.Environment              (getArgs)
-import           Text.Printf                     (printf)
+import qualified Data.ByteString                                as BS
+import           Database.Redis.Cluster.Internal.CommandGrammar (CommandFrameRouting (..),
+                                                                 classifyCommandFrame,
+                                                                 renderCommandGrammarError)
+import           GHC.Clock                                      (getMonotonicTimeNSec)
+import           System.Environment                             (getArgs)
+import           Text.Printf                                    (printf)
+
+-- | Benchmark-local view of the generated grammar's routing decision.
+data CommandRouting
+    = KeylessRoute
+    | KeyedRoute BS.ByteString
+    | CommandError String
+
+classifyCommand :: BS.ByteString -> [BS.ByteString] -> CommandRouting
+classifyCommand command arguments =
+    case classifyCommandFrame (command : arguments) of
+        Right FrameKeyless -> KeylessRoute
+        Right (FrameSingleSlot key _) -> KeyedRoute key
+        Right (FrameCrossSlot _) ->
+            CommandError "CROSSSLOT Keys in request don't hash to the same slot"
+        Left errorValue -> CommandError (renderCommandGrammarError errorValue)
 
 main :: IO ()
 main = do

@@ -355,6 +355,21 @@ spec = describe "Cluster Tunnel Mode" $ do
               runRawOnNode owner ["MGET", multiOne, multiTwo]
                 `shouldReturn` RespArray [RespBulkString "first", RespBulkString "second"]
 
+    it "smart mode passes a Redis WRONGTYPE error reply through unchanged" $
+      withSmartProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          master <- firstMaster client
+          let key = getKeyForNode master "smart-wrongtype"
+          (`finally` deleteFromNode master [key]) $ do
+            runRawOnNode master ["SET", key, "string"]
+              `shouldReturn` RespSimpleString "OK"
+            bracket connectProxySocket S.close $ \sock -> do
+              sendAll sock (encodeFrame $ rawFrame ["LPUSH", key, "item"])
+              (response, buffered) <- receiveProxyResponse sock BS.empty
+              response `shouldBe`
+                RespError "WRONGTYPE Operation against a key holding the wrong kind of value"
+              buffered `shouldBe` BS.empty
+
     it "smart mode returns exact local errors and leaves malformed and cross-slot candidates unchanged" $
       withSmartProxy $
         bracket createTestClusterClient closeClusterClient $ \client -> do
@@ -390,7 +405,8 @@ spec = describe "Cluster Tunnel Mode" $ do
                 assertExactLocalError malformedMsetResponse "MSET has malformed arguments"
                 crossSlotResponse <- runRawProxyCommand conn
                   ["MSET", firstKey, "cross-first", secondKey, "cross-second"]
-                assertExactLocalError crossSlotResponse "CROSSSLOT Keys in request don't hash to the same slot"
+                crossSlotResponse
+                  `shouldBe` RespError "CROSSSLOT Keys in request don't hash to the same slot"
               runRawOnNode firstOwner ["GET", firstKey]
                 `shouldReturn` RespBulkString "first-before"
               runRawOnNode secondOwner ["GET", secondKey]
@@ -558,6 +574,31 @@ spec = describe "Cluster Tunnel Mode" $ do
 
               close conn1
             _ -> expectationFailure "Expected at least 2 master nodes"
+
+    it "pinned mode returns GET values that look like hosts or CLUSTER NODES text unchanged" $
+      withPinnedProxy $
+        bracket createTestClusterClient closeClusterClient $ \client -> do
+          master <- firstMaster client
+          let port = nodePort (nodeAddress master)
+              values =
+                [ "v1.2"
+                , "10.0.0.12"
+                , "redis1.example.local"
+                , "node-a 10.0.0.1:6379@16379 master - 0 0 1 connected"
+                ]
+              keys =
+                [ getKeyForNode master ("pinned-literal-" ++ show index)
+                | index <- [1 .. length values]
+                ]
+          (`finally` deleteFromNode master keys) $
+            bracket (connectPinnedProxySocket port) S.close $ \sock ->
+              forM_ (zip keys values) $ \(key, value) -> do
+                runRawOnNode master ["SET", key, value]
+                  `shouldReturn` RespSimpleString "OK"
+                sendAll sock (encodeFrame $ rawFrame ["GET", key])
+                (response, buffered) <- receiveProxyResponse sock BS.empty
+                response `shouldBe` RespBulkString value
+                buffered `shouldBe` BS.empty
 
     it "pinned mode rewrites CLUSTER SLOTS addresses to 127.0.0.1" $
       withPinnedProxy $ do
